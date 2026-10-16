@@ -2,7 +2,7 @@
 
 Self-hosted control panel for a homelab: servers, Docker containers and Compose stacks, static websites with automatic DNS and TLS, and backups – all from one web UI.
 
-PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (embedded as a library) with a React UI. Every managed server runs a small agent that **dials out** to the panel over gRPC with mutual TLS, so servers behind NAT need no open ports.
+PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (embedded as a library) with a React UI. Every managed server runs a small **agent container** that dials out to the panel over gRPC with mutual TLS, so servers behind NAT need no open ports. Agent updates are done by a short-lived updater container with automatic rollback.
 
 > **Status: design phase.** This repository holds the UI design, the architecture notes and the backlog. No code yet – start with the [Roadmap](https://github.com/oldbear24/PocketServerManager/issues/40).
 
@@ -10,7 +10,7 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 
 ## What it will do
 
-- **Servers and agents** – connect a server with one command and a one-time token; live heartbeat, resource usage and events; signed agent self-updates.
+- **Servers and agents** – connect a Docker host with one `docker run` and a one-time token; live heartbeat, resource usage and events; one-click agent updates through a temporary updater container that rolls back if the new agent does not come up.
 - **Containers and stacks** – Docker inventory and actions, Compose editor with revisions and encrypted secrets, live logs, web terminal.
 - **Static sites** – deploy from Git, a ZIP upload or an empty placeholder; builds run in a throwaway container; atomic releases and instant rollback.
 - **Domains and TLS** – connect DNS providers (Cloudflare first); records and certificates (Let's Encrypt or ZeroSSL, HTTP-01 or DNS-01, wildcards) are created, renewed and pushed to the servers automatically. Containers get a domain through a `pocketcloud.domain` label.
@@ -27,8 +27,8 @@ flowchart LR
     GW[gRPC gateway]
     MGR[Commands · DNS · ACME · Scheduler]
   end
-  A1[Agent: server 1] -- gRPC / mTLS, dial-out --> GW
-  A2[Agent: server 2] -- gRPC / mTLS, dial-out --> GW
+  A1[Agent container: server 1] -- gRPC / mTLS, dial-out --> GW
+  A2[Agent container: server 2] -- gRPC / mTLS, dial-out --> GW
   MGR -- API --> DNS[(DNS providers)]
   MGR -- ACME --> CA[(Let's Encrypt / ZeroSSL)]
   A1 --> D1[Docker · Caddy edge · restic]
@@ -61,7 +61,8 @@ The [Roadmap issue](https://github.com/oldbear24/PocketServerManager/issues/40) 
 
 ```
 cmd/panel     panel binary (PocketBase + gRPC gateway + UI)      – planned
-cmd/agent     agent binary                                        – planned
+cmd/agent     agent (runs as a container)                         – planned
+cmd/updater   temporary container that swaps the agent on update  – planned
 proto/        gRPC API (buf)                                      – planned
 internal/     shared Go packages                                  – planned
 web/          React UI (Vite + TypeScript)                        – planned

@@ -49,7 +49,7 @@ Jobs with a 14-day history strip, failed-run banner with a fix action, snapshots
 <img src="screenshots/07-backups.png" width="720" alt="Backups">
 
 ### 8. Connect a server – [preview](preview/Enroll.html) · [source](source/Enroll.dc.html)
-One-time enrollment token, install command (script, Docker, manual systemd) that updates with name and roles, live connection checklist, agent versions.
+One-time enrollment token, Docker install (`docker run`, Compose snippet or a wrapper script) that updates with name and roles, live connection checklist, agent versions with a note on the updater container.
 
 <img src="screenshots/08-connect-server.png" width="720" alt="Connect a server">
 

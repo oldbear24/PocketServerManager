@@ -57,7 +57,7 @@ a{color:#8FB0FF}a:hover{color:#B7CCFF}
 <header style="display: flex; flex-direction: column; gap: 6px">
 <div style="font-size: 12.5px; color: #7E8794"><a href="Main.html" style="color: #98A1AE; text-decoration: none">Agenti</a> / Připojit server</div>
 <h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Připojit nový server</h1>
-<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 760px">Agent se sám připojí ven na <span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #C5CAD3">panel.example.cz:9443</span>. Na serveru není potřeba otevírat žádný port – funguje i za NAT.</p>
+<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 760px">Agent běží jako Docker kontejner a sám se připojí ven na <span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #C5CAD3">panel.example.cz:9443</span>. Na serveru není potřeba otevírat žádný port – funguje i za NAT.</p>
 </header>
 
 <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
@@ -94,27 +94,31 @@ a{color:#8FB0FF}a:hover{color:#B7CCFF}
 
 <section aria-labelledby="s2-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
 <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 18px 0">
-<h2 id="s2-h" style="margin: 0; font-size: 15px; font-weight: 600">2 · Spusť instalaci na serveru</h2>
+<h2 id="s2-h" style="margin: 0; font-size: 15px; font-weight: 600">2 · Spusť agenta na serveru</h2>
 <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 8px; background: #1A2233; font-size: 12.5px; color: #A9C1FF"><span style="font-family: 'Geist Mono', ui-monospace, monospace">ENR-7Q2K-XM4P-9TLD</span><span style="color: #7E8794">· jednorázový · ještě 14:32</span></span>
 <button type="button" style="height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Nový token</button>
 </div>
 <div role="tablist" aria-label="Způsob instalace" style="display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid #1F242D; overflow-x: auto">
 
-<button type="button" role="tab" aria-selected="true" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid #8FB0FF; background: transparent; color: #E6E8EC; font: inherit; font-size: 13.5px; cursor: pointer">Linux skript</button>
+<button type="button" role="tab" aria-selected="true" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid #8FB0FF; background: transparent; color: #E6E8EC; font: inherit; font-size: 13.5px; cursor: pointer">docker run</button>
 
-<button type="button" role="tab" aria-selected="false" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98A1AE; font: inherit; font-size: 13.5px; cursor: pointer">Docker</button>
+<button type="button" role="tab" aria-selected="false" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98A1AE; font: inherit; font-size: 13.5px; cursor: pointer">Docker Compose</button>
 
-<button type="button" role="tab" aria-selected="false" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98A1AE; font: inherit; font-size: 13.5px; cursor: pointer">Ručně (systemd)</button>
+<button type="button" role="tab" aria-selected="false" style="flex: none; height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98A1AE; font: inherit; font-size: 13.5px; cursor: pointer">Instalační skript</button>
 
 </div>
 <div style="position: relative; background: #0B0D10">
-<pre style="margin: 0; padding: 18px 18px 18px 18px; overflow-x: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; line-height: 22px; color: #C5CAD3; white-space: pre">curl -fsSL https://panel.example.cz/install.sh | sudo sh -s -- \
-  --panel panel.example.cz:9443 \
-  --token ENR-7Q2K-XM4P-9TLD \
-  --name nas-02 --roles docker</pre>
+<pre style="margin: 0; padding: 18px 18px 18px 18px; overflow-x: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; line-height: 22px; color: #C5CAD3; white-space: pre">docker run -d --name pocketcloud-agent --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v pocketcloud-agent:/var/lib/pocketcloud \
+  -v /:/host:ro,rslave \
+  -e PANEL=panel.example.cz:9443 -e CA_PIN=sha256:5f1c9e07a4b2d8e6 \
+  -e TOKEN=ENR-7Q2K-XM4P-9TLD \
+  -e NAME=nas-02 -e ROLES=docker \
+  ghcr.io/oldbear24/pocketcloud-agent:0.4.2</pre>
 <button type="button" style="position: absolute; top: 10px; right: 10px; height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Kopírovat</button>
 </div>
-<div style="padding: 12px 18px; font-size: 12.5px; color: #7E8794">Skript ověří podpis binárky, vytvoří systemd službu pocketcloud-agent a spustí registraci.</div>
+<div style="padding: 12px 18px; font-size: 12.5px; color: #7E8794">Docker socket je potřeba pro správu kontejnerů. Kořen hostitele je připojený jen pro čtení – kvůli metrikám a zálohám složek. Identita agenta zůstává ve svazku pocketcloud-agent.</div>
 </section>
 
 <section aria-labelledby="s3-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 6px">
@@ -162,17 +166,18 @@ a{color:#8FB0FF}a:hover{color:#B7CCFF}
 <section aria-labelledby="how-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
 <h2 id="how-h" style="margin: 0; font-size: 15px; font-weight: 600">Co se při připojení děje</h2>
 <ol style="margin: 0; padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #C5CAD3">
-<li>Agent vygeneruje vlastní klíč a pošle žádost o certifikát spolu s tokenem.</li>
+<li>Kontejner agenta vygeneruje vlastní klíč a pošle žádost o certifikát spolu s tokenem.</li>
 <li>Panel ověří token, podepíše certifikát interní CA a token zneplatní.</li>
 <li>Agent otevře mTLS stream a čeká na příkazy – žádné heslo na disku.</li>
 <li>Pošle inventář Dockeru; server se objeví v přehledu.</li>
+<li>Identita zůstává ve svazku pocketcloud-agent, takže přežije restart i aktualizaci kontejneru.</li>
 </ol>
 </section>
 <section aria-labelledby="req-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px">
 <h2 id="req-h" style="margin: 0; font-size: 15px; font-weight: 600">Požadavky</h2>
 <dl style="margin: 0; display: grid; grid-template-columns: minmax(90px, auto) minmax(0, 1fr); gap: 8px 14px; font-size: 13px">
 <dt style="color: #7E8794">Systém</dt><dd style="margin: 0">Linux · amd64 nebo arm64</dd>
-<dt style="color: #7E8794">Docker</dt><dd style="margin: 0">24+ (pro role Docker a Edge)</dd>
+<dt style="color: #7E8794">Docker</dt><dd style="margin: 0">24+ (agent sám běží v kontejneru)</dd>
 <dt style="color: #7E8794">Síť</dt><dd style="margin: 0">odchozí TCP 9443 na panel</dd>
 <dt style="color: #7E8794">Edge</dt><dd style="margin: 0">příchozí 80 a 443 pro weby</dd>
 </dl>
@@ -198,6 +203,7 @@ a{color:#8FB0FF}a:hover{color:#B7CCFF}
 <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #F79A95">v0.3.9 · offline</span>
 </div>
 
+<p style="margin: 4px 0 0; font-size: 12.5px; color: #98A1AE">Aktualizaci provede dočasný kontejner <span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #C5CAD3">pocketcloud-updater</span>: stáhne nový image, vymění kontejner agenta, a když se nový nepřipojí k panelu, vrátí původní.</p>
 <button type="button" style="margin-top: 4px; align-self: flex-start; height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Aktualizovat 2 agenty</button>
 </section>
 </aside>

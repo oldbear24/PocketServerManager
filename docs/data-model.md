@@ -20,7 +20,7 @@ Conventions:
 
 | Collection | Purpose | Key fields |
 |---|---|---|
-| `hosts` | A managed server and its agent | `name`, `roles[]` (docker / edge / backup), `status` (online / degraded / offline), `os`, `arch`, `cpu_cores`, `mem_bytes`, `ip4`, `ip6`, `labels`, `agent_version`, `docker_version`, `last_seen`, `rtt_ms`, `connected_since`, `cert_serial`, `cert_expires_at` |
+| `hosts` | A managed server and its agent | `name`, `roles[]` (docker / edge / backup), `status` (online / degraded / offline), `os`, `arch`, `cpu_cores`, `mem_bytes`, `ip4`, `ip6`, `labels`, `agent_version`, `agent_image_digest`, `agent_container_id`, `docker_version`, `last_seen`, `rtt_ms`, `connected_since`, `cert_serial`, `cert_expires_at` |
 | `revoked_certs` | Agent certificate denylist | `serial`, `host`, `reason` |
 | `commands` | Audit trail and delivery queue | `host`, `type`, `payload` (json, 🔒 parts), `status`, `requested_by`, `parent`, `correlation_id`, `attempts`, `dispatched_at`, `started_at`, `finished_at`, `expires_at`, `result` (json), `error`, `output` (file) |
 | `events` | Timeline per host and resource | `host`, `kind`, `severity`, `message`, `data` |
