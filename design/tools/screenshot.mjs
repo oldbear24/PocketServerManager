@@ -3,6 +3,7 @@
 // package so the screenshots look the same offline.
 //
 // Usage: (cd design/tools && npm install && npm run render && npm run screenshots)
+//        node screenshot.mjs Import   # only some screens
 
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -37,7 +38,9 @@ await page.route(/fonts\.(googleapis|gstatic)\.com/, (route) =>
   route.fulfill({ status: 200, contentType: 'text/css', body: fontCss })
 );
 
-for (const screen of screens) {
+// Optional arguments limit the run to some screens: node screenshot.mjs Import Audit
+const only = process.argv.slice(2);
+for (const screen of screens.filter((s) => only.length === 0 || only.includes(s.source))) {
   const url = pathToFileURL(join(PREVIEW, `${screen.source}.html`)).href;
   await page.goto(url, { waitUntil: 'load' });
   await page.evaluate(() => document.fonts.ready);

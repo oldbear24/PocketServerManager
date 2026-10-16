@@ -34,7 +34,7 @@ Every action becomes a record in the `commands` collection – the command histo
 
 ## Design
 
-Twelve screens: overview, server detail, Compose stack, static site, new-site wizard (static or PHP), domains & certificates, backups, connecting a server, diagnostics, change audit, PHP site, databases. See [design/README.md](design/README.md) for screenshots, clickable static previews and the canvas sources.
+Thirteen screens: overview, server detail, Compose stack, static site, new-site wizard (static or PHP), domains & certificates, backups, connecting a server, diagnostics, change audit, PHP site, databases, import from Coolify. See [design/README.md](design/README.md) for screenshots, clickable static previews and the canvas sources.
 
 ## Roadmap
 

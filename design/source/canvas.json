@@ -16,7 +16,8 @@
     "Backups.dc.html": { "x": 0, "y": 4280, "w": 1440, "h": 1420, "title": "Zálohy", "expand": "fill", "is_interactive": true },
     "Enroll.dc.html": { "x": 1520, "y": 4280, "w": 1440, "h": 1200, "title": "Připojení serveru · agent v Dockeru", "expand": "fill", "is_interactive": true },
     "Diagnostics.dc.html": { "x": 3040, "y": 4280, "w": 1440, "h": 2060, "title": "Diagnostika · plugin pro PocketBase", "expand": "fill", "is_interactive": true },
-    "Audit.dc.html": { "x": 4560, "y": 4280, "w": 1440, "h": 1100, "title": "Audit změn", "expand": "fill", "is_interactive": true }
+    "Audit.dc.html": { "x": 4560, "y": 4280, "w": 1440, "h": 1100, "title": "Audit změn", "expand": "fill", "is_interactive": true },
+    "Import.dc.html": { "x": 0, "y": 6700, "w": 1440, "h": 1900, "title": "Import z Coolify · plán migrace", "expand": "fill", "is_interactive": true }
   },
   "order": [
     "Main.dc.html",
@@ -30,12 +31,14 @@
     "Backups.dc.html",
     "Enroll.dc.html",
     "Diagnostics.dc.html",
-    "Audit.dc.html"
+    "Audit.dc.html",
+    "Import.dc.html"
   ],
   "notes": {
     "ops": { "x": 0, "y": -300, "text": "Provoz – servery, kontejnery, databáze", "kind": "title1", "maxW": 6000 },
     "web": { "x": 0, "y": 2000, "text": "Weby (statické i PHP), domény a SSL", "kind": "title1", "maxW": 6000 },
-    "bak": { "x": 0, "y": 3980, "text": "Zálohy, agenti, diagnostika a audit", "kind": "title1", "maxW": 6000 }
+    "bak": { "x": 0, "y": 3980, "text": "Zálohy, agenti, diagnostika a audit", "kind": "title1", "maxW": 6000 },
+    "mig": { "x": 0, "y": 6400, "text": "Migrace z Coolify", "kind": "title1", "maxW": 6000 }
   },
   "designSystems": []
 }

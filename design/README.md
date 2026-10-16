@@ -1,12 +1,12 @@
 # Design
 
-UI design for PocketCloud: twelve screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
+UI design for PocketCloud: thirteen screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
 
 | Folder | What it is |
 |---|---|
 | [`screenshots/`](screenshots/) | Full-page PNGs at 1440 px – the quickest way to look at the design on GitHub |
 | [`preview/`](preview/) | Static HTML pages; open `preview/index.html` locally – screens link to each other like the prototype |
-| [`source/`](source/) | Source artboards (`*.dc.html`) and the canvas layout (`canvas.json`) from Claude Design, including the interactive parts (log filters, wizard type and progress, install command tabs, audit entries, database servers) |
+| [`source/`](source/) | Source artboards (`*.dc.html`) and the canvas layout (`canvas.json`) from Claude Design, including the interactive parts (log filters, wizard type and progress, install command tabs, audit entries, database servers, import plan and migration mode) |
 | [`tools/`](tools/) | Scripts that regenerate `preview/` and `screenshots/` from `source/` |
 
 The editable canvas lives in Claude Design: <https://claude.ai/artifact/Ei8hKsA6eYJGcDUG8kfTRA> (private to the owner). After changing it, copy the artboards into `source/` and regenerate the previews.
@@ -72,6 +72,11 @@ A WordPress site on PHP 8.3: FPM workers, latency and error rate, PHP runtime (i
 Shared and dedicated database servers per host (MariaDB, PostgreSQL) with size, connections and backup schedule; databases of the selected server with their apps; connection panel with the environment snippet and actions (rotate password, Adminer for 30 minutes, SQL export, clone); hints for consolidating a dedicated instance into a shared server.
 
 <img src="screenshots/12-databases.png" width="720" alt="Databases">
+
+### 13. Import from Coolify – [preview](preview/Import.html) · [source](source/Import.dc.html)
+Migration plan for a Coolify installation: the sources it was read from (server export, REST API, the agent on the Coolify server), in place or onto another server, every Coolify resource with its PocketCloud target, domain, data handling and status; detail with the compose diff, database choice (keep or move to a shared server) and how each variable carries over; cutover steps with rollback and the list of things that need manual work. See [docs/migration-from-coolify.md](../docs/migration-from-coolify.md).
+
+<img src="screenshots/13-coolify-import.png" width="720" alt="Import from Coolify">
 
 ## Design tokens
 

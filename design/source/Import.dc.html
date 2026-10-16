@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Import z Coolify – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">8</span></a>
+<a href="Stack.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Databases.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg><span>Databáze</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">14</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Audit.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg><span>Audit a aktivita</span></a>
+<a href="Diagnostics.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l3.5-4.5"/><path d="M4 20h16"/></svg><span>Diagnostika</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>7 z 8 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 20px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12.5px; color: #7E8794"><a href="Server.dc.html" style="color: #98A1AE; text-decoration: none">Servery</a> / Import z Coolify</div>
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Import z Coolify</h1>
+<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 780px">Načte aplikace, služby a databáze z Coolify a připraví plán. Dokud plán nespustíš, v Coolify ani na serverech se nic nezmění.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Načíst znovu</button>
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Uložit plán</button>
+</div>
+</header>
+
+<ol aria-label="Postup importu" style="list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px">
+<sc-for list="{{phases}}" as="p" hint-placeholder-count="4">
+<li aria-current="{{p.current}}" style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid {{p.border}}; background: {{p.bg}}">
+<span style="flex: none; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; background: {{p.dotBg}}; color: {{p.dotFg}}">{{p.mark}}</span>
+<span style="display: flex; flex-direction: column; gap: 1px; min-width: 0"><span style="font-size: 13.5px; font-weight: 500; color: {{p.fg}}">{{p.title}}</span><span style="font-size: 12px; color: #7E8794">{{p.sub}}</span></span>
+</li>
+</sc-for>
+</ol>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch">
+<section aria-labelledby="src-h" style="flex: 999 1 560px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px">
+<h2 id="src-h" style="margin: 0; font-size: 15px; font-weight: 600">Zdroj</h2>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">coolify.example.cz</span>
+<span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #12251A; color: #7BE3A2">Coolify 4.4.6</span>
+<span style="font-size: 12.5px; color: #98A1AE">token s oprávněním <span style="font-family: 'Geist Mono', ui-monospace, monospace">read:sensitive</span> · admin týmu</span>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px">
+<sc-for list="{{sources}}" as="s" hint-placeholder-count="3">
+<div style="border: 1px solid #1F242D; border-radius: 10px; padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; background: #101318">
+<span style="flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 50%; background: {{s.dot}}" aria-hidden="true"></span>
+<span style="display: flex; flex-direction: column; gap: 3px; min-width: 0"><span style="font-size: 13.5px; font-weight: 500">{{s.title}}</span><span style="font-size: 12.5px; color: #98A1AE">{{s.sub}}</span></span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section aria-labelledby="mode-h" style="flex: 1 1 400px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<h2 id="mode-h" style="margin: 0; font-size: 15px; font-weight: 600">Kam migrovat</h2>
+<div role="radiogroup" aria-labelledby="mode-h" style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{modes}}" as="m" hint-placeholder-count="2">
+<button type="button" role="radio" aria-checked="{{m.checked}}" onClick="{{m.pick}}" style="text-align: left; display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 1px solid {{m.border}}; background: {{m.bg}}; color: #E6E8EC; font: inherit; cursor: pointer">
+<span style="flex: none; margin-top: 2px; width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; border: 2px solid {{m.ring}}; display: flex; align-items: center; justify-content: center"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{m.dot}}"></span></span>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><span style="font-size: 13.5px; font-weight: 500">{{m.title}}</span><span style="font-size: 12.5px; color: #98A1AE">{{m.sub}}</span></span>
+</button>
+</sc-for>
+</div>
+</section>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section aria-labelledby="plan-h" style="flex: 999 1 640px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 18px; border-bottom: 1px solid #1F242D">
+<h2 id="plan-h" style="margin: 0; font-size: 15px; font-weight: 600">Plán</h2>
+<span style="font-size: 12.5px; color: #98A1AE">{{sum.total}}</span>
+<span style="display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto">
+<span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #12251A; color: #7BE3A2">{{sum.ok}}</span>
+<span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #2A2112; color: #F5C76A">{{sum.warn}}</span>
+<span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #2B1517; color: #F79A95">{{sum.manual}}</span>
+</span>
+</div>
+<div style="overflow-x: auto">
+<div style="min-width: 620px">
+<div style="display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(170px, 1.3fr) minmax(150px, 1.1fr) 92px; gap: 12px; padding: 10px 18px; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794; border-bottom: 1px solid #1F242D">
+<span>Coolify</span><span>PocketCloud</span><span>Doména a data</span><span>Stav</span>
+</div>
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+<div style="padding: 8px 18px; background: #101318; border-bottom: 1px solid #1F242D; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">{{g.label}}</div>
+<sc-for list="{{g.rows}}" as="r" hint-placeholder-count="3">
+<button type="button" onClick="{{r.pick}}" aria-pressed="{{r.pressed}}" style="width: 100%; display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(170px, 1.3fr) minmax(150px, 1.1fr) 92px; gap: 12px; align-items: center; padding: 11px 18px; border: 0; border-bottom: 1px solid #1A1E26; background: {{r.rowBg}}; color: inherit; font: inherit; text-align: left; cursor: pointer">
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; color: {{r.nameC}}">{{r.name}}</span><span style="font-size: 12px; color: #98A1AE">{{r.kind}}</span></span>
+<span style="display: flex; flex-direction: column; gap: 3px; align-items: flex-start; min-width: 0"><span style="padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #1A2233; color: #A9C1FF">{{r.target}}</span><span style="font-size: 12px; color: #98A1AE">{{r.targetSub}}</span></span>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #C5CAD3; overflow-wrap: anywhere">{{r.domains}}</span><span style="font-size: 12px; color: #98A1AE">{{r.data}}</span></span>
+<span style="justify-self: start; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; white-space: nowrap; background: {{r.st.bg}}; color: {{r.st.fg}}">{{r.st.label}}</span>
+</button>
+</sc-for>
+</sc-for>
+</div>
+</div>
+<div style="padding: 10px 18px; font-size: 12.5px; color: #98A1AE">{{sum.extra}}</div>
+</section>
+
+<aside aria-labelledby="det-h" style="flex: 1 1 380px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; align-items: flex-start; gap: 10px">
+<h2 id="det-h" style="margin: 0; font-size: 16px; font-weight: 600; flex: 1"><span style="font-family: 'Geist Mono', ui-monospace, monospace">{{d.name}}</span> → {{d.target}}</h2>
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: {{d.st.bg}}; color: {{d.st.fg}}">{{d.st.label}}</span>
+</div>
+<dl style="margin: 0; display: grid; grid-template-columns: minmax(90px, auto) minmax(0, 1fr); gap: 8px 14px; font-size: 13px">
+<sc-for list="{{d.meta}}" as="m" hint-placeholder-count="4">
+<dt style="color: #7E8794">{{m.k}}</dt><dd style="margin: 0; color: #C5CAD3; overflow-wrap: anywhere">{{m.v}}</dd>
+</sc-for>
+</dl>
+<sc-if value="{{d.hasDb}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div id="db-h" style="font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">Databáze</div>
+<div role="radiogroup" aria-labelledby="db-h" style="display: flex; flex-direction: column; gap: 6px">
+<sc-for list="{{d.dbOpts}}" as="o" hint-placeholder-count="2">
+<button type="button" role="radio" aria-checked="{{o.checked}}" onClick="{{o.pick}}" style="text-align: left; display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-radius: 9px; border: 1px solid {{o.border}}; background: {{o.bg}}; color: #E6E8EC; font: inherit; cursor: pointer">
+<span style="flex: none; margin-top: 2px; width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; border: 2px solid {{o.ring}}; display: flex; align-items: center; justify-content: center"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{o.dot}}"></span></span>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><span style="font-size: 13px; font-weight: 500">{{o.title}}</span><span style="font-size: 12px; color: #98A1AE">{{o.sub}}</span></span>
+</button>
+</sc-for>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{d.hasDiff}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">compose.yaml · oproti Coolify</div>
+<div style="border: 1px solid #1F242D; border-radius: 8px; overflow-x: auto; background: #0F1216; padding: 8px 0">
+<sc-for list="{{d.diff}}" as="l" hint-placeholder-count="8">
+<div style="display: flex; min-width: max-content; background: {{l.bg}}; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; line-height: 19px">
+<span style="flex: none; width: 22px; text-align: center; color: {{l.markC}}">{{l.mark}}</span>
+<span style="white-space: pre; color: {{l.fg}}; padding-right: 16px">{{l.text}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">Proměnné a nastavení</div>
+<div style="border: 1px solid #1F242D; border-radius: 8px; overflow: hidden">
+<sc-for list="{{d.env}}" as="e" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-top: 1px solid #1A1E26; font-size: 12.5px">
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #C5CAD3; overflow-wrap: anywhere">{{e.k}}</span>
+<span style="color: #98A1AE">{{e.v}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+<sc-if value="{{d.hasNotes}}" hint-placeholder-val="{{ true }}">
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{d.notes}}" as="n" hint-placeholder-count="2">
+<li style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: #1D1A12; border: 1px solid #3A3018; font-size: 12.5px; color: #E9DCC0"><span aria-hidden="true" style="flex: none; color: #F2B544; font-weight: 600">!</span><span>{{n.text}}</span></li>
+</sc-for>
+</ul>
+</sc-if>
+</aside>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section aria-labelledby="cut-h" style="flex: 999 1 600px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px">
+<h2 id="cut-h" style="margin: 0; font-size: 15px; font-weight: 600">{{cut.title}}</h2>
+<span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: #2A2112; color: #F5C76A">{{cut.pill}}</span>
+</div>
+<p style="margin: 0; font-size: 13px; color: #C5CAD3">{{cut.text}}</p>
+<ol style="margin: 0; padding: 0; list-style: none; columns: 2 260px; column-gap: 28px">
+<sc-for list="{{cut.steps}}" as="c" hint-placeholder-count="7">
+<li style="display: flex; gap: 12px; align-items: flex-start; padding: 9px 0; border-top: 1px solid #1A1E26; break-inside: avoid">
+<span style="flex: none; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; background: {{c.dotBg}}; color: {{c.dotFg}}">{{c.mark}}</span>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><span style="font-size: 13.5px; color: {{c.fg}}">{{c.title}}</span><span style="font-size: 12px; color: #7E8794">{{c.sub}}</span></span>
+</li>
+</sc-for>
+</ol>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 4px">
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 9px; border: 0; background: #8FB0FF; color: #0C0E12; font: inherit; font-weight: 600; cursor: pointer">{{cut.action}}</button>
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Nanečisto</button>
+<span style="flex: 1 1 260px; font-size: 12.5px; color: #98A1AE">{{cut.rollback}}</span>
+</div>
+</section>
+
+<section aria-labelledby="man-h" style="flex: 1 1 380px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<h2 id="man-h" style="margin: 0; font-size: 15px; font-weight: 600">Co se nepřenese samo</h2>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column">
+<sc-for list="{{manual}}" as="x" hint-placeholder-count="5">
+<li style="display: flex; flex-direction: column; gap: 2px; padding: 9px 0; border-top: 1px solid #1A1E26">
+<span style="font-size: 13px; color: #E6E8EC"><span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #A9C1FF">{{x.res}}</span> · {{x.title}}</span>
+<span style="font-size: 12px; color: #98A1AE">{{x.sub}}</span>
+</li>
+</sc-for>
+</ul>
+<div style="font-size: 12px; color: #7E8794">Každý objekt vytvořený importem se zapíše do auditu se zdrojem „import“.</div>
+</section>
+</div>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: 'n8n', mode: 'inplace', db: { n8n: 'keep', pg: 'keep' } };
+  }
+  renderVals() {
+    const st = this.state;
+    const inPlace = st.mode === 'inplace';
+    const server = inPlace ? 'vps-ovh' : 'vps-hetzner';
+    const sharedLong = inPlace ? 'pg-ovh (nový sdílený server)' : 'pg-hetzner';
+    const shared = inPlace ? 'pg-ovh' : 'pg-hetzner';
+    const n8nShared = st.db.n8n === 'shared';
+    const pgShared = st.db.pg === 'shared';
+    const S = {
+      ok: { bg: '#12251A', fg: '#7BE3A2', label: 'Bez zásahu' },
+      warn: { bg: '#2A2112', fg: '#F5C76A', label: 'Upozornění' },
+      manual: { bg: '#2B1517', fg: '#F79A95', label: 'Ruční krok' }
+    };
+    const rows = [
+      { id: 'portfolio', group: 'web · production', name: 'portfolio', kind: 'Aplikace · Static (Git)',
+        target: 'Statický web', targetSub: 'npm run build → dist/', domains: 'portfolio.example.cz', data: 'bez svazků', status: 'ok',
+        meta: [['Coolify', 'aplikace · build pack static · github.com/david/portfolio (main)'], ['Kontejner', 'x8k2r1…-20261014T091502 · nginx:alpine'], ['Cíl', 'statický web portfolio na ' + server + ' · build v job kontejneru'], ['Data', 'žádné svazky – obsah se sestaví z Gitu']],
+        env: [['NODE_VERSION', 'proměnná buildu · převzato'], ['SPA', 'zapnuto v Coolify → SPA fallback']] },
+      { id: 'api', group: 'web · production', name: 'api', kind: 'Aplikace · Nixpacks (Node.js)',
+        target: 'Stack', targetSub: 'web-api · obraz z Coolify', domains: 'api.example.cz', data: 'bez svazků', status: 'manual',
+        meta: [['Coolify', 'aplikace · Nixpacks · github.com/david/api (main)'], ['Obraz', 'm3p9q2…:4f1c2ab · postaven v Coolify 14. 10.'], ['Cíl', 'stack web-api na ' + server], ['Data', 'bez svazků']],
+        diff: [[' ', 'services:'], [' ', '  api:'], [' ', '    image: m3p9q2…:4f1c2ab'], ['-', '    labels:'], ['-', '      - traefik.http.routers.https-0-m3p9q2….rule=Host(`api.example.cz`)'], ['-', '      - traefik.http.middlewares.api-rl.ratelimit.average=20'], ['+', '    labels:'], ['+', '      pocketcloud.domain: api.example.cz'], ['+', '      pocketcloud.port: "3000"']],
+        env: [['PORT', 'převzato'], ['DATABASE_URL', pgShared ? 'přepsáno na ' + shared + ' · nové heslo jako tajemství' : 'odkaz na postgres-main · alias k7d1m0… zachován'], ['JWT_SECRET', 'tajemství']],
+        notes: ['Coolify staví z Gitu (Nixpacks), PocketCloud ne. Nastav CI (GitHub Actions → ghcr.io) a nasazení tokenem API – do té doby poběží poslední obraz z Coolify.', '2 náhledová nasazení (PR #41 a #44) se nepřenesou.'] },
+      { id: 'crm', group: 'web · production', name: 'crm', kind: 'Aplikace · Dockerfile (Laravel)',
+        target: 'PHP web', targetSub: 'PHP 8.3 · šablona Laravel', domains: 'crm.example.cz', data: 'kopie storage/ · 120 MB', status: 'warn',
+        meta: [['Coolify', 'aplikace · Dockerfile · github.com/david/crm (main)'], ['Rozpoznáno', 'Laravel 11 – artisan, composer.json'], ['Cíl', 'PHP web crm na ' + server + ' · PHP 8.3 · kořen public/'], ['Data', 'svazek crm-storage → shared/storage webu']],
+        env: [['APP_KEY', 'tajemství'], ['DB_HOST', pgShared ? 'přepsáno na ' + shared : 'alias k7d1m0… (postgres-main)'], ['MAIL_MAILER', 'nahrazeno SMTP relay panelu'], ['scheduler', 'plánovaná úloha · php artisan schedule:run · každou minutu']],
+        notes: ['Rozpoznán Laravel – navrhujeme PHP web. Jinak: stack s posledním obrazem z Coolify.'] },
+      { id: 'n8n', group: 'tools · production', name: 'n8n', kind: 'Služba · šablona n8n',
+        target: 'Stack', targetSub: n8nShared ? 'tools-n8n · databáze na ' + shared : 'tools-n8n · 2 služby', domains: 'n8n.example.cz',
+        data: inPlace ? (n8nShared ? '1 svazek zůstane + dump' : '2 svazky zůstanou') : (n8nShared ? 'kopie 1,0 GB + dump' : 'kopie 1,4 GB'), status: 'ok',
+        meta: [['Coolify', 'služba ze šablony · n8n + postgresql'], ['Kontejnery', 'n8n-w2c7h5…, postgresql-w2c7h5…'], ['Cíl', 'stack tools-n8n na ' + server], ['Data', inPlace ? 'svazky w2c7h5…_n8n-data a …_postgresql-data jako external' : 'kopie přes restic, při přepnutí dorovnání']],
+        diff: [[' ', '  n8n:'], [' ', '    image: docker.n8n.io/n8nio/n8n:1.88.0'], ['-', '    labels:'], ['-', '      - coolify.managed=true'], ['-', '      - traefik.http.routers.https-0-w2c7h5…-n8n.rule=Host(`n8n.example.cz`)'], ['+', '    labels:'], ['+', '      pocketcloud.domain: n8n.example.cz'], ['+', '      pocketcloud.port: "5678"'], [' ', 'volumes:'], [' ', '  n8n-data:']].concat(inPlace ? [['+', '    external: true'], ['+', '    name: w2c7h5…_n8n-data']] : [['+', '    # obnova ze zálohy restic, 1,4 GB']]),
+        env: [['SERVICE_PASSWORD_POSTGRES', 'vygenerováno Coolify · převzato jako tajemství'], ['N8N_ENCRYPTION_KEY', '„zobrazit jen jednou“ · doplnil agent'], ['SERVICE_FQDN_N8N', 'nahrazeno doménou n8n.example.cz'], ['DB_POSTGRESDB_HOST', n8nShared ? 'přepsáno na ' + shared : 'postgresql (služba ve stacku)']],
+        db: { key: 'n8n', keep: ['Ponechat PostgreSQL ve stacku', 'stejný svazek, nic se nepřevádí'], shared: ['Přesunout na ' + sharedLong, 'dump a obnova, vlastní uživatel; přepíše připojení n8n'] } },
+      { id: 'kuma', group: 'tools · production', name: 'uptime-kuma', kind: 'Služba · šablona Uptime Kuma',
+        target: 'Stack', targetSub: 'tools-uptime-kuma', domains: 'kuma.example.cz', data: inPlace ? '1 svazek zůstane' : 'kopie 210 MB', status: 'ok',
+        meta: [['Coolify', 'služba ze šablony · uptime-kuma'], ['Kontejner', 'uptime-kuma-c4n8v1…'], ['Cíl', 'stack tools-uptime-kuma na ' + server], ['Data', inPlace ? 'svazek c4n8v1…_uptime-kuma jako external' : 'kopie 210 MB přes restic']],
+        env: [['SERVICE_FQDN_UPTIMEKUMA_3001', 'nahrazeno doménou · port 3001']] },
+      { id: 'vault', group: 'tools · production', name: 'vaultwarden', kind: 'Služba · šablona Vaultwarden',
+        target: 'Stack', targetSub: 'tools-vaultwarden', domains: 'vault.example.cz', data: inPlace ? '1 svazek zůstane' : 'kopie 95 MB', status: 'ok',
+        meta: [['Coolify', 'služba ze šablony · vaultwarden'], ['Kontejner', 'vaultwarden-p1x6d3…'], ['Cíl', 'stack tools-vaultwarden na ' + server], ['Data', inPlace ? 'svazek p1x6d3…_vaultwarden-data jako external' : 'kopie 95 MB přes restic']],
+        env: [['ADMIN_TOKEN', '„zobrazit jen jednou“ · doplnil agent'], ['SIGNUPS_ALLOWED', 'převzato']] },
+      { id: 'pg', group: 'data · production', name: 'postgres-main', kind: 'Databáze · PostgreSQL 16',
+        target: pgShared ? 'Databáze na ' + shared : 'Vyhrazená databáze', targetSub: pgShared ? 'api a crm · dump a obnova' : 'stack data-postgres · port 5433', domains: '',
+        data: pgShared ? 'dump 2,1 GB' : (inPlace ? 'svazek zůstane' : 'dump 2,1 GB'), status: 'warn',
+        meta: [['Coolify', 'samostatná databáze · postgres:16-alpine · veřejný port 5433'], ['Kontejner', 'k7d1m0…'], ['Databáze', 'api (1,6 GB), crm (480 MB)'], ['Cíl', pgShared ? 'databáze api a crm na ' + sharedLong : 'stack data-postgres na ' + server + ' (vyhrazená)'], ['Zálohy', 'S3 denně 03:00 → záloha každé databáze přes restic']],
+        env: [['POSTGRES_PASSWORD', 'tajemství'], ['POSTGRES_USER', 'převzato']],
+        db: { key: 'pg', keep: ['Ponechat vyhrazenou', 'stack data-postgres se stejným svazkem, port 5433 zůstane'], shared: ['Přesunout databáze api a crm na ' + sharedLong, 'port 5433 zanikne; api a crm se přepojí'] },
+        notes: ['Veřejný port 5433: sdílený server porty nepublikuje. Pokud se k databázi připojuješ zvenku, nech ji vyhrazenou nebo použij VPN.', 'Staré dumpy v S3 zůstanou, nové zálohy půjdou přes restic.'] },
+      { id: 'redis', group: 'data · production', name: 'redis', kind: 'Databáze · Redis 7',
+        target: 'Vyhrazená databáze', targetSub: 'stack data-redis', domains: '', data: inPlace ? 'svazek zůstane' : 'kopie 12 MB', status: 'ok',
+        meta: [['Coolify', 'samostatná databáze · redis:7.4-alpine'], ['Kontejner', 'r5t2b9…'], ['Cíl', 'stack data-redis na ' + server], ['Data', inPlace ? 'svazek redis-data-r5t2b9… jako external' : 'kopie 12 MB přes restic']],
+        env: [['REDIS_PASSWORD', 'tajemství']],
+        notes: ['Redis nemá sdílený server – zůstává jako vyhrazený stack.'] }
+    ];
+    const sel = rows.find((r) => r.id === st.sel) || rows[3];
+    const groupNames = [];
+    rows.forEach((r) => { if (groupNames.indexOf(r.group) < 0) groupNames.push(r.group); });
+    const count = (s) => rows.filter((r) => r.status === s).length;
+    const radio = (on) => ({
+      checked: on ? 'true' : 'false',
+      border: on ? '#8FB0FF' : '#2A303B',
+      bg: on ? '#171C26' : 'transparent',
+      ring: on ? '#8FB0FF' : '#4A5263',
+      dot: on ? '#8FB0FF' : 'transparent'
+    });
+    const done = { dotBg: '#12251A', dotFg: '#7BE3A2', fg: '#E6E8EC', mark: '✓' };
+    const todo = (n) => ({ dotBg: '#1C2027', dotFg: '#A7AFBB', fg: '#C5CAD3', mark: String(n) });
+    const inSteps = [
+      Object.assign({ title: 'Certifikáty vydány předem', sub: 'DNS-01 přes Cloudflare · 6 z 6 domén' }, done),
+      Object.assign({ title: 'Záloha svazků a databází', sub: 'dnes 13:10 · restic na backup-node' }, done),
+      Object.assign({ title: 'Odříznout Coolify', sub: 'zastavit coolify, coolify-db, coolify-redis, coolify-sentinel' }, todo(3)),
+      Object.assign({ title: 'Zastavit 9 kontejnerů aplikací', sub: 'restart policy → no, nic se nemaže' }, todo(4)),
+      Object.assign({ title: 'Přepnout proxy na portech 80/443', sub: 'coolify-proxy (Traefik) → pocketcloud-edge (Caddy)' }, todo(5)),
+      Object.assign({ title: 'Spustit 6 stacků a 2 weby', sub: 'stejné svazky jako external' }, todo(6)),
+      Object.assign({ title: 'Kontrola 6 domén', sub: 'HTTPS 200, platný certifikát, odezva' }, todo(7))
+    ];
+    const mvSteps = [
+      Object.assign({ title: 'Certifikáty vydány předem', sub: 'DNS-01 přes Cloudflare · 6 z 6 domén' }, done),
+      Object.assign({ title: 'Vytvořit stacky, weby a databáze na vps-hetzner', sub: 'zatím nespuštěné' }, todo(2)),
+      Object.assign({ title: 'První kopie dat', sub: 'svazky 1,8 GB přes restic · databáze dumpem' }, todo(3)),
+      Object.assign({ title: 'Po aplikacích: zastavit v Coolify, dorovnat data, spustit', sub: 'výpadek 1–2 min na aplikaci' }, todo(4)),
+      Object.assign({ title: 'Přepnout DNS', sub: 'A a AAAA přes Cloudflare · TTL 300 s' }, todo(5)),
+      Object.assign({ title: 'Kontrola 6 domén', sub: 'HTTPS 200, platný certifikát, odezva' }, todo(6))
+    ];
+    return {
+      phases: [
+        { title: 'Připojení', sub: 'coolify.example.cz · agent na vps-ovh', mark: '✓', dotBg: '#12251A', dotFg: '#7BE3A2', fg: '#E6E8EC', bg: '#13161C', border: '#1F242D', current: 'false' },
+        { title: 'Plán', sub: rows.length + ' zdrojů ke kontrole', mark: '2', dotBg: '#8FB0FF', dotFg: '#0C0E12', fg: '#E6E8EC', bg: '#171C26', border: '#8FB0FF', current: 'step' },
+        { title: inPlace ? 'Přepnutí' : 'Přesun', sub: inPlace ? 'jedno okno, 3–5 min' : 'po aplikacích', mark: '3', dotBg: '#1C2027', dotFg: '#A7AFBB', fg: '#C5CAD3', bg: '#13161C', border: '#1F242D', current: 'false' },
+        { title: 'Úklid', sub: 'Coolify se odstraní po 7 dnech', mark: '4', dotBg: '#1C2027', dotFg: '#A7AFBB', fg: '#C5CAD3', bg: '#13161C', border: '#1F242D', current: 'false' }
+      ],
+      sources: [
+        { title: 'Export serveru', sub: 'nejde: na vps-ovh běží samo Coolify (localhost) – údaje doplní API a agent', dot: '#F2B544' },
+        { title: 'REST API', sub: '8 zdrojů · 41 proměnných · 1 plánovaná úloha · 1 záloha', dot: '#5BD68A' },
+        { title: 'Agent na vps-ovh', sub: '11 kontejnerů z Coolify · /data/coolify · doplnil 2 hodnoty „zobrazit jen jednou“', dot: '#5BD68A' }
+      ],
+      modes: [
+        Object.assign({ title: 'Na místě · vps-ovh', sub: 'Svazky zůstanou, kde jsou – nic se nekopíruje. Proxy se přepne v jednom okně, Coolify se jen zastaví.', pick: () => this.setState({ mode: 'inplace' }) }, radio(inPlace)),
+        Object.assign({ title: 'Na jiný server · vps-hetzner', sub: 'Vše se postaví vedle, data se zkopírují a DNS se přepne po aplikacích. Coolify běží až do konce.', pick: () => this.setState({ mode: 'move' }) }, radio(!inPlace))
+      ],
+      sum: {
+        total: rows.length + ' zdrojů ve 3 projektech',
+        ok: count('ok') + ' bez zásahu',
+        warn: count('warn') + ' upozornění',
+        manual: count('manual') + ' ruční krok',
+        extra: 'Navíc: 1 plánovaná úloha (crm → scheduler), 1 záloha databáze (postgres-main → restic), 41 proměnných, z toho 14 jako tajemství.'
+      },
+      groups: groupNames.map((g) => ({
+        label: g,
+        rows: rows.filter((r) => r.group === g).map((r) => ({
+          name: r.name, kind: r.kind, target: r.target, targetSub: r.targetSub, domains: r.domains, data: r.data,
+          st: S[r.status],
+          rowBg: r.id === sel.id ? '#171C26' : 'transparent',
+          nameC: r.id === sel.id ? '#A9C1FF' : '#E6E8EC',
+          pressed: r.id === sel.id ? 'true' : 'false',
+          pick: () => this.setState({ sel: r.id })
+        }))
+      })),
+      d: {
+        name: sel.name,
+        target: sel.target,
+        st: S[sel.status],
+        meta: sel.meta.map((m) => ({ k: m[0], v: m[1] })),
+        hasDb: !!sel.db,
+        dbOpts: sel.db ? ['keep', 'shared'].map((k) => Object.assign({
+          title: sel.db[k][0], sub: sel.db[k][1],
+          pick: () => { const next = Object.assign({}, this.state.db); next[sel.db.key] = k; this.setState({ db: next }); }
+        }, radio(st.db[sel.db.key] === k))) : [],
+        hasDiff: !!sel.diff,
+        diff: (sel.diff || []).map((l) => ({
+          mark: l[0] === ' ' ? '' : l[0], text: l[1],
+          bg: l[0] === '+' ? '#12251A' : l[0] === '-' ? '#2B1517' : 'transparent',
+          markC: l[0] === '+' ? '#7BE3A2' : '#F79A95',
+          fg: l[0] === '+' ? '#B9F0CC' : l[0] === '-' ? '#F5B8B4' : '#98A1AE'
+        })),
+        env: sel.env.map((e) => ({ k: e[0], v: e[1] })),
+        hasNotes: !!(sel.notes && sel.notes.length),
+        notes: (sel.notes || []).map((t) => ({ text: t }))
+      },
+      cut: inPlace ? {
+        title: 'Přepnutí na místě · vps-ovh',
+        pill: 'výpadek 3–5 min',
+        text: 'Proběhne jako jeden příkaz s průběhem. Coolify se jen zastaví – nic se nesmaže a návrat je jedno tlačítko.',
+        steps: inSteps,
+        action: 'Spustit přepnutí…',
+        rollback: 'Návrat zastaví stacky a edge a znovu spustí Coolify, jeho proxy i kontejnery.'
+      } : {
+        title: 'Přesun na vps-hetzner',
+        pill: 'výpadek 1–2 min na aplikaci',
+        text: 'Aplikace se postaví na vps-hetzner, data se zkopírují a DNS se přepne u každé aplikace zvlášť. Coolify běží, dokud nepřepneš poslední doménu.',
+        steps: mvSteps,
+        action: 'Spustit přesun…',
+        rollback: 'Návrat: DNS zpět na vps-ovh – Coolify tam pořád běží.'
+      },
+      manual: [
+        { res: 'api', title: 'build z Gitu (Nixpacks)', sub: 'nastav CI a nasazení tokenem API; do té doby poslední obraz z Coolify' },
+        { res: 'api', title: '2 náhledová nasazení (PR)', sub: 'PocketCloud náhledy nemá' },
+        { res: 'api', title: 'vlastní Traefik label s rate limitem', sub: 'v PocketCloudu zatím ručně v konfiguraci edge' },
+        { res: 'postgres-main', title: 'veřejný port 5433', sub: 'sdílený server porty nepublikuje – nech vyhrazenou nebo použij VPN' },
+        { res: 'proxy/dynamic/legacy.yaml', title: 'vlastní router old.example.cz → 10.0.0.50:8080', sub: 'směrování na jiný stroj zatím není (návrh #41)' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

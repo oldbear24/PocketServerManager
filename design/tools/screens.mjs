@@ -73,5 +73,11 @@ export const screens = [
     slug: '12-databases',
     title: 'Databases',
     description: 'Shared database servers per host with a database and user per app, connection details, consolidation of dedicated instances.'
+  },
+  {
+    source: 'Import',
+    slug: '13-coolify-import',
+    title: 'Import from Coolify',
+    description: 'Migration plan from a Coolify installation: sources, in place or onto another server, resource mapping with compose diff and variables, cutover steps and rollback.'
   }
 ];
