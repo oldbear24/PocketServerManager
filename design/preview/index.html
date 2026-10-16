@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PocketCloud – UI previews</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12;color:#E6E8EC;font-family:'Geist',ui-sans-serif,system-ui,sans-serif}
+main{max-width:1200px;margin:0 auto;padding:40px 16px 64px}
+h1{margin:0 0 6px;font-size:28px;font-weight:600;letter-spacing:-0.02em}
+p{margin:0 0 28px;color:#98A1AE}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.card{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #1F242D;border-radius:12px;background:#13161C;color:inherit;text-decoration:none}
+.card:hover{border-color:#33405A}
+.card img{width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-radius:8px;background:#101318}
+.t{font-weight:600}
+.d{font-size:13px;color:#98A1AE}
+</style>
+</head>
+<body>
+<main>
+<h1>PocketCloud – UI previews</h1>
+<p>Static snapshots of the design. Screens link to each other like the prototype; interactive bits (filters, wizard progress) live in the source canvas.</p>
+<div class="grid">
+<a class="card" href="Main.html">
+<img src="../screenshots/01-overview.png" alt="" loading="lazy">
+<span class="t">Overview</span>
+<span class="d">Agents, containers, sites and backups at a glance; servers with live load, alerts, command queue.</span>
+</a>
+<a class="card" href="Server.html">
+<img src="../screenshots/02-server-detail.png" alt="" loading="lazy">
+<span class="t">Server detail</span>
+<span class="d">Agent connection (gRPC, mTLS, heartbeat), usage charts, containers, edge proxy routes, disks, events.</span>
+</a>
+<a class="card" href="Stack.html">
+<img src="../screenshots/03-stack.png" alt="" loading="lazy">
+<span class="t">Compose stack</span>
+<span class="d">Services, compose.yaml editor with unsaved changes, revisions, secrets and live logs.</span>
+</a>
+<a class="card" href="Sites.html">
+<img src="../screenshots/04-static-site.png" alt="" loading="lazy">
+<span class="t">Static site</span>
+<span class="d">Deployments with instant rollback, domains with DNS and TLS state, build source and HTTPS options.</span>
+</a>
+<a class="card" href="SiteNew.html">
+<img src="../screenshots/05-new-site-wizard.png" alt="" loading="lazy">
+<span class="t">New site wizard</span>
+<span class="d">Source, domain and certificate in one form; DNS zone detection and a live provisioning timeline.</span>
+</a>
+<a class="card" href="Domains.html">
+<img src="../screenshots/06-domains-tls.png" alt="" loading="lazy">
+<span class="t">Domains, DNS and certificates</span>
+<span class="d">DNS providers, certificates with expiry and challenge type, zones, ACME account, internal CA.</span>
+</a>
+<a class="card" href="Backups.html">
+<img src="../screenshots/07-backups.png" alt="" loading="lazy">
+<span class="t">Backups</span>
+<span class="d">Backup jobs with 14-day history, failed run banner, snapshots for restore, backup targets.</span>
+</a>
+<a class="card" href="Enroll.html">
+<img src="../screenshots/08-connect-server.png" alt="" loading="lazy">
+<span class="t">Connect a server</span>
+<span class="d">One-time enrollment token, install command (script, Docker, manual) and live connection checklist.</span>
+</a>
+</div>
+</main>
+</body>
+</html>

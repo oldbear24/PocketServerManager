@@ -1,0 +1,16 @@
+{
+  "name": "pocketcloud-design-tools",
+  "private": true,
+  "type": "module",
+  "description": "Renders the Claude Design artboards in design/source into static previews and screenshots.",
+  "scripts": {
+    "render": "node render.mjs",
+    "screenshots": "node screenshot.mjs",
+    "build": "node render.mjs && node screenshot.mjs"
+  },
+  "dependencies": {
+    "geist": "^1.8.1",
+    "htmlparser2": "^9.1.0",
+    "playwright": "1.56.0"
+  }
+}

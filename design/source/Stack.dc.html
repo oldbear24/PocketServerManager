@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Stack analytics – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="Stack.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Main.dc.html#aktivita" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Aktivita a příkazy</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>6 ze 7 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 20px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px">
+<div style="flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12.5px; color: #7E8794"><a href="Stack.dc.html" style="color: #98A1AE; text-decoration: none">Stacky</a> / <a href="Server.dc.html" style="color: #98A1AE; text-decoration: none">vps-hetzner</a> / analytics</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-family: 'Geist Mono', ui-monospace, monospace">analytics</h1>
+<span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #12251A; color: #7BE3A2"><span style="width: 6px; height: 6px; border-radius: 50%; background: #5BD68A"></span>2 / 2 běží</span>
+<span style="padding: 3px 10px; border-radius: 999px; font-size: 12px; background: #2A2112; color: #F5C76A">1 neuložená změna</span>
+</div>
+<div style="font-size: 13px; color: #98A1AE">Docker Compose · revize r7 nasazena 10. 10. 14:02 · zdroj: editor v panelu</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Stáhnout image</button>
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Zastavit</button>
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 9px; border: 0; background: #8FB0FF; color: #0C0E12; font: inherit; font-weight: 600; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Nasadit r8</button>
+</div>
+</header>
+
+<section aria-label="Služby" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px">
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'Geist Mono', ui-monospace, monospace; font-weight: 500; font-size: 15px">umami</span><span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; background: #12251A; color: #7BE3A2">healthy</span><span style="margin-left: auto; font-size: 12px; color: #7E8794">uptime 6 d</span></div>
+<div style="font-size: 12.5px; color: #98A1AE; font-family: 'Geist Mono', ui-monospace, monospace">ghcr.io/umami-software/umami:postgresql-v2</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: #A7AFBB"><span>CPU <b style="font-weight: 500; color: #E6E8EC">1,2 %</b></span><span>RAM <b style="font-weight: 500; color: #E6E8EC">212 MB</b></span><span>Port <b style="font-weight: 500; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace">3000</b></span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: #101318; font-size: 12.5px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5BD68A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><a href="https://umami.example.cz" style="font-family: 'Geist Mono', ui-monospace, monospace; text-decoration: none">umami.example.cz</a><span style="margin-left: auto; color: #7E8794">z labelu pocketcloud.domain</span></div>
+</div>
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'Geist Mono', ui-monospace, monospace; font-weight: 500; font-size: 15px">db</span><span style="padding: 2px 8px; border-radius: 999px; font-size: 11.5px; background: #12251A; color: #7BE3A2">healthy</span><span style="margin-left: auto; font-size: 12px; color: #7E8794">uptime 6 d</span></div>
+<div style="font-size: 12.5px; color: #98A1AE; font-family: 'Geist Mono', ui-monospace, monospace">postgres:16-alpine</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: #A7AFBB"><span>CPU <b style="font-weight: 500; color: #E6E8EC">0,3 %</b></span><span>RAM <b style="font-weight: 500; color: #E6E8EC">96 MB</b></span><span>Svazek <b style="font-weight: 500; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace">umami-db · 1,1 GB</b></span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: #101318; font-size: 12.5px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#F2B544" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/></svg><span style="color: #C5CAD3">Záloha pg_dump se zapne po nasazení r8</span></div>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section aria-labelledby="compose-h" style="flex: 999 1 560px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 12px; border-bottom: 1px solid #1F242D">
+<h2 id="compose-h" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Konfigurace stacku</h2>
+<button type="button" aria-pressed="true" style="height: 44px; padding: 0 10px; border: 0; border-bottom: 2px solid #8FB0FF; background: transparent; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; cursor: pointer">compose.yaml</button>
+<button type="button" style="height: 44px; padding: 0 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #98A1AE; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; cursor: pointer">.env</button>
+<span style="margin-left: auto; font-size: 12px; color: #7E8794">YAML · validní · 31 řádků</span>
+</div>
+<div style="padding: 10px 0; overflow-x: auto; background: #0F1216">
+<sc-for list="{{lines}}" as="l" hint-placeholder-count="31">
+<div style="display: flex; min-width: max-content; background: {{l.bg}}; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 20px">
+<span style="flex: none; width: 18px; text-align: center; color: {{l.markC}}">{{l.mark}}</span>
+<span style="flex: none; width: 30px; padding-right: 14px; text-align: right; color: #5D6573">{{l.n}}</span>
+<span style="white-space: pre; color: {{l.fg}}; padding-right: 20px">{{l.text}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+<div style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section aria-labelledby="rev-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px"><h2 id="rev-h" style="margin: 0; font-size: 15px; font-weight: 600">Revize</h2><button type="button" style="margin-left: auto; height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Porovnat</button></div>
+<sc-for list="{{revisions}}" as="r" hint-placeholder-count="4">
+<div style="display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; border-top: 1px solid #1A1E26">
+<span style="flex: none; width: 30px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; color: {{r.c}}">{{r.id}}</span>
+<span style="min-width: 0; flex: 1; display: flex; flex-direction: column"><span style="font-size: 13px; color: #E6E8EC">{{r.what}}</span><span style="font-size: 12px; color: #7E8794">{{r.meta}}</span></span>
+<span style="flex: none; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #98A1AE">{{r.diff}}</span>
+</div>
+</sc-for>
+</section>
+<section aria-labelledby="env-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px">
+<h2 id="env-h" style="margin: 0 0 4px; font-size: 15px; font-weight: 600">Proměnné a tajemství</h2>
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px"><span style="flex: 1">DB_PASS</span><span style="color: #7E8794">••••••••••</span><span style="padding: 1px 6px; border-radius: 4px; background: #1A2233; color: #A9C1FF; font-family: 'Geist', sans-serif; font-size: 11px">tajné</span></div>
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px"><span style="flex: 1">APP_SECRET</span><span style="color: #7E8794">••••••••••</span><span style="padding: 1px 6px; border-radius: 4px; background: #1A2233; color: #A9C1FF; font-family: 'Geist', sans-serif; font-size: 11px">tajné</span></div>
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px"><span style="flex: 1">TZ</span><span style="color: #C5CAD3">Europe/Prague</span></div>
+<div style="font-size: 12px; color: #7E8794; margin-top: 4px">Tajemství jdou agentovi šifrovaně v příkazu stack.deploy, na disk se neukládají.</div>
+</section>
+</div>
+</div>
+
+<section aria-labelledby="logs-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #1F242D">
+<h2 id="logs-h" style="margin: 0 6px 0 4px; font-size: 15px; font-weight: 600">Logy</h2>
+<span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #7BE3A2"><span style="width: 7px; height: 7px; border-radius: 50%; background: #5BD68A"></span>živě</span>
+<div role="group" aria-label="Filtr služby" style="display: flex; padding: 3px; border: 1px solid #252B35; border-radius: 8px; gap: 2px">
+<sc-for list="{{filters}}" as="f" hint-placeholder-count="3">
+<button type="button" onClick="{{f.pick}}" aria-pressed="{{f.pressed}}" style="height: 34px; padding: 0 12px; border: 0; border-radius: 6px; background: {{f.bg}}; color: {{f.fg}}; font: inherit; font-size: 12.5px; cursor: pointer">{{f.label}}</button>
+</sc-for>
+</div>
+<label style="flex: 1 1 200px; min-width: 0; box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; border: 1px solid #252B35; border-radius: 8px; background: #101318; color: #7E8794">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Filtrovat logy</span>
+<input type="search" placeholder="Filtrovat (regex)…" style="flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px">
+</label>
+<button type="button" onClick="{{toggleFollow}}" aria-pressed="{{followPressed}}" style="height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: {{followBg}}; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">{{followLabel}}</button>
+<button type="button" aria-label="Stáhnout logy" style="width: 40px; height: 40px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #C5CAD3; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+</div>
+<div role="log" aria-label="Výpis logů" style="padding: 10px 0; background: #0B0D10; overflow-x: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 21px">
+<sc-for list="{{logs}}" as="g" hint-placeholder-count="10">
+<div style="display: flex; gap: 14px; padding: 0 16px; min-width: max-content">
+<span style="color: #5D6573">{{g.ts}}</span>
+<span style="width: 48px; color: {{g.svcC}}">{{g.svc}}</span>
+<span style="width: 40px; color: {{g.lvlC}}">{{g.lvl}}</span>
+<span style="color: #C5CAD3; white-space: pre">{{g.msg}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1240}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { svc: 'all', follow: true };
+  }
+  renderVals() {
+    const svc = this.state.svc;
+    const follow = this.state.follow;
+    const src = [
+      'services:',
+      '  umami:',
+      '    image: ghcr.io/umami-software/umami:postgresql-v2',
+      '    restart: unless-stopped',
+      '    environment:',
+      '      DATABASE_URL: postgresql://umami:${DB_PASS}@db:5432/umami',
+      '      APP_SECRET: ${APP_SECRET}',
+      '    depends_on:',
+      '      db:',
+      '        condition: service_healthy',
+      '    labels:',
+      '      pocketcloud.domain: umami.example.cz',
+      '      pocketcloud.port: "3000"',
+      '',
+      '  db:',
+      '    image: postgres:16-alpine',
+      '    restart: unless-stopped',
+      '    environment:',
+      '      POSTGRES_USER: umami',
+      '      POSTGRES_PASSWORD: ${DB_PASS}',
+      '    volumes:',
+      '      - umami-db:/var/lib/postgresql/data',
+      '    labels:',
+      '      pocketcloud.backup: pg_dump',
+      '      pocketcloud.backup.schedule: "30 1 * * *"',
+      '    healthcheck:',
+      '      test: ["CMD", "pg_isready", "-U", "umami"]',
+      '      interval: 10s',
+      '',
+      'volumes:',
+      '  umami-db:'
+    ];
+    const added = [23, 24, 25];
+    const lines = src.map((text, i) => {
+      const n = i + 1;
+      const isAdd = added.indexOf(n) !== -1;
+      const top = /^[a-z_]+:$/.test(text) || /^  [a-z_-]+:$/.test(text);
+      return {
+        n, text,
+        mark: isAdd ? '+' : '',
+        markC: '#5BD68A',
+        bg: isAdd ? '#12251A' : 'transparent',
+        fg: text.indexOf('pocketcloud.') !== -1 ? '#7BE3A2' : top ? '#A9C1FF' : '#C5CAD3'
+      };
+    });
+    const all = [
+      { ts: '12:24:07.912', svc: 'umami', lvl: 'INFO', msg: 'POST /api/send 200 3ms' },
+      { ts: '12:24:07.640', svc: 'umami', lvl: 'INFO', msg: 'POST /api/send 200 4ms' },
+      { ts: '12:24:05.118', svc: 'umami', lvl: 'WARN', msg: 'slow query getSessionStats 812ms' },
+      { ts: '12:24:02.301', svc: 'umami', lvl: 'INFO', msg: 'GET /api/websites/3f1c/stats 200 41ms' },
+      { ts: '12:22:13.881', svc: 'db', lvl: 'LOG', msg: 'checkpoint complete: wrote 42 buffers (0.3%); write=4.1 s' },
+      { ts: '12:22:10.004', svc: 'db', lvl: 'LOG', msg: 'checkpoint starting: time' },
+      { ts: '12:21:58.442', svc: 'umami', lvl: 'INFO', msg: 'POST /api/send 200 5ms' },
+      { ts: '12:21:40.019', svc: 'umami', lvl: 'ERROR', msg: 'client disconnected before response (ECONNRESET)' },
+      { ts: '12:21:33.770', svc: 'umami', lvl: 'INFO', msg: 'GET /script.js 304 1ms' },
+      { ts: '12:17:10.004', svc: 'db', lvl: 'LOG', msg: 'automatic vacuum of table "umami.public.website_event"' }
+    ];
+    const lvlC = { INFO: '#8FB0FF', WARN: '#F2B544', ERROR: '#F2706B', LOG: '#98A1AE' };
+    const svcC = { umami: '#A9C1FF', db: '#F0A35E' };
+    const logs = all
+      .filter((g) => svc === 'all' || g.svc === svc)
+      .map((g) => Object.assign({}, g, { lvlC: lvlC[g.lvl], svcC: svcC[g.svc] }));
+    const opts = [
+      { id: 'all', label: 'Vše' },
+      { id: 'umami', label: 'umami' },
+      { id: 'db', label: 'db' }
+    ];
+    const filters = opts.map((o) => ({
+      label: o.label,
+      pressed: svc === o.id ? 'true' : 'false',
+      bg: svc === o.id ? '#1F2532' : 'transparent',
+      fg: svc === o.id ? '#E6E8EC' : '#98A1AE',
+      pick: () => this.setState({ svc: o.id })
+    }));
+    return {
+      lines,
+      logs,
+      filters,
+      followLabel: follow ? 'Sledovat: zapnuto' : 'Sledovat: vypnuto',
+      followPressed: follow ? 'true' : 'false',
+      followBg: follow ? '#1F2532' : 'transparent',
+      toggleFollow: () => this.setState({ follow: !this.state.follow }),
+      revisions: [
+        { id: 'r8', what: 'Záloha db přes pg_dump', meta: 'neuloženo · koncept', diff: '+3 −0', c: '#F5C76A' },
+        { id: 'r7', what: 'Doména přes label pocketcloud.domain', meta: 'nasazeno 10. 10. 14:02 · admin', diff: '+2 −4', c: '#7BE3A2' },
+        { id: 'r6', what: 'Image umami → postgresql-v2', meta: '2. 10. 19:40 · admin', diff: '+1 −1', c: '#98A1AE' },
+        { id: 'r5', what: 'Healthcheck pro db', meta: '21. 9. 08:15 · admin', diff: '+4 −0', c: '#98A1AE' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

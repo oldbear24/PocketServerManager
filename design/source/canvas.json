@@ -1,0 +1,33 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-10-16T10:26:00Z" },
+  "title": "PocketCloud – UI",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1440, "h": 1240, "title": "Přehled", "expand": "fill", "is_interactive": true },
+    "Server.dc.html": { "x": 1520, "y": 0, "w": 1440, "h": 1320, "title": "Detail serveru · agent a gRPC", "expand": "fill", "is_interactive": true },
+    "Stack.dc.html": { "x": 3040, "y": 0, "w": 1440, "h": 1240, "title": "Stack · compose a live logy", "expand": "fill", "is_interactive": true },
+    "Sites.dc.html": { "x": 0, "y": 1800, "w": 1440, "h": 1240, "title": "Statický web", "expand": "fill", "is_interactive": true },
+    "SiteNew.dc.html": { "x": 1520, "y": 1800, "w": 1440, "h": 1240, "title": "Nový web · automatická doména a SSL", "expand": "fill", "is_interactive": true },
+    "Domains.dc.html": { "x": 3040, "y": 1800, "w": 1440, "h": 1320, "title": "Domény, DNS a certifikáty", "expand": "fill", "is_interactive": true },
+    "Backups.dc.html": { "x": 0, "y": 3600, "w": 1440, "h": 1240, "title": "Zálohy", "expand": "fill", "is_interactive": true },
+    "Enroll.dc.html": { "x": 1520, "y": 3600, "w": 1440, "h": 1120, "title": "Připojení serveru · instalace agenta", "expand": "fill", "is_interactive": true }
+  },
+  "order": [
+    "Main.dc.html",
+    "Server.dc.html",
+    "Stack.dc.html",
+    "Sites.dc.html",
+    "SiteNew.dc.html",
+    "Domains.dc.html",
+    "Backups.dc.html",
+    "Enroll.dc.html"
+  ],
+  "notes": {
+    "ops": { "x": 0, "y": -300, "text": "Provoz – servery, agenti, kontejnery", "kind": "title1", "maxW": 4480 },
+    "web": { "x": 0, "y": 1500, "text": "Statické weby, domény a SSL", "kind": "title1", "maxW": 4480 },
+    "bak": { "x": 0, "y": 3300, "text": "Zálohy a připojení serverů", "kind": "title1", "maxW": 2960 }
+  },
+  "designSystems": []
+}

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Nový web – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="Stack.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Main.dc.html#aktivita" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Aktivita a příkazy</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>6 ze 7 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 20px">
+
+<header style="display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12.5px; color: #7E8794"><a href="Sites.dc.html" style="color: #98A1AE; text-decoration: none">Weby</a> / Nový web</div>
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Nový statický web</h1>
+<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 720px">Zadej doménu a zbytek zařídíme: DNS záznamy u připojeného poskytovatele, certifikát přes ACME, build a nasazení na zvolený server.</p>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+
+<form style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+
+<fieldset style="margin: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<legend style="float: left; padding: 0; margin: 0 0 2px; font-size: 15px; font-weight: 600">1 · Zdroj obsahu</legend>
+<div role="group" aria-label="Typ zdroje" style="clear: both; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px">
+<sc-for list="{{sources}}" as="s" hint-placeholder-count="3">
+<button type="button" onClick="{{s.pick}}" aria-pressed="{{s.pressed}}" style="text-align: left; min-height: 64px; padding: 12px 14px; border-radius: 10px; border: 1px solid {{s.border}}; background: {{s.bg}}; color: #E6E8EC; font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 2px">
+<span style="font-weight: 500">{{s.label}}</span>
+<span style="font-size: 12px; color: #98A1AE">{{s.hint}}</span>
+</button>
+</sc-for>
+</div>
+<sc-if value="{{isGit}}" hint-placeholder-val="{{ true }}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px">
+<label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Repozitář
+<input type="text" value="https://gitea.example.cz/admin/docs.git" readOnly="{{ true }}" style="height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">
+</label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Větev
+<input type="text" value="main" readOnly="{{ true }}" style="height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">
+</label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Build příkaz
+<input type="text" value="mkdocs build" readOnly="{{ true }}" style="height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">
+</label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Výstupní složka
+<input type="text" value="site/" readOnly="{{ true }}" style="height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">
+</label>
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #7BE3A2"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>Rozpoznáno: MkDocs</div>
+</div>
+</sc-if>
+<sc-if value="{{isZip}}" hint-placeholder-val="{{ false }}">
+<div style="border: 1px dashed #33405A; border-radius: 10px; padding: 28px; text-align: center; color: #98A1AE; font-size: 13px">Přetáhni ZIP nebo složku s hotovým webem (index.html v kořeni)</div>
+</sc-if>
+<sc-if value="{{isEmpty}}" hint-placeholder-val="{{ false }}">
+<div style="font-size: 13px; color: #98A1AE">Vytvoří se prázdný web s jednou stránkou „Připravujeme". Obsah nahraješ později.</div>
+</sc-if>
+</fieldset>
+
+<fieldset style="margin: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<legend style="float: left; padding: 0; margin: 0 0 2px; font-size: 15px; font-weight: 600">2 · Doména a server</legend>
+<div style="clear: both; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Doména
+<input type="text" value="{{domainInput}}" onChange="{{onDomain}}" spellcheck="false" style="height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 8px; border: 1px solid #3A4660; background: #0C0E12; color: #E6E8EC; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13.5px">
+</label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Server (edge proxy)
+<select style="height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font: inherit">
+<option>vps-hetzner · 203.0.113.24</option>
+<option>vps-wedos · 198.51.100.7</option>
+<option>pve-01 · jen LAN</option>
+</select>
+</label>
+</div>
+<sc-if value="{{zone.auto}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; gap: 12px; padding: 12px 14px; border-radius: 10px; background: #12251A; border: 1px solid #1E3A28">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5BD68A" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 1px"><path d="M5 12l5 5 9-10"/></svg>
+<div style="display: flex; flex-direction: column; gap: 2px; font-size: 13px"><span style="color: #E6E8EC">Zóna <b style="font-weight: 600; font-family: 'Geist Mono', ui-monospace, monospace">{{zone.name}}</b> je u poskytovatele {{zone.provider}} – DNS nastavíme automaticky.</span><span style="font-size: 12.5px; color: #98A1AE">API token má oprávnění Zone.DNS:Edit · ověřeno před 3 min</span></div>
+</div>
+</sc-if>
+<sc-if value="{{zone.manual}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; gap: 12px; padding: 12px 14px; border-radius: 10px; background: #2A2112; border: 1px solid #44361A">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F2B544" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 1px"><path d="M12 8v5M12 16.5h.01"/><circle cx="12" cy="12" r="9"/></svg>
+<div style="display: flex; flex-direction: column; gap: 2px; font-size: 13px"><span style="color: #E6E8EC">Zónu tohoto webu nespravuje žádný připojený poskytovatel.</span><span style="font-size: 12.5px; color: #C5CAD3">Nastav záznamy níže u svého registrátora, nebo <a href="Domains.dc.html">připoj DNS poskytovatele</a>. Kontrolujeme každých 30 s.</span></div>
+</div>
+</sc-if>
+<div style="border: 1px solid #1F242D; border-radius: 10px; overflow: hidden">
+<div style="display: grid; grid-template-columns: 70px minmax(120px, 1fr) minmax(140px, 1.3fr) 60px; gap: 10px; padding: 8px 12px; background: #101318; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794"><span>Typ</span><span>Název</span><span>Hodnota</span><span>TTL</span></div>
+<sc-for list="{{records}}" as="r" hint-placeholder-count="3">
+<div style="display: grid; grid-template-columns: 70px minmax(120px, 1fr) minmax(140px, 1.3fr) 60px; gap: 10px; padding: 9px 12px; border-top: 1px solid #1A1E26; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px">
+<span style="color: #A9C1FF">{{r.type}}</span><span style="color: #E6E8EC; overflow-wrap: anywhere">{{r.name}}</span><span style="color: #C5CAD3; overflow-wrap: anywhere">{{r.value}}</span><span style="color: #98A1AE">{{r.ttl}}</span>
+</div>
+</sc-for>
+</div>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 32px; font-size: 13px; color: #C5CAD3; cursor: pointer">
+<input type="checkbox" checked="{{www}}" onChange="{{toggleWww}}" style="width: 18px; height: 18px; accent-color: #8FB0FF; margin: 0">
+Přidat i www.{{domain}} s přesměrováním 301
+</label>
+</fieldset>
+
+<fieldset style="margin: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<legend style="float: left; padding: 0; margin: 0 0 2px; font-size: 15px; font-weight: 600">3 · Certifikát</legend>
+<div style="clear: both; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Certifikační autorita
+<select style="height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font: inherit">
+<option>Let's Encrypt (doporučeno)</option>
+<option>ZeroSSL</option>
+<option>Vlastní certifikát (nahrát)</option>
+<option>Interní CA – jen pro LAN</option>
+</select>
+</label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: #A7AFBB">Ověření (ACME challenge)
+<select style="height: 44px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: #0C0E12; color: #E6E8EC; font: inherit">
+<option>Automaticky</option>
+<option>HTTP-01 přes edge proxy</option>
+<option>DNS-01 přes API poskytovatele</option>
+</select>
+</label>
+</div>
+<p style="margin: 0; font-size: 12.5px; color: #7E8794">Automaticky = HTTP-01, pokud je server veřejně dostupný na portu 80; jinak DNS-01. Wildcard vždy DNS-01. Obnova 30 dní před vypršením.</p>
+</fieldset>
+
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+<button type="button" onClick="{{start}}" style="height: 48px; display: inline-flex; align-items: center; gap: 8px; padding: 0 20px; border-radius: 10px; border: 0; background: #8FB0FF; color: #0C0E12; font: inherit; font-weight: 600; font-size: 15px; cursor: pointer">{{startLabel}}</button>
+<a href="Sites.dc.html" style="height: 48px; box-sizing: border-box; display: inline-flex; align-items: center; padding: 0 16px; border-radius: 10px; color: #C5CAD3; text-decoration: none">Zrušit</a>
+</div>
+</form>
+
+<aside aria-labelledby="prog-h" style="flex: 1 1 380px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 10px">
+<h2 id="prog-h" style="margin: 0; font-size: 15px; font-weight: 600">Průběh</h2>
+<span style="margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; background: {{summary.bg}}; color: {{summary.fg}}">{{summary.label}}</span>
+</div>
+<div style="height: 6px; background: #232935; border-radius: 3px"><div style="height: 6px; border-radius: 3px; width: {{pct}}%; background: #8FB0FF"></div></div>
+<ol aria-live="polite" style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column">
+<sc-for list="{{steps}}" as="p" hint-placeholder-count="8">
+<li style="display: flex; gap: 12px; padding: 8px 0">
+<span style="flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid {{p.ring}}; background: {{p.fill}}; color: {{p.ic}}; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; box-sizing: border-box">{{p.sym}}</span>
+<span style="min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px">
+<span style="color: {{p.fg}}; font-size: 13.5px">{{p.title}}</span>
+<span style="font-size: 12px; color: #7E8794; font-family: 'Geist Mono', ui-monospace, monospace; overflow-wrap: anywhere">{{p.detail}}</span>
+</span>
+<span style="flex: none; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11.5px; color: #7E8794">{{p.time}}</span>
+</li>
+</sc-for>
+</ol>
+<sc-if value="{{done}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 10px; background: #12251A; border: 1px solid #1E3A28">
+<span style="font-weight: 600; color: #7BE3A2">Web běží na HTTPS</span>
+<a href="Sites.dc.html" style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">https://{{domain}}</a>
+</div>
+</sc-if>
+<div style="margin-top: 4px; padding-top: 12px; border-top: 1px solid #1F242D; font-size: 12px; color: #7E8794">Každý krok je záznam v kolekci <span style="font-family: 'Geist Mono', ui-monospace, monospace">commands</span> – průběh vidíš i v aktivitě.</div>
+</aside>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1240}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { src: 'git', domain: 'docs.example.cz', www: true, step: 3, running: false };
+    this.timer = null;
+  }
+  componentWillUnmount() {
+    if (this.timer) clearInterval(this.timer);
+  }
+  renderVals() {
+    const st = this.state;
+    const domain = st.domain || 'docs.example.cz';
+    let zone;
+    if (/(^|\.)example\.cz$/.test(domain)) zone = { auto: true, manual: false, name: 'example.cz', provider: 'Cloudflare' };
+    else if (/(^|\.)example\.org$/.test(domain)) zone = { auto: true, manual: false, name: 'example.org', provider: 'WEDOS' };
+    else zone = { auto: false, manual: true, name: '', provider: '' };
+    const records = [
+      { type: 'A', name: domain, value: '203.0.113.24', ttl: '300' },
+      { type: 'AAAA', name: domain, value: '2001:db8::24', ttl: '300' }
+    ];
+    if (st.www) records.push({ type: 'CNAME', name: 'www.' + domain, value: domain, ttl: '300' });
+    const via = zone.auto ? ' (' + zone.provider + ' API)' : ' (ruční nastavení)';
+    const defs = [
+      { title: 'Web vytvořen a přiřazen serveru', detail: 'sites.create → vps-hetzner' },
+      { title: zone.auto ? 'DNS záznamy vytvořeny' : 'Čekám na DNS záznamy', detail: records.map((r) => r.type).join(' + ') + via },
+      { title: 'Propagace DNS ověřena', detail: '1.1.1.1 · 8.8.8.8 · 9.9.9.9 · autoritativní NS' },
+      { title: 'Build obsahu', detail: 'mkdocs build · 41 stránek · 6 s' },
+      { title: 'Nasazení přes agenta', detail: 'gRPC site.deploy · 1,1 MB · Caddy reload' },
+      { title: 'Certifikát vydán', detail: "Let's Encrypt · HTTP-01 · " + domain + (st.www ? ', www.' + domain : '') },
+      { title: 'Kontrola dostupnosti', detail: 'https://' + domain + ' → 200 · TLS 1.3 · HTTP/3' }
+    ];
+    const total = defs.length;
+    const step = Math.min(st.step, total);
+    const steps = defs.map((d, i) => {
+      const isDone = i < step;
+      const isRun = i === step;
+      return {
+        title: d.title,
+        detail: d.detail,
+        time: isDone ? '12:31:' + String(2 + i * 4).padStart(2, '0') : isRun ? 'teď' : '',
+        sym: isDone ? '✓' : isRun ? '•' : String(i + 1),
+        ring: isDone ? '#5BD68A' : isRun ? '#8FB0FF' : '#33394A',
+        fill: isDone ? '#12251A' : isRun ? '#1A2233' : 'transparent',
+        ic: isDone ? '#7BE3A2' : isRun ? '#A9C1FF' : '#7E8794',
+        fg: isDone ? '#C5CAD3' : isRun ? '#E6E8EC' : '#98A1AE'
+      };
+    });
+    const done = step >= total;
+    const summary = done
+      ? { label: 'Hotovo', bg: '#12251A', fg: '#7BE3A2' }
+      : { label: 'Krok ' + (step + 1) + ' ze ' + total, bg: '#1A2233', fg: '#A9C1FF' };
+    const srcOpts = [
+      { id: 'git', label: 'Git repozitář', hint: 'build při každém push' },
+      { id: 'zip', label: 'Nahrát soubory', hint: 'ZIP nebo složka' },
+      { id: 'empty', label: 'Prázdný web', hint: 'obsah později' }
+    ];
+    return {
+      domain,
+      domainInput: st.domain,
+      zone,
+      records,
+      steps,
+      done,
+      summary,
+      pct: Math.round(step / total * 100),
+      www: st.www,
+      isGit: st.src === 'git',
+      isZip: st.src === 'zip',
+      isEmpty: st.src === 'empty',
+      sources: srcOpts.map((o) => ({
+        label: o.label, hint: o.hint,
+        pressed: st.src === o.id ? 'true' : 'false',
+        bg: st.src === o.id ? '#1A2233' : '#101318',
+        border: st.src === o.id ? '#8FB0FF' : '#252B35',
+        pick: () => this.setState({ src: o.id })
+      })),
+      startLabel: st.running ? 'Probíhá…' : 'Vytvořit a nasadit',
+      onDomain: (e) => this.setState({ domain: e.target.value.trim().toLowerCase() }),
+      toggleWww: () => this.setState({ www: !this.state.www }),
+      start: () => {
+        if (this.timer) clearInterval(this.timer);
+        this.setState({ step: 0, running: true });
+        this.timer = setInterval(() => {
+          const next = this.state.step + 1;
+          if (next >= total) {
+            clearInterval(this.timer);
+            this.timer = null;
+            this.setState({ step: total, running: false });
+          } else {
+            this.setState({ step: next });
+          }
+        }, 900);
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

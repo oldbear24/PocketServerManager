@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>vps-hetzner – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="Stack.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Main.dc.html#aktivita" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Aktivita a příkazy</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>6 ze 7 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px">
+<div style="flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12.5px; color: #7E8794"><a href="Main.dc.html" style="color: #98A1AE; text-decoration: none">Servery</a> / vps-hetzner</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; font-family: 'Geist Mono', ui-monospace, monospace">vps-hetzner</h1>
+<span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: #12251A; color: #7BE3A2"><span style="width: 6px; height: 6px; border-radius: 50%; background: #5BD68A"></span>Online</span>
+<span style="padding: 3px 10px; border-radius: 999px; font-size: 12px; background: #1A2233; color: #A9C1FF">edge proxy</span>
+<span style="padding: 3px 10px; border-radius: 999px; font-size: 12px; background: #1C2027; color: #A7AFBB">docker host</span>
+</div>
+<div style="font-size: 13px; color: #98A1AE">Ubuntu 24.04 · 4 vCPU · 8 GB RAM · 160 GB NVMe · <span style="font-family: 'Geist Mono', ui-monospace, monospace">203.0.113.24</span> · <span style="font-family: 'Geist Mono', ui-monospace, monospace">2001:db8::24</span> · uptime 41 dní</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-5-6-5M12 19h8"/></svg>Terminál</button>
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>Restartovat agenta</button>
+<button type="button" aria-label="Další akce serveru" style="width: 44px; height: 44px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+</div>
+</header>
+
+<nav aria-label="Sekce serveru" style="display: flex; gap: 4px; border-bottom: 1px solid #1F242D; overflow-x: auto">
+<a href="#prehled" aria-current="page" style="flex: none; padding: 12px 14px; color: #E6E8EC; text-decoration: none; font-weight: 500; border-bottom: 2px solid #8FB0FF">Přehled</a>
+<a href="#kontejnery" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Kontejnery <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">8</span></a>
+<a href="#proxy" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Proxy a weby <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="#svazky" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Svazky a sítě</a>
+<a href="Backups.dc.html" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Zálohy</a>
+<a href="#agent" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Nastavení agenta</a>
+</nav>
+
+<div id="prehled" style="display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch">
+
+<section id="agent" aria-labelledby="agent-h" style="flex: 1 1 360px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 10px">
+<h2 id="agent-h" style="margin: 0; font-size: 15px; font-weight: 600">Agent a spojení</h2>
+<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #7BE3A2"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A; box-shadow: 0 0 0 4px #12251A"></span>stream aktivní</span>
+</div>
+<dl style="margin: 0; display: grid; grid-template-columns: minmax(120px, auto) minmax(0, 1fr); gap: 9px 16px; font-size: 13px">
+<dt style="color: #7E8794">Spojení</dt><dd style="margin: 0">dial-out → <span style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443</span></dd>
+<dt style="color: #7E8794">Šifrování</dt><dd style="margin: 0">mTLS · cert agenta platný do 2. 4. 2027</dd>
+<dt style="color: #7E8794">Verze agenta</dt><dd style="margin: 0"><span style="font-family: 'Geist Mono', ui-monospace, monospace">v0.4.2</span> <span style="color: #7BE3A2">· nejnovější</span></dd>
+<dt style="color: #7E8794">Heartbeat</dt><dd style="margin: 0">před 4 s · interval 10 s</dd>
+<dt style="color: #7E8794">RTT</dt><dd style="margin: 0; font-family: 'Geist Mono', ui-monospace, monospace">28 ms</dd>
+<dt style="color: #7E8794">Připojen od</dt><dd style="margin: 0">3. 10. 09:12 (13 dní bez přerušení)</dd>
+<dt style="color: #7E8794">Docker</dt><dd style="margin: 0">Engine 27.3 · Compose v2.29</dd>
+<dt style="color: #7E8794">Příkazy</dt><dd style="margin: 0">0 ve frontě · 1 odesláno · 214 dokončeno</dd>
+</dl>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto">
+<button type="button" style="height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 13px; cursor: pointer">Rotovat certifikát</button>
+<button type="button" style="height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 13px; cursor: pointer">Stáhnout diagnostiku</button>
+</div>
+</section>
+
+<section aria-labelledby="metrics-h" style="flex: 999 1 560px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<h2 id="metrics-h" style="margin: 0; font-size: 15px; font-weight: 600">Využití</h2>
+<span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #A7AFBB"><span style="width: 14px; height: 3px; border-radius: 2px; background: #8FB0FF"></span>CPU <b style="font-weight: 500; color: #E6E8EC">22 %</b></span>
+<span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: #A7AFBB"><span style="width: 14px; height: 3px; border-radius: 2px; background: #F0A35E"></span>RAM <b style="font-weight: 500; color: #E6E8EC">3,5 / 8 GB</b></span>
+<div role="group" aria-label="Časové okno" style="margin-left: auto; display: flex; padding: 3px; border: 1px solid #252B35; border-radius: 8px; gap: 2px">
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #98A1AE; font: inherit; font-size: 12.5px; cursor: pointer">1 h</button>
+<button type="button" aria-pressed="true" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: #1F2532; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">24 h</button>
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #98A1AE; font: inherit; font-size: 12.5px; cursor: pointer">7 d</button>
+</div>
+</div>
+<div style="display: flex; gap: 10px">
+<div style="display: flex; flex-direction: column; justify-content: space-between; height: 180px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11px; color: #7E8794; text-align: right">
+<span>100</span><span>50</span><span>0 %</span>
+</div>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<svg role="img" aria-label="Graf využití CPU a RAM za posledních 24 hodin" viewBox="0 0 600 180" preserveAspectRatio="none" style="width: 100%; height: 180px; display: block">
+<line x1="0" y1="45" x2="600" y2="45" stroke="#1F242D" stroke-width="1" vector-effect="non-scaling-stroke"/>
+<line x1="0" y1="90" x2="600" y2="90" stroke="#1F242D" stroke-width="1" vector-effect="non-scaling-stroke"/>
+<line x1="0" y1="135" x2="600" y2="135" stroke="#1F242D" stroke-width="1" vector-effect="non-scaling-stroke"/>
+<line x1="0" y1="179.5" x2="600" y2="179.5" stroke="#2A303B" stroke-width="1" vector-effect="non-scaling-stroke"/>
+<path d="{{cpuArea}}" fill="#8FB0FF" fill-opacity="0.12"/>
+<polyline points="{{ramPts}}" fill="none" stroke="#F0A35E" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+<polyline points="{{cpuPts}}" fill="none" stroke="#8FB0FF" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+</svg>
+<div style="display: flex; justify-content: space-between; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11px; color: #7E8794"><span>12:00</span><span>18:00</span><span>00:00</span><span>06:00</span><span>teď</span></div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; padding-top: 12px; border-top: 1px solid #1F242D">
+<div><div style="font-size: 12px; color: #7E8794">Síť dovnitř</div><div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 15px">2,4 Mb/s</div></div>
+<div><div style="font-size: 12px; color: #7E8794">Síť ven</div><div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 15px">11,8 Mb/s</div></div>
+<div><div style="font-size: 12px; color: #7E8794">Load 1/5/15</div><div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 15px">0,62 0,71 0,58</div></div>
+<div><div style="font-size: 12px; color: #7E8794">HTTP požadavky</div><div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 15px">38 / s</div></div>
+</div>
+</section>
+</div>
+
+<section id="kontejnery" aria-labelledby="ctr-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #1F242D">
+<h2 id="ctr-h" style="margin: 0; font-size: 15px; font-weight: 600">Kontejnery</h2>
+<span style="font-size: 12px; color: #7E8794">6 běží · 1 restartuje · 1 zastaven</span>
+<a href="Stack.dc.html" style="margin-left: auto; height: 36px; box-sizing: border-box; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; color: #E6E8EC; text-decoration: none; font-size: 13px">Nový stack</a>
+</div>
+<div style="overflow-x: auto">
+<div style="min-width: 940px">
+<div style="display: grid; grid-template-columns: minmax(230px, 2fr) 110px 128px 70px 80px minmax(150px, 1.3fr) 90px 96px; gap: 12px; padding: 10px 18px; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794; border-bottom: 1px solid #1F242D">
+<span>Kontejner</span><span>Stack</span><span>Stav</span><span>CPU</span><span>RAM</span><span>Vystaveno</span><span>Uptime</span><span style="text-align: right">Akce</span>
+</div>
+<sc-for list="{{containers}}" as="c" hint-placeholder-count="8">
+<div style="display: grid; grid-template-columns: minmax(230px, 2fr) 110px 128px 70px 80px minmax(150px, 1.3fr) 90px 96px; gap: 12px; align-items: center; padding: 10px 18px; border-bottom: 1px solid #1A1E26">
+<div style="min-width: 0"><div style="font-weight: 500; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">{{c.name}}</div><div style="font-size: 12px; color: #7E8794; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{c.image}}</div></div>
+<a href="Stack.dc.html" style="font-size: 13px; text-decoration: none">{{c.stack}}</a>
+<div><span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; background: {{c.t.bg}}; color: {{c.t.fg}}"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{c.t.dot}}"></span>{{c.state}}</span></div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #C5CAD3">{{c.cpu}}</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #C5CAD3">{{c.ram}}</div>
+<div style="font-size: 12.5px; color: #A7AFBB; font-family: 'Geist Mono', ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{c.expose}}</div>
+<div style="font-size: 12.5px; color: #98A1AE">{{c.up}}</div>
+<div style="display: flex; justify-content: flex-end; gap: 4px">
+<a href="Stack.dc.html" aria-label="Logy kontejneru {{c.name}}" style="width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #A7AFBB"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h10M4 18h7"/></svg></a>
+<button type="button" aria-label="Restartovat kontejner {{c.name}}" style="width: 40px; height: 40px; border-radius: 8px; border: 0; background: transparent; color: #A7AFBB; cursor: pointer; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section id="proxy" aria-labelledby="proxy-h" style="flex: 999 1 520px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #1F242D">
+<h2 id="proxy-h" style="margin: 0; font-size: 15px; font-weight: 600">Edge proxy – trasy</h2>
+<span style="font-size: 12px; color: #7E8794">Caddy řízený agentem · certifikáty z panelu</span>
+<a href="SiteNew.dc.html" style="margin-left: auto; font-size: 13px; text-decoration: none">Přidat doménu</a>
+</div>
+<sc-for list="{{routes}}" as="r" hint-placeholder-count="7">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 18px; border-bottom: 1px solid #1A1E26">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="{{r.t.dot}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+<span style="flex: 1 1 180px; min-width: 0; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; color: #E6E8EC">{{r.host}}</span>
+<span style="color: #7E8794" aria-hidden="true">→</span>
+<span style="flex: 1 1 180px; min-width: 0; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #A7AFBB">{{r.to}}</span>
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; background: {{r.k.bg}}; color: {{r.k.fg}}">{{r.kind}}</span>
+</div>
+</sc-for>
+</section>
+
+<div id="svazky" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section aria-labelledby="disk-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px">
+<h2 id="disk-h" style="margin: 0; font-size: 15px; font-weight: 600">Disky</h2>
+<sc-for list="{{disks}}" as="d" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between; gap: 10px; font-size: 13px"><span style="font-family: 'Geist Mono', ui-monospace, monospace">{{d.mount}}</span><span style="color: #98A1AE">{{d.label}}</span></div>
+<div style="height: 6px; background: #232935; border-radius: 3px"><div style="height: 6px; border-radius: 3px; width: {{d.pct}}%; background: #8FB0FF"></div></div>
+</div>
+</sc-for>
+</section>
+<section aria-labelledby="ev-h" style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<h2 id="ev-h" style="margin: 0; font-size: 15px; font-weight: 600">Události serveru</h2>
+<sc-for list="{{events}}" as="e" hint-placeholder-count="4">
+<div style="display: flex; gap: 12px; font-size: 13px">
+<span style="flex: none; width: 44px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">{{e.time}}</span>
+<span style="color: #C5CAD3">{{e.text}}</span>
+</div>
+</sc-for>
+</section>
+</div>
+</div>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1320}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const T = {
+      ok: { fg: '#7BE3A2', bg: '#12251A', dot: '#5BD68A' },
+      warn: { fg: '#F5C76A', bg: '#2A2112', dot: '#F2B544' },
+      err: { fg: '#F79A95', bg: '#2B1517', dot: '#F2706B' },
+      info: { fg: '#A9C1FF', bg: '#1A2233', dot: '#8FB0FF' },
+      off: { fg: '#A7AFBB', bg: '#1C2027', dot: '#6B7380' }
+    };
+    const cpu = [18, 16, 15, 14, 13, 12, 14, 22, 31, 28, 25, 24, 27, 30, 26, 22, 21, 24, 29, 35, 31, 26, 23, 22];
+    const ram = [40, 40, 41, 41, 41, 40, 40, 42, 44, 45, 45, 44, 44, 45, 46, 45, 44, 44, 45, 47, 46, 45, 44, 44];
+    const pts = (a) => a.map((v, i) => (i * 600 / (a.length - 1)).toFixed(1) + ',' + (180 - v * 1.7).toFixed(1)).join(' ');
+    const cpuPts = pts(cpu);
+    const ct = (name, image, stack, tone, state, cpuV, ramV, expose, up) => ({ name, image, stack, state, cpu: cpuV, ram: ramV, expose, up, t: T[tone] });
+    return {
+      cpuPts,
+      ramPts: pts(ram),
+      cpuArea: 'M0,180 L' + cpuPts.split(' ').join(' L') + ' L600,180 Z',
+      containers: [
+        ct('caddy-edge', 'caddy:2.8-alpine', 'system', 'ok', 'Běží', '0,4 %', '48 MB', ':80  :443', '13 d'),
+        ct('umami', 'ghcr.io/umami-software/umami:postgresql-v2', 'analytics', 'ok', 'Běží', '1,2 %', '212 MB', 'umami.example.cz', '6 d'),
+        ct('umami-db', 'postgres:16-alpine', 'analytics', 'ok', 'Běží', '0,3 %', '96 MB', 'jen interní síť', '6 d'),
+        ct('vaultwarden', 'vaultwarden/server:1.32.0', 'vault', 'ok', 'Běží', '0,1 %', '38 MB', 'vault.example.cz', '13 d'),
+        ct('uptime-kuma', 'louislam/uptime-kuma:1', 'monitoring', 'ok', 'Běží', '2,8 %', '140 MB', 'kuma.example.cz', '13 d'),
+        ct('n8n', 'n8nio/n8n:1.64.0', 'automation', 'warn', 'Restartuje', '—', '—', 'n8n.example.cz', '3× / 10 min'),
+        ct('gitea-runner', 'gitea/act_runner:0.2', 'ci', 'ok', 'Běží', '4,1 %', '320 MB', '—', '2 d'),
+        ct('old-wiki', 'requarks/wiki:2', 'wiki', 'off', 'Zastaven', '—', '—', '—', 'před 9 dny')
+      ],
+      routes: [
+        { host: 'blog.example.cz', to: '/srv/sites/blog', kind: 'statický web', t: T.ok, k: T.info },
+        { host: 'docs.example.cz', to: '/srv/sites/docs', kind: 'statický web', t: T.info, k: T.info },
+        { host: 'status.example.org', to: '/srv/sites/status', kind: 'statický web', t: T.ok, k: T.info },
+        { host: 'umami.example.cz', to: 'umami:3000', kind: 'kontejner', t: T.ok, k: T.off },
+        { host: 'vault.example.cz', to: 'vaultwarden:80', kind: 'kontejner', t: T.ok, k: T.off },
+        { host: 'kuma.example.cz', to: 'uptime-kuma:3001', kind: 'kontejner', t: T.ok, k: T.off },
+        { host: 'n8n.example.cz', to: 'n8n:5678', kind: 'kontejner', t: T.ok, k: T.off }
+      ],
+      disks: [
+        { mount: '/', label: '59 / 160 GB', pct: 37 },
+        { mount: '/var/lib/docker', label: '41 / 80 GB', pct: 52 },
+        { mount: '/srv/sites', label: '0,8 / 20 GB', pct: 4 }
+      ],
+      events: [
+        { time: '12:23', text: 'Přijat příkaz site.deploy pro docs.example.cz' },
+        { time: '12:20', text: 'n8n ukončen kódem 137 (OOM) – restart 3/5' },
+        { time: '09:41', text: 'Caddy načetl novou konfiguraci (7 tras)' },
+        { time: '03:12', text: 'Obnoven certifikát blog.example.cz (HTTP-01)' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
