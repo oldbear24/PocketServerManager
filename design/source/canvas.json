@@ -12,7 +12,8 @@
     "SiteNew.dc.html": { "x": 1520, "y": 2300, "w": 1440, "h": 1280, "title": "Nový web · automatická doména a SSL", "expand": "fill", "is_interactive": true },
     "Domains.dc.html": { "x": 3040, "y": 2300, "w": 1440, "h": 1480, "title": "Domény, DNS a certifikáty", "expand": "fill", "is_interactive": true },
     "Backups.dc.html": { "x": 0, "y": 4280, "w": 1440, "h": 1420, "title": "Zálohy", "expand": "fill", "is_interactive": true },
-    "Enroll.dc.html": { "x": 1520, "y": 4280, "w": 1440, "h": 1200, "title": "Připojení serveru · agent v Dockeru", "expand": "fill", "is_interactive": true }
+    "Enroll.dc.html": { "x": 1520, "y": 4280, "w": 1440, "h": 1200, "title": "Připojení serveru · agent v Dockeru", "expand": "fill", "is_interactive": true },
+    "Diagnostics.dc.html": { "x": 3040, "y": 4280, "w": 1440, "h": 2060, "title": "Diagnostika · plugin pro PocketBase", "expand": "fill", "is_interactive": true }
   },
   "order": [
     "Main.dc.html",
@@ -22,12 +23,13 @@
     "SiteNew.dc.html",
     "Domains.dc.html",
     "Backups.dc.html",
-    "Enroll.dc.html"
+    "Enroll.dc.html",
+    "Diagnostics.dc.html"
   ],
   "notes": {
     "ops": { "x": 0, "y": -300, "text": "Provoz – servery, agenti, kontejnery", "kind": "title1", "maxW": 4480 },
     "web": { "x": 0, "y": 2000, "text": "Statické weby, domény a SSL", "kind": "title1", "maxW": 4480 },
-    "bak": { "x": 0, "y": 3980, "text": "Zálohy a připojení serverů", "kind": "title1", "maxW": 2960 }
+    "bak": { "x": 0, "y": 3980, "text": "Zálohy, agenti a diagnostika", "kind": "title1", "maxW": 4480 }
   },
   "designSystems": []
 }

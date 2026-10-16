@@ -1,6 +1,6 @@
 # Design
 
-UI design for PocketCloud: eight screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
+UI design for PocketCloud: nine screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
 
 | Folder | What it is |
 |---|---|
@@ -52,6 +52,11 @@ Jobs with a 14-day history strip, failed-run banner with a fix action, snapshots
 One-time enrollment token, Docker install (`docker run`, Compose snippet or a wrapper script) that updates with name and roles, live connection checklist, agent versions with a note on the updater container.
 
 <img src="screenshots/08-connect-server.png" width="720" alt="Connect a server">
+
+### 9. Diagnostics – [preview](preview/Diagnostics.html) · [source](source/Diagnostics.dc.html)
+Served by the diagnostics plugin: gRPC connection health per agent (stream state, RTT, clock skew, reconnects, last error), a 24-hour connection strip with events, agent runtime state and self-checks, a live message trace with filters and optional payload capture, panel internals (cron jobs, queues) and recent errors.
+
+<img src="screenshots/09-diagnostics.png" width="720" alt="Diagnostics">
 
 ## Design tokens
 

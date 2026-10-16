@@ -161,6 +161,7 @@ sequenceDiagram
 | `StreamLogs` | client stream | log chunks for an active `logs.follow` |
 | `Exec` | bidi stream | terminal sessions |
 | `FetchArtifact` | server stream | agent downloads uploads and site releases |
+| `UploadArtifact` | client stream | agent uploads diagnostics bundles and restore downloads to the panel |
 | `RenewCertificate` | unary | identity rotation |
 
 Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `logs.*`, `exec.*`, `site.*`, `edge.*`, `cert.*`, `acme.*`, `backup.*`, `agent.*`. Agents advertise supported types in `capabilities`, which keeps old agents working while new command types are added.
@@ -249,6 +250,30 @@ LAN-only names use DNS rewrites (AdGuard Home, Pi-hole) and certificates from th
 - `backup.run` carries repository URL, credentials, sources and optional pre-hooks (database dumps via `restic backup --stdin-from-command`).
 - Retention with `restic forget --prune`; weekly `restic check --read-data-subset`.
 - The panel backs up its own `pb_data`; the master key is exported separately. Restoring the panel keeps the CA, so agents reconnect without re-enrollment.
+
+## Diagnostics
+
+Detailed diagnostics live in a separate PocketBase plugin, `plugins/diagnostics`, registered the same way as PocketBase's own plugins (`diagnostics.MustRegister(app, diagnostics.Config{…})`). When it is disabled it adds no overhead.
+
+```mermaid
+flowchart LR
+  subgraph Panel
+    GW[gRPC gateway] -- stats handler and interceptors --> DG[Diagnostics plugin]
+    CQ[Command queue] -- hooks --> DG
+    PB[PocketBase: realtime, cron, SQLite] -- hooks --> DG
+    DG --> API["/api/diag/* (admin only)"]
+    DG --> MET["/metrics (Prometheus, token)"]
+  end
+  AG[Agent] -- "heartbeat stats, self-checks, bundles" --> GW
+  API --> UI[Diagnostika page]
+```
+
+- **Collection** – a gRPC `stats.Handler` (connection begin/end, payload sizes, RPC timing) plus unary and stream interceptors (status codes, command ids); command-queue hooks (depth, dispatch and completion latency, retries, replays, timeouts); PocketBase internals (realtime clients, cron jobs, SQLite and WAL size); Go `runtime/metrics`.
+- **Per agent** – connected since, remote address, TLS version and certificate expiry, RTT p50/p95, clock skew, messages and bytes in/out, reconnects with classified reasons (EOF, keepalive timeout, TLS error, revoked certificate), last error.
+- **Storage** – in memory only: counters, histograms and a ring buffer of the last 500 message metadata entries per agent, 24 h window. Connection events also go to the `events` collection so they survive restarts.
+- **Agent side** – heartbeats carry light runtime stats (goroutines, heap, worker pool, Docker API latency, free space on the agent volume); periodic self-checks (Docker socket, host mount, edge container, restic, time sync); `agent.diagnostics` builds a bundle uploaded with `UploadArtifact`; `agent.set_log_level` enables debug logging for a limited time.
+- **Payload capture** – off by default. An admin can capture message payloads of one agent for 10 minutes; fields marked with a custom `sensitive` proto field option are always masked.
+- **Output** – the Diagnostika page (System section of the UI), an optional token-protected Prometheus endpoint, and downloadable debug bundles (`diagnostic_bundles`, with expiry).
 
 ## Security model
 

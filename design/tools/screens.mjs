@@ -48,6 +48,12 @@ export const screens = [
     source: 'Enroll',
     slug: '08-connect-server',
     title: 'Connect a server',
-    description: 'One-time enrollment token, install command (script, Docker, manual) and live connection checklist.'
+    description: 'One-time enrollment token, Docker install command (docker run, Compose, script) and live connection checklist.'
+  },
+  {
+    source: 'Diagnostics',
+    slug: '09-diagnostics',
+    title: 'Diagnostics',
+    description: 'gRPC connection health per agent, agent state and self-checks, live message trace, panel internals.'
   }
 ];

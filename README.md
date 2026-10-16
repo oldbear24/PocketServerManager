@@ -16,6 +16,7 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 - **Domains and TLS** – connect DNS providers (Cloudflare first); records and certificates (Let's Encrypt or ZeroSSL, HTTP-01 or DNS-01, wildcards) are created, renewed and pushed to the servers automatically. Containers get a domain through a `pocketcloud.domain` label.
 - **Backups** – restic jobs for volumes, folders and database dumps to S3/B2, SFTP or a backup server; retention, integrity checks, restore, and a backup of the panel itself.
 - **Overview and alerts** – what needs attention, the command queue, notifications via e-mail, ntfy, Gotify or webhooks.
+- **Diagnostics** – a PocketBase plugin with live gRPC connection health per agent, a message trace, agent self-checks, debug bundles and an optional Prometheus endpoint.
 
 ## Architecture
 
@@ -42,14 +43,14 @@ Every action becomes a record in the `commands` collection – the audit trail a
 
 ## Design
 
-Eight screens: overview, server detail, Compose stack, static site, new-site wizard, domains & certificates, backups, connecting a server. See [design/README.md](design/README.md) for screenshots, clickable static previews and the canvas sources.
+Nine screens: overview, server detail, Compose stack, static site, new-site wizard, domains & certificates, backups, connecting a server, diagnostics. See [design/README.md](design/README.md) for screenshots, clickable static previews and the canvas sources.
 
 ## Roadmap
 
 | Milestone | Focus |
 |---|---|
 | [M0 · Foundations](https://github.com/oldbear24/PocketServerManager/milestone/1) | repo and CI, gRPC contract, PocketBase schema, panel and UI skeletons, key technical decisions |
-| [M1 · Agent & connectivity](https://github.com/oldbear24/PocketServerManager/milestone/2) | internal CA and mTLS, agent, enrollment, command queue, heartbeats, self-update |
+| [M1 · Agent & connectivity](https://github.com/oldbear24/PocketServerManager/milestone/2) | internal CA and mTLS, agent container, enrollment, command queue, heartbeats, updates, diagnostics plugin |
 | [M2 · Containers & stacks](https://github.com/oldbear24/PocketServerManager/milestone/3) | inventory and actions, Compose stacks, live logs, metrics, terminal, server page |
 | [M3 · Static sites, domains & TLS](https://github.com/oldbear24/PocketServerManager/milestone/4) | edge proxy, site deployments, DNS providers, ACME, new-site wizard, container and LAN domains |
 | [M4 · Backups](https://github.com/oldbear24/PocketServerManager/milestone/5) | targets and jobs, retention, restore, integrity checks, panel backup |
@@ -64,6 +65,7 @@ cmd/panel     panel binary (PocketBase + gRPC gateway + UI)      – planned
 cmd/agent     agent (runs as a container)                         – planned
 cmd/updater   temporary container that swaps the agent on update  – planned
 proto/        gRPC API (buf)                                      – planned
+plugins/      PocketBase plugins, e.g. diagnostics                – planned
 internal/     shared Go packages                                  – planned
 web/          React UI (Vite + TypeScript)                        – planned
 design/       UI design: screenshots, static previews, sources

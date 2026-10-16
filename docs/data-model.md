@@ -27,6 +27,9 @@ Conventions:
 | `alerts` | Open problems | `rule`, `target`, `severity`, `status` (open / acknowledged / resolved), `first_seen`, `last_seen`, `message`, `acknowledged_by` |
 | `alert_rules` | Thresholds and channels | `kind`, `params`, `channels[]`, `enabled` |
 | `notification_channels` | E-mail, ntfy, Gotify, webhook | `kind`, `config` 🔒 |
+| `diagnostic_bundles` | Debug bundles from agents or the panel | `host` (empty = panel), `requested_by`, `file`, `size_bytes`, `expires_at` |
+
+Live diagnostics (connection stats, message trace, queue latencies) are kept in memory by the diagnostics plugin and are not stored in collections.
 
 ## Containers and stacks
 
