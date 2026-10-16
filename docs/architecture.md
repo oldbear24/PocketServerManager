@@ -1,58 +1,15 @@
 # Architecture
 
 > Status: proposal. Decisions marked **(spike)** are settled in the spike issue in milestone M0 and recorded as ADRs in `docs/adr/`.
+>
+> Diagrams are PNG renders of the Mermaid sources in [`diagrams/`](diagrams/), so they show up everywhere, including the GitHub mobile app. Edit the `.mmd` file and run [`diagrams/render.sh`](diagrams/render.sh).
 
 PocketCloud has two binaries:
 
 - **Panel** – one Go process: [PocketBase](https://pocketbase.io) embedded as a library (auth, collections, REST + realtime API, files, cron), the React UI, a gRPC gateway for agents, and the managers for commands, DNS, certificates and backups.
 - **Agent** – a small container (`pocketcloud-agent`) on every managed server. It dials out to the panel, executes commands (Docker, Compose, edge proxy, site deploys, PHP and database containers, restic) and streams data back. It never replaces itself: updates are done by a short-lived **updater** container (`pocketcloud-updater`).
 
-```mermaid
-flowchart LR
-  subgraph Browser
-    UI[React UI]
-  end
-
-  subgraph Panel["Panel (single Go binary)"]
-    PB[(PocketBase<br/>collections, auth, files)]
-    API[REST + realtime API]
-    GW[gRPC gateway :9443]
-    CQ[Command dispatcher]
-    REL[Log / exec relay]
-    ACME[ACME + DNS manager]
-    SCHED[Scheduler]
-    AUD[Audit writer]
-  end
-
-  subgraph Server["Managed server (Docker)"]
-    AG[Agent container]
-    DK[Docker Engine]
-    EDGE[Edge container - Caddy]
-    APPS[Stacks, PHP-FPM and database containers]
-    RS[restic]
-    UPD[Updater container - only during updates]
-  end
-
-  UI -- HTTPS --> API
-  UI -- SSE / WebSocket --> REL
-  API --- PB
-  CQ --- PB
-  SCHED --- PB
-  PB -- record hooks --> AUD
-  AG -- "gRPC over mTLS (dial-out)" --> GW
-  GW --- CQ
-  GW --- REL
-  AG --> DK
-  DK --- APPS
-  EDGE -- "HTTP / FastCGI" --> APPS
-  AG --> EDGE
-  AG --> RS
-  AG -. starts on update .-> UPD
-  UPD -. replaces .-> AG
-  ACME -- provider API --> DNS[(DNS providers)]
-  ACME -- ACME --> CA[(Let's Encrypt / ZeroSSL)]
-  RS -- backups --> TGT[(S3 / SFTP / rest-server)]
-```
+<img src="diagrams/components.png" width="1036" alt="Panel and managed server components and how they connect">
 
 ## Principles
 
@@ -93,33 +50,7 @@ The agent ships as a multi-arch image (`ghcr.io/oldbear24/pocketcloud-agent`, li
 
 A container cannot safely replace itself: stopping its own container kills the process halfway through. The agent therefore starts a tiny, purpose-built `pocketcloud-updater` container (a static Go binary on `scratch`) that swaps the agent container and exits.
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant P as Panel
-  participant A as Agent (old)
-  participant D as Docker Engine
-  participant U as Updater (temporary)
-  participant N as Agent (new)
-
-  P->>A: agent.update (agent and updater images pinned by digest)
-  A->>D: pull both images by digest
-  A->>D: run updater (auto-remove, docker.sock + agent volume)
-  A-->>P: progress: updater started
-  U->>D: inspect pocketcloud-agent
-  U->>D: stop old container, rename it
-  U->>D: create new container from the same config with the new image
-  D->>N: start
-  N->>P: reconnect with the new version
-  U->>D: wait until the new container is healthy
-  alt healthy before the timeout
-    U->>D: remove old container
-  else unhealthy or timeout
-    U->>D: remove new container, rename and start the old one
-  end
-  U->>U: write the result to the agent volume, exit
-  Note over N,P: the agent running afterwards reports the result for the command id
-```
+<img src="diagrams/agent-update.png" width="1279" alt="Agent update sequence with the temporary updater container and rollback">
 
 - Images are always pulled by digest; the panel release defines which agent and updater digests belong to it.
 - The new container keeps the old one's environment, mounts, networks, restart policy and labels (recreate from inspect).
@@ -130,26 +61,7 @@ sequenceDiagram
 
 The panel runs an internal CA. Agents authenticate with client certificates; no passwords or API tokens live on servers.
 
-```mermaid
-sequenceDiagram
-  autonumber
-  actor Admin
-  participant UI as Panel UI
-  participant P as Panel
-  participant A as Agent container (new server)
-
-  Admin->>UI: Connect a server (name, roles)
-  UI->>P: create enrollment token (hashed, single use, 15 min)
-  P-->>UI: docker run command with token and CA pin
-  Admin->>A: docker run
-  A->>A: generate key pair and CSR
-  A->>P: Enroll(token, CSR) over TLS, panel verified with CA pin
-  P->>P: validate token, create host, sign client certificate
-  P-->>A: certificate and CA chain
-  A->>P: SubscribeCommands over mTLS
-  A->>P: ReportInventory
-  P-->>UI: realtime: host online
-```
+<img src="diagrams/enrollment.png" width="1012" alt="Server enrollment sequence with a one-time token and a client certificate">
 
 - Certificate SAN `pocketcloud://host/<hostId>` identifies the host on every call.
 - Agent certificates are valid for 180 days and renewed over the existing connection when 30 days remain (`RenewCertificate`).
@@ -176,21 +88,7 @@ Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `l
 
 ## Command lifecycle
 
-```mermaid
-stateDiagram-v2
-  [*] --> queued
-  queued --> dispatched: agent connected
-  queued --> cancelled: user cancels or expires
-  dispatched --> running: agent accepted
-  dispatched --> timed_out: no answer in time
-  running --> succeeded
-  running --> failed
-  running --> timed_out
-  succeeded --> [*]
-  failed --> [*]
-  timed_out --> [*]
-  cancelled --> [*]
-```
+<img src="diagrams/command-lifecycle.png" width="531" alt="Command states: queued, dispatched, running, succeeded, failed, timed out, cancelled">
 
 - The dispatcher reacts to new records (`OnRecordAfterCreateSuccess`) and to agent connects.
 - Commands touching the same resource (stack, site, backup repository) run in order; others in parallel.
@@ -199,13 +97,7 @@ stateDiagram-v2
 
 ## Logs and terminal
 
-```mermaid
-flowchart LR
-  B[Browser] -- "SSE (logs) / WebSocket (exec)" --> R[Panel relay]
-  R -- "logs.follow / exec.start command" --> A[Agent]
-  A -- "StreamLogs / Exec gRPC stream" --> R
-  A -- Docker API --> D[Container]
-```
+<img src="diagrams/logs-terminal.png" width="436" alt="Logs and terminal relay between browser, panel, agent and container">
 
 The relay is a custom route registered in `OnServe`; it checks the PocketBase auth token, fans one agent stream out to all viewers and stops it when the last viewer leaves.
 
@@ -221,29 +113,7 @@ Certificates are issued **centrally by the panel** **(spike: certmagic vs lego)*
 
 New site provisioning (one parent command):
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant UI as Panel UI
-  participant P as Panel
-  participant DNS as DNS provider
-  participant A as Edge agent
-  participant CA as ACME CA
-
-  UI->>P: create site (source, domain, server)
-  P->>P: find zone (longest suffix match among connected zones)
-  P->>DNS: create A / AAAA (+ www CNAME)
-  P->>P: wait for propagation (public resolvers + authoritative NS)
-  P->>A: site.deploy (build in throwaway container, atomic release switch)
-  A-->>P: release active
-  P->>A: acme.challenge.put
-  P->>CA: order certificate (HTTP-01)
-  CA->>A: GET /.well-known/acme-challenge/...
-  CA-->>P: certificate
-  P->>A: cert.install + edge.apply
-  P->>A: availability check
-  P-->>UI: done, https://domain
-```
+<img src="diagrams/new-site.png" width="1076" alt="New site provisioning sequence: DNS records, deploy, certificate, availability check">
 
 If the zone is not at a connected provider, the wizard shows the records to create at the registrar and polls until they resolve.
 
@@ -255,16 +125,7 @@ LAN-only names use DNS rewrites (AdGuard Home, Pi-hole) and certificates from th
 
 A PHP site is a site with `type = php`. Its code is deployed exactly like a static site (releases and a `current` symlink on the `pocketcloud-sites` volume); requests for PHP scripts are executed by a dedicated PHP-FPM container per site, everything else is served by the edge directly.
 
-```mermaid
-flowchart LR
-  V1[Visitor] -- HTTPS --> E[Edge - Caddy]
-  E -- static files --> S[("pocketcloud-sites volume<br/>shop/releases · shop/shared")]
-  E -- "FastCGI shop-php:9000" --> F[shop-php - PHP-FPM]
-  F -- "code read-only, shared/ writable" --> S
-  F -- "private network pcdb-shop" --> D[(db-main - MariaDB)]
-  F -. SMTP relay .-> M[(Mail server)]
-  A[Agent] -. "deploy, cron, status" .-> F
-```
+<img src="diagrams/php-site.png" width="615" alt="PHP site request flow: edge proxy, PHP-FPM container, sites volume, database and mail relay">
 
 - **Runtime image** – `ghcr.io/oldbear24/pocketcloud-php:<version>-fpm`, built in CI from the official `php:<version>-fpm` images for every supported PHP version (currently 8.2–8.5; the UI warns before a version reaches end of life), multi-arch. It adds the common extensions (opcache, mysqli, pdo_mysql, pdo_pgsql, gd, intl, zip, exif, imagick, redis, bcmath), `msmtp` as `sendmail`, WP-CLI, Composer and a small status helper that reports the FPM pool and OPcache state. Sites that need more extensions use an image derived from it.
 - **One container per site** – `<site>-php`, labelled `pocketcloud.role=site`, attached to the `pocketcloud-edge` network under the alias `<site>-php`. It runs as `www-data` with CPU and memory limits, without the Docker socket and without published ports. It mounts only its own site directory from the sites volume (Docker volume subpaths, Engine 26+) at the same path the edge uses (`/srv/sites/<site>`), read-only, with `shared/` mounted read-write on top; `open_basedir` is limited to the site directory and `/tmp`.
@@ -281,17 +142,7 @@ flowchart LR
 
 Applications on the same host share a database server instead of each running its own instance. Each application still gets its own database, its own user and its own network path to the server.
 
-```mermaid
-flowchart LR
-  subgraph H["Host vps-wedos"]
-    S1[shop-php] -- pcdb-shop --> DB[(db-main - MariaDB 11)]
-    S2[matomo stack] -- pcdb-matomo --> DB
-    S3[ghost stack] -- pcdb-ghost --> DB
-    AG[Agent] -- "docker exec: client and dump tools" --> DB
-  end
-  P[Panel] -- "db.* commands" --> AG
-  AG -- "restic, one snapshot per database" --> T[(Backup target)]
-```
+<img src="diagrams/database-servers.png" width="908" alt="Shared database server with a private network per application">
 
 - **Servers** – a shared server is a container managed by PocketCloud (MariaDB 11 LTS or PostgreSQL 17) with its data in a named volume, labelled `pocketcloud.role=db`, with no published ports. Admin credentials are generated by the panel and stored encrypted; memory settings (`innodb_buffer_pool_size`, `shared_buffers`) start from presets based on the host's RAM.
 - **Dedicated servers** – database containers found inside stacks are listed as dedicated (read-only until the stack's credentials are linked). They stay dedicated when they need something a shared server does not offer (e.g. immich with VectorChord) and can otherwise be consolidated.
@@ -317,18 +168,7 @@ flowchart LR
 
 Detailed diagnostics live in a separate PocketBase plugin, `plugins/diagnostics`, registered the same way as PocketBase's own plugins (`diagnostics.MustRegister(app, diagnostics.Config{…})`). When it is disabled it adds no overhead.
 
-```mermaid
-flowchart LR
-  subgraph Panel
-    GW[gRPC gateway] -- stats handler and interceptors --> DG[Diagnostics plugin]
-    CQ[Command queue] -- hooks --> DG
-    PB[PocketBase: realtime, cron, SQLite] -- hooks --> DG
-    DG --> API["/api/diag/* (admin only)"]
-    DG --> MET["/metrics (Prometheus, token)"]
-  end
-  AG[Agent] -- "heartbeat stats, self-checks, bundles" --> GW
-  API --> UI[Diagnostika page]
-```
+<img src="diagrams/diagnostics.png" width="776" alt="Diagnostics plugin data flow from the gRPC gateway, command queue and PocketBase to the API">
 
 - **Collection** – a gRPC `stats.Handler` (connection begin/end, payload sizes, RPC timing) plus unary and stream interceptors (status codes, command ids); command-queue hooks (depth, dispatch and completion latency, retries, replays, timeouts); PocketBase internals (realtime clients, cron jobs, SQLite and WAL size); Go `runtime/metrics`.
 - **Per agent** – connected since, remote address, TLS version and certificate expiry, RTT p50/p95, clock skew, messages and bytes in/out, reconnects with classified reasons (EOF, keepalive timeout, TLS error, revoked certificate), last error.
@@ -341,18 +181,7 @@ flowchart LR
 
 Every configuration change is written to the append-only `audit_log` collection: who made it, from where, what exactly changed, and which command it caused.
 
-```mermaid
-flowchart LR
-  UI[UI] --> API[REST API]
-  TOK[API token, e.g. CI] --> API
-  SU["PocketBase dashboard /_/"] --> API
-  API --> REC[(Records)]
-  SYS["Scheduler · ACME · agent reports"] --> REC
-  REC -- "record hooks: create, update, delete" --> AW[Audit writer]
-  AW -- "diff · redact secrets · hash chain" --> AL[(audit_log)]
-  AL --> PAGE[Audit a aktivita page]
-  AL --> EXP["JSONL export · integrity check"]
-```
+<img src="diagrams/change-audit.png" width="626" alt="Change audit flow from record hooks through the audit writer to the audit log">
 
 - **Scope** – configuration collections: hosts, stacks, sites, domains, DNS providers, certificates, backup targets and jobs, database servers and databases, scheduled tasks, users and roles, API tokens, alert rules, PocketCloud and PocketBase settings, collection schema. High-volume or derived data (inventory, metrics, events, diagnostics) is not audited; commands are shown from `commands` in their own tab.
 - **Writer** – one component registered on PocketBase's record hooks (after a successful create, update or delete) for the audited collections. It compares the record with `Original()` and stores field-level diffs; a deletion stores the last state. The actor (user, API token or superuser), IP, user agent and source (UI, API, PocketBase dashboard) come from the request; changes without a request are attributed to the component that made them (scheduler, ACME manager, agent report, migration).

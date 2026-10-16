@@ -1,0 +1,25 @@
+sequenceDiagram
+  autonumber
+  participant P as Panel
+  participant A as Agent (old)
+  participant D as Docker Engine
+  participant U as Updater (temporary)
+  participant N as Agent (new)
+
+  P->>A: agent.update<br/>(images pinned by digest)
+  A->>D: pull both images by digest
+  A->>D: run updater (auto-remove,<br/>docker.sock + agent volume)
+  A-->>P: progress: updater started
+  U->>D: inspect pocketcloud-agent
+  U->>D: stop old container, rename it
+  U->>D: create new container<br/>(same config, new image)
+  D->>N: start
+  N->>P: reconnect with the new version
+  U->>D: wait until the new<br/>container is healthy
+  alt healthy before the timeout
+    U->>D: remove old container
+  else unhealthy or timeout
+    U->>D: remove new container,<br/>rename and start the old one
+  end
+  U->>U: write the result to<br/>the agent volume, exit
+  Note over P,N: whichever agent runs afterwards reports the result for the command id

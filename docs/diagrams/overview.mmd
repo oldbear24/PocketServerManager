@@ -1,0 +1,13 @@
+flowchart LR
+  UI[Browser UI] -- HTTPS --> P
+  subgraph P[Panel: Go + embedded PocketBase]
+    API[REST + realtime API]
+    GW[gRPC gateway]
+    MGR["Commands · Scheduler<br/>DNS · ACME · Audit"]
+  end
+  A1[Agent container: server 1] -- "gRPC / mTLS<br/>dial-out" --> GW
+  A2[Agent container: server 2] -- "gRPC / mTLS<br/>dial-out" --> GW
+  MGR -- API --> DNS[(DNS providers)]
+  MGR -- ACME --> CA[(Let's Encrypt / ZeroSSL)]
+  A1 --> D1["Docker · Caddy edge<br/>PHP-FPM · DB servers · restic"]
+  A2 --> D2["Docker · Caddy edge<br/>PHP-FPM · DB servers · restic"]

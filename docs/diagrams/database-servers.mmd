@@ -1,0 +1,9 @@
+flowchart LR
+  subgraph H["Host vps-wedos"]
+    S1[shop-php] -- pcdb-shop --> DB[(db-main - MariaDB 11)]
+    S2[matomo stack] -- pcdb-matomo --> DB
+    S3[ghost stack] -- pcdb-ghost --> DB
+    AG[Agent] -- "docker exec: client and dump tools" --> DB
+  end
+  P[Panel] -- "db.* commands" --> AG
+  AG -- "restic, one snapshot per database" --> T[(Backup target)]

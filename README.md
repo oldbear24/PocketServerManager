@@ -23,21 +23,7 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  UI[Browser UI] -- HTTPS --> P
-  subgraph P[Panel: Go + embedded PocketBase]
-    API[REST + realtime API]
-    GW[gRPC gateway]
-    MGR[Commands · DNS · ACME · Scheduler]
-  end
-  A1[Agent container: server 1] -- gRPC / mTLS, dial-out --> GW
-  A2[Agent container: server 2] -- gRPC / mTLS, dial-out --> GW
-  MGR -- API --> DNS[(DNS providers)]
-  MGR -- ACME --> CA[(Let's Encrypt / ZeroSSL)]
-  A1 --> D1[Docker · Caddy edge · PHP-FPM · DB servers · restic]
-  A2 --> D2[Docker · Caddy edge · PHP-FPM · DB servers · restic]
-```
+<img src="docs/diagrams/overview.png" width="994" alt="Architecture overview: the browser talks to the panel, agents on each server dial out to the panel over gRPC with mTLS">
 
 Every action becomes a record in the `commands` collection – the command history and the delivery queue at once – and every configuration change lands in an append-only audit log. Logs and terminal sessions stream agent → panel → browser without touching the database.
 

@@ -1,0 +1,10 @@
+flowchart TB
+  UI[UI] --> API[REST API]
+  TOK["API token, e.g. CI"] --> API
+  SU["PocketBase dashboard /_/"] --> API
+  API --> REC[(Records)]
+  SYS["Scheduler · ACME<br/>agent reports"] --> REC
+  REC -- "record hooks:<br/>create, update, delete" --> AW[Audit writer]
+  AW -- "diff · redact secrets<br/>hash chain" --> AL[(audit_log)]
+  AL --> PAGE[Audit a aktivita page]
+  AL --> EXP["JSONL export<br/>integrity check"]

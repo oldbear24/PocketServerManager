@@ -1,0 +1,10 @@
+flowchart TB
+  AG[Agent] -- "heartbeat stats, self-checks, bundles" --> GW
+  subgraph Panel
+    GW[gRPC gateway] -- "stats handler<br/>and interceptors" --> DG[Diagnostics plugin]
+    CQ[Command queue] -- hooks --> DG
+    PB["PocketBase<br/>realtime, cron, SQLite"] -- hooks --> DG
+    DG --> API["/api/diag/* (admin only)"]
+    DG --> MET["/metrics (Prometheus, token)"]
+  end
+  API --> UI[Diagnostika page]

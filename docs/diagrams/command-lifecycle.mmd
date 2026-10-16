@@ -1,0 +1,13 @@
+stateDiagram-v2
+  [*] --> queued
+  queued --> dispatched: agent connected
+  queued --> cancelled: user cancels or expires
+  dispatched --> running: agent accepted
+  dispatched --> timed_out: no answer in time
+  running --> succeeded
+  running --> failed
+  running --> timed_out
+  succeeded --> [*]
+  failed --> [*]
+  timed_out --> [*]
+  cancelled --> [*]

@@ -1,0 +1,21 @@
+sequenceDiagram
+  autonumber
+  participant UI as Panel UI
+  participant P as Panel
+  participant DNS as DNS provider
+  participant A as Edge agent
+  participant CA as ACME CA
+
+  UI->>P: create site<br/>(source, domain, server)
+  P->>P: find zone<br/>(longest suffix match)
+  P->>DNS: create A / AAAA<br/>(+ www CNAME)
+  P->>P: wait for propagation<br/>(public resolvers + authoritative NS)
+  P->>A: site.deploy (build in job<br/>container, atomic release switch)
+  A-->>P: release active
+  P->>A: acme.challenge.put
+  P->>CA: order certificate (HTTP-01)
+  CA->>A: GET /.well-known/<br/>acme-challenge/…
+  CA-->>P: certificate
+  P->>A: cert.install + edge.apply
+  P->>A: availability check
+  P-->>UI: done, https://domain

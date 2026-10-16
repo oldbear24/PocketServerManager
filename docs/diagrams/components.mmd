@@ -1,0 +1,38 @@
+flowchart TB
+  UI[Browser – React UI]
+
+  subgraph Panel["Panel – single Go binary"]
+    API[REST + realtime API]
+    REL[Log / exec relay]
+    PB[("PocketBase<br/>collections · auth · files")]
+    MGR["Command dispatcher<br/>Scheduler · Audit writer<br/>ACME + DNS manager"]
+    GW[gRPC gateway :9443]
+  end
+
+  subgraph Server["Managed server – Docker"]
+    AG[Agent container]
+    EDGE["Edge – Caddy :80 / :443"]
+    APPS["Stacks · PHP-FPM<br/>database servers"]
+    JOBS["Job containers<br/>builds · restic"]
+    UPD["Updater<br/>only during updates"]
+  end
+
+  DNS[(DNS providers)]
+  CA[(Let's Encrypt / ZeroSSL)]
+  TGT[(S3 / SFTP / rest-server)]
+
+  UI -- HTTPS --> API
+  UI -- "SSE / WebSocket" --> REL
+  API --- PB
+  PB --- MGR
+  MGR --- GW
+  REL --- GW
+  GW <-- "gRPC over mTLS<br/>agent dials out" --> AG
+  AG --> EDGE
+  AG --> APPS
+  AG --> JOBS
+  AG -. "starts on update,<br/>updater replaces agent" .-> UPD
+  EDGE -- "HTTP / FastCGI" --> APPS
+  MGR -- "provider API" --> DNS
+  MGR -- ACME --> CA
+  JOBS -- backups --> TGT

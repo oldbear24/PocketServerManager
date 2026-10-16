@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  actor Admin
+  participant UI as Panel UI
+  participant P as Panel
+  participant A as Agent container (new server)
+
+  Admin->>UI: Connect a server<br/>(name, roles)
+  UI->>P: create enrollment token<br/>(hashed, single use, 15 min)
+  P-->>UI: docker run command<br/>with token and CA pin
+  Admin->>A: docker run
+  A->>A: generate key pair<br/>and CSR
+  A->>P: Enroll(token, CSR) over TLS,<br/>panel verified with CA pin
+  P->>P: validate token, create host,<br/>sign client certificate
+  P-->>A: certificate and CA chain
+  A->>P: SubscribeCommands over mTLS
+  A->>P: ReportInventory
+  P-->>UI: realtime: host online

@@ -1,0 +1,8 @@
+flowchart TB
+  V1[Visitor] -- HTTPS --> E[Edge – Caddy]
+  E -- "static files" --> S[("pocketcloud-sites volume<br/>shop/releases · shop/shared")]
+  E -- "FastCGI shop-php:9000" --> F[shop-php – PHP-FPM]
+  F -- "code read-only,<br/>shared/ writable" --> S
+  F -- "private network<br/>pcdb-shop" --> D[(db-main – MariaDB)]
+  F -. "SMTP relay" .-> M[(Mail server)]
+  A[Agent] -. "deploy, cron, status" .-> F
