@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Databáze – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="Stack.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Databases.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg><span>Databáze</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">14</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Audit.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg><span>Audit a aktivita</span></a>
+<a href="Diagnostics.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l3.5-4.5"/><path d="M4 20h16"/></svg><span>Diagnostika</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>6 ze 7 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 20px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Databáze</h1>
+<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 780px">Sdílené databázové servery na každém hostiteli. Aplikace dostane vlastní databázi a uživatele s právy jen na ni – ne celou instanci.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Nový databázový server</button>
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 9px; border: 0; background: #8FB0FF; color: #0C0E12; font: inherit; font-weight: 600; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nová databáze</button>
+</div>
+</header>
+
+<section aria-label="Souhrn databází" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px">
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12.5px; color: #A7AFBB">Databázové servery</div>
+<div style="font-size: 24px; font-weight: 600; letter-spacing: -0.02em">5</div>
+<div style="font-size: 12.5px; color: #98A1AE">3 sdílené · 2 vyhrazené</div>
+</div>
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12.5px; color: #A7AFBB">Databáze</div>
+<div style="font-size: 24px; font-weight: 600; letter-spacing: -0.02em">14</div>
+<div style="font-size: 12.5px; color: #98A1AE">12 na sdílených serverech</div>
+</div>
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12.5px; color: #A7AFBB">Data celkem</div>
+<div style="font-size: 24px; font-weight: 600; letter-spacing: -0.02em">13,5 GB</div>
+<div style="font-size: 12.5px; color: #98A1AE">největší: nextcloud 3,8 GB</div>
+</div>
+<div style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12.5px; color: #A7AFBB">Zálohy za 24 h</div>
+<div style="font-size: 24px; font-weight: 600; letter-spacing: -0.02em; color: #7BE3A2">14 / 14</div>
+<div style="font-size: 12.5px; color: #98A1AE">dump každé databáze zvlášť</div>
+</div>
+</section>
+
+<section aria-labelledby="srv-h" style="display: flex; flex-direction: column; gap: 12px">
+<h2 id="srv-h" style="margin: 0; font-size: 15px; font-weight: 600">Servery</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px">
+<sc-for list="{{servers}}" as="s" hint-placeholder-count="5">
+<button type="button" onClick="{{s.pick}}" aria-pressed="{{s.pressed}}" style="text-align: left; background: {{s.bg}}; border: 1px solid {{s.border}}; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; color: #E6E8EC; font: inherit; cursor: pointer">
+<span style="display: flex; align-items: center; gap: 8px; width: 100%"><span style="font-family: 'Geist Mono', ui-monospace, monospace; font-weight: 500">{{s.name}}</span><span style="margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: {{s.k.bg}}; color: {{s.k.fg}}">{{s.kind}}</span></span>
+<span style="font-size: 12.5px; color: #A7AFBB">{{s.engine}} · <span style="font-family: 'Geist Mono', ui-monospace, monospace">{{s.host}}</span></span>
+<span style="display: flex; gap: 14px; font-size: 12.5px; color: #98A1AE"><span>{{s.dbs}}</span><span>{{s.size}}</span><span>{{s.conns}}</span></span>
+<span style="display: block; width: 100%; height: 4px; background: #232935; border-radius: 2px"><span style="display: block; height: 4px; border-radius: 2px; width: {{s.connPct}}%; background: #8FB0FF"></span></span>
+<span style="font-size: 12px; color: {{s.hintC}}">{{s.hint}}</span>
+</button>
+</sc-for>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section aria-labelledby="dbs-h" style="flex: 999 1 560px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #1F242D">
+<h2 id="dbs-h" style="margin: 0; font-size: 15px; font-weight: 600">Databáze na <span style="font-family: 'Geist Mono', ui-monospace, monospace">{{cur.name}}</span></h2>
+<span style="font-size: 12px; color: #7E8794">{{cur.net}}</span>
+</div>
+<div style="overflow-x: auto">
+<div style="min-width: 660px">
+<div style="display: grid; grid-template-columns: minmax(130px, 1fr) minmax(170px, 1.3fr) 90px 70px 120px; gap: 12px; padding: 10px 18px; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794; border-bottom: 1px solid #1F242D">
+<span>Databáze</span><span>Aplikace</span><span>Velikost</span><span>Spoj.</span><span>Záloha</span>
+</div>
+<sc-for list="{{dbs}}" as="d" hint-placeholder-count="6">
+<div style="display: grid; grid-template-columns: minmax(130px, 1fr) minmax(170px, 1.3fr) 90px 70px 120px; gap: 12px; align-items: center; padding: 10px 18px; border-bottom: 1px solid #1A1E26; background: {{d.rowBg}}">
+<button type="button" onClick="{{d.pick}}" aria-pressed="{{d.pressed}}" style="justify-self: start; padding: 4px 0; border: 0; background: transparent; color: {{d.nameC}}; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px; text-align: left; cursor: pointer">{{d.name}}</button>
+<span style="font-size: 12.5px; color: #A7AFBB">{{d.app}}</span>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #C5CAD3">{{d.size}}</span>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; color: #C5CAD3">{{d.conns}}</span>
+<span style="font-size: 12.5px; color: {{d.backupC}}">{{d.backup}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</section>
+
+<aside aria-labelledby="conn-h" style="flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section style="background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+<h2 id="conn-h" style="margin: 0; font-size: 15px; font-weight: 600">Připojení · <span style="font-family: 'Geist Mono', ui-monospace, monospace">{{sel.name}}</span></h2>
+<dl style="margin: 0; display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr); gap: 8px 14px; font-size: 13px">
+<dt style="color: #7E8794">Host</dt><dd style="margin: 0; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px">{{sel.host}}</dd>
+<dt style="color: #7E8794">Uživatel</dt><dd style="margin: 0; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px">{{sel.user}}</dd>
+<dt style="color: #7E8794">Heslo</dt><dd style="margin: 0; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px">•••••••• · tajemství aplikace</dd>
+<dt style="color: #7E8794">Práva</dt><dd style="margin: 0">{{sel.grants}}</dd>
+</dl>
+<pre style="margin: 0; padding: 12px 14px; border-radius: 8px; background: #0F1216; border: 1px solid #1F242D; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 20px; color: #C5CAD3; white-space: pre; overflow-x: auto">{{sel.env}}</pre>
+<div style="font-size: 12.5px; color: #98A1AE">Rotace hesla aktualizuje tajemství aplikace a aplikaci restartuje.</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Rotovat heslo</button>
+<button type="button" style="height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Adminer na 30 min</button>
+<button type="button" style="height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Export SQL</button>
+<button type="button" style="height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">Klonovat</button>
+</div>
+</section>
+<section aria-labelledby="move-h" style="background: #13161C; border: 1px solid {{cur.moveBorder}}; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px">
+<h2 id="move-h" style="margin: 0; font-size: 15px; font-weight: 600">{{cur.moveTitle}}</h2>
+<p style="margin: 0; font-size: 13px; color: #C5CAD3">{{cur.moveText}}</p>
+<sc-if value="{{cur.canMove}}" hint-placeholder-val="{{ false }}">
+<button type="button" style="align-self: flex-start; height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid #3A4660; background: #1A2233; color: #E6E8EC; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer">{{cur.moveAction}}</button>
+</sc-if>
+</section>
+</aside>
+</div>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1280}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { srv: 'db-main', db: 'shop' };
+  }
+  renderVals() {
+    const K = {
+      shared: { fg: '#A9C1FF', bg: '#1A2233' },
+      dedicated: { fg: '#A7AFBB', bg: '#1C2027' }
+    };
+    const raw = [
+      { name: 'db-main', engine: 'MariaDB 11', host: 'vps-wedos', kind: 'shared', size: '2,2 GB', conns: 23, max: 200, port: 3306,
+        hint: 'Zálohy denně 01:30 · každá databáze zvlášť', hintTone: 'muted',
+        dbs: [
+          { name: 'shop', app: 'web shop.example.org', size: '412 MB', conns: 8, backup: 'OK · 01:30' },
+          { name: 'matomo', app: 'stack matomo', size: '1,1 GB', conns: 5, backup: 'OK · 01:30' },
+          { name: 'ghost', app: 'stack ghost', size: '96 MB', conns: 3, backup: 'OK · 01:30' },
+          { name: 'bookstack', app: 'stack bookstack', size: '188 MB', conns: 4, backup: 'OK · 01:30' },
+          { name: 'kanboard', app: 'stack kanboard', size: '41 MB', conns: 3, backup: 'OK · 01:30' },
+          { name: 'test_restore', app: 'test obnovy · smaže se za 2 h', size: '412 MB', conns: 0, backup: '—' }
+        ] },
+      { name: 'pg-main', engine: 'PostgreSQL 17', host: 'nas', kind: 'shared', size: '7,0 GB', conns: 41, max: 100, port: 5432,
+        hint: 'Zálohy denně 02:00 · každá databáze zvlášť', hintTone: 'muted',
+        dbs: [
+          { name: 'nextcloud', app: 'stack nextcloud', size: '3,8 GB', conns: 18, backup: 'OK · 02:00' },
+          { name: 'paperless', app: 'stack paperless', size: '1,9 GB', conns: 9, backup: 'OK · 02:00' },
+          { name: 'linkwarden', app: 'stack linkwarden', size: '620 MB', conns: 6, backup: 'OK · 02:00' },
+          { name: 'authentik', app: 'stack authentik', size: '680 MB', conns: 8, backup: 'OK · 02:00' }
+        ] },
+      { name: 'pg-hetzner', engine: 'PostgreSQL 17', host: 'vps-hetzner', kind: 'shared', size: '550 MB', conns: 12, max: 100, port: 5432,
+        hint: 'Zálohy denně 01:00 · každá databáze zvlášť', hintTone: 'muted',
+        dbs: [
+          { name: 'n8n', app: 'stack automation', size: '340 MB', conns: 7, backup: 'OK · 01:00' },
+          { name: 'outline', app: 'stack outline', size: '210 MB', conns: 5, backup: 'OK · 01:00' }
+        ] },
+      { name: 'umami-db', engine: 'PostgreSQL 16', host: 'vps-hetzner', kind: 'dedicated', size: '1,1 GB', conns: 6, max: 100, port: 5432,
+        hint: 'Lze přesunout na pg-hetzner', hintTone: 'warn', move: 'pg-hetzner',
+        dbs: [{ name: 'umami', app: 'stack analytics', size: '1,1 GB', conns: 6, backup: 'OK · 01:30' }] },
+      { name: 'immich-db', engine: 'PostgreSQL 16 + VectorChord', host: 'nas', kind: 'dedicated', size: '2,6 GB', conns: 14, max: 100, port: 5432,
+        hint: 'Vlastní rozšíření – zůstává samostatně', hintTone: 'muted', keep: true,
+        dbs: [{ name: 'immich', app: 'stack immich', size: '2,6 GB', conns: 14, backup: 'OK · 02:14' }] }
+    ];
+    const cur = raw.find((s) => s.name === this.state.srv) || raw[0];
+    const selDb = cur.dbs.find((d) => d.name === this.state.db) || cur.dbs[0];
+    const isMy = cur.engine.indexOf('MariaDB') === 0;
+    const env = isMy
+      ? ['DB_HOST=' + cur.name, 'DB_PORT=' + cur.port, 'DB_NAME=' + selDb.name, 'DB_USER=' + selDb.name, 'DB_PASSWORD=${secret:db/' + selDb.name + '}'].join('\n')
+      : ['DATABASE_URL=postgres://' + selDb.name + ':${secret:db/' + selDb.name + '}', '  @' + cur.name + ':' + cur.port + '/' + selDb.name].join('\n');
+    let moveTitle, moveText, moveAction = '', canMove = false, moveBorder = '#1F242D';
+    if (cur.move) {
+      moveTitle = 'Sloučit do sdíleného serveru';
+      moveText = 'Databázi umami jde přesunout na ' + cur.move + ' na stejném hostiteli: dump a obnova, přepnutí připojení aplikace, krátký výpadek stacku analytics. Ušetří to jednu instanci PostgreSQL.';
+      moveAction = 'Přesunout na ' + cur.move + '…';
+      canMove = true;
+      moveBorder = '#44361A';
+    } else if (cur.keep) {
+      moveTitle = 'Vyhrazená instance';
+      moveText = 'Immich potřebuje rozšíření VectorChord, které sdílený server nemá, proto běží samostatně ve svém stacku.';
+    } else {
+      moveTitle = 'Sdílený server';
+      moveText = 'Slouží aplikacím na hostiteli ' + cur.host + ' – každá se připojuje přes vlastní interní síť, bez otevřených portů a bez přístupu k ostatním aplikacím. Nová databáze se tu vytvoří i s vlastním uživatelem.';
+    }
+    return {
+      servers: raw.map((s) => ({
+        name: s.name, engine: s.engine, host: s.host,
+        kind: s.kind === 'shared' ? 'sdílený' : 'vyhrazený',
+        k: K[s.kind],
+        dbs: s.dbs.length + (s.dbs.length === 1 ? ' databáze' : s.dbs.length < 5 ? ' databáze' : ' databází'),
+        size: s.size,
+        conns: s.conns + ' / ' + s.max + ' spoj.',
+        connPct: Math.round(s.conns / s.max * 100),
+        hint: s.hint,
+        hintC: s.hintTone === 'warn' ? '#F5C76A' : '#7E8794',
+        bg: s.name === cur.name ? '#171C26' : '#13161C',
+        border: s.name === cur.name ? '#8FB0FF' : '#1F242D',
+        pressed: s.name === cur.name ? 'true' : 'false',
+        pick: () => this.setState({ srv: s.name, db: s.dbs[0].name })
+      })),
+      cur: {
+        name: cur.name,
+        net: cur.kind === 'shared' ? cur.engine + ' · ' + cur.host + ' · privátní síť pro každou aplikaci' : cur.engine + ' · ' + cur.host + ' · síť stacku',
+        moveTitle, moveText, moveAction, canMove, moveBorder
+      },
+      dbs: cur.dbs.map((d) => ({
+        name: d.name, app: d.app, size: d.size, conns: String(d.conns), backup: d.backup,
+        backupC: d.backup === '—' ? '#7E8794' : '#7BE3A2',
+        rowBg: d.name === selDb.name ? '#171C26' : 'transparent',
+        nameC: d.name === selDb.name ? '#A9C1FF' : '#E6E8EC',
+        pressed: d.name === selDb.name ? 'true' : 'false',
+        pick: () => this.setState({ db: d.name })
+      })),
+      sel: {
+        name: selDb.name,
+        host: cur.name + ':' + cur.port,
+        user: selDb.name,
+        grants: 'jen databáze ' + selDb.name + ' · bez práv k ostatním',
+        env
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

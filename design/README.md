@@ -1,12 +1,12 @@
 # Design
 
-UI design for PocketCloud: nine screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
+UI design for PocketCloud: twelve screens in a dark console style. The UI copy is Czech; English strings come with the localisation issue (milestone M5).
 
 | Folder | What it is |
 |---|---|
 | [`screenshots/`](screenshots/) | Full-page PNGs at 1440 px – the quickest way to look at the design on GitHub |
 | [`preview/`](preview/) | Static HTML pages; open `preview/index.html` locally – screens link to each other like the prototype |
-| [`source/`](source/) | Source artboards (`*.dc.html`) and the canvas layout (`canvas.json`) from Claude Design, including the interactive parts (log filters, wizard progress, install command tabs) |
+| [`source/`](source/) | Source artboards (`*.dc.html`) and the canvas layout (`canvas.json`) from Claude Design, including the interactive parts (log filters, wizard type and progress, install command tabs, audit entries, database servers) |
 | [`tools/`](tools/) | Scripts that regenerate `preview/` and `screenshots/` from `source/` |
 
 The editable canvas lives in Claude Design: <https://claude.ai/artifact/Ei8hKsA6eYJGcDUG8kfTRA> (private to the owner). After changing it, copy the artboards into `source/` and regenerate the previews.
@@ -34,7 +34,7 @@ Deployments with instant rollback, domains with DNS and certificate state, build
 <img src="screenshots/04-static-site.png" width="720" alt="Static site">
 
 ### 5. New site wizard – [preview](preview/SiteNew.html) · [source](source/SiteNew.dc.html)
-Source, domain + server and certificate in one form. Typing a domain detects its zone at a connected DNS provider (automatic) or switches to manual mode with the records to set. The timeline shows provisioning step by step.
+Type (static site or PHP application), source, domain + server and certificate in one form. PHP adds the PHP version, a framework template and the database (shared server on the same host, dedicated instance or none). Typing a domain detects its zone at a connected DNS provider (automatic) or switches to manual mode with the records to set. The timeline shows provisioning step by step.
 
 <img src="screenshots/05-new-site-wizard.png" width="720" alt="New site wizard">
 
@@ -57,6 +57,21 @@ One-time enrollment token, Docker install (`docker run`, Compose snippet or a wr
 Served by the diagnostics plugin: gRPC connection health per agent (stream state, RTT, clock skew, reconnects, last error), a 24-hour connection strip with events, agent runtime state and self-checks, a live message trace with filters and optional payload capture, panel internals (cron jobs, queues) and recent errors.
 
 <img src="screenshots/09-diagnostics.png" width="720" alt="Diagnostics">
+
+### 10. Change audit – [preview](preview/Audit.html) · [source](source/Audit.dc.html)
+Audit a aktivita: tabs for configuration changes, commands and security events; filters by time, author, type, server and action; entries from the UI, API tokens, the system and superusers in the PocketBase dashboard; detail with source, linked command, entry hash and a field or compose diff; revert, object history, integrity check of the hash chain and JSONL export.
+
+<img src="screenshots/10-audit.png" width="720" alt="Change audit">
+
+### 11. PHP site – [preview](preview/SitePhp.html) · [source](source/SitePhp.dc.html)
+A WordPress site on PHP 8.3: FPM workers, latency and error rate, PHP runtime (image, FastCGI target, pool, limits, extensions, `php.ini` overrides, version switch), deployments with rollback, database on a shared server, persistent data outside releases, cron and outgoing mail, live PHP error log. The certificate banner links to Domains & TLS.
+
+<img src="screenshots/11-php-site.png" width="720" alt="PHP site">
+
+### 12. Databases – [preview](preview/Databases.html) · [source](source/Databases.dc.html)
+Shared and dedicated database servers per host (MariaDB, PostgreSQL) with size, connections and backup schedule; databases of the selected server with their apps; connection panel with the environment snippet and actions (rotate password, Adminer for 30 minutes, SQL export, clone); hints for consolidating a dedicated instance into a shared server.
+
+<img src="screenshots/12-databases.png" width="720" alt="Databases">
 
 ## Design tokens
 

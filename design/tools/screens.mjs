@@ -55,5 +55,23 @@ export const screens = [
     slug: '09-diagnostics',
     title: 'Diagnostics',
     description: 'gRPC connection health per agent, agent state and self-checks, live message trace, panel internals.'
+  },
+  {
+    source: 'Audit',
+    slug: '10-audit',
+    title: 'Change audit',
+    description: 'Append-only log of every configuration change with author, source and field or YAML diff; revert, export, integrity check.'
+  },
+  {
+    source: 'SitePhp',
+    slug: '11-php-site',
+    title: 'PHP site',
+    description: 'PHP-FPM runtime per site (version, extensions, php.ini), deployments, database on a shared server, persistent data, cron, mail, PHP error log.'
+  },
+  {
+    source: 'Databases',
+    slug: '12-databases',
+    title: 'Databases',
+    description: 'Shared database servers per host with a database and user per app, connection details, consolidation of dedicated instances.'
   }
 ];

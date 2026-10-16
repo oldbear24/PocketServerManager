@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Audit změn – PocketCloud</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0;background:#0C0E12}
+a{color:#8FB0FF}a:hover{color:#B7CCFF}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #0C0E12; color: #E6E8EC; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.45; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Hlavní navigace" style="flex: 1 1 232px; max-width: 100%; box-sizing: border-box; background: #101318; border-right: 1px solid #1F242D; padding: 20px 14px; display: flex; flex-direction: column; gap: 22px">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 10px; padding: 2px 8px; text-decoration: none; color: #E6E8EC">
+<span style="width: 30px; height: 30px; border-radius: 8px; background: #8FB0FF; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0C0E12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+<span style="font-weight: 600; font-size: 16px; letter-spacing: -0.01em">PocketCloud</span>
+</a>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Main.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Přehled</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Infrastruktura</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Server.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span>Servery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">7</span></a>
+<a href="Stack.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg><span>Stacky a kontejnery</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">42</span></a>
+<a href="Databases.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg><span>Databáze</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">14</span></a>
+<a href="Backups.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/></svg><span>Zálohy</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2706B" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Web</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Sites.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z"/></svg><span>Weby</span><span style="margin-left: auto; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">5</span></a>
+<a href="Domains.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Domény a SSL</span><span style="margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: #F2B544" aria-hidden="true"></span></a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="padding: 0 10px 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7E8794">Systém</div>
+<div style="display: flex; flex-wrap: wrap; gap: 2px">
+<a href="Enroll.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V4h6v3"/><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 13h6M12 10v6"/></svg><span>Agenti</span></a>
+<a href="Audit.dc.html" aria-current="page" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #1A2030; color: #E6E8EC; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8FB0FF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg><span>Audit a aktivita</span></a>
+<a href="Diagnostics.dc.html" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l3.5-4.5"/><path d="M4 20h16"/></svg><span>Diagnostika</span></a>
+<a href="#nastaveni" style="flex: 1 1 180px; box-sizing: border-box; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #A7AFBB; text-decoration: none"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Nastavení</span></a>
+</div>
+</div>
+<div style="margin-top: auto; padding: 12px; border: 1px solid #1F242D; border-radius: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #98A1AE">
+<div style="display: flex; align-items: center; gap: 8px; color: #E6E8EC; font-size: 13px; font-weight: 500"><span style="width: 8px; height: 8px; border-radius: 50%; background: #5BD68A" aria-hidden="true"></span>gRPC brána běží</div>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace">panel.example.cz:9443 · mTLS</div>
+<div>6 ze 7 agentů připojeno</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 18px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12.5px; color: #7E8794">Systém / Audit a aktivita</div>
+<h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em">Audit změn</h1>
+<p style="margin: 0; font-size: 13.5px; color: #98A1AE; max-width: 780px">Každá změna konfigurace – z UI, API, plánovače, agentů i administrace PocketBase – s autorem a rozdílem hodnot. Záznamy se dají jen přidávat a jsou řetězené hashem.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<span style="display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: 999px; background: #12251A; color: #7BE3A2; font-size: 12.5px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>Řetězec neporušen · ověřeno 13:45</span>
+<button type="button" style="height: 44px; padding: 0 14px; border-radius: 9px; border: 1px solid #2A303B; background: #161A21; color: #E6E8EC; font: inherit; font-weight: 500; cursor: pointer">Ověřit integritu</button>
+<button type="button" style="height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 9px; border: 0; background: #8FB0FF; color: #0C0E12; font: inherit; font-weight: 600; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Export JSONL</button>
+</div>
+</header>
+
+<nav aria-label="Typ záznamů" style="display: flex; gap: 4px; border-bottom: 1px solid #1F242D; overflow-x: auto">
+<a href="#zmeny" aria-current="page" style="flex: none; padding: 12px 14px; color: #E6E8EC; text-decoration: none; font-weight: 500; border-bottom: 2px solid #8FB0FF">Změny <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">1 284</span></a>
+<a href="#prikazy" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Příkazy <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">3 912</span></a>
+<a href="#bezpecnost" style="flex: none; padding: 12px 14px; color: #98A1AE; text-decoration: none">Bezpečnost <span style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">146</span></a>
+</nav>
+
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<label style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border: 1px solid #252B35; border-radius: 9px; background: #12151B; color: #7E8794">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Hledat v auditu</span>
+<input type="search" placeholder="Objekt, autor, IP…" style="flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #E6E8EC; font: inherit">
+</label>
+<div role="group" aria-label="Období" style="display: flex; padding: 3px; border: 1px solid #252B35; border-radius: 8px; gap: 2px">
+<button type="button" aria-pressed="true" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: #1F2532; color: #E6E8EC; font: inherit; font-size: 12.5px; cursor: pointer">24 h</button>
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #98A1AE; font: inherit; font-size: 12.5px; cursor: pointer">7 dní</button>
+<button type="button" style="height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #98A1AE; font: inherit; font-size: 12.5px; cursor: pointer">30 dní</button>
+</div>
+<sc-for list="{{chips}}" as="c" hint-placeholder-count="4">
+<button type="button" style="height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; background: transparent; color: #C5CAD3; font: inherit; font-size: 13px; cursor: pointer"><span style="color: #7E8794">{{c.k}}:</span>{{c.v}}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+
+<section aria-label="Záznamy změn" style="flex: 999 1 520px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; overflow: hidden">
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="2">
+<div style="padding: 10px 18px; background: #101318; border-bottom: 1px solid #1F242D; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">{{g.label}}</div>
+<sc-for list="{{g.items}}" as="e" hint-placeholder-count="5">
+<button type="button" onClick="{{e.pick}}" aria-pressed="{{e.pressed}}" style="width: 100%; display: flex; align-items: flex-start; gap: 12px; padding: 12px 18px; border: 0; border-bottom: 1px solid #1A1E26; background: {{e.rowBg}}; color: inherit; font: inherit; text-align: left; cursor: pointer">
+<span style="flex: none; width: 64px; padding-top: 2px; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #7E8794">{{e.time}}</span>
+<span style="flex: none; width: 30px; height: 30px; border-radius: 50%; background: {{e.av.bg}}; color: {{e.av.fg}}; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600">{{e.initials}}</span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 13.5px; color: #C5CAD3"><span style="color: #E6E8EC; font-weight: 500">{{e.actor}}</span> {{e.verb}} <span style="color: {{e.resC}}; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 13px">{{e.resource}}</span></span>
+<span style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: #98A1AE">
+<span>{{e.summary}}</span>
+<span style="padding: 1px 7px; border-radius: 999px; background: #1C2027; color: #A7AFBB">{{e.source}}</span>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #7E8794">{{e.host}}</span>
+</span>
+</span>
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: {{e.a.bg}}; color: {{e.a.fg}}">{{e.actionLabel}}</span>
+</button>
+</sc-for>
+</sc-for>
+<div style="padding: 12px 18px; font-size: 12.5px; color: #7E8794">Zobrazeno 9 z 1 284 záznamů · starší se načítají při posunu</div>
+</section>
+
+<aside aria-labelledby="det-h" style="flex: 1 1 440px; min-width: 0; background: #13161C; border: 1px solid #1F242D; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; align-items: flex-start; gap: 10px">
+<h2 id="det-h" style="margin: 0; font-size: 16px; font-weight: 600; flex: 1">{{d.title}}</h2>
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: {{d.a.bg}}; color: {{d.a.fg}}">{{d.actionLabel}}</span>
+</div>
+<dl style="margin: 0; display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); gap: 8px 14px; font-size: 13px">
+<sc-for list="{{d.meta}}" as="m" hint-placeholder-count="6">
+<dt style="color: #7E8794">{{m.k}}</dt><dd style="margin: 0; color: #C5CAD3; overflow-wrap: anywhere">{{m.v}}</dd>
+</sc-for>
+</dl>
+<sc-if value="{{d.isDiff}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">Rozdíl · {{d.diffFile}}</div>
+<div style="border: 1px solid #1F242D; border-radius: 8px; overflow-x: auto; background: #0F1216; padding: 8px 0">
+<sc-for list="{{d.diff}}" as="l" hint-placeholder-count="7">
+<div style="display: flex; min-width: max-content; background: {{l.bg}}; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12.5px; line-height: 20px">
+<span style="flex: none; width: 22px; text-align: center; color: {{l.markC}}">{{l.mark}}</span>
+<span style="white-space: pre; color: {{l.fg}}; padding-right: 16px">{{l.text}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{d.isFields}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794">Změněná pole</div>
+<div style="border: 1px solid #1F242D; border-radius: 8px; overflow: hidden">
+<div style="display: grid; grid-template-columns: minmax(110px, 1fr) minmax(90px, 1fr) minmax(90px, 1fr); gap: 10px; padding: 8px 12px; background: #101318; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #7E8794"><span>Pole</span><span>Před</span><span>Po</span></div>
+<sc-for list="{{d.fields}}" as="f" hint-placeholder-count="3">
+<div style="display: grid; grid-template-columns: minmax(110px, 1fr) minmax(90px, 1fr) minmax(90px, 1fr); gap: 10px; padding: 9px 12px; border-top: 1px solid #1A1E26; font-size: 12.5px">
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; color: #C5CAD3; overflow-wrap: anywhere">{{f.name}}</span>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; color: {{f.beforeC}}; overflow-wrap: anywhere">{{f.before}}</span>
+<span style="font-family: 'Geist Mono', ui-monospace, monospace; color: {{f.afterC}}; overflow-wrap: anywhere">{{f.after}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{d.hasNote}}" hint-placeholder-val="{{ true }}">
+<div style="padding: 10px 12px; border-radius: 8px; background: #101318; font-size: 13px; color: #C5CAD3"><span style="color: #7E8794">Poznámka ke změně: </span>{{d.note}}</div>
+</sc-if>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 12px; border-top: 1px solid #1F242D">
+<sc-if value="{{d.revertable}}" hint-placeholder-val="{{ true }}">
+<button type="button" style="height: 40px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 8px; border: 1px solid #3A4660; background: #1A2233; color: #E6E8EC; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>{{d.revertLabel}}</button>
+</sc-if>
+<a href="#historie" style="height: 40px; box-sizing: border-box; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 8px; border: 1px solid #2A303B; color: #E6E8EC; text-decoration: none; font-size: 13px">Historie objektu</a>
+<sc-if value="{{d.hasRevertNote}}" hint-placeholder-val="{{ false }}">
+<span style="flex: 1 1 100%; font-size: 12.5px; color: #98A1AE">{{d.revertNote}}</span>
+</sc-if>
+</div>
+<div style="font-size: 12px; color: #7E8794">Vrácení vytvoří novou změnu, která se také zapíše do auditu.</div>
+</aside>
+</div>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: 'e1' };
+  }
+  renderVals() {
+    const A = {
+      create: { label: 'Vytvořeno', fg: '#7BE3A2', bg: '#12251A' },
+      update: { label: 'Změněno', fg: '#A9C1FF', bg: '#1A2233' },
+      delete: { label: 'Smazáno', fg: '#F79A95', bg: '#2B1517' },
+      action: { label: 'Akce', fg: '#A7AFBB', bg: '#1C2027' }
+    };
+    const AV = {
+      user: { fg: '#A9C1FF', bg: '#1A2233' },
+      system: { fg: '#A7AFBB', bg: '#1C2027' },
+      token: { fg: '#F5C76A', bg: '#2A2112' },
+      superuser: { fg: '#F79A95', bg: '#2B1517' }
+    };
+    const sel = this.state.sel;
+    const add = (t) => ({ text: t, mark: '+', markC: '#5BD68A', bg: '#12251A', fg: '#C5CAD3' });
+    const ctx = (t) => ({ text: t, mark: '', markC: '#5D6573', bg: 'transparent', fg: '#7E8794' });
+    const fld = (name, before, after, secret) => ({
+      name, before, after,
+      beforeC: before === '—' ? '#5D6573' : '#F79A95',
+      afterC: after === '—' ? '#5D6573' : secret ? '#F5C76A' : '#7BE3A2'
+    });
+    const raw = [
+      { id: 'e1', day: 0, time: '13:42:10', actor: 'admin', at: 'user', initials: 'A', verb: 'uložil a nasadil stack', resource: 'analytics', host: 'vps-hetzner', summary: 'compose.yaml +3 −0 · revize r8', source: 'UI', action: 'update',
+        title: 'Změna stacku analytics', when: '16. 10. 2026 13:42:10', who: 'admin · role admin', src: 'UI · 198.51.100.23 · Firefox 131 na Linuxu', link: 'příkaz cmd_8f2a stack.deploy (úspěch)', rec: '#18 422 · sha256 4be1…9c0a',
+        kind: 'diff', diffFile: 'compose.yaml (r7 → r8)', diff: [ctx('    volumes:'), ctx('      - umami-db:/var/lib/postgresql/data'), add('    labels:'), add('      pocketcloud.backup: pg_dump'), add('      pocketcloud.backup.schedule: "30 1 * * *"'), ctx('    healthcheck:')],
+        note: 'Záloha db přes pg_dump', revert: 'Vrátit na revizi r7' },
+      { id: 'e2', day: 0, time: '13:38:55', actor: 'admin', at: 'user', initials: 'A', verb: 'přidal doménu', resource: 'docs.example.cz', host: 'vps-hetzner', summary: 'web docs · přesměrování www', source: 'UI', action: 'create',
+        title: 'Nová doména docs.example.cz', when: '16. 10. 2026 13:38:55', who: 'admin · role admin', src: 'UI · 198.51.100.23 · průvodce novým webem', link: 'nadřazený příkaz cmd_91b0 site.create', rec: '#18 418 · sha256 77d2…1e04',
+        kind: 'fields', fields: [fld('hostname', '—', 'docs.example.cz'), fld('target', '—', 'web docs'), fld('redirect', '—', 'www → 301'), fld('certificate', '—', "Let's Encrypt · auto")],
+        note: '', revert: 'Odebrat doménu' },
+      { id: 'e3', day: 0, time: '13:31:03', actor: 'PocketCloud', at: 'system', initials: 'PC', verb: 'vytvořil DNS záznamy v zóně', resource: 'example.cz', host: 'Cloudflare', summary: 'A, AAAA, CNAME pro docs', source: 'Systém', action: 'create',
+        title: 'DNS záznamy pro docs.example.cz', when: '16. 10. 2026 13:31:03', who: 'PocketCloud (DNS manager)', src: 'Systém · Cloudflare API', link: 'nadřazený příkaz cmd_91b0 site.create', rec: '#18 409 · sha256 c90a…5b71',
+        kind: 'fields', fields: [fld('A docs', '—', '203.0.113.24'), fld('AAAA docs', '—', '2001:db8::24'), fld('CNAME www.docs', '—', 'docs.example.cz')],
+        note: '', revert: '', revertNote: 'Záznamy patří k doméně docs.example.cz – odstraní se spolu s ní.' },
+      { id: 'e4', day: 0, time: '13:20:44', actor: 'admin', at: 'user', initials: 'A', verb: 'změnil přístup k DNS poskytovateli', resource: 'WEDOS (WAPI)', host: '', summary: 'heslo WAPI · poznámka', source: 'UI', action: 'update',
+        title: 'Změna DNS poskytovatele WEDOS', when: '16. 10. 2026 13:20:44', who: 'admin · role admin', src: 'UI · 198.51.100.23 · Firefox 131 na Linuxu', link: '—', rec: '#18 401 · sha256 1f6e…a3d8',
+        kind: 'fields', fields: [fld('wapi_password', '••••••', 'změněno', true), fld('note', '—', 'IP 203.0.113.24 povolena')],
+        note: 'Po povolení IP ve WAPI', revert: '', revertNote: 'Tajné hodnoty se do auditu neukládají, proto je nelze vrátit – jen znovu zadat.' },
+      { id: 'e5', day: 0, time: '12:58:02', actor: 'ci-deploy', at: 'token', initials: 'CI', verb: 'nasadil web', resource: 'blog.example.cz', host: 'vps-hetzner', summary: 'nasazení #48 · a3f9c21', source: 'API', action: 'update',
+        title: 'Nasazení webu blog.example.cz', when: '16. 10. 2026 12:58:02', who: 'API token ci-deploy (jen nasazení webů)', src: 'API · webhook z gitea.example.cz', link: 'příkaz cmd_8d11 site.deploy (úspěch)', rec: '#18 377 · sha256 9a40…0c2f',
+        kind: 'fields', fields: [fld('active_deployment', '#47', '#48'), fld('commit', '7c02e4b', 'a3f9c21')],
+        note: '', revert: 'Vrátit na nasazení #47' },
+      { id: 'e6', day: 0, time: '11:47:15', actor: 'jana', at: 'user', initials: 'J', verb: 'restartovala kontejner', resource: 'n8n', host: 'vps-hetzner', summary: 'příkaz container.restart', source: 'UI', action: 'action',
+        title: 'Restart kontejneru n8n', when: '16. 10. 2026 11:47:15', who: 'jana · role operátor', src: 'UI · 192.0.2.41 · Safari na iOS', link: 'příkaz cmd_7e02 container.restart (úspěch za 4 s)', rec: '#18 340 · sha256 e2b7…7710',
+        kind: 'fields', fields: [fld('state', 'restarting', 'running')],
+        note: '', revert: '', revertNote: 'Akce se nevracejí – vrátit jde jen změnu konfigurace.' },
+      { id: 'e7', day: 1, time: '22:14:03', actor: 'superuser', at: 'superuser', initials: 'SU', verb: 'upravil nastavení', resource: 'audit.retention_days', host: '', summary: '365 → 180 dní', source: 'Admin PocketBase', action: 'update',
+        title: 'Změna nastavení přes administraci PocketBase', when: '15. 10. 2026 22:14:03', who: 'superuser admin@example.cz', src: 'Administrace PocketBase (/_/) · 198.51.100.23', link: '—', rec: '#18 102 · sha256 5d33…ee19',
+        kind: 'fields', fields: [fld('audit.retention_days', '365', '180')],
+        note: '', revert: 'Vrátit hodnotu 365' },
+      { id: 'e8', day: 1, time: '21:14:09', actor: 'jana', at: 'user', initials: 'J', verb: 'smazala zálohovací úlohu', resource: 'old-wiki', host: 'pve-01', summary: 'úloha i její plán', source: 'UI', action: 'delete',
+        title: 'Smazaná zálohovací úloha old-wiki', when: '15. 10. 2026 21:14:09', who: 'jana · role operátor', src: 'UI · 192.0.2.41 · Safari na iOS', link: '—', rec: '#18 097 · sha256 0b8c…4a61',
+        kind: 'fields', fields: [fld('source', 'svazek wiki-data', '—'), fld('schedule', 'denně 01:00', '—'), fld('targets', 'backup-node', '—')],
+        note: 'Wiki je zrušená', revert: 'Obnovit úlohu' },
+      { id: 'e9', day: 1, time: '18:30:00', actor: 'admin', at: 'user', initials: 'A', verb: 'změnil retenci úlohy', resource: 'photos', host: 'nas', summary: '7d 4w 6m → 7d 4w 12m', source: 'UI', action: 'update',
+        title: 'Změna retence zálohy photos', when: '15. 10. 2026 18:30:00', who: 'admin · role admin', src: 'UI · 198.51.100.23 · Firefox 131 na Linuxu', link: '—', rec: '#18 060 · sha256 a7f1…31c9',
+        kind: 'fields', fields: [fld('retention.monthly', '6', '12')],
+        note: '', revert: 'Vrátit 6 měsíců' }
+    ];
+    const item = (e) => ({
+      time: e.time, actor: e.actor, verb: e.verb, resource: e.resource, summary: e.summary, source: e.source,
+      host: e.host, initials: e.initials, av: AV[e.at], a: A[e.action], actionLabel: A[e.action].label,
+      resC: e.action === 'delete' ? '#F79A95' : '#A9C1FF',
+      rowBg: e.id === sel ? '#171C26' : 'transparent',
+      pressed: e.id === sel ? 'true' : 'false',
+      pick: () => this.setState({ sel: e.id })
+    });
+    const c = raw.find((e) => e.id === sel) || raw[0];
+    const meta = [
+      { k: 'Kdy', v: c.when },
+      { k: 'Autor', v: c.who },
+      { k: 'Zdroj', v: c.src },
+      { k: 'Server', v: c.host || '—' },
+      { k: 'Souvislost', v: c.link },
+      { k: 'Záznam', v: c.rec }
+    ];
+    return {
+      chips: [
+        { k: 'Autor', v: 'všichni' },
+        { k: 'Typ', v: 'vše' },
+        { k: 'Server', v: 'všechny' },
+        { k: 'Akce', v: 'vše' }
+      ],
+      groups: [
+        { label: 'Dnes · 16. 10.', items: raw.filter((e) => e.day === 0).map(item) },
+        { label: 'Včera · 15. 10.', items: raw.filter((e) => e.day === 1).map(item) }
+      ],
+      d: {
+        title: c.title,
+        a: A[c.action],
+        actionLabel: A[c.action].label,
+        meta,
+        isDiff: c.kind === 'diff',
+        isFields: c.kind === 'fields',
+        diffFile: c.diffFile || '',
+        diff: c.diff || [],
+        fields: c.fields || [],
+        hasNote: !!c.note,
+        note: c.note,
+        revertable: !!c.revert,
+        revertLabel: c.revert,
+        hasRevertNote: !!c.revertNote,
+        revertNote: c.revertNote || ''
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>
