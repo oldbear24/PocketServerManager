@@ -20,6 +20,7 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 - **Overview and alerts** – what needs attention, the command queue, notifications via e-mail, ntfy, Gotify or webhooks.
 - **Diagnostics** – a PocketBase plugin with live gRPC connection health per agent, a message trace, agent self-checks, debug bundles and an optional Prometheus endpoint.
 - **Change audit** – every configuration change from the UI, the API or the PocketBase dashboard with author, source and field-level diff; append-only, hash-chained, exportable, with one-click revert.
+- **Import from Coolify** – read a Coolify installation into a reviewed plan and move it in place (reusing the volumes) or onto a new server, with rollback.
 
 ## Architecture
 
@@ -29,6 +30,7 @@ Every action becomes a record in the `commands` collection – the command histo
 
 - [docs/architecture.md](docs/architecture.md) – components, enrollment, gRPC API, command lifecycle, sites/DNS/TLS flow, PHP sites, database servers, backups, diagnostics, change audit, security model
 - [docs/data-model.md](docs/data-model.md) – proposed PocketBase collections
+- [docs/migration-from-coolify.md](docs/migration-from-coolify.md) – how a Coolify installation moves to PocketCloud, by hand or with the importer
 
 ## Design
 
@@ -44,6 +46,7 @@ Twelve screens: overview, server detail, Compose stack, static site, new-site wi
 | [M3 · Sites, domains & TLS](https://github.com/oldbear24/PocketServerManager/milestone/4) | edge proxy, static and PHP sites, DNS providers, ACME, new-site wizard, scheduled tasks, container and LAN domains |
 | [M4 · Backups](https://github.com/oldbear24/PocketServerManager/milestone/5) | targets and jobs, retention, restore, integrity checks, per-database backups, panel backup |
 | [M5 · Overview, alerts & hardening](https://github.com/oldbear24/PocketServerManager/milestone/6) | dashboard, alerts, search, roles and API tokens, security review, i18n, install guide |
+| [M6 · Import from Coolify](https://github.com/oldbear24/PocketServerManager/milestone/7) | migration plan from a Coolify installation, in-place cutover or move to a new server, rollback |
 
 The [Roadmap issue](https://github.com/oldbear24/PocketServerManager/issues/40) tracks every issue by milestone.
 
