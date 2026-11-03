@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -25,12 +26,26 @@ const (
 // Store writes inventory reports to the collections.
 type Store struct {
 	App core.App
+
+	// locks keeps the snapshot and the events of one host apart: right after a
+	// connect both arrive at once, and two writers that each find no record for a
+	// new container would both insert it.
+	locks sync.Map
+}
+
+func (s *Store) lock(hostID string) func() {
+	value, _ := s.locks.LoadOrStore(hostID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 // Sync makes the stored inventory of a host match a snapshot: it updates what
 // changed, adds what is new and removes what is gone. Records are matched by
 // their Docker identity, so an agent restart produces no duplicates.
 func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) error {
+	defer s.lock(hostID)()
+
 	return s.App.RunInTransaction(func(tx core.App) error {
 		stacks, err := stacksByName(tx, hostID)
 		if err != nil {
@@ -72,6 +87,8 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 
 // Apply stores one incremental change.
 func (s *Store) Apply(hostID string, event *agentv1.ReportEventsRequest) error {
+	defer s.lock(hostID)()
+
 	switch change := event.GetChange().(type) {
 	case *agentv1.ReportEventsRequest_ContainerUpdated:
 		stacks, err := stacksByName(s.App, hostID)
