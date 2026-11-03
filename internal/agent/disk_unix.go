@@ -11,6 +11,6 @@ func diskUsage(path string) (total, free uint64, err error) {
 		return 0, 0, err
 	}
 
-	size := uint64(stat.Bsize) //nolint:unconvert,gosec // the type differs per platform
-	return uint64(stat.Blocks) * size, uint64(stat.Bavail) * size, nil
+	size := uint64(stat.Bsize)                                         //nolint:unconvert,gosec // the type differs per platform
+	return uint64(stat.Blocks) * size, uint64(stat.Bavail) * size, nil //nolint:unconvert // the types differ per platform
 }
