@@ -1275,8 +1275,9 @@ code,
   padding: 0 18px;
 }
 
+/* the time has milliseconds: 12 characters of the mono face */
 .log-line.with-time {
-  grid-template-columns: 76px minmax(70px, 120px) minmax(0, 1fr);
+  grid-template-columns: 12ch minmax(70px, 120px) minmax(0, 1fr);
 }
 
 .log-line:hover {

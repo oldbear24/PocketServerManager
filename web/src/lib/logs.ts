@@ -1,6 +1,10 @@
-/** One line of a followed log. The sequence number counts every line of a viewer. */
+/**
+ * One line of a followed log. The sequence number counts every line of a viewer,
+ * in the order they arrived; `at` is the line's time in milliseconds.
+ */
 export type LogEntry = {
   seq: number;
+  at: number;
   ts: string;
   container?: string;
   service?: string;
@@ -9,9 +13,28 @@ export type LogEntry = {
 };
 
 export type LogEvent =
-  | { type: "lines"; lines: Omit<LogEntry, "seq">[] }
+  | { type: "open" }
+  | { type: "lines"; lines: Omit<LogEntry, "seq" | "at">[] }
   | { type: "dropped"; count: number }
   | { type: "end"; error?: string };
+
+/**
+ * Adds a batch of lines in time order. The lines of several containers arrive in
+ * batches per container, the first lines above all, so a batch can belong before
+ * lines that are already there. Lines of the same time keep their order of arrival,
+ * and a line without a readable time stays where it arrived.
+ */
+export function insertLines(lines: LogEntry[], batch: LogEntry[]): void {
+  for (const line of batch) {
+    let index = lines.length;
+    if (!Number.isNaN(line.at)) {
+      while (index > 0 && lines[index - 1].at > line.at) {
+        index -= 1;
+      }
+    }
+    lines.splice(index, 0, line);
+  }
+}
 
 /** A filter that cannot be compiled yet matches everything, while the user types. */
 export function compileFilter(text: string): { regex: RegExp | null; invalid: boolean } {
@@ -62,7 +85,7 @@ export function levelTone(level: string): LevelTone {
   return level === "WARNING" || level === "WARN" ? "warn" : "info";
 }
 
-/** The file a download produces: the lines as they arrived, oldest first. */
+/** The file a download produces: the lines in time order, oldest first. */
 export function logFileText(lines: LogEntry[]): string {
   return lines
     .map((line) => `${line.ts} ${line.service || line.container || "-"} ${line.text}`)

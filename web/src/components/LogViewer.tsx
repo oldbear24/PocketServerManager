@@ -6,6 +6,7 @@ import { followEvents } from "../lib/api";
 import { formatTime } from "../lib/format";
 import {
   compileFilter,
+  insertLines,
   levelTone,
   logFileText,
   splitLevel,
@@ -87,13 +88,19 @@ export function LogViewer({
     };
 
     const onEvent = (event: LogEvent) => {
-      if (event.type === "lines") {
+      if (event.type === "open") {
         delay = retryMin;
         setStatus("live");
-        for (const line of event.lines) {
-          counter.current += 1;
-          lines.current.push({ ...line, seq: counter.current });
-        }
+      } else if (event.type === "lines") {
+        delay = retryMin;
+        setStatus("live");
+        insertLines(
+          lines.current,
+          event.lines.map((line) => {
+            counter.current += 1;
+            return { ...line, seq: counter.current, at: Date.parse(line.ts) };
+          }),
+        );
         if (lines.current.length > keepLines) {
           lines.current.splice(0, lines.current.length - keepLines);
         }
@@ -231,7 +238,9 @@ export function LogViewer({
                 key={line.seq}
                 className={`log-line${timestamps ? " with-time" : ""}${line.stream === "stderr" ? " stderr" : ""}`}
               >
-                {timestamps && <span className="log-time">{formatTime(line.ts)}</span>}
+                {timestamps && (
+                  <span className="log-time">{formatTime(line.ts, { milliseconds: true })}</span>
+                )}
                 <span className="log-source">{line.service || line.container}</span>
                 <span className="log-text">
                   <LogText text={line.text} />

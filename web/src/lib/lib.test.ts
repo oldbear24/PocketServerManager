@@ -15,6 +15,7 @@ import {
 import { composeSnippet, dockerRunCommand, scriptCommand, type InstallParams } from "./install";
 import {
   compileFilter,
+  insertLines,
   levelTone,
   logFileText,
   splitLevel,
@@ -290,6 +291,7 @@ describe("traffic", () => {
 describe("logs", () => {
   const line = (seq: number, text: string, service = "web"): LogEntry => ({
     seq,
+    at: Date.parse("2026-10-16T12:00:00Z"),
     ts: "2026-10-16T12:00:00Z",
     service,
     text,
@@ -322,7 +324,26 @@ describe("logs", () => {
     expect(levelTone("INFO")).toBe("info");
   });
 
-  it("a download holds the lines as they came", () => {
+  it("keeps the lines of several containers in time order", () => {
+    const at = (seq: number, ts: string, service: string): LogEntry => ({
+      seq,
+      at: Date.parse(ts),
+      ts,
+      service,
+      text: `${service} ${seq}`,
+    });
+    const view: LogEntry[] = [];
+
+    // the first lines come per container: web's, then db's, which are partly older
+    insertLines(view, [at(1, "2026-10-16T12:00:01Z", "web"), at(2, "2026-10-16T12:00:05Z", "web")]);
+    insertLines(view, [at(3, "2026-10-16T12:00:02Z", "db"), at(4, "2026-10-16T12:00:05Z", "db")]);
+    // then new lines, and one without a readable time
+    insertLines(view, [at(5, "2026-10-16T12:00:06Z", "web"), at(6, "garbage", "db")]);
+
+    expect(view.map((entry) => entry.seq)).toEqual([1, 3, 2, 4, 5, 6]);
+  });
+
+  it("a download holds the lines oldest first", () => {
     expect(logFileText(lines.slice(0, 2))).toBe(
       "2026-10-16T12:00:00Z web GET / 200\n2026-10-16T12:00:00Z db ERROR boom",
     );

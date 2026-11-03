@@ -146,6 +146,11 @@ func (p *Panel) serveLogs(e *core.RequestEvent, hostID string, containers []stri
 		return nil //nolint:nilerr // the browser is gone before it started
 	}
 
+	// a quiet container sends nothing for a long time: say that the stream is up
+	if err := sendSSE(e, logEvent{Type: "open"}); err != nil {
+		return nil //nolint:nilerr // the browser left
+	}
+
 	keepalive := time.NewTicker(sseKeepalive)
 	defer keepalive.Stop()
 

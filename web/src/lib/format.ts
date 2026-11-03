@@ -31,7 +31,10 @@ export function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(date);
 }
 
-export function formatTime(value: string | null | undefined): string {
+export function formatTime(
+  value: string | null | undefined,
+  options: { milliseconds?: boolean } = {},
+): string {
   const date = parseDate(value);
   if (!date) {
     return "–";
@@ -40,6 +43,7 @@ export function formatTime(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    fractionalSecondDigits: options.milliseconds ? 3 : undefined,
     hourCycle: "h23",
   }).format(date);
 }
