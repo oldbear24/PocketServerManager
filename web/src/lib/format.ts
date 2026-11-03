@@ -143,6 +143,19 @@ export function formatChartTime(seconds: number, range: string): string {
   }).format(date);
 }
 
+/** A label of a time axis whose ticks are `step` seconds apart: a date for whole days. */
+export function formatAxisTime(seconds: number, step: number): string {
+  const date = new Date(seconds * 1000);
+  if (step >= 86400) {
+    return new Intl.DateTimeFormat(locale(), { day: "numeric", month: "numeric" }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
 export function formatNumber(value: number, digits = 0): string {
   return new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(value);
 }

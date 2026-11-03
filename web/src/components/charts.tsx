@@ -8,6 +8,8 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 
+import { formatAxisTime } from "../lib/format";
+
 export type ChartSeries = {
   key: string;
   label: string;
@@ -39,6 +41,73 @@ export function chartSegments(times: number[], resolution: number): Segment[] {
   }
 
   return times.length ? segments : [];
+}
+
+const minute = 60;
+const hour = 60 * minute;
+const day = 24 * hour;
+
+/** Steps that give round times on an axis, smallest first. */
+const tickSteps = [
+  5 * minute,
+  15 * minute,
+  30 * minute,
+  hour,
+  3 * hour,
+  6 * hour,
+  12 * hour,
+  day,
+  2 * day,
+  7 * day,
+];
+
+/**
+ * Round times between `from` and `to` (in seconds) for the labels of a time axis:
+ * whole quarters, hours or days in the browser's time zone, at most `most` of them.
+ * The end of the range is "now", which has a label of its own, so a tick too close
+ * to it is left out.
+ */
+export function timeTicks(
+  from: number,
+  to: number,
+  most: number,
+): { step: number; ticks: number[] } {
+  const span = to - from;
+  if (span <= 0 || most < 1) {
+    return { step: 0, ticks: [] };
+  }
+
+  const step =
+    tickSteps.find((candidate) => span / candidate <= most) ?? tickSteps[tickSteps.length - 1];
+  const perDay = Math.max(1, Math.round(day / step));
+  const daysPerStep = Math.max(1, Math.round(step / day));
+
+  const ticks: number[] = [];
+  const start = new Date(from * 1000);
+  start.setHours(0, 0, 0, 0);
+
+  // local dates, so that a change of the clock keeps the ticks on whole hours
+  for (
+    let date = start;
+    date.getTime() / 1000 <= to;
+    date = new Date(date.getFullYear(), date.getMonth(), date.getDate() + daysPerStep)
+  ) {
+    for (let index = 0; index < perDay; index++) {
+      const time =
+        new Date(
+          date.getFullYear(),
+          date.getMonth(),
+          date.getDate(),
+          0,
+          (index * step) / minute,
+        ).getTime() / 1000;
+      if (time > from && time <= to - step / 2) {
+        ticks.push(time);
+      }
+    }
+  }
+
+  return { step, ticks };
 }
 
 /** The index of the sample nearest to a time. */
@@ -147,7 +216,8 @@ export function LineChart({
       })
       .join("");
 
-  const axisTimes = [0, 1, 2, 3, 4].map((step) => from + ((to - from) * step) / 4);
+  // a label needs about 90 pixels, and more than seven make the axis hard to read
+  const axis = timeTicks(from, to, Math.min(7, Math.max(2, Math.floor(plotWidth / 90))));
 
   const onPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (!times.length) {
@@ -205,17 +275,20 @@ export function LineChart({
           </g>
         ))}
 
-        {axisTimes.map((time, index) => (
+        {axis.ticks.map((time) => (
           <text
             key={time}
             className="chart-axis"
             x={x(time)}
             y={chartHeight - 6}
-            textAnchor={index === 0 ? "start" : index === axisTimes.length - 1 ? "end" : "middle"}
+            textAnchor="middle"
           >
-            {index === axisTimes.length - 1 ? t("chart.now") : formatTime(time)}
+            {formatAxisTime(time, axis.step)}
           </text>
         ))}
+        <text className="chart-axis" x={x(to)} y={chartHeight - 6} textAnchor="end">
+          {t("chart.now")}
+        </text>
 
         {series.map((item) => (
           <g key={item.key}>
