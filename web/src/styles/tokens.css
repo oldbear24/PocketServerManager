@@ -1,0 +1,35 @@
+/* Design tokens from design/README.md. */
+:root {
+  --bg: #0c0e12;
+  --nav: #101318;
+  --surface: #13161c;
+  --surface-2: #171b22;
+  --border: #1f242d;
+  --border-control: #2a303b;
+  --text: #e6e8ec;
+  --text-2: #a7afbb;
+  --text-3: #7e8794;
+  --accent: #8fb0ff;
+  --accent-hover: #b7ccff;
+  --accent-bg: #1a2238;
+  --on-accent: #0c0e12;
+
+  --ok: #5bd68a;
+  --ok-bg: #12251a;
+  --ok-text: #7be3a2;
+  --warn: #f2b544;
+  --warn-bg: #2a2112;
+  --warn-text: #f5c76a;
+  --err: #f2706b;
+  --err-bg: #2b1517;
+  --err-text: #f79a95;
+  --off: #6b7380;
+  --off-bg: #1c2027;
+  --off-text: #a7afbb;
+
+  --radius-card: 12px;
+  --radius-control: 9px;
+
+  --font: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
