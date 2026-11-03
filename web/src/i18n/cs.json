@@ -657,7 +657,9 @@
     "project": "Projekt",
     "services": "Služby",
     "import": "Importovat",
-    "importQueued": "Importuji {{name}}. Stack se tu objeví, jakmile se načtou jeho soubory."
+    "importQueued": "Importuji {{name}}. Stack se tu objeví, jakmile se načtou jeho soubory.",
+    "importFailed": "{{name}} se nepodařilo importovat: {{error}}",
+    "noComposeFile": "Docker neuvádí, ze kterého Compose souboru vznikl, takže ho nejde importovat."
   },
   "stack": {
     "notFound": "Tento stack neexistuje.",
@@ -678,7 +680,10 @@
     "deploy": "Nasadit r{{revision}}",
     "files": "Soubory stacku",
     "checking": "kontroluji…",
-    "valid": "validní · řádků: {{count}}",
+    "valid_one": "YAML · validní · {{count}} řádek",
+    "valid_few": "YAML · validní · {{count}} řádky",
+    "valid_many": "YAML · validní · {{count}} řádku",
+    "valid_other": "YAML · validní · {{count}} řádků",
     "invalid_one": "{{count}} problém",
     "invalid_few": "{{count}} problémy",
     "invalid_many": "{{count}} problémů",

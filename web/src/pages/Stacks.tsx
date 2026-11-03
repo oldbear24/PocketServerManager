@@ -5,10 +5,19 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
-import { Button, Card, EmptyState, Field, StatusPill, Table, type Tone } from "../components/ui";
+import {
+  Banner,
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  StatusPill,
+  Table,
+  type Tone,
+} from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
-import { formatDateTime } from "../lib/format";
+import { formatDateTime, parseDate } from "../lib/format";
 import { pb } from "../lib/pb";
 import { useLiveList } from "../lib/realtime";
 import { stackApi, stackNamePattern, type ComposeProject } from "../lib/stacks";
@@ -138,6 +147,14 @@ function ImportCard({ hosts, canAct }: { hosts: Host[]; canAct: boolean }) {
   const lastImport = imports.items[0]?.id;
   const lastStatus = imports.items[0]?.status;
 
+  // the latest import, if it failed in the last hour, says why: the toast only said it started
+  const latestImport = imports.items[0];
+  const failedImport =
+    latestImport?.status === "failed" &&
+    Date.now() - (parseDate(latestImport.finished_at)?.getTime() ?? 0) < 3600_000
+      ? latestImport
+      : undefined;
+
   useEffect(() => {
     let cancelled = false;
 
@@ -179,6 +196,13 @@ function ImportCard({ hosts, canAct }: { hosts: Host[]; canAct: boolean }) {
 
   return (
     <Card title={t("stacks.found")} note={t("stacks.foundNote")} flush>
+      {failedImport && (
+        <div style={{ padding: "12px 18px 0" }}>
+          <Banner tone="err">
+            {t("stacks.importFailed", { name: failedImport.label, error: failedImport.error })}
+          </Banner>
+        </div>
+      )}
       <Table label={t("stacks.found")}>
         <thead>
           <tr>
@@ -194,7 +218,11 @@ function ImportCard({ hosts, canAct }: { hosts: Host[]; canAct: boolean }) {
             <tr key={`${project.host.id}/${project.project}`}>
               <td>
                 <div className="cell-title">{project.project}</div>
-                <div className="cell-sub mono">{project.config_files[0] ?? "–"}</div>
+                {project.config_files.length > 0 ? (
+                  <div className="cell-sub mono">{project.config_files.join(", ")}</div>
+                ) : (
+                  <div className="cell-sub">{t("stacks.noComposeFile")}</div>
+                )}
               </td>
               <td className="muted">{project.host.name}</td>
               <td className="muted">{project.services.join(", ")}</td>
@@ -203,7 +231,11 @@ function ImportCard({ hosts, canAct }: { hosts: Host[]; canAct: boolean }) {
               </td>
               {canAct && (
                 <td style={{ textAlign: "right" }}>
-                  <Button size="small" onClick={() => void importProject(project)}>
+                  <Button
+                    size="small"
+                    disabled={project.config_files.length === 0}
+                    onClick={() => void importProject(project)}
+                  >
                     {t("stacks.import")}
                   </Button>
                 </td>

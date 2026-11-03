@@ -633,7 +633,9 @@
     "project": "Project",
     "services": "Services",
     "import": "Import",
-    "importQueued": "Importing {{name}}. The stack appears here when its files have been read."
+    "importQueued": "Importing {{name}}. The stack appears here when its files have been read.",
+    "importFailed": "{{name}} could not be imported: {{error}}",
+    "noComposeFile": "Docker does not say which Compose file started it, so it cannot be imported."
   },
   "stack": {
     "notFound": "This stack does not exist.",
@@ -654,7 +656,8 @@
     "deploy": "Deploy r{{revision}}",
     "files": "Files of the stack",
     "checking": "checking…",
-    "valid": "valid · {{count}} lines",
+    "valid_one": "YAML · valid · {{count}} line",
+    "valid_other": "YAML · valid · {{count}} lines",
     "invalid_one": "{{count}} problem",
     "invalid_other": "{{count}} problems",
     "line": "line {{line}}:",
