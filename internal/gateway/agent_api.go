@@ -67,6 +67,14 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	ctx := stream.Context()
 	hostID := hostIDFrom(ctx)
 
+	// The stream is registered before the host is marked as connected: whoever sees
+	// stream_open can then rely on Commands.Connected, as the terminal and the logs do.
+	delivery := s.Commands.Connect(hostID, req.GetCapabilities(), req.GetRecentlyFinished())
+	defer func() {
+		s.Commands.Disconnect(delivery)
+		s.streamClosed(hostID)
+	}()
+
 	cameBack := false
 	err := s.updateHost(hostID, func(host *core.Record) {
 		// the first connection of a new server is not a recovery
@@ -102,12 +110,6 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 		return err
 	}
 
-	delivery := s.Commands.Connect(hostID, req.GetCapabilities(), req.GetRecentlyFinished())
-	defer func() {
-		s.Commands.Disconnect(delivery)
-		s.streamClosed(hostID, delivery)
-	}()
-
 	for {
 		select {
 		case message := <-delivery.Out():
@@ -124,13 +126,20 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	}
 }
 
-func (s *Server) streamClosed(hostID string, delivery *commands.Stream) {
+func (s *Server) streamClosed(hostID string) {
 	// a newer stream may already have taken over
 	if s.Commands.Connected(hostID) {
 		return
 	}
 
+	closed := false
 	err := s.updateHost(hostID, func(host *core.Record) {
+		// Asked again under the host's lock: a newer stream connects before it takes
+		// that lock to mark the host, so it cannot be marked closed after that.
+		if s.Commands.Connected(hostID) {
+			return
+		}
+		closed = true
 		host.Set("stream_open", false)
 		if host.GetString("status") == schema.HostOnline {
 			host.Set("status", schema.HostDegraded)
@@ -138,6 +147,9 @@ func (s *Server) streamClosed(hostID string, delivery *commands.Stream) {
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.Log.Debug("failed to update a disconnected host", "host", hostID, "error", err)
+		return
+	}
+	if !closed {
 		return
 	}
 
