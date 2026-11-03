@@ -228,6 +228,8 @@ message HostFacts {
   string agent_image_digest = 11;
   // agent_container_id is the id of the agent's own container.
   string agent_container_id = 12;
+  // compose_version is the version of the Compose plugin.
+  string compose_version = 13;
 }
 
 // HostVitals is a compact summary of the host's current usage.

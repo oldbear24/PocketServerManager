@@ -145,6 +145,10 @@ func (p *Panel) handleAuditRevert(e *core.RequestEvent) error {
 	actor := audit.ActorFromRequest(e)
 	actor.Note = "revert of entry " + entry.Id
 
+	if entry.GetString("collection") == schema.Stacks {
+		return p.revertStack(e, entry, actor)
+	}
+
 	if err := audit.Revert(e.Request.Context(), p.App, entry, actor); err != nil {
 		var refused *audit.RevertError
 		if errors.As(err, &refused) {

@@ -94,7 +94,12 @@ export function OverviewPage() {
     sort: "-last_seen",
     perPage: 20,
   });
-  const commands = useLiveList<Command>("commands", { sort: "-created", perPage: 8 });
+  // opening a log or a terminal is a command too, but no one is waiting in a queue for it
+  const commands = useLiveList<Command>("commands", {
+    filter: "type !~ 'logs.%' && type !~ 'exec.%'",
+    sort: "-created",
+    perPage: 8,
+  });
 
   const online = hosts.items.filter((host) => host.status !== "offline" && host.status !== "");
   const offline = hosts.items.filter((host) => host.status === "offline");

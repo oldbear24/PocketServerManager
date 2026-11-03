@@ -57,6 +57,7 @@ export function ServersPage() {
                 <th>CPU</th>
                 <th>RAM</th>
                 <th>{t("host.disk")}</th>
+                <th>{t("server.load1")}</th>
                 <th>{t("host.agent")}</th>
                 <th>{t("host.lastSeen")}</th>
               </tr>
@@ -102,6 +103,9 @@ export function ServersPage() {
                       value={percentOf(host.disk_used_bytes, host.disk_total_bytes)}
                       label={t("host.diskOf", { name: host.name })}
                     />
+                  </td>
+                  <td className="num">
+                    {host.status === "offline" ? "–" : formatNumber(host.load1, 2)}
                   </td>
                   <td className="num">{formatVersion(host.agent_version)}</td>
                   <td className="muted">{formatRelative(host.last_seen, now)}</td>

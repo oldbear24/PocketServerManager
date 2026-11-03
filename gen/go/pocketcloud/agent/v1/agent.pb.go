@@ -807,8 +807,10 @@ type HostFacts struct {
 	AgentImageDigest string `protobuf:"bytes,11,opt,name=agent_image_digest,json=agentImageDigest,proto3" json:"agent_image_digest,omitempty"`
 	// agent_container_id is the id of the agent's own container.
 	AgentContainerId string `protobuf:"bytes,12,opt,name=agent_container_id,json=agentContainerId,proto3" json:"agent_container_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// compose_version is the version of the Compose plugin.
+	ComposeVersion string `protobuf:"bytes,13,opt,name=compose_version,json=composeVersion,proto3" json:"compose_version,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *HostFacts) Reset() {
@@ -921,6 +923,13 @@ func (x *HostFacts) GetAgentImageDigest() string {
 func (x *HostFacts) GetAgentContainerId() string {
 	if x != nil {
 		return x.AgentContainerId
+	}
+	return ""
+}
+
+func (x *HostFacts) GetComposeVersion() string {
+	if x != nil {
+		return x.ComposeVersion
 	}
 	return ""
 }
@@ -3322,7 +3331,7 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x18\n" +
 	"\apercent\x18\x03 \x01(\x05R\apercent\"5\n" +
 	"\x1bReportCommandUpdateResponse\x12\x16\n" +
-	"\x06cancel\x18\x01 \x01(\bR\x06cancel\"\xe9\x02\n" +
+	"\x06cancel\x18\x01 \x01(\bR\x06cancel\"\x92\x03\n" +
 	"\tHostFacts\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x0e\n" +
 	"\x02os\x18\x02 \x01(\tR\x02os\x12\x16\n" +
@@ -3336,7 +3345,8 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\ragent_version\x18\n" +
 	" \x01(\tR\fagentVersion\x12,\n" +
 	"\x12agent_image_digest\x18\v \x01(\tR\x10agentImageDigest\x12,\n" +
-	"\x12agent_container_id\x18\f \x01(\tR\x10agentContainerId\"\xc4\x02\n" +
+	"\x12agent_container_id\x18\f \x01(\tR\x10agentContainerId\x12'\n" +
+	"\x0fcompose_version\x18\r \x01(\tR\x0ecomposeVersion\"\xc4\x02\n" +
 	"\n" +
 	"HostVitals\x121\n" +
 	"\x06uptime\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x06uptime\x12\x14\n" +

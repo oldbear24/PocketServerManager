@@ -51,6 +51,8 @@ message Command {
     StackValidate stack_validate = 124;
     // stack_restart restarts a stack's containers.
     StackRestart stack_restart = 125;
+    // stack_import reads a Compose project found on the host and uploads its files.
+    StackImport stack_import = 126;
 
     // logs_follow starts streaming logs with StreamLogs.
     LogsFollow logs_follow = 130;
@@ -209,6 +211,9 @@ message StackDeploy {
   bool pull = 6;
   // registries holds credentials for private registries used by the stack.
   repeated RegistryAuth registries = 7;
+  // override_yaml is a second Compose file the panel generates, for what it manages
+  // itself: the database networks of the stack. Empty when there is nothing to add.
+  string override_yaml = 8;
 }
 
 // StackStop stops a stack's containers.
@@ -229,6 +234,10 @@ message StackDown {
 message StackPull {
   // name is the Compose project name.
   string name = 1;
+  // secrets fill in the variables of the Compose file; they stay in this process.
+  map<string, string> secrets = 2 [(pocketcloud.options.v1.sensitive) = true];
+  // registries holds credentials for private registries used by the stack.
+  repeated RegistryAuth registries = 3;
 }
 
 // StackValidate runs `docker compose config` on the given files.
@@ -245,6 +254,18 @@ message StackValidate {
 message StackRestart {
   // name is the Compose project name.
   string name = 1;
+}
+
+// StackImport reads the files of a Compose project found on the host, through the
+// host mount, and uploads them with UploadArtifact: they may hold secrets, so they
+// stay out of the command's result.
+message StackImport {
+  // project is the Compose project name.
+  string project = 1;
+  // config_files are the paths of its Compose files on the host.
+  repeated string config_files = 2;
+  // working_dir is the directory it was started in, which holds its .env file.
+  string working_dir = 3;
 }
 
 // LogsFollow starts a log stream. The agent opens StreamLogs with the session id.

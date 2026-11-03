@@ -107,6 +107,38 @@ export function formatBytes(value: number | null | undefined): string {
   return `${new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(scaled)} ${units[exponent]}`;
 }
 
+/** Traffic the way it is usually talked about: bits per second, from bytes per second. */
+export function formatBitrate(bytesPerSecond: number | null | undefined): string {
+  if (bytesPerSecond === null || bytesPerSecond === undefined || bytesPerSecond < 0) {
+    return "–";
+  }
+  const bits = bytesPerSecond * 8;
+  const units = ["b/s", "kb/s", "Mb/s", "Gb/s", "Tb/s"];
+  const exponent = bits < 1 ? 0 : Math.min(Math.floor(Math.log10(bits) / 3), units.length - 1);
+  const scaled = bits / 1000 ** exponent;
+  const digits = scaled >= 100 || exponent === 0 ? 0 : 1;
+  return `${new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(scaled)} ${units[exponent]}`;
+}
+
+/** A moment on a chart's axis: the time for up to a day, the date for a week. */
+export function formatChartTime(seconds: number, range: string): string {
+  const date = new Date(seconds * 1000);
+  if (range === "7d") {
+    return new Intl.DateTimeFormat(locale(), {
+      day: "numeric",
+      month: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
 export function formatNumber(value: number, digits = 0): string {
   return new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(value);
 }

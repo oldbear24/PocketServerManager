@@ -5,7 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pocketbase/pocketbase/core"
+
+	"github.com/oldbear24/PocketServerManager/internal/metrics"
+	"github.com/oldbear24/PocketServerManager/internal/schema"
 )
+
+var metricsHour = metrics.Windows["1h"]
 
 // restoreStarted rewrites the agent's command store to what a kill -9 leaves
 // behind: the command started and never finished.
@@ -54,4 +61,24 @@ func recordID(t *testing.T, body string) string {
 	}
 
 	return response.ID
+}
+
+// saveStack creates a stack record and returns its id.
+func (h *harness) saveStack(hostID, name, compose string) string {
+	h.t.Helper()
+
+	collection, err := h.app.FindCollectionByNameOrId(schema.Stacks)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+
+	stack := core.NewRecord(collection)
+	stack.Set("host", hostID)
+	stack.Set("name", name)
+	stack.Set("compose_yaml", compose)
+	if err := h.app.Save(stack); err != nil {
+		h.t.Fatal(err)
+	}
+
+	return stack.Id
 }

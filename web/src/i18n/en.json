@@ -8,7 +8,8 @@
     "unknown": "unknown",
     "actions": "Actions",
     "name": "Name",
-    "save": "Save"
+    "save": "Save",
+    "edit": "Edit"
   },
   "nav": {
     "label": "Main navigation",
@@ -101,7 +102,8 @@
       "paused": "Paused",
       "dead": "Dead",
       "removing": "Removing"
-    }
+    },
+    "notFound": "This container does not exist."
   },
   "overview": {
     "title": "Overview",
@@ -140,7 +142,9 @@
       "overview": "Overview",
       "containers": "Containers",
       "volumes": "Volumes & networks",
-      "agent": "Agent settings"
+      "agent": "Agent settings",
+      "proxy": "Proxy & sites",
+      "backups": "Backups"
     },
     "restartAgent": "Restart agent",
     "restartQueued": "The agent will restart.",
@@ -216,7 +220,31 @@
     "updateStepUpdater": "Updater container started",
     "updateStepConnected": "New agent connected to the panel",
     "updateStepRemoved": "Old container removed",
-    "updateStepRolledBack": "Rolled back to the old container"
+    "updateStepRolledBack": "Rolled back to the old container",
+    "netIn": "Network in",
+    "netOut": "Network out",
+    "load": "Load 1/5/15",
+    "disks": "Disks",
+    "noDisks": "The agent has not reported any disks yet.",
+    "diskOf": "Usage of {{mount}}",
+    "cpuShort": "CPU",
+    "ramShort": "RAM",
+    "showLogs": "Logs of {{name}}",
+    "more": "More actions",
+    "containerRow": "Container",
+    "agentContainerLine": "{{name}} · image {{version}}",
+    "commandCounts3": "{{queued}} queued · {{sent}} sent · {{done}} done",
+    "composeShort": "Compose {{version}}",
+    "newStack": "New stack",
+    "edgeRoutes": "Edge proxy routes",
+    "edgeRoutesNote": "Caddy run by the agent · certificates from the panel",
+    "edgeRoutesLater": "Routes appear here with sites and domains, in milestone M3.",
+    "proxyLater": "The edge proxy, sites and their routes arrive in milestone M3.",
+    "backupsLater": "Backup jobs for this server arrive in milestone M4.",
+    "openTerminal": "Terminal in {{name}}",
+    "restarts_one": "{{count}}× restarted",
+    "restarts_other": "{{count}}× restarted",
+    "load1": "Load"
   },
   "connect": {
     "title": "Connect a new server",
@@ -335,7 +363,8 @@
       "terminal_session": "Terminal session",
       "adminer_session": "Adminer session",
       "payload_capture": "Payload capture",
-      "integrity_broken": "Integrity broken"
+      "integrity_broken": "Integrity broken",
+      "terminal_session_end": "Terminal closed"
     },
     "verb": {
       "create": "created",
@@ -354,7 +383,8 @@
       "terminal_session": "opened a terminal on",
       "adminer_session": "opened Adminer on",
       "payload_capture": "started a payload capture on",
-      "integrity_broken": "found a broken chain in"
+      "integrity_broken": "found a broken chain in",
+      "terminal_session_end": "closed a terminal on"
     },
     "source": {
       "ui": "UI",
@@ -522,10 +552,145 @@
     },
     "command": {
       "timed_out": "A command timed out"
+    },
+    "terminal": {
+      "opened": "A terminal was opened by {{user}}: {{target}}"
     }
   },
   "alert": {
     "agent_offline": "{{name}}: the agent stopped responding",
     "audit_integrity": "The integrity check of the audit log failed"
+  },
+  "chart": {
+    "now": "now",
+    "time": "Time",
+    "range": "Time range",
+    "ranges": {
+      "1h": "1 h",
+      "24h": "24 h",
+      "7d": "7 d"
+    },
+    "usageLabel": "{{title}}, CPU and memory over the last {{range}}",
+    "noData": "No samples in this time range yet",
+    "showTable": "Show as a table"
+  },
+  "logs": {
+    "title": "Logs",
+    "status": {
+      "connecting": "connecting",
+      "live": "live",
+      "ended": "stream ended"
+    },
+    "serviceFilter": "Show the logs of",
+    "all": "All",
+    "filter": "Filter (regex)…",
+    "filterInvalid": "This is not a valid regular expression, so nothing is filtered.",
+    "timestampsOn": "Times: on",
+    "timestampsOff": "Times: off",
+    "followOn": "Follow: on",
+    "followOff_one": "Follow: off · {{count}} new",
+    "followOff_other": "Follow: off · {{count}} new",
+    "download": "Download what is shown here",
+    "dropped_one": "{{count}} line did not reach this view: it arrived too fast.",
+    "dropped_other": "{{count}} lines did not reach this view: they arrived too fast.",
+    "empty": "Waiting for log lines…",
+    "noMatch": "No line matches the filter."
+  },
+  "terminal": {
+    "open": "Terminal",
+    "title": "Web terminal",
+    "note": "For administrators. Who opened it, when and where is recorded under Audit & activity; what is typed is not.",
+    "target": "Open a shell in",
+    "choose": "Choose a container…",
+    "hostShell": "The host itself",
+    "hostShellRisk": "A host shell runs through a short-lived privileged container with full access to this server: anyone who gets here has root.",
+    "hostShellOff": "Host shells are off on this server. To allow them, start its agent with HOST_SHELL_ENABLED=1.",
+    "connect": "Connect",
+    "reconnect": "Connect again",
+    "loading": "Loading the terminal…",
+    "state": {
+      "connecting": "connecting",
+      "open": "connected",
+      "exited": "ended with code {{code}}",
+      "idle": "closed after a long silence",
+      "error": "failed",
+      "closed": "disconnected"
+    }
+  },
+  "stacks": {
+    "new": "New stack",
+    "name": "Name (lower case letters, digits, dashes)",
+    "nameInvalid": "Use lower case letters, digits, dashes and underscores.",
+    "server": "Server",
+    "create": "Create and edit",
+    "noneTitle": "No stacks yet",
+    "noneText": "A stack is a Compose project on one server: a file, its variables and its secrets, with every change kept as a revision.",
+    "running": "{{running}} / {{total}} running",
+    "revision": "Revision",
+    "deployedAt": "Deployed",
+    "found": "Found on your servers",
+    "foundNote": "Compose projects that no stack manages yet",
+    "project": "Project",
+    "services": "Services",
+    "import": "Import",
+    "importQueued": "Importing {{name}}. The stack appears here when its files have been read."
+  },
+  "stack": {
+    "notFound": "This stack does not exist.",
+    "unsaved": "unsaved changes",
+    "failed": "the last deploy failed",
+    "notDeployed": "not deployed yet",
+    "deployedLine": "revision r{{revision}} deployed {{date}}",
+    "source": {
+      "editor": "source: editor in the panel",
+      "import": "source: imported from the server"
+    },
+    "pull": "Pull images",
+    "stop": "Stop",
+    "down": "Remove containers",
+    "downConfirm": "Remove the containers of {{name}}?",
+    "downNote": "The stack and its revisions stay, and its named volumes too unless you say otherwise. Deploying brings the containers back.",
+    "downVolumes": "Also remove its named volumes, with their data",
+    "deploy": "Deploy r{{revision}}",
+    "files": "Files of the stack",
+    "checking": "checking…",
+    "valid": "valid · {{count}} lines",
+    "invalid_one": "{{count}} problem",
+    "invalid_other": "{{count}} problems",
+    "line": "line {{line}}:",
+    "editorLoading": "Loading the editor…",
+    "note": "What changed, for the history (optional)",
+    "discard": "Discard changes",
+    "saved": "The changes were saved as a new revision.",
+    "output": "Output",
+    "outputWaiting": "Waiting for output…",
+    "uptime": "up {{value}}",
+    "ports": "Port",
+    "revisions": "Revisions",
+    "draft": "Your changes",
+    "draftNote": "not saved · draft",
+    "noNote": "No description",
+    "deployedOn": "deployed {{date}}",
+    "compare": "Show changes",
+    "rollback": "Roll back",
+    "rollbackConfirm": "Deploy r{{revision}} again?",
+    "rollbackNote": "This deploys the files of that revision as a new revision. The history only grows; secrets keep their current values.",
+    "noRevisions": "No revisions yet.",
+    "variables": "Variables & secrets",
+    "secret": "secret",
+    "hiddenValue": "hidden value",
+    "removeSecret": "Remove {{name}}",
+    "noVariables": "No variables yet.",
+    "secretsNote": "Secrets are stored encrypted and go to the agent inside the deploy command only. They are written to the env file during the deploy and removed afterwards, and cannot be read back.",
+    "secretName": "Name",
+    "secretNameInvalid": "Letters, digits and underscores; not starting with a digit.",
+    "secretValue": "Value",
+    "addSecret": "Set secret",
+    "secretSaved": "The secret was saved. It takes effect with the next deploy.",
+    "removeTitle": "Remove this stack",
+    "removeNote": "This removes the stack and its history from the panel. Its containers must be gone first.",
+    "remove": "Remove stack",
+    "removeConfirm": "Remove the stack {{name}}?",
+    "hostOffline": "The server is offline: what you start now waits until it is back, for up to an hour."
   }
 }

@@ -42,6 +42,8 @@ func stack(c *agentv1.Command) string {
 		return "stack:" + p.StackPull.GetName()
 	case *agentv1.Command_StackRestart:
 		return "stack:" + p.StackRestart.GetName()
+	case *agentv1.Command_StackImport:
+		return "stack:" + p.StackImport.GetProject()
 	}
 	return ""
 }
@@ -120,6 +122,7 @@ var Specs = map[string]Spec{
 	"stack.pull":     {Timeout: 15 * time.Minute, Role: schema.RoleOperator, Resource: stack},
 	"stack.restart":  {Timeout: 5 * time.Minute, Role: schema.RoleOperator, Resource: stack},
 	"stack.validate": {Timeout: time.Minute},
+	"stack.import":   {Timeout: 2 * time.Minute, Resource: stack},
 
 	"logs.follow": {Timeout: time.Minute},
 	"logs.stop":   {Timeout: time.Minute},

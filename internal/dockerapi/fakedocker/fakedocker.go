@@ -29,6 +29,12 @@ type Container struct {
 	Host    map[string]any
 	Started time.Time
 	Restart int32
+
+	// CPUPercent and MemBytes are what the statistics report.
+	CPUPercent float64
+	MemBytes   uint64
+	cpuTotal   uint64
+	logs       *logBuffer
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -39,10 +45,15 @@ type Engine struct {
 	containers map[string]*Container
 	images     map[string]map[string]any
 	volumes    map[string]map[string]string
-	networks   map[string]bool
+	networks   map[string]*Network
 	calls      []string
 	events     map[chan map[string]any]struct{}
+	systemCPU  uint64
+	execs      map[string]*ExecCall
+	execList   []*ExecCall
 
+	// OnExec answers a process started without a terminal.
+	OnExec func(call *ExecCall, stdin []byte) ExecResult
 	// FailOn makes requests fail whose "METHOD path" contains the key.
 	FailOn map[string]string
 	// BlockOn makes requests whose "METHOD path" contains the key wait on the channel.
@@ -58,8 +69,9 @@ func newEngine() *Engine {
 		containers: make(map[string]*Container),
 		images:     make(map[string]map[string]any),
 		volumes:    make(map[string]map[string]string),
-		networks:   map[string]bool{"bridge": true},
+		networks:   map[string]*Network{"bridge": {Name: "bridge", Driver: "bridge", Members: map[string][]string{}}},
 		events:     make(map[chan map[string]any]struct{}),
+		execs:      make(map[string]*ExecCall),
 		FailOn:     make(map[string]string),
 		BlockOn:    make(map[string]chan struct{}),
 	}
@@ -169,6 +181,7 @@ func (e *Engine) RemoveContainer(id string) {
 	defer e.mu.Unlock()
 
 	delete(e.containers, id)
+	e.removeFromNetworks(id)
 	e.broadcast("container", "destroy", id, nil)
 }
 
@@ -196,6 +209,19 @@ func (e *Engine) Names() []string {
 		names = append(names, container.Name)
 	}
 	return names
+}
+
+// SetLoad sets what the statistics of a container report.
+func (e *Engine) SetLoad(name string, cpuPercent float64, memBytes uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, container := range e.containers {
+		if container.Name == name {
+			container.CPUPercent = cpuPercent
+			container.MemBytes = memBytes
+		}
+	}
 }
 
 // AddImage registers a local image with its defaults.
@@ -337,6 +363,8 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 		e.createContainer(w, r)
 	case strings.HasPrefix(path, "/containers/"):
 		e.containerRoute(w, r, strings.TrimPrefix(path, "/containers/"))
+	case strings.HasPrefix(path, "/exec/"):
+		e.execRoute(w, r, strings.TrimPrefix(path, "/exec/"))
 	case path == "/images/create":
 		e.pullImage(w, r)
 	case strings.HasPrefix(path, "/images/"):
@@ -345,8 +373,10 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 		e.listVolumes(w)
 	case path == "/networks":
 		e.listNetworks(w)
+	case path == "/networks/create":
+		e.createNetwork(w, r)
 	case strings.HasPrefix(path, "/networks/"):
-		w.WriteHeader(http.StatusOK)
+		e.networkRoute(w, r, strings.TrimPrefix(path, "/networks/"))
 	case path == "/events":
 		e.streamEvents(w, r)
 	default:
@@ -445,6 +475,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 			return
 		}
 		delete(e.containers, container.ID)
+		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
 		w.WriteHeader(http.StatusNoContent)
 
@@ -453,6 +484,9 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 
 	case action == "start":
 		status, health := "running", container.Health
+		if _, checked := container.Config["Healthcheck"]; checked {
+			health = "healthy"
+		}
 		if e.OnStart != nil {
 			status, health = e.OnStart(container)
 		}
@@ -479,14 +513,28 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "stats":
+		// the host's counter moves by 1000 per call, and the container's by its share of that
+		e.systemCPU += 1000
+		container.cpuTotal += uint64(container.CPUPercent * 10)
+
+		memory := container.MemBytes
+		if memory == 0 {
+			memory = 150 << 20
+		}
+
 		writeJSON(w, map[string]any{
-			"cpu_stats":    map[string]any{"cpu_usage": map[string]any{"total_usage": 1000}, "system_cpu_usage": 10000, "online_cpus": 4},
-			"memory_stats": map[string]any{"usage": 200 << 20, "limit": 1 << 30, "stats": map[string]uint64{"inactive_file": 50 << 20}},
-			"networks":     map[string]any{"eth0": map[string]any{"rx_bytes": 1000, "tx_bytes": 2000}},
+			"cpu_stats":    map[string]any{"cpu_usage": map[string]any{"total_usage": container.cpuTotal}, "system_cpu_usage": e.systemCPU, "online_cpus": 4},
+			"memory_stats": map[string]any{"usage": memory + 50<<20, "limit": 1 << 30, "stats": map[string]uint64{"inactive_file": 50 << 20}},
+			"networks":     map[string]any{"eth0": map[string]any{"rx_bytes": e.systemCPU, "tx_bytes": 2 * e.systemCPU}},
 		})
 
+	case action == "exec":
+		e.createExec(w, r, container)
+
 	case action == "logs":
-		w.WriteHeader(http.StatusOK)
+		e.mu.Unlock()
+		e.streamLogs(w, r, container)
+		e.mu.Lock()
 
 	default:
 		writeError(w, http.StatusNotFound, "unknown action "+action)
@@ -583,8 +631,8 @@ func (e *Engine) listNetworks(w http.ResponseWriter) {
 	defer e.mu.Unlock()
 
 	list := make([]map[string]any, 0, len(e.networks))
-	for name := range e.networks {
-		list = append(list, map[string]any{"Id": "net-" + name, "Name": name, "Driver": "bridge"})
+	for name, network := range e.networks {
+		list = append(list, map[string]any{"Id": "net-" + name, "Name": name, "Driver": network.Driver, "Internal": network.Internal, "Labels": network.Labels})
 	}
 	writeJSON(w, list)
 }

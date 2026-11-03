@@ -20,6 +20,9 @@ const (
 	maxWorkers    = 8
 	reportTimeout = 15 * time.Second
 	outputChunk   = 64 << 10
+	// outputFlush is how long output may wait before it goes to the panel: someone
+	// may be watching a deploy.
+	outputFlush = 300 * time.Millisecond
 )
 
 // perTypeLimits caps commands of a kind on top of the global worker limit: pulls
@@ -184,7 +187,9 @@ func (x *Executor) run(ctx context.Context, cancel context.CancelFunc, command *
 
 	x.log.Debug("running a command", "command", id, "type", command.GetType())
 
+	stopFlushing := reporter.flushRegularly()
 	result, err := x.safely(ctx, handler, command, reporter)
+	stopFlushing()
 	reporter.flush()
 
 	switch {
@@ -335,9 +340,39 @@ type Reporter struct {
 	executor  *Executor
 	commandID string
 
+	// sending keeps updates in the order of their sequence numbers
+	sending sync.Mutex
+
 	mu       sync.Mutex
 	sequence uint64
 	pending  []byte
+}
+
+// flushRegularly sends pending output until the returned function is called.
+func (r *Reporter) flushRegularly() (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+
+	go func() {
+		defer close(finished)
+
+		ticker := time.NewTicker(outputFlush)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				r.flush()
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 // Progress reports the current step. A percent of -1 means unknown.
@@ -370,6 +405,9 @@ func (r *Reporter) flush() {
 }
 
 func (r *Reporter) state(state agentv1.CommandState, progress *agentv1.CommandProgress) {
+	r.sending.Lock()
+	defer r.sending.Unlock()
+
 	r.mu.Lock()
 	r.sequence++
 	update := &agentv1.ReportCommandUpdateRequest{

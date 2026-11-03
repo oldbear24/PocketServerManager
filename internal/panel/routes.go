@@ -36,6 +36,9 @@ func (p *Panel) bindRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 	p.bindSetupRoutes(se)
 
+	// a WebSocket cannot carry the auth header: its ticket comes from a signed-in route
+	se.Router.GET("/api/pc/terminal/socket", p.handleTerminalSocket)
+
 	se.Router.GET("/api/pc/ca.pem", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "application/x-pem-file")
 		e.Response.Header().Set("Content-Disposition", `attachment; filename="pocketcloud-root-ca.pem"`)

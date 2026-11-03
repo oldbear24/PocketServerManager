@@ -39,6 +39,7 @@ func (a *Agent) registerHandlers() {
 	x.Handle("stack.pull", a.handleStackPull)
 	x.Handle("stack.restart", a.handleStackRestart)
 	x.Handle("stack.validate", a.handleStackValidate)
+	x.Handle("stack.import", a.handleStackImport)
 
 	x.Handle("logs.follow", a.handleLogsFollow)
 	x.Handle("logs.stop", a.handleLogsStop)

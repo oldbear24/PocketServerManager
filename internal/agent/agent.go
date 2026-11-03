@@ -68,6 +68,10 @@ type Agent struct {
 	execSessions sessionSet
 	metrics      *metricsCollector
 
+	composeMu      sync.Mutex
+	composeRelease string
+	composeAt      time.Time
+
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
 }
@@ -117,6 +121,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	a.Log.Info("the agent is starting", "version", version.Version, "host", a.Identity.Name, "panel", a.Identity.Panel)
+
+	a.restoreCleanEnvFiles()
 
 	a.setHealth(false)
 	defer a.setHealth(false)
@@ -241,9 +247,14 @@ func (a *Agent) session(parent context.Context) error {
 
 	self := a.ownContainerID(ctx)
 
+	capabilities := a.Executor.Capabilities()
+	if a.Config.HostShell {
+		capabilities = append(capabilities, capabilityHostShell)
+	}
+
 	stream, err := client.SubscribeCommands(ctx, &agentv1.SubscribeCommandsRequest{
 		AgentVersion:     version.Version,
-		Capabilities:     a.Executor.Capabilities(),
+		Capabilities:     capabilities,
 		RecentlyFinished: a.store.recentlyFinished(),
 		ImageDigest:      a.ownImageDigest(ctx),
 		ContainerId:      self,
@@ -443,6 +454,7 @@ func (a *Agent) facts(ctx context.Context) *agentv1.HostFacts {
 
 	facts.AgentContainerId = a.ownContainerID(ctx)
 	facts.AgentImageDigest = a.ownImageDigest(ctx)
+	facts.ComposeVersion = a.composeVersion(ctx)
 
 	return facts
 }

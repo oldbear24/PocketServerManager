@@ -122,6 +122,9 @@ func TestStartingOpensNoBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if err := app.OnTerminate().Trigger(&core.TerminateEvent{App: app}); err != nil {
+			t.Error(err)
+		}
 		if err := app.ClearBootstrap(); err != nil {
 			t.Error(err)
 		}

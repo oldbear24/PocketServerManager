@@ -8,7 +8,8 @@
     "unknown": "neznámé",
     "actions": "Akce",
     "name": "Název",
-    "save": "Uložit"
+    "save": "Uložit",
+    "edit": "Upravit"
   },
   "nav": {
     "label": "Hlavní navigace",
@@ -103,7 +104,8 @@
       "paused": "Pozastaven",
       "dead": "Mrtvý",
       "removing": "Odstraňuje se"
-    }
+    },
+    "notFound": "Tento kontejner neexistuje."
   },
   "overview": {
     "title": "Přehled",
@@ -150,7 +152,9 @@
       "overview": "Přehled",
       "containers": "Kontejnery",
       "volumes": "Svazky a sítě",
-      "agent": "Nastavení agenta"
+      "agent": "Nastavení agenta",
+      "proxy": "Proxy a weby",
+      "backups": "Zálohy"
     },
     "restartAgent": "Restartovat agenta",
     "restartQueued": "Agent se restartuje.",
@@ -226,7 +230,33 @@
     "updateStepUpdater": "Dočasný kontejner updateru spuštěn",
     "updateStepConnected": "Nový agent se připojil k panelu",
     "updateStepRemoved": "Starý kontejner odstraněn",
-    "updateStepRolledBack": "Vráceno na starý kontejner"
+    "updateStepRolledBack": "Vráceno na starý kontejner",
+    "netIn": "Síť dovnitř",
+    "netOut": "Síť ven",
+    "load": "Load 1/5/15",
+    "disks": "Disky",
+    "noDisks": "Agent zatím nenahlásil žádné disky.",
+    "diskOf": "Využití {{mount}}",
+    "cpuShort": "CPU",
+    "ramShort": "RAM",
+    "showLogs": "Logy kontejneru {{name}}",
+    "more": "Další akce",
+    "containerRow": "Kontejner",
+    "agentContainerLine": "{{name}} · image {{version}}",
+    "commandCounts3": "{{queued}} ve frontě · {{sent}} odesláno · {{done}} dokončeno",
+    "composeShort": "Compose {{version}}",
+    "newStack": "Nový stack",
+    "edgeRoutes": "Edge proxy – trasy",
+    "edgeRoutesNote": "Caddy řízený agentem · certifikáty z panelu",
+    "edgeRoutesLater": "Trasy se tu objeví s weby a doménami, v milníku M3.",
+    "proxyLater": "Edge proxy, weby a jejich trasy přijdou v milníku M3.",
+    "backupsLater": "Zálohovací úlohy tohoto serveru přijdou v milníku M4.",
+    "openTerminal": "Terminál v {{name}}",
+    "restarts_one": "{{count}}× restart",
+    "restarts_few": "{{count}}× restart",
+    "restarts_many": "{{count}}× restart",
+    "restarts_other": "{{count}}× restart",
+    "load1": "Load"
   },
   "connect": {
     "title": "Připojit nový server",
@@ -349,7 +379,8 @@
       "terminal_session": "Relace terminálu",
       "adminer_session": "Relace Admineru",
       "payload_capture": "Zachycení obsahu",
-      "integrity_broken": "Porušená integrita"
+      "integrity_broken": "Porušená integrita",
+      "terminal_session_end": "Terminál zavřen"
     },
     "verb": {
       "create": "vytvořil",
@@ -368,7 +399,8 @@
       "terminal_session": "otevřel terminál na",
       "adminer_session": "otevřel Adminer na",
       "payload_capture": "spustil zachycení obsahu na",
-      "integrity_broken": "našel porušený řetězec v"
+      "integrity_broken": "našel porušený řetězec v",
+      "terminal_session_end": "zavřel(a) terminál na"
     },
     "source": {
       "ui": "UI",
@@ -540,10 +572,151 @@
     },
     "command": {
       "timed_out": "Příkaz vypršel"
+    },
+    "terminal": {
+      "opened": "Terminál otevřel(a) {{user}}: {{target}}"
     }
   },
   "alert": {
     "agent_offline": "{{name}}: agent přestal odpovídat",
     "audit_integrity": "Kontrola integrity auditu selhala"
+  },
+  "chart": {
+    "now": "teď",
+    "time": "Čas",
+    "range": "Časový rozsah",
+    "ranges": {
+      "1h": "1 h",
+      "24h": "24 h",
+      "7d": "7 d"
+    },
+    "usageLabel": "{{title}}, CPU a paměť za posledních {{range}}",
+    "noData": "V tomto rozsahu zatím nejsou žádné vzorky",
+    "showTable": "Zobrazit jako tabulku"
+  },
+  "logs": {
+    "title": "Logy",
+    "status": {
+      "connecting": "připojuji",
+      "live": "živě",
+      "ended": "stream skončil"
+    },
+    "serviceFilter": "Zobrazit logy",
+    "all": "Vše",
+    "filter": "Filtrovat (regex)…",
+    "filterInvalid": "Toto není platný regulární výraz, proto se nic nefiltruje.",
+    "timestampsOn": "Časy: zapnuto",
+    "timestampsOff": "Časy: vypnuto",
+    "followOn": "Sledovat: zapnuto",
+    "followOff_one": "Sledovat: vypnuto · {{count}} nový",
+    "followOff_few": "Sledovat: vypnuto · {{count}} nové",
+    "followOff_many": "Sledovat: vypnuto · {{count}} nových",
+    "followOff_other": "Sledovat: vypnuto · {{count}} nových",
+    "download": "Stáhnout, co je tu zobrazeno",
+    "dropped_one": "{{count}} řádek se sem nedostal: přišly moc rychle.",
+    "dropped_few": "{{count}} řádky se sem nedostaly: přišly moc rychle.",
+    "dropped_many": "{{count}} řádků se sem nedostalo: přišly moc rychle.",
+    "dropped_other": "{{count}} řádků se sem nedostalo: přišly moc rychle.",
+    "empty": "Čekám na řádky logu…",
+    "noMatch": "Filtru neodpovídá žádný řádek."
+  },
+  "terminal": {
+    "open": "Terminál",
+    "title": "Webový terminál",
+    "note": "Pro administrátory. Kdo ho otevřel, kdy a kde se zapíše do Auditu a aktivity; co se píše, ne.",
+    "target": "Otevřít shell v",
+    "choose": "Vyber kontejner…",
+    "hostShell": "přímo na serveru",
+    "hostShellRisk": "Shell na serveru běží přes krátkodobý privilegovaný kontejner s plným přístupem k tomuto serveru: kdo se sem dostane, má root.",
+    "hostShellOff": "Shell na serveru je tu vypnutý. Povolíš ho spuštěním agenta s HOST_SHELL_ENABLED=1.",
+    "connect": "Připojit",
+    "reconnect": "Připojit znovu",
+    "loading": "Načítám terminál…",
+    "state": {
+      "connecting": "připojuji",
+      "open": "připojeno",
+      "exited": "skončil s kódem {{code}}",
+      "idle": "zavřen po dlouhém tichu",
+      "error": "selhalo",
+      "closed": "odpojeno"
+    }
+  },
+  "stacks": {
+    "new": "Nový stack",
+    "name": "Název (malá písmena, číslice, pomlčky)",
+    "nameInvalid": "Použij malá písmena, číslice, pomlčky a podtržítka.",
+    "server": "Server",
+    "create": "Vytvořit a upravit",
+    "noneTitle": "Zatím žádné stacky",
+    "noneText": "Stack je Compose projekt na jednom serveru: soubor, jeho proměnné a tajemství, a každá změna se uchová jako revize.",
+    "running": "{{running}} / {{total}} běží",
+    "revision": "Revize",
+    "deployedAt": "Nasazeno",
+    "found": "Nalezeno na serverech",
+    "foundNote": "Compose projekty, které zatím nespravuje žádný stack",
+    "project": "Projekt",
+    "services": "Služby",
+    "import": "Importovat",
+    "importQueued": "Importuji {{name}}. Stack se tu objeví, jakmile se načtou jeho soubory."
+  },
+  "stack": {
+    "notFound": "Tento stack neexistuje.",
+    "unsaved": "neuložené změny",
+    "failed": "poslední nasazení selhalo",
+    "notDeployed": "zatím nenasazeno",
+    "deployedLine": "revize r{{revision}} nasazena {{date}}",
+    "source": {
+      "editor": "zdroj: editor v panelu",
+      "import": "zdroj: import ze serveru"
+    },
+    "pull": "Stáhnout image",
+    "stop": "Zastavit",
+    "down": "Odstranit kontejnery",
+    "downConfirm": "Odstranit kontejnery stacku {{name}}?",
+    "downNote": "Stack a jeho revize zůstanou, a pokud neřekneš jinak, i pojmenované svazky. Nasazení kontejnery vrátí.",
+    "downVolumes": "Odstranit i pojmenované svazky s jejich daty",
+    "deploy": "Nasadit r{{revision}}",
+    "files": "Soubory stacku",
+    "checking": "kontroluji…",
+    "valid": "validní · řádků: {{count}}",
+    "invalid_one": "{{count}} problém",
+    "invalid_few": "{{count}} problémy",
+    "invalid_many": "{{count}} problémů",
+    "invalid_other": "{{count}} problémů",
+    "line": "řádek {{line}}:",
+    "editorLoading": "Načítám editor…",
+    "note": "Co se změnilo, pro historii (nepovinné)",
+    "discard": "Zahodit změny",
+    "saved": "Změny se uložily jako nová revize.",
+    "output": "Výstup",
+    "outputWaiting": "Čekám na výstup…",
+    "uptime": "běží {{value}}",
+    "ports": "Port",
+    "revisions": "Revize",
+    "draft": "Tvoje změny",
+    "draftNote": "neuloženo · koncept",
+    "noNote": "Bez popisu",
+    "deployedOn": "nasazeno {{date}}",
+    "compare": "Zobrazit změny",
+    "rollback": "Vrátit zpět",
+    "rollbackConfirm": "Znovu nasadit r{{revision}}?",
+    "rollbackNote": "Soubory té revize se nasadí jako nová revize. Historie jen přibývá; tajemství si drží své současné hodnoty.",
+    "noRevisions": "Zatím žádné revize.",
+    "variables": "Proměnné a tajemství",
+    "secret": "tajné",
+    "hiddenValue": "skrytá hodnota",
+    "removeSecret": "Odstranit {{name}}",
+    "noVariables": "Zatím žádné proměnné.",
+    "secretsNote": "Tajemství jsou uložena šifrovaně a k agentovi jdou jen v příkazu nasazení. Do env souboru se zapíšou jen po dobu nasazení, pak se odstraní, a zpět se přečíst nedají.",
+    "secretName": "Název",
+    "secretNameInvalid": "Písmena, číslice a podtržítka; na začátku ne číslice.",
+    "secretValue": "Hodnota",
+    "addSecret": "Nastavit tajemství",
+    "secretSaved": "Tajemství se uložilo. Projeví se při dalším nasazení.",
+    "removeTitle": "Odstranit tento stack",
+    "removeNote": "Stack i jeho historie zmizí z panelu. Jeho kontejnery musí být nejdřív pryč.",
+    "remove": "Odstranit stack",
+    "removeConfirm": "Odstranit stack {{name}}?",
+    "hostOffline": "Server je offline: co teď spustíš, počká, až se vrátí, nejdéle hodinu."
   }
 }

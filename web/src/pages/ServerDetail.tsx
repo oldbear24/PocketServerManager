@@ -1,4 +1,14 @@
-import { Download, Play, RefreshCw, RotateCw, Square, Trash2 } from "lucide-react";
+import {
+  AlignLeft,
+  Download,
+  MoreHorizontal,
+  Play,
+  RefreshCw,
+  RotateCw,
+  Square,
+  TerminalSquare,
+  Trash2,
+} from "lucide-react";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +17,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import { ContainerStatePill, HostStatusPill } from "../components/status";
+import { UsageChart } from "../components/UsageChart";
 import {
   Banner,
   Button,
@@ -25,6 +36,7 @@ import {
 import { api, errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import {
+  formatBitrate,
   formatBytes,
   formatDate,
   formatDateTime,
@@ -37,11 +49,17 @@ import {
   percentOf,
 } from "../lib/format";
 import { eventText } from "../lib/events";
+import {
+  useContainerValues,
+  useHostMetrics,
+  type MetricRange,
+  type MountUsage,
+} from "../lib/metrics";
 import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecord, useNow } from "../lib/realtime";
 import type { Command, Container, Host, HostEvent, Network, PanelInfo, Volume } from "../lib/types";
 
-const tabs = ["overview", "containers", "volumes", "agent"] as const;
+const tabs = ["overview", "containers", "proxy", "volumes", "backups", "agent"] as const;
 type Tab = (typeof tabs)[number];
 
 const protectedRoles = ["agent", "updater", "edge", "job"];
@@ -72,6 +90,7 @@ export function ServerDetailPage() {
     host.os,
     host.cpu_cores ? t("server.cores", { count: host.cpu_cores }) : "",
     host.mem_bytes ? `${formatBytes(host.mem_bytes)} RAM` : "",
+    host.disk_total_bytes ? formatBytes(host.disk_total_bytes) : "",
     host.ip4,
     host.ip6,
     host.uptime_s ? t("server.uptime", { value: formatDuration(host.uptime_s) }) : "",
@@ -107,14 +126,26 @@ export function ServerDetailPage() {
         items={[
           { id: "overview", label: t("server.tab.overview") },
           { id: "containers", label: t("server.tab.containers"), count: containers.total },
+          { id: "proxy", label: t("server.tab.proxy") },
           { id: "volumes", label: t("server.tab.volumes") },
+          { id: "backups", label: t("server.tab.backups") },
           { id: "agent", label: t("server.tab.agent") },
         ]}
       />
 
       {active === "overview" && <OverviewTab host={host} containers={containers.items} />}
       {active === "containers" && <ContainersCard containers={containers.items} host={host} />}
+      {active === "proxy" && (
+        <Card>
+          <EmptyState title={t("server.tab.proxy")}>{t("server.proxyLater")}</EmptyState>
+        </Card>
+      )}
       {active === "volumes" && <VolumesTab host={host} />}
+      {active === "backups" && (
+        <Card>
+          <EmptyState title={t("server.tab.backups")}>{t("server.backupsLater")}</EmptyState>
+        </Card>
+      )}
       {active === "agent" && <AgentTab host={host} />}
     </>
   );
@@ -140,12 +171,55 @@ function HostActions({ host }: { host: Host }) {
     }
   };
 
+  const offline = host.status === "offline";
+
+  const run = async (type: string, payload: object, message: string) => {
+    try {
+      await api.runCommand(host.id, type, payload, host.name);
+      toast.success(message);
+    } catch (err) {
+      toast.error(err);
+    }
+  };
+
   return (
     <>
-      <Button disabled={host.status === "offline"} onClick={() => setConfirming(true)}>
+      <Link className="button" to={`/servers/${host.id}/terminal`} aria-disabled={offline}>
+        <TerminalSquare size={16} aria-hidden="true" />
+        {t("terminal.open")}
+      </Link>
+      <Button disabled={offline} onClick={() => setConfirming(true)}>
         <RotateCw size={16} aria-hidden="true" />
         {t("server.restartAgent")}
       </Button>
+      <details className="menu">
+        <summary
+          className="button icon-button"
+          aria-label={t("server.more")}
+          title={t("server.more")}
+        >
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </summary>
+        <div className="menu-items">
+          <button
+            type="button"
+            disabled={offline}
+            onClick={() => void run("agent.rotate_certificate", {}, t("server.rotateQueued"))}
+          >
+            {t("server.rotateCert")}
+          </button>
+          <button
+            type="button"
+            disabled={offline}
+            onClick={() =>
+              void run("agent.diagnostics", { log_lines: 1000 }, t("server.diagnosticsQueued"))
+            }
+          >
+            {t("server.downloadDiagnostics")}
+          </button>
+          <Link to={`/servers/${host.id}/agent`}>{t("server.tab.agent")}</Link>
+        </div>
+      </details>
       <ConfirmDialog
         open={confirming}
         title={t("server.restartConfirm", { name: host.name })}
@@ -160,6 +234,10 @@ function HostActions({ host }: { host: Host }) {
 }
 
 function OverviewTab({ host, containers }: { host: Host; containers: Container[] }) {
+  const [range, setRange] = useState<MetricRange>("24h");
+  const metrics = useHostMetrics(host.id, range);
+  const isEdge = host.roles.includes("edge");
+
   return (
     <>
       <div className="columns">
@@ -167,11 +245,19 @@ function OverviewTab({ host, containers }: { host: Host; containers: Container[]
           <AgentCard host={host} />
         </div>
         <div className="column-wide">
-          <UsageCard host={host} />
+          <UsageCard host={host} metrics={metrics} range={range} onRange={setRange} />
         </div>
       </div>
       <ContainersCard containers={containers} host={host} />
-      <EventsCard host={host} />
+      <div className="columns">
+        <div className="column-wide">
+          {isEdge ? <EdgeRoutesCard /> : <EventsCard host={host} />}
+        </div>
+        <div className="column-side">
+          <DisksCard mounts={metrics.data?.mounts ?? []} />
+          {isEdge && <EventsCard host={host} />}
+        </div>
+      </div>
     </>
   );
 }
@@ -201,9 +287,17 @@ function AgentCard({ host }: { host: Host }) {
   }, []);
 
   const queued = useLiveList<Command>("commands", {
-    filter: `host = "${host.id}" && (status = "queued" || status = "dispatched" || status = "running")`,
+    filter: `host = "${host.id}" && status = "queued"`,
     perPage: 1,
   });
+  const sent = useLiveList<Command>("commands", {
+    filter: `host = "${host.id}" && (status = "dispatched" || status = "running")`,
+    perPage: 1,
+  });
+  const agentContainer = useLiveList<Container>("containers", {
+    filter: `host = "${host.id}" && system_role = "agent"`,
+    perPage: 1,
+  }).items[0];
   const done = useLiveList<Command>("commands", {
     filter: `host = "${host.id}" && status = "succeeded"`,
     perPage: 1,
@@ -254,10 +348,35 @@ function AgentCard({ host }: { host: Host }) {
         <dd className="num">{host.rtt_ms ? `${formatNumber(host.rtt_ms, 1)} ms` : "–"}</dd>
         <dt>{t("server.connectedSince")}</dt>
         <dd>{formatDateTime(host.connected_since)}</dd>
+        {agentContainer && (
+          <>
+            <dt>{t("server.containerRow")}</dt>
+            <dd>
+              {t("server.agentContainerLine", {
+                name: agentContainer.name,
+                version: formatVersion(host.agent_version),
+              })}
+              {agentContainer.health && ` · ${agentContainer.health}`}
+            </dd>
+          </>
+        )}
         <dt>Docker</dt>
-        <dd>{host.docker_version ? `Engine ${host.docker_version}` : "–"}</dd>
+        <dd>
+          {[
+            host.docker_version ? `Engine ${host.docker_version}` : "",
+            host.compose_version ? t("server.composeShort", { version: host.compose_version }) : "",
+          ]
+            .filter(Boolean)
+            .join(" · ") || "–"}
+        </dd>
         <dt>{t("server.commands")}</dt>
-        <dd>{t("server.commandCounts", { open: queued.total, done: done.total })}</dd>
+        <dd>
+          {t("server.commandCounts3", {
+            queued: queued.total,
+            sent: sent.total,
+            done: done.total,
+          })}
+        </dd>
       </dl>
       {isAdmin && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
@@ -279,38 +398,102 @@ function AgentCard({ host }: { host: Host }) {
   );
 }
 
-function UsageCard({ host }: { host: Host }) {
+function UsageCard({
+  host,
+  metrics,
+  range,
+  onRange,
+}: {
+  host: Host;
+  metrics: ReturnType<typeof useHostMetrics>;
+  range: MetricRange;
+  onRange: (range: MetricRange) => void;
+}) {
   const { t } = useTranslation();
-  const memory = percentOf(host.mem_used_bytes, host.mem_bytes);
-  const disk = percentOf(host.disk_used_bytes, host.disk_total_bytes);
+  const points = metrics.data?.points ?? null;
+  const last = points ? points.t.length - 1 : -1;
 
   return (
-    <Card title={t("server.usage")}>
-      <dl className="facts" style={{ gridTemplateColumns: "minmax(70px, 100px) 1fr" }}>
-        <dt>CPU</dt>
-        <dd>
-          <span className="num">{formatNumber(host.cpu_percent)} %</span>
-          <ProgressBar value={host.cpu_percent} label="CPU" />
-        </dd>
-        <dt>RAM</dt>
-        <dd>
-          <span className="num">
-            {formatBytes(host.mem_used_bytes)} / {formatBytes(host.mem_bytes)}
-          </span>
-          <ProgressBar value={memory} label="RAM" />
-        </dd>
-        <dt>{t("host.disk")}</dt>
-        <dd>
-          <span className="num">
-            {formatBytes(host.disk_used_bytes)} / {formatBytes(host.disk_total_bytes)}
-          </span>
-          <ProgressBar value={disk} label={t("host.disk")} warnAt={85} errAt={95} />
-        </dd>
-        <dt>Load</dt>
-        <dd className="num">{formatNumber(host.load1, 2)}</dd>
-      </dl>
+    <UsageChart
+      title={t("server.usage")}
+      points={points}
+      stale={metrics.stale}
+      range={range}
+      onRange={onRange}
+      currentCpu={host.cpu_percent}
+      currentMem={`${formatBytes(host.mem_used_bytes)} / ${formatBytes(host.mem_bytes)}`}
+      footer={
+        <dl className="stat-row">
+          <div>
+            <dt>{t("server.netIn")}</dt>
+            <dd>{last >= 0 ? formatBitrate(points?.net_in[last]) : "–"}</dd>
+          </div>
+          <div>
+            <dt>{t("server.netOut")}</dt>
+            <dd>{last >= 0 ? formatBitrate(points?.net_out[last]) : "–"}</dd>
+          </div>
+          <div>
+            <dt>{t("server.load")}</dt>
+            <dd>
+              {[host.load1, host.load5, host.load15]
+                .map((value) => formatNumber(value, 2))
+                .join(" ")}
+            </dd>
+          </div>
+        </dl>
+      }
+    />
+  );
+}
+
+/** The routes of an edge proxy arrive with sites and domains. */
+function EdgeRoutesCard() {
+  const { t } = useTranslation();
+
+  return (
+    <Card title={t("server.edgeRoutes")} note={t("server.edgeRoutesNote")}>
+      <p className="muted">{t("server.edgeRoutesLater")}</p>
     </Card>
   );
+}
+
+function DisksCard({ mounts }: { mounts: MountUsage[] }) {
+  const { t } = useTranslation();
+
+  return (
+    <Card title={t("server.disks")}>
+      {mounts.length === 0 ? (
+        <p className="muted">{t("server.noDisks")}</p>
+      ) : (
+        <div className="disk-list">
+          {mounts.map((mount) => (
+            <div key={mount.mount}>
+              <div className="disk-line">
+                <span className="mono">{mount.mount}</span>
+                <span className="num muted">
+                  {formatBytes(mount.used)} / {formatBytes(mount.total)}
+                </span>
+              </div>
+              <ProgressBar
+                value={percentOf(mount.used, mount.total)}
+                label={t("server.diskOf", { mount: mount.mount })}
+                warnAt={85}
+                errAt={95}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** The stack of a container: a link if PocketCloud manages it, else the project's name. */
+function StackLink({ container }: { container: Container }) {
+  if (container.stack) {
+    return <Link to={`/stacks/${container.stack}`}>{container.project}</Link>;
+  }
+  return <>{container.project || "–"}</>;
 }
 
 export function ContainersCard({ containers, host }: { containers: Container[]; host: Host }) {
@@ -318,12 +501,14 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
   const { user } = useAuth();
   const toast = useToast();
   const now = useNow(30000);
+  const values = useContainerValues(host.id).data ?? {};
 
   const [removing, setRemoving] = useState<Container | null>(null);
   const [removeVolumes, setRemoveVolumes] = useState(false);
   const [pending, setPending] = useState<Record<string, boolean>>({});
 
   const canAct = hasRole(user, "operator");
+  const isAdmin = hasRole(user, "admin");
 
   const running = containers.filter((container) => container.state === "running").length;
   const restarting = containers.filter((container) => container.state === "restarting").length;
@@ -358,6 +543,13 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
     <Card
       title={t("server.containers")}
       note={t("server.containerCounts", { running, restarting, stopped })}
+      side={
+        canAct && (
+          <Link className="button small" to="/stacks">
+            {t("server.newStack")}
+          </Link>
+        )
+      }
       flush
     >
       {containers.length === 0 ? (
@@ -369,9 +561,11 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
               <th>{t("server.container")}</th>
               <th>Stack</th>
               <th>{t("host.state")}</th>
+              <th>{t("server.cpuShort")}</th>
+              <th>{t("server.ramShort")}</th>
               <th>{t("server.ports")}</th>
               <th>Uptime</th>
-              {canAct && <th style={{ textAlign: "right" }}>{t("common.actions")}</th>}
+              <th style={{ textAlign: "right" }}>{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -379,11 +573,17 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
               const isSystem = protectedRoles.includes(container.system_role);
               const isRunning = container.state === "running";
               const busy = pending[container.id];
+              const usage = isRunning ? values[container.docker_id] : undefined;
 
               return (
                 <tr key={container.id}>
                   <td>
-                    <div className="cell-title">{container.name}</div>
+                    <Link
+                      className="cell-title"
+                      to={`/servers/${host.id}/containers/${container.docker_id}`}
+                    >
+                      {container.name}
+                    </Link>
                     <div className="cell-sub">{container.image}</div>
                   </td>
                   <td className="muted">
@@ -392,12 +592,14 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
                         {t("server.system")}
                       </StatusPill>
                     ) : (
-                      container.project || "–"
+                      <StackLink container={container} />
                     )}
                   </td>
                   <td>
                     <ContainerStatePill state={container.state} health={container.health} />
                   </td>
+                  <td className="num">{usage ? `${formatNumber(usage.cpu, 1)} %` : "–"}</td>
+                  <td className="num">{usage ? formatBytes(usage.mem) : "–"}</td>
                   <td className="mono small">
                     {(container.ports ?? [])
                       .filter((port) => port.public)
@@ -407,55 +609,73 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
                   <td className="muted">
                     {isRunning && parseDate(container.started_at)
                       ? formatDuration((now - parseDate(container.started_at)!.getTime()) / 1000)
-                      : "–"}
+                      : container.state === "restarting"
+                        ? t("server.restarts", { count: container.restart_count })
+                        : "–"}
                   </td>
-                  {canAct && (
-                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                      {!isRunning && (
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <Link
+                      className="button icon-button bare"
+                      to={`/servers/${host.id}/containers/${container.docker_id}`}
+                      aria-label={t("server.showLogs", { name: container.name })}
+                      title={t("server.showLogs", { name: container.name })}
+                    >
+                      <AlignLeft size={16} aria-hidden="true" />
+                    </Link>
+                    {isAdmin && isRunning && (
+                      <Link
+                        className="button icon-button bare"
+                        to={`/servers/${host.id}/terminal?container=${container.docker_id}`}
+                        aria-label={t("server.openTerminal", { name: container.name })}
+                        title={t("server.openTerminal", { name: container.name })}
+                      >
+                        <TerminalSquare size={16} aria-hidden="true" />
+                      </Link>
+                    )}
+                    {canAct && !isRunning && (
+                      <IconButton
+                        bare
+                        disabled={busy}
+                        aria-label={t("server.startContainer", { name: container.name })}
+                        onClick={() => void act(container, "container.start", {})}
+                      >
+                        <Play size={16} aria-hidden="true" />
+                      </IconButton>
+                    )}
+                    {canAct && !isSystem && (
+                      <>
+                        {isRunning && (
+                          <IconButton
+                            bare
+                            disabled={busy}
+                            aria-label={t("server.stopContainer", { name: container.name })}
+                            onClick={() => void act(container, "container.stop", {})}
+                          >
+                            <Square size={16} aria-hidden="true" />
+                          </IconButton>
+                        )}
                         <IconButton
                           bare
                           disabled={busy}
-                          aria-label={t("server.startContainer", { name: container.name })}
-                          onClick={() => void act(container, "container.start", {})}
+                          aria-label={t("server.restartContainer", { name: container.name })}
+                          onClick={() => void act(container, "container.restart", {})}
                         >
-                          <Play size={16} aria-hidden="true" />
+                          <RefreshCw size={16} aria-hidden="true" />
                         </IconButton>
-                      )}
-                      {!isSystem && (
-                        <>
-                          {isRunning && (
-                            <IconButton
-                              bare
-                              disabled={busy}
-                              aria-label={t("server.stopContainer", { name: container.name })}
-                              onClick={() => void act(container, "container.stop", {})}
-                            >
-                              <Square size={16} aria-hidden="true" />
-                            </IconButton>
-                          )}
-                          <IconButton
-                            bare
-                            disabled={busy}
-                            aria-label={t("server.restartContainer", { name: container.name })}
-                            onClick={() => void act(container, "container.restart", {})}
-                          >
-                            <RefreshCw size={16} aria-hidden="true" />
-                          </IconButton>
-                          <IconButton
-                            bare
-                            disabled={busy}
-                            aria-label={t("server.removeContainer", { name: container.name })}
-                            onClick={() => {
-                              setRemoveVolumes(false);
-                              setRemoving(container);
-                            }}
-                          >
-                            <Trash2 size={16} aria-hidden="true" />
-                          </IconButton>
-                        </>
-                      )}
-                    </td>
-                  )}
+                        <IconButton
+                          bare
+                          disabled={busy}
+                          aria-label={t("server.removeContainer", { name: container.name })}
+                          onClick={() => {
+                            setRemoveVolumes(false);
+                            setRemoving(container);
+                          }}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </IconButton>
+                      </>
+                    )}
+                  </td>
                 </tr>
               );
             })}

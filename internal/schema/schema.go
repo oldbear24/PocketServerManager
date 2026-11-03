@@ -117,6 +117,9 @@ type AuditedCollection struct {
 	// Ignore lists fields that are not configuration, such as live status.
 	// A save that changes nothing else produces no audit entry.
 	Ignore []string
+	// Revision is the number field that counts the revisions of a record, if any.
+	// An entry of a save that moves it says from which revision to which.
+	Revision string
 }
 
 // Audited lists the configuration collections covered by the change audit.
@@ -128,11 +131,11 @@ var Audited = []AuditedCollection{
 		"status", "os", "kernel", "arch", "cpu_cores", "mem_bytes", "ip4", "ip6",
 		"agent_version", "agent_image_digest", "agent_container_id", "docker_version",
 		"last_seen", "rtt_ms", "clock_skew_ms", "connected_since", "stream_open",
-		"uptime_s", "load1", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
-		"runtime", "self_checks", "inventory_at", "capabilities",
+		"uptime_s", "load1", "load5", "load15", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
+		"runtime", "self_checks", "inventory_at", "capabilities", "compose_version",
 		"cert_serial", "cert_prev_serial", "cert_expires_at", "hostname",
 	}},
-	{Name: Stacks, Label: "name", Host: "host", Ignore: []string{"status"}},
+	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at"}},
 	{Name: Settings, Label: "public_url"},
 	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
 	{Name: "alert_rules", Label: "kind"},
