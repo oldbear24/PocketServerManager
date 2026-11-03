@@ -313,7 +313,11 @@ func up(ctx context.Context, client *dockerapi.Client, parsed *call) error {
 
 		for _, network := range slices.Sorted(maps.Keys(service.Networks)) {
 			if project.Networks[network].External {
-				err := client.ConnectNetwork(ctx, project.Networks[network].Name, id, nil)
+				var endpoint map[string]any
+				if config := service.Networks[network]; config != nil && len(config.Aliases) > 0 {
+					endpoint = map[string]any{"Aliases": config.Aliases}
+				}
+				err := client.ConnectNetwork(ctx, project.Networks[network].Name, id, endpoint)
 				if err != nil {
 					return fmt.Errorf("network %s declared as external, but could not be found: %w", network, err)
 				}

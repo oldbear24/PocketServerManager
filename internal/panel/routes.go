@@ -39,6 +39,11 @@ func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 	// a WebSocket cannot carry the auth header: its ticket comes from a signed-in route
 	se.Router.GET("/api/pc/terminal/socket", p.handleTerminalSocket)
 
+	// a browser tab of Adminer cannot either: a ticket becomes a cookie of that browser.
+	// Adminer only uses GET and POST; a route for any method would clash with the UI's.
+	se.Router.GET(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
+	se.Router.POST(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
+
 	se.Router.GET("/api/pc/ca.pem", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "application/x-pem-file")
 		e.Response.Header().Set("Content-Disposition", `attachment; filename="pocketcloud-root-ca.pem"`)

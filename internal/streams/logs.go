@@ -339,7 +339,15 @@ func (b *Broker) Close() {
 	for _, session := range b.terminals {
 		terminals = append(terminals, session)
 	}
+	relays := make([]*Relay, 0, len(b.relays))
+	for _, relay := range b.relays {
+		relays = append(relays, relay)
+	}
 	b.mu.Unlock()
+
+	for _, relay := range relays {
+		relay.Close("The panel is shutting down.")
+	}
 
 	for _, session := range sessions {
 		b.endLogSession(session, "The panel is shutting down.")

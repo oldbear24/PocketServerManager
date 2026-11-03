@@ -46,6 +46,8 @@ func (a *Agent) registerHandlers() {
 
 	x.Handle("exec.start", a.handleExecStart)
 	x.Handle("exec.stop", a.handleExecStop)
+
+	a.registerDatabaseHandlers()
 }
 
 // protected refuses work on the containers PocketCloud itself depends on. The UI

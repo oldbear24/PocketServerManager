@@ -229,11 +229,6 @@ func secretKeysOf(stack *core.Record) []string {
 	return keys
 }
 
-// resolveSecret finds a secret an env file refers to as `${secret:name}`.
-func (p *Panel) resolveSecret(name string) (string, error) {
-	return p.resolveDatabaseSecret(name)
-}
-
 // enrichStackDeploy puts the secrets into the command right before delivery. The
 // stored payload only has the env file with its references.
 func (p *Panel) enrichStackDeploy(record *core.Record, command *agentv1.Command) error {
@@ -250,7 +245,7 @@ func (p *Panel) enrichStackDeploy(record *core.Record, command *agentv1.Command)
 		return err
 	}
 
-	plain, referenced, err := stacks.ResolveEnv(payload.GetEnv(), p.resolveSecret)
+	plain, referenced, err := stacks.ResolveEnv(payload.GetEnv(), p.secretResolver(stack))
 	if err != nil {
 		return err
 	}
@@ -258,7 +253,7 @@ func (p *Panel) enrichStackDeploy(record *core.Record, command *agentv1.Command)
 
 	payload.Env = plain
 	payload.Secrets = secrets
-	payload.OverrideYaml, err = p.stackOverride(stack, payload.GetComposeYaml())
+	payload.OverrideYaml, payload.DbNetworks, err = p.stackOverride(stack, payload.GetComposeYaml())
 
 	return err
 }
@@ -280,7 +275,7 @@ func (p *Panel) enrichStackPull(record *core.Record, command *agentv1.Command) e
 		return err
 	}
 
-	_, referenced, err := stacks.ResolveEnv(stack.GetString("env"), p.resolveSecret)
+	_, referenced, err := stacks.ResolveEnv(stack.GetString("env"), p.secretResolver(stack))
 	if err != nil {
 		return err
 	}
@@ -476,7 +471,7 @@ func (p *Panel) deployRevision(ctx context.Context, stack, revision *core.Record
 		return nil, &deployRejection{Message: "The Compose file has problems, so it was not deployed.", Result: &result}
 	}
 
-	if _, _, err := stacks.ResolveEnv(env, p.resolveSecret); err != nil {
+	if _, _, err := stacks.ResolveEnv(env, p.secretResolver(stack)); err != nil {
 		return nil, &deployRejection{Message: "The env file refers to a secret that does not exist: " + err.Error()}
 	}
 
@@ -784,6 +779,8 @@ func (p *Panel) handleComposeImport(e *core.RequestEvent) error {
 func (p *Panel) artifactHandlers() map[string]gateway.ArtifactHandler {
 	return map[string]gateway.ArtifactHandler{
 		artifactStackImport: p.importStack,
+		artifactSQLExport:   p.storeDump(artifactSQLExport),
+		artifactSQLFinal:    p.storeDump(artifactSQLFinal),
 	}
 }
 

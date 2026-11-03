@@ -214,6 +214,10 @@ message StackDeploy {
   // override_yaml is a second Compose file the panel generates, for what it manages
   // itself: the database networks of the stack. Empty when there is nothing to add.
   string override_yaml = 8;
+  // db_networks are the database networks override_yaml refers to. The agent
+  // creates them and attaches their database servers before Compose runs, so that
+  // the external networks exist.
+  repeated DbNetworkAttach db_networks = 9;
 }
 
 // StackStop stops a stack's containers.
@@ -519,6 +523,17 @@ message DbAdminerStart {
   string image = 3;
   // ttl_s is when the container gets removed.
   int32 ttl_s = 4;
+  // connection is the database server Adminer signs in to. Its credentials go
+  // only into the environment of the Adminer container.
+  DbConnection connection = 5;
+  // server_alias is the server's name on the network.
+  string server_alias = 6;
+  // database is the database Adminer opens.
+  string database = 7;
+  // user is the user Adminer signs in as; empty uses the administrator.
+  string user = 8;
+  // password is that user's password.
+  string password = 9 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // DbAdminerStop removes an Adminer container.

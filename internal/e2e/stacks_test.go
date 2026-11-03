@@ -19,6 +19,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
@@ -90,7 +91,7 @@ type composeHarness struct {
 	hostRoot string
 }
 
-func newComposeHarness(t *testing.T, name string) *composeHarness {
+func newComposeHarness(t *testing.T, name string, prepare ...func(*agent.Agent)) *composeHarness {
 	t.Helper()
 
 	h := newHarness(t)
@@ -104,7 +105,7 @@ func newComposeHarness(t *testing.T, name string) *composeHarness {
 	config.DockerCLI = fakeCLI(t)
 	config.HostRoot = hostRoot
 
-	running := h.start(config)
+	running := h.start(config, prepare...)
 
 	var host *core.Record
 	h.waitFor("the agent to connect", func() bool {

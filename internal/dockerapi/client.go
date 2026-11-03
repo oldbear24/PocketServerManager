@@ -85,8 +85,21 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 			return nil, err
 		}
 		reader = bytes.NewReader(raw)
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers["Content-Type"] = "application/json"
 	}
 
+	return c.send(ctx, method, path, query, reader, headers)
+}
+
+// requestRaw sends a body that is not JSON, such as an archive.
+func (c *Client) requestRaw(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string) (*http.Response, error) {
+	return c.send(ctx, method, path, query, body, map[string]string{"Content-Type": contentType})
+}
+
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, reader io.Reader, headers map[string]string) (*http.Response, error) {
 	target := c.base + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -95,9 +108,6 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -424,12 +434,17 @@ func (c *Client) InspectVolume(ctx context.Context, name string) (*Volume, error
 	return &volume, nil
 }
 
-// Network is one network.
+// Network is one network. Containers, keyed by id, is only filled in by
+// InspectNetwork.
 type Network struct {
-	ID     string            `json:"Id"`
-	Name   string            `json:"Name"`
-	Driver string            `json:"Driver"`
-	Labels map[string]string `json:"Labels"`
+	ID         string            `json:"Id"`
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Internal   bool              `json:"Internal"`
+	Labels     map[string]string `json:"Labels"`
+	Containers map[string]struct {
+		Name string `json:"Name"`
+	} `json:"Containers"`
 }
 
 // Networks lists every network.

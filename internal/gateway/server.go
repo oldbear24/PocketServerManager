@@ -106,6 +106,9 @@ type StreamBroker interface {
 	LogsClosed(hostID, sessionID string)
 	// Terminal attaches the agent's Exec stream to a session and blocks until it ends.
 	Terminal(ctx context.Context, hostID, sessionID string, stream agentv1.AgentService_ExecServer) error
+	// Relay attaches the agent's stream to a tool container to its session and
+	// blocks until it ends.
+	Relay(ctx context.Context, hostID, sessionID string, stream agentv1.AgentService_RelayServer) error
 }
 
 // Start listens on addr and serves in the background.

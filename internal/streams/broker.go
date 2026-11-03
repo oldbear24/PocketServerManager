@@ -23,6 +23,8 @@ type Broker struct {
 	logSources  map[string]*logSession
 
 	terminals map[string]*terminal
+
+	relays map[string]*Relay
 }
 
 // New creates a broker for a command queue. Call Register before the queue starts.
@@ -33,6 +35,7 @@ func New(queue *commands.Manager) *Broker {
 		logSessions: make(map[string]*logSession),
 		logSources:  make(map[string]*logSession),
 		terminals:   make(map[string]*terminal),
+		relays:      make(map[string]*Relay),
 	}
 }
 
@@ -40,6 +43,7 @@ func New(queue *commands.Manager) *Broker {
 func (b *Broker) Register() {
 	b.Commands.OnFinish("logs.follow", b.logFollowFinished)
 	b.Commands.OnFinish("exec.start", b.execStartFinished)
+	b.Commands.OnFinish("db.adminer.start", b.adminerStartFinished)
 }
 
 // newSessionID returns a random id. It is what binds an agent's stream to a

@@ -307,6 +307,26 @@ func TestNoSecretInAuditLog(t *testing.T) {
 
 	host := testutil.NewHost(t, env.app, "secret-host")
 
+	// a database user belongs to a server
+	servers, err := env.app.FindCollectionByNameOrId(schema.DBServers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbServer := core.NewRecord(servers)
+	dbServer.Set("host", host.Id)
+	dbServer.Set("name", "audit-server")
+	dbServer.Set("engine", schema.EngineMariaDB)
+	dbServer.Set("kind", schema.DBServerShared)
+	if err := env.app.Save(dbServer); err != nil {
+		t.Fatal(err)
+	}
+
+	// what a collection needs besides a host and a name
+	required := map[string]map[string]any{
+		schema.DBServers: {"engine": schema.EngineMariaDB, "kind": schema.DBServerShared},
+		schema.DBUsers:   {"server": dbServer.Id, "name": "with_secrets"},
+	}
+
 	covered := 0
 	for name, fields := range schema.Encrypted {
 		collection, err := env.app.FindCollectionByNameOrId(name)
@@ -321,6 +341,9 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		}
 		if collection.Fields.GetByName("name") != nil {
 			record.Set("name", "with-secrets")
+		}
+		for field, value := range required[name] {
+			record.Set(field, value)
 		}
 		for _, field := range fields {
 			record.Set(field, secret+"-create")
@@ -350,7 +373,7 @@ func TestNoSecretInAuditLog(t *testing.T) {
 	testutil.NewUser(t, env.app, "secret@example.com", schema.RoleViewer)
 
 	dump := []string{}
-	err := env.app.DB().NewQuery("SELECT coalesce(changes,'') || coalesce(snapshot,'') || note || record_label FROM audit_log").Column(&dump)
+	err = env.app.DB().NewQuery("SELECT coalesce(changes,'') || coalesce(snapshot,'') || note || record_label FROM audit_log").Column(&dump)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -186,6 +186,14 @@ func (a *Agent) handleStackDeploy(ctx context.Context, command *agentv1.Command,
 
 	output := newMaskingWriter(reporter, payload.GetSecrets())
 
+	// the override refers to the database networks as external: they must exist
+	if len(payload.GetDbNetworks()) > 0 {
+		reporter.Progress("networks", "Preparing the database networks", 5)
+		if err := a.prepareNetworks(ctx, payload.GetDbNetworks(), output); err != nil {
+			return nil, err
+		}
+	}
+
 	reporter.Progress("validate", "Validating the Compose file", 10)
 	if err := a.compose(ctx, payload.GetName(), output, env, "config", "--quiet"); err != nil {
 		return nil, err

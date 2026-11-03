@@ -1361,7 +1361,11 @@ type StackDeploy struct {
 	Registries []*RegistryAuth `protobuf:"bytes,7,rep,name=registries,proto3" json:"registries,omitempty"`
 	// override_yaml is a second Compose file the panel generates, for what it manages
 	// itself: the database networks of the stack. Empty when there is nothing to add.
-	OverrideYaml  string `protobuf:"bytes,8,opt,name=override_yaml,json=overrideYaml,proto3" json:"override_yaml,omitempty"`
+	OverrideYaml string `protobuf:"bytes,8,opt,name=override_yaml,json=overrideYaml,proto3" json:"override_yaml,omitempty"`
+	// db_networks are the database networks override_yaml refers to. The agent
+	// creates them and attaches their database servers before Compose runs, so that
+	// the external networks exist.
+	DbNetworks    []*DbNetworkAttach `protobuf:"bytes,9,rep,name=db_networks,json=dbNetworks,proto3" json:"db_networks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1450,6 +1454,13 @@ func (x *StackDeploy) GetOverrideYaml() string {
 		return x.OverrideYaml
 	}
 	return ""
+}
+
+func (x *StackDeploy) GetDbNetworks() []*DbNetworkAttach {
+	if x != nil {
+		return x.DbNetworks
+	}
+	return nil
 }
 
 // StackStop stops a stack's containers.
@@ -3283,7 +3294,18 @@ type DbAdminerStart struct {
 	// image is the Adminer image.
 	Image string `protobuf:"bytes,3,opt,name=image,proto3" json:"image,omitempty"`
 	// ttl_s is when the container gets removed.
-	TtlS          int32 `protobuf:"varint,4,opt,name=ttl_s,json=ttlS,proto3" json:"ttl_s,omitempty"`
+	TtlS int32 `protobuf:"varint,4,opt,name=ttl_s,json=ttlS,proto3" json:"ttl_s,omitempty"`
+	// connection is the database server Adminer signs in to. Its credentials go
+	// only into the environment of the Adminer container.
+	Connection *DbConnection `protobuf:"bytes,5,opt,name=connection,proto3" json:"connection,omitempty"`
+	// server_alias is the server's name on the network.
+	ServerAlias string `protobuf:"bytes,6,opt,name=server_alias,json=serverAlias,proto3" json:"server_alias,omitempty"`
+	// database is the database Adminer opens.
+	Database string `protobuf:"bytes,7,opt,name=database,proto3" json:"database,omitempty"`
+	// user is the user Adminer signs in as; empty uses the administrator.
+	User string `protobuf:"bytes,8,opt,name=user,proto3" json:"user,omitempty"`
+	// password is that user's password.
+	Password      string `protobuf:"bytes,9,opt,name=password,proto3" json:"password,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3344,6 +3366,41 @@ func (x *DbAdminerStart) GetTtlS() int32 {
 		return x.TtlS
 	}
 	return 0
+}
+
+func (x *DbAdminerStart) GetConnection() *DbConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *DbAdminerStart) GetServerAlias() string {
+	if x != nil {
+		return x.ServerAlias
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
 }
 
 // DbAdminerStop removes an Adminer container.
@@ -4649,7 +4706,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"Y\n" +
 	"\tImagePull\x12\x14\n" +
 	"\x05image\x18\x01 \x01(\tR\x05image\x126\n" +
-	"\x04auth\x18\x02 \x01(\v2\".pocketcloud.agent.v1.RegistryAuthR\x04auth\"\xfb\x02\n" +
+	"\x04auth\x18\x02 \x01(\v2\".pocketcloud.agent.v1.RegistryAuthR\x04auth\"\xc3\x03\n" +
 	"\vStackDeploy\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fcompose_yaml\x18\x02 \x01(\tR\vcomposeYaml\x12\x10\n" +
@@ -4660,7 +4717,9 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\n" +
 	"registries\x18\a \x03(\v2\".pocketcloud.agent.v1.RegistryAuthR\n" +
 	"registries\x12#\n" +
-	"\roverride_yaml\x18\b \x01(\tR\foverrideYaml\x1a:\n" +
+	"\roverride_yaml\x18\b \x01(\tR\foverrideYaml\x12F\n" +
+	"\vdb_networks\x18\t \x03(\v2%.pocketcloud.agent.v1.DbNetworkAttachR\n" +
+	"dbNetworks\x1a:\n" +
 	"\fSecretsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1f\n" +
@@ -4826,13 +4885,20 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\aDbStats\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +
-	"connection\"t\n" +
+	"connection\"\xad\x02\n" +
 	"\x0eDbAdminerStart\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
 	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x14\n" +
 	"\x05image\x18\x03 \x01(\tR\x05image\x12\x13\n" +
-	"\x05ttl_s\x18\x04 \x01(\x05R\x04ttlS\".\n" +
+	"\x05ttl_s\x18\x04 \x01(\x05R\x04ttlS\x12B\n" +
+	"\n" +
+	"connection\x18\x05 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +
+	"connection\x12!\n" +
+	"\fserver_alias\x18\x06 \x01(\tR\vserverAlias\x12\x1a\n" +
+	"\bdatabase\x18\a \x01(\tR\bdatabase\x12\x12\n" +
+	"\x04user\x18\b \x01(\tR\x04user\x12 \n" +
+	"\bpassword\x18\t \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\".\n" +
 	"\rDbAdminerStop\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"g\n" +
@@ -5077,33 +5143,35 @@ var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
 	5,  // 52: pocketcloud.agent.v1.ImagePull.auth:type_name -> pocketcloud.agent.v1.RegistryAuth
 	56, // 53: pocketcloud.agent.v1.StackDeploy.secrets:type_name -> pocketcloud.agent.v1.StackDeploy.SecretsEntry
 	5,  // 54: pocketcloud.agent.v1.StackDeploy.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
-	57, // 55: pocketcloud.agent.v1.StackPull.secrets:type_name -> pocketcloud.agent.v1.StackPull.SecretsEntry
-	5,  // 56: pocketcloud.agent.v1.StackPull.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
-	17, // 57: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
-	58, // 58: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	59, // 59: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	60, // 60: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	27, // 61: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	27, // 62: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	27, // 63: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	27, // 64: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	27, // 65: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	27, // 66: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	61, // 67: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	42, // 68: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 69: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	62, // 70: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	42, // 71: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 72: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 73: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 74: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 75: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	42, // 76: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	77, // [77:77] is the sub-list for method output_type
-	77, // [77:77] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	33, // 55: pocketcloud.agent.v1.StackDeploy.db_networks:type_name -> pocketcloud.agent.v1.DbNetworkAttach
+	57, // 56: pocketcloud.agent.v1.StackPull.secrets:type_name -> pocketcloud.agent.v1.StackPull.SecretsEntry
+	5,  // 57: pocketcloud.agent.v1.StackPull.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
+	17, // 58: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
+	58, // 59: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	59, // 60: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	60, // 61: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	27, // 62: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 63: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 64: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 65: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 66: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 67: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 68: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	61, // 69: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
+	42, // 70: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 71: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	62, // 72: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	42, // 73: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 74: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 75: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 76: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 77: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 78: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	79, // [79:79] is the sub-list for method output_type
+	79, // [79:79] is the sub-list for method input_type
+	79, // [79:79] is the sub-list for extension type_name
+	79, // [79:79] is the sub-list for extension extendee
+	0,  // [0:79] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }

@@ -1,19 +1,41 @@
 package fakedocker
 
 import (
+	"archive/tar"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
+	"path"
 	"strings"
 )
 
-// Network is a fake network. Members maps container ids to their aliases.
+// Network is a fake network. Members maps container ids to their aliases, and
+// Addresses to the address each got on the network.
 type Network struct {
-	Name     string
-	Driver   string
-	Internal bool
-	Labels   map[string]string
-	Members  map[string][]string
+	Name      string
+	Driver    string
+	Internal  bool
+	Labels    map[string]string
+	Members   map[string][]string
+	Addresses map[string]string
+
+	// number tells the networks' address ranges apart
+	number int
+}
+
+// join adds a container under aliases and gives it an address on the network.
+func (n *Network) join(id string, aliases []string) {
+	if aliases == nil {
+		aliases = []string{}
+	}
+	if n.Addresses == nil {
+		n.Addresses = map[string]string{}
+	}
+	n.Members[id] = aliases
+	n.Addresses[id] = fmt.Sprintf("10.%d.0.%d", 100+n.number%150, len(n.Members)+1)
 }
 
 // FindNetwork returns a copy of the network with a name, or nil.
@@ -31,6 +53,7 @@ func (e *Engine) FindNetwork(name string) *Network {
 	for id, aliases := range network.Members {
 		copied.Members[id] = append([]string{}, aliases...)
 	}
+	copied.Addresses = maps.Clone(network.Addresses)
 
 	return &copied
 }
@@ -74,12 +97,15 @@ func (e *Engine) createNetwork(w http.ResponseWriter, r *http.Request) {
 		driver = "bridge"
 	}
 
+	e.networkCount++
 	e.networks[body.Name] = &Network{
-		Name:     body.Name,
-		Driver:   driver,
-		Internal: body.Internal,
-		Labels:   body.Labels,
-		Members:  map[string][]string{},
+		Name:      body.Name,
+		Driver:    driver,
+		Internal:  body.Internal,
+		Labels:    body.Labels,
+		Members:   map[string][]string{},
+		Addresses: map[string]string{},
+		number:    e.networkCount,
 	}
 	e.broadcast("network", "create", "net-"+body.Name, map[string]string{"name": body.Name})
 
@@ -102,7 +128,13 @@ func (e *Engine) networkRoute(w http.ResponseWriter, r *http.Request, rest strin
 
 	switch {
 	case r.Method == http.MethodGet && action == "":
-		writeJSON(w, map[string]any{"Id": "net-" + name, "Name": name, "Driver": network.Driver, "Internal": network.Internal, "Labels": network.Labels})
+		members := map[string]any{}
+		for id := range network.Members {
+			if container := e.containers[id]; container != nil {
+				members[id] = map[string]any{"Name": container.Name}
+			}
+		}
+		writeJSON(w, map[string]any{"Id": "net-" + name, "Name": name, "Driver": network.Driver, "Internal": network.Internal, "Labels": network.Labels, "Containers": members})
 
 	case r.Method == http.MethodDelete && action == "":
 		if len(network.Members) > 0 {
@@ -136,9 +168,10 @@ func (e *Engine) networkRoute(w http.ResponseWriter, r *http.Request, rest strin
 				writeError(w, http.StatusForbidden, "endpoint with name "+container.Name+" already exists in network "+name)
 				return
 			}
-			network.Members[container.ID] = body.EndpointConfig.Aliases
+			network.join(container.ID, body.EndpointConfig.Aliases)
 		} else {
 			delete(network.Members, container.ID)
+			delete(network.Addresses, container.ID)
 		}
 
 		e.broadcast("network", action, "net-"+name, map[string]string{"name": name, "container": container.ID})
@@ -153,5 +186,47 @@ func (e *Engine) networkRoute(w http.ResponseWriter, r *http.Request, rest strin
 func (e *Engine) removeFromNetworks(id string) {
 	for _, network := range e.networks {
 		delete(network.Members, id)
+		delete(network.Addresses, id)
 	}
+}
+
+// receiveArchive unpacks what was copied into a container, for tests to read with File.
+func (e *Engine) receiveArchive(w http.ResponseWriter, r *http.Request, container *Container) {
+	dir := r.URL.Query().Get("path")
+
+	reader := tar.NewReader(r.Body)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if container.files == nil {
+			container.files = map[string][]byte{}
+		}
+		container.files[path.Join(dir, header.Name)] = content //nolint:gosec // a key of an in-memory map, not a path on disk
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// File returns a file that was copied into a container, or nil.
+func (e *Engine) File(name, file string) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, container := range e.containers {
+		if container.Name == name {
+			return container.files[file]
+		}
+	}
+	return nil
 }

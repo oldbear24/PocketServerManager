@@ -586,6 +586,21 @@ func (s *Server) Exec(stream agentv1.AgentService_ExecServer) error {
 	return s.Streams.Terminal(stream.Context(), hostIDFrom(stream.Context()), first.GetSessionId(), &firstExecMessage{AgentService_ExecServer: stream, first: first})
 }
 
+// Relay attaches an agent's stream to a tool container, such as Adminer, to the
+// session it was opened for. The first message only names the session.
+func (s *Server) Relay(stream agentv1.AgentService_RelayServer) error {
+	if s.Streams == nil {
+		return status.Error(codes.Unimplemented, "relays are not available")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+
+	return s.Streams.Relay(stream.Context(), hostIDFrom(stream.Context()), first.GetSessionId(), stream)
+}
+
 // firstExecMessage hands the session id message back to the reader of the stream.
 type firstExecMessage struct {
 	agentv1.AgentService_ExecServer

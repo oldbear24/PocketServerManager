@@ -49,8 +49,12 @@ type Panel struct {
 	Diagnostics *diagnostics.Plugin
 
 	// TerminalIdle closes a terminal without input or output; zero is the default.
-	TerminalIdle    time.Duration
+	TerminalIdle time.Duration
+	// AdminerTTL is how long an Adminer session lasts; zero is AdminerLifetime.
+	AdminerTTL time.Duration
+
 	terminalTickets terminalTickets
+	adminers        adminerSessions
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -86,6 +90,7 @@ func (p *Panel) Register() {
 	p.registerMetrics()
 	p.Streams.Register()
 	p.registerStacks()
+	p.registerDatabases()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -113,6 +118,7 @@ func (p *Panel) Register() {
 		p.bindStreamRoutes(group)
 		p.bindStackRoutes(group)
 		p.bindTerminalRoutes(group)
+		p.bindDatabaseRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 

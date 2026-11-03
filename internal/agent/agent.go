@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,9 +65,14 @@ type Agent struct {
 
 	client atomic.Pointer[agentv1.AgentServiceClient]
 
-	logSessions  sessionSet
-	execSessions sessionSet
-	metrics      *metricsCollector
+	logSessions     sessionSet
+	execSessions    sessionSet
+	adminerSessions sessionSet
+	metrics         *metricsCollector
+
+	// DialTool opens a connection to a tool container such as Adminer. Tests,
+	// which have no containers to reach, replace it.
+	DialTool func(ctx context.Context, address string) (net.Conn, error)
 
 	composeMu      sync.Mutex
 	composeRelease string
@@ -123,6 +129,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.Log.Info("the agent is starting", "version", version.Version, "host", a.Identity.Name, "panel", a.Identity.Panel)
 
 	a.restoreCleanEnvFiles()
+	a.removeStaleAdminers(ctx)
 
 	a.setHealth(false)
 	defer a.setHealth(false)

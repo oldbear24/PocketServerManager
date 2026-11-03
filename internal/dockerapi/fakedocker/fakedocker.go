@@ -35,6 +35,7 @@ type Container struct {
 	MemBytes   uint64
 	cpuTotal   uint64
 	logs       *logBuffer
+	files      map[string][]byte
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -51,6 +52,8 @@ type Engine struct {
 	systemCPU  uint64
 	execs      map[string]*ExecCall
 	execList   []*ExecCall
+
+	networkCount int
 
 	// OnExec answers a process started without a terminal.
 	OnExec func(call *ExecCall, stdin []byte) ExecResult
@@ -69,7 +72,7 @@ func newEngine() *Engine {
 		containers: make(map[string]*Container),
 		images:     make(map[string]map[string]any),
 		volumes:    make(map[string]map[string]string),
-		networks:   map[string]*Network{"bridge": {Name: "bridge", Driver: "bridge", Members: map[string][]string{}}},
+		networks:   map[string]*Network{"bridge": {Name: "bridge", Driver: "bridge", Members: map[string][]string{}, Addresses: map[string]string{}}},
 		events:     make(map[chan map[string]any]struct{}),
 		execs:      make(map[string]*ExecCall),
 		FailOn:     make(map[string]string),
@@ -450,6 +453,14 @@ func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	e.containers[id] = &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+
+	// a container created on a network of its own starts out on it
+	if mode, _ := host["NetworkMode"].(string); mode != "" {
+		if network := e.networks[mode]; network != nil {
+			network.join(id, nil)
+		}
+	}
+
 	e.broadcast("container", "create", id, nil)
 
 	w.WriteHeader(http.StatusCreated)
@@ -480,7 +491,10 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "json":
-		writeJSON(w, inspectDocument(container))
+		writeJSON(w, e.inspectDocument(container))
+
+	case action == "archive" && r.Method == http.MethodPut:
+		e.receiveArchive(w, r, container)
 
 	case action == "start":
 		status, health := "running", container.Health
@@ -541,7 +555,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 	}
 }
 
-func inspectDocument(c *Container) map[string]any {
+func (e *Engine) inspectDocument(c *Container) map[string]any {
 	state := map[string]any{
 		"Status":  c.Status,
 		"Running": c.Status == "running",
@@ -557,6 +571,13 @@ func inspectDocument(c *Container) map[string]any {
 		state["Health"] = map[string]any{"Status": c.Health}
 	}
 
+	networks := map[string]any{"bridge": map[string]any{"Aliases": []string{c.ID[:12], "keep-this-alias"}, "IPAddress": "172.17.0.2"}}
+	for name, network := range e.networks {
+		if aliases, member := network.Members[c.ID]; member {
+			networks[name] = map[string]any{"Aliases": aliases, "IPAddress": network.Addresses[c.ID], "NetworkID": "net-" + name}
+		}
+	}
+
 	return map[string]any{
 		"Id":              c.ID,
 		"Name":            "/" + c.Name,
@@ -565,7 +586,7 @@ func inspectDocument(c *Container) map[string]any {
 		"State":           state,
 		"Config":          c.Config,
 		"HostConfig":      c.Host,
-		"NetworkSettings": map[string]any{"Networks": map[string]any{"bridge": map[string]any{"Aliases": []string{c.ID[:12], "keep-this-alias"}, "IPAddress": "172.17.0.2"}}},
+		"NetworkSettings": map[string]any{"Networks": networks},
 	}
 }
 
