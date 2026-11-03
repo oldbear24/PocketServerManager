@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -165,7 +164,7 @@ func writeLog(parsed *call) error {
 		return err
 	}
 
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // the test that runs this tool names the file
 	if err != nil {
 		return err
 	}
@@ -352,7 +351,7 @@ func waitIfAsked() error {
 
 	deadline := time.Now().Add(waitLimit)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Clean(path)); err == nil {
+		if _, err := os.Stat(path); err == nil { //nolint:gosec // the test that runs this tool names the file
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)

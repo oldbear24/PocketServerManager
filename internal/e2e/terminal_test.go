@@ -63,7 +63,7 @@ func dialTerminal(t *testing.T, base, ticket string) *terminalClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { conn.CloseNow() })
+	t.Cleanup(func() { _ = conn.CloseNow() })
 
 	return &terminalClient{t: t, conn: conn}
 }
@@ -318,7 +318,7 @@ func TestTerminalTicketsAreForAdminsAndWorkOnce(t *testing.T) {
 			response.Body.Close()
 		}
 		if err == nil {
-			conn.CloseNow()
+			_ = conn.CloseNow()
 			return http.StatusSwitchingProtocols
 		}
 		if response == nil {

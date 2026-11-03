@@ -63,11 +63,11 @@ func openLogs(t *testing.T, url, token string) *logClient {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { response.Body.Close() })
 
 	client := &logClient{t: t, cancel: cancel, messages: make(chan logMessage, 1024), status: response.StatusCode}
 
 	go func() {
-		defer response.Body.Close()
 		defer close(client.messages)
 
 		scanner := bufio.NewScanner(response.Body)

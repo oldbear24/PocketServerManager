@@ -526,6 +526,7 @@ func watchOutput(t *testing.T, ctx context.Context, url, token string) <-chan ma
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { response.Body.Close() })
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("output: %d", response.StatusCode)
 	}
@@ -533,7 +534,6 @@ func watchOutput(t *testing.T, ctx context.Context, url, token string) <-chan ma
 	messages := make(chan map[string]string, 256)
 
 	go func() {
-		defer response.Body.Close()
 		defer close(messages)
 
 		scanner := bufio.NewScanner(response.Body)

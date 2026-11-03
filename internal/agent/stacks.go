@@ -425,7 +425,7 @@ func (a *Agent) handleStackImport(ctx context.Context, command *agentv1.Command,
 	files := payload.GetConfigFiles()
 	switch {
 	case len(files) == 0:
-		return nil, errors.New("Docker does not say where the Compose file of this project is")
+		return nil, errors.New("the Docker labels of this project do not say where its Compose file is")
 	case len(files) > 1:
 		return nil, fmt.Errorf("this project was started from %d Compose files; merge them into one first", len(files))
 	}

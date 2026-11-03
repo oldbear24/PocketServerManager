@@ -252,7 +252,11 @@ func (b *Broker) Terminal(ctx context.Context, hostID, sessionID string, stream 
 
 	defer func() {
 		session.finish("")
-		<-sendDone
+		// The sender must be done with the stream before the handler returns. What
+		// it failed to send no longer matters: the session is over.
+		if err := <-sendDone; err != nil && !errors.Is(err, context.Canceled) {
+			b.Log.Debug("terminal input stopped", "session", sessionID, "error", err)
+		}
 	}()
 
 	for {
