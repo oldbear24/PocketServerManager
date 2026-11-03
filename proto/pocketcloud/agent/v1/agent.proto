@@ -1,0 +1,597 @@
+syntax = "proto3";
+
+package pocketcloud.agent.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "pocketcloud/agent/v1/commands.proto";
+import "pocketcloud/options/v1/options.proto";
+
+// AgentService is the contract between the panel and the agents.
+//
+// Agents always dial out: the panel hosts this service on its gRPC gateway and
+// never opens a connection to a managed server. Every RPC except Enroll requires
+// a client certificate issued by the panel's internal CA; the certificate's SAN
+// `pocketcloud://host/<hostId>` identifies the calling host.
+//
+// Versioning rules:
+//   - field numbers and names are never reused; removed fields are `reserved`;
+//   - a new command type is a new field in the `Command.payload` oneof;
+//   - agents advertise the command types they support in
+//     `SubscribeCommandsRequest.capabilities`, and the panel never dispatches a
+//     type an agent has not advertised.
+service AgentService {
+  // Enroll exchanges a one-time enrollment token and a CSR for a signed client
+  // certificate. It is the only RPC callable without a client certificate.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // SubscribeCommands is the long-lived stream that delivers commands. A new
+  // subscription replaces any older one of the same host. After connecting, the
+  // panel re-sends commands that were dispatched but never finished.
+  rpc SubscribeCommands(SubscribeCommandsRequest) returns (stream SubscribeCommandsResponse);
+
+  // ReportCommandUpdate reports progress and the final result of a command. It
+  // is idempotent by command id and sequence number.
+  rpc ReportCommandUpdate(ReportCommandUpdateRequest) returns (ReportCommandUpdateResponse);
+
+  // Heartbeat is called every 10 seconds with the host's vitals. The response
+  // carries the server time, which the agent uses for RTT and clock skew.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // ReportInventory uploads a complete Docker inventory snapshot. It is sent
+  // after every connect, and periodically to repair any missed events.
+  rpc ReportInventory(ReportInventoryRequest) returns (ReportInventoryResponse);
+
+  // ReportEvents streams incremental Docker inventory changes.
+  rpc ReportEvents(stream ReportEventsRequest) returns (ReportEventsResponse);
+
+  // PushMetrics streams batches of host and container metrics.
+  rpc PushMetrics(stream PushMetricsRequest) returns (PushMetricsResponse);
+
+  // StreamLogs carries log chunks for an active `logs.follow` command. The agent
+  // opens it when it receives the command and closes it on `logs.stop`.
+  rpc StreamLogs(stream StreamLogsRequest) returns (StreamLogsResponse);
+
+  // Exec is the bidirectional stream of one terminal session, opened by the
+  // agent when it receives `exec.start`.
+  rpc Exec(stream ExecRequest) returns (stream ExecResponse);
+
+  // FetchArtifact lets the agent download uploads and site releases from the panel.
+  rpc FetchArtifact(FetchArtifactRequest) returns (stream FetchArtifactResponse);
+
+  // UploadArtifact lets the agent upload diagnostics bundles, SQL exports and
+  // restore downloads to the panel.
+  rpc UploadArtifact(stream UploadArtifactRequest) returns (UploadArtifactResponse);
+
+  // Relay is an admin-only byte stream to a temporary tool container (Adminer).
+  // It is opened by a command and bound to one browser session, like Exec.
+  rpc Relay(stream RelayRequest) returns (stream RelayResponse);
+
+  // RenewCertificate rotates the agent's identity over the existing mTLS channel.
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+}
+
+// EnrollRequest carries the one-time token and the certificate signing request.
+message EnrollRequest {
+  // token is the one-time enrollment token (`ENR-…`).
+  string token = 1 [(pocketcloud.options.v1.sensitive) = true];
+  // csr_pem is a PEM-encoded PKCS#10 CSR for the key the agent generated locally.
+  bytes csr_pem = 2;
+  // name overrides the host name stored with the token, if not empty.
+  string name = 3;
+  // roles overrides the roles stored with the token, if not empty.
+  repeated string roles = 4;
+  // facts describes the host at enrollment time.
+  HostFacts facts = 5;
+}
+
+// EnrollResponse returns the new identity of the agent.
+message EnrollResponse {
+  // host_id is the id of the `hosts` record created for this agent.
+  string host_id = 1;
+  // name is the final host name.
+  string name = 2;
+  // roles are the final host roles.
+  repeated string roles = 3;
+  // certificate_pem is the signed client certificate followed by the agent intermediate.
+  bytes certificate_pem = 4;
+  // ca_pem is the panel's root certificate. The agent trusts it from now on.
+  bytes ca_pem = 5;
+  // expires_at is the expiry time of the client certificate.
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+// SubscribeCommandsRequest opens the command stream.
+message SubscribeCommandsRequest {
+  // agent_version is the agent's semantic version.
+  string agent_version = 1;
+  // capabilities lists every command type this agent can execute, e.g. `container.start`.
+  repeated string capabilities = 2;
+  // recently_finished lists commands the agent has finished, so that the panel
+  // can settle any it still believes to be in flight.
+  repeated FinishedCommand recently_finished = 3;
+  // image_digest is the digest of the image the agent container runs.
+  string image_digest = 4;
+  // container_id is the id of the agent's own container.
+  string container_id = 5;
+}
+
+// FinishedCommand is the terminal state of a command the agent has already run.
+message FinishedCommand {
+  // command_id is the id of the `commands` record.
+  string command_id = 1;
+  // state is the terminal state the command reached.
+  CommandState state = 2;
+  // error is the failure message, if any.
+  string error = 3;
+  // finished_at is when the command finished on the agent.
+  google.protobuf.Timestamp finished_at = 4;
+}
+
+// SubscribeCommandsResponse is one message on the command stream.
+message SubscribeCommandsResponse {
+  // event is what the panel asks the agent to do.
+  oneof event {
+    // command is a command to execute.
+    Command command = 1;
+    // cancel asks the agent to cancel a running command.
+    CommandCancel cancel = 2;
+  }
+}
+
+// CommandCancel asks the agent to stop working on a command.
+message CommandCancel {
+  // command_id is the id of the command to cancel.
+  string command_id = 1;
+  // reason is shown in the command's error.
+  string reason = 2;
+}
+
+// CommandState is the state of a command as reported by the agent.
+enum CommandState {
+  // COMMAND_STATE_UNSPECIFIED is the zero value and is never sent.
+  COMMAND_STATE_UNSPECIFIED = 0;
+  // COMMAND_STATE_RUNNING means that the agent started executing the command.
+  COMMAND_STATE_RUNNING = 1;
+  // COMMAND_STATE_SUCCEEDED means that the command finished successfully.
+  COMMAND_STATE_SUCCEEDED = 2;
+  // COMMAND_STATE_FAILED means that the command finished with an error.
+  COMMAND_STATE_FAILED = 3;
+  // COMMAND_STATE_CANCELLED means that the command was cancelled on the agent.
+  COMMAND_STATE_CANCELLED = 4;
+}
+
+// ReportCommandUpdateRequest is one progress update or the final result of a command.
+message ReportCommandUpdateRequest {
+  // command_id is the id of the command.
+  string command_id = 1;
+  // sequence increases by one with every update of the command, starting at 1.
+  // The panel ignores any update whose sequence it has already processed.
+  uint64 sequence = 2;
+  // state is the command's state after this update.
+  CommandState state = 3;
+  // progress describes the current step, if any.
+  CommandProgress progress = 4;
+  // output is a chunk of the command's output. It is relayed to any browsers
+  // watching the command and stored as a file when the command finishes.
+  bytes output = 5;
+  // result is the machine-readable result; only used with a terminal state.
+  google.protobuf.Struct result = 6;
+  // error is the failure message; only used with COMMAND_STATE_FAILED.
+  string error = 7;
+  // duplicate is set when the agent recognised a replayed command that it had
+  // already finished: the state and result are repeated, nothing ran again.
+  bool duplicate = 8;
+}
+
+// CommandProgress is the current step of a running command.
+message CommandProgress {
+  // step is a short machine-readable step id, e.g. `pull`.
+  string step = 1;
+  // message is a human-readable description of the step.
+  string message = 2;
+  // percent is the overall progress from 0 to 100, or -1 if unknown.
+  int32 percent = 3;
+}
+
+// ReportCommandUpdateResponse acknowledges an update.
+message ReportCommandUpdateResponse {
+  // cancel is set when the panel has given up on the command (it was cancelled
+  // or timed out), so the agent should stop working on it.
+  bool cancel = 1;
+}
+
+// HostFacts are rarely changing properties of a managed host.
+message HostFacts {
+  // hostname is the name of the host (not of the agent container).
+  string hostname = 1;
+  // os is a human-readable operating system description.
+  string os = 2;
+  // kernel is the kernel release.
+  string kernel = 3;
+  // arch is the machine architecture, e.g. `amd64`.
+  string arch = 4;
+  // cpu_cores is the number of logical CPUs.
+  int32 cpu_cores = 5;
+  // mem_bytes is the total memory.
+  uint64 mem_bytes = 6;
+  // ip4 is the primary IPv4 address.
+  string ip4 = 7;
+  // ip6 is the primary IPv6 address.
+  string ip6 = 8;
+  // docker_version is the version of the Docker Engine.
+  string docker_version = 9;
+  // agent_version is the agent's semantic version.
+  string agent_version = 10;
+  // agent_image_digest is the digest of the image the agent container runs.
+  string agent_image_digest = 11;
+  // agent_container_id is the id of the agent's own container.
+  string agent_container_id = 12;
+}
+
+// HostVitals is a compact summary of the host's current usage.
+message HostVitals {
+  // uptime is the time since the host booted.
+  google.protobuf.Duration uptime = 1;
+  // load1 is the 1-minute load average.
+  double load1 = 2;
+  // load5 is the 5-minute load average.
+  double load5 = 3;
+  // load15 is the 15-minute load average.
+  double load15 = 4;
+  // cpu_percent is the CPU usage from 0 to 100, averaged over all CPUs.
+  double cpu_percent = 5;
+  // mem_used_bytes is the used memory (total minus available).
+  uint64 mem_used_bytes = 6;
+  // mem_total_bytes is the total memory.
+  uint64 mem_total_bytes = 7;
+  // disk_used_bytes is the used space on the root file system.
+  uint64 disk_used_bytes = 8;
+  // disk_total_bytes is the size of the root file system.
+  uint64 disk_total_bytes = 9;
+}
+
+// AgentRuntime describes the agent process itself.
+message AgentRuntime {
+  // goroutines is the current number of goroutines.
+  int32 goroutines = 1;
+  // heap_bytes is the size of the live heap.
+  uint64 heap_bytes = 2;
+  // workers_busy is the number of commands being executed.
+  int32 workers_busy = 3;
+  // workers_max is the maximum number of commands executed in parallel.
+  int32 workers_max = 4;
+  // docker_api_latency_ms is the latency of the last Docker API ping.
+  double docker_api_latency_ms = 5;
+  // volume_free_bytes is the free space on the agent volume.
+  uint64 volume_free_bytes = 6;
+  // log_level is the current log level.
+  string log_level = 7;
+}
+
+// SelfCheck is the result of one periodic self-check of the agent.
+message SelfCheck {
+  // name identifies the check: `docker`, `host_mount`, `edge`, `restic`, `time`.
+  string name = 1;
+  // ok tells whether the check passed.
+  bool ok = 2;
+  // skipped is set when the check does not apply to this host.
+  bool skipped = 3;
+  // detail is a human-readable result or error.
+  string detail = 4;
+  // checked_at is when the check last ran.
+  google.protobuf.Timestamp checked_at = 5;
+}
+
+// HeartbeatRequest is sent every 10 seconds.
+message HeartbeatRequest {
+  // sent_at is the agent's clock when the heartbeat was sent.
+  google.protobuf.Timestamp sent_at = 1;
+  // facts are the host's current facts.
+  HostFacts facts = 2;
+  // vitals are the host's current vitals.
+  HostVitals vitals = 3;
+  // runtime describes the agent process.
+  AgentRuntime runtime = 4;
+  // last_rtt_ms is the measured round trip of the previous heartbeat.
+  double last_rtt_ms = 5;
+  // clock_skew_ms is the measured difference between the panel's clock and the agent's.
+  double clock_skew_ms = 6;
+  // self_checks are the latest self-check results.
+  repeated SelfCheck self_checks = 7;
+}
+
+// HeartbeatResponse carries the panel's clock and hints for the agent.
+message HeartbeatResponse {
+  // server_time is the panel's clock when it handled the heartbeat.
+  google.protobuf.Timestamp server_time = 1;
+  // renew_certificate tells the agent to rotate its certificate as soon as possible.
+  bool renew_certificate = 2;
+}
+
+// PortMapping is one port exposed by a container.
+message PortMapping {
+  // private_port is the port inside the container.
+  uint32 private_port = 1;
+  // public_port is the published port on the host; 0 when not published.
+  uint32 public_port = 2;
+  // protocol is `tcp` or `udp`.
+  string protocol = 3;
+  // ip is the host address the port is bound to.
+  string ip = 4;
+}
+
+// ContainerInfo describes one container in the inventory.
+message ContainerInfo {
+  // docker_id is the full container id.
+  string docker_id = 1;
+  // name is the container name, without the leading slash.
+  string name = 2;
+  // image is the image reference.
+  string image = 3;
+  // state is the Docker state: created, running, paused, restarting, exited, dead.
+  string state = 4;
+  // health is the health check state: healthy, unhealthy, starting, or empty.
+  string health = 5;
+  // restart_count is the number of restarts done by Docker.
+  int32 restart_count = 6;
+  // ports lists the exposed ports.
+  repeated PortMapping ports = 7;
+  // labels are the container labels, including `com.docker.compose.*` and `pocketcloud.*`.
+  map<string, string> labels = 8;
+  // started_at is when the container last started.
+  google.protobuf.Timestamp started_at = 9;
+  // status is Docker's human-readable status text.
+  string status = 10;
+}
+
+// VolumeInfo describes one volume in the inventory.
+message VolumeInfo {
+  // name is the volume name.
+  string name = 1;
+  // driver is the volume driver.
+  string driver = 2;
+  // size_bytes is the size, if known; -1 when it is unknown.
+  int64 size_bytes = 3;
+  // labels are the volume labels.
+  map<string, string> labels = 4;
+}
+
+// NetworkInfo describes one network in the inventory.
+message NetworkInfo {
+  // name is the network name.
+  string name = 1;
+  // driver is the network driver.
+  string driver = 2;
+  // docker_id is the full network id.
+  string docker_id = 3;
+  // labels are the network labels.
+  map<string, string> labels = 4;
+}
+
+// ReportInventoryRequest is a complete snapshot of the host's Docker objects.
+message ReportInventoryRequest {
+  // containers lists every container, running or not.
+  repeated ContainerInfo containers = 1;
+  // volumes lists every volume.
+  repeated VolumeInfo volumes = 2;
+  // networks lists every network.
+  repeated NetworkInfo networks = 3;
+  // collected_at is when the snapshot was taken.
+  google.protobuf.Timestamp collected_at = 4;
+}
+
+// ReportInventoryResponse acknowledges a snapshot.
+message ReportInventoryResponse {}
+
+// ReportEventsRequest is one incremental inventory change.
+message ReportEventsRequest {
+  // change is what happened.
+  oneof change {
+    // container_updated is the new state of a created or changed container.
+    ContainerInfo container_updated = 1;
+    // container_removed is the docker id of a removed container.
+    string container_removed = 2;
+    // volume_updated is a created or changed volume.
+    VolumeInfo volume_updated = 3;
+    // volume_removed is the name of a removed volume.
+    string volume_removed = 4;
+    // network_updated is a created or changed network.
+    NetworkInfo network_updated = 5;
+    // network_removed is the name of a removed network.
+    string network_removed = 6;
+  }
+  // occurred_at is when Docker reported the change.
+  google.protobuf.Timestamp occurred_at = 7;
+}
+
+// ReportEventsResponse is returned when the agent closes the event stream.
+message ReportEventsResponse {}
+
+// MetricSample is one host or container sample.
+message MetricSample {
+  // ts is the time of the sample.
+  google.protobuf.Timestamp ts = 1;
+  // container_id is the docker id of the container; empty for host samples.
+  string container_id = 2;
+  // cpu_percent is the CPU usage from 0 to 100, relative to the whole host.
+  double cpu_percent = 3;
+  // mem_bytes is the used memory.
+  uint64 mem_bytes = 4;
+  // mem_total_bytes is the memory limit (container) or total memory (host).
+  uint64 mem_total_bytes = 5;
+  // disk_used_bytes is the used space on the root file system (host samples).
+  uint64 disk_used_bytes = 6;
+  // disk_total_bytes is the size of the root file system (host samples).
+  uint64 disk_total_bytes = 7;
+  // net_in_bytes is the number of bytes received since the previous sample.
+  uint64 net_in_bytes = 8;
+  // net_out_bytes is the number of bytes sent since the previous sample.
+  uint64 net_out_bytes = 9;
+  // load1 is the 1-minute load average (host samples).
+  double load1 = 10;
+  // mounts is the usage per mount point (host samples).
+  repeated DiskUsage mounts = 11;
+}
+
+// DiskUsage is the usage of one mounted file system.
+message DiskUsage {
+  // mount is the mount point on the host.
+  string mount = 1;
+  // device is the mounted device.
+  string device = 2;
+  // fs_type is the file system type.
+  string fs_type = 3;
+  // used_bytes is the used space.
+  uint64 used_bytes = 4;
+  // total_bytes is the size of the file system.
+  uint64 total_bytes = 5;
+}
+
+// PushMetricsRequest is one batch of samples.
+message PushMetricsRequest {
+  // samples are the samples of this batch.
+  repeated MetricSample samples = 1;
+}
+
+// PushMetricsResponse is returned when the agent closes the metrics stream.
+message PushMetricsResponse {}
+
+// StreamLogsRequest is one chunk of log lines of a followed container or stack.
+message StreamLogsRequest {
+  // session_id comes from the `logs.follow` command that opened the stream.
+  string session_id = 1;
+  // lines are the new log lines.
+  repeated LogLine lines = 2;
+}
+
+// LogLine is one line of a container log.
+message LogLine {
+  // ts is Docker's timestamp of the line.
+  google.protobuf.Timestamp ts = 1;
+  // container is the name of the source container.
+  string container = 2;
+  // service is the Compose service, if any.
+  string service = 3;
+  // stream is `stdout` or `stderr`.
+  string stream = 4;
+  // text is the line without its trailing newline.
+  string text = 5;
+}
+
+// StreamLogsResponse is returned when the agent closes the log stream.
+message StreamLogsResponse {}
+
+// ExecRequest is a message from the agent on a terminal session.
+message ExecRequest {
+  // session_id comes from the `exec.start` command; only the first message needs it.
+  string session_id = 1;
+  // output is what the session wrote to its terminal.
+  bytes output = 2;
+  // exited is set when the session has ended.
+  bool exited = 3;
+  // exit_code is the exit code of the session, when exited is set.
+  int32 exit_code = 4;
+  // error is set when the session could not be started or broke.
+  string error = 5;
+}
+
+// ExecResponse is a message from the panel on a terminal session.
+message ExecResponse {
+  // input is what the user typed.
+  bytes input = 1 [(pocketcloud.options.v1.sensitive) = true];
+  // resize tells the agent to resize the terminal.
+  TerminalSize resize = 2;
+  // close asks the agent to end the session.
+  bool close = 3;
+}
+
+// TerminalSize is the size of a terminal in characters.
+message TerminalSize {
+  // cols is the number of columns.
+  uint32 cols = 1;
+  // rows is the number of rows.
+  uint32 rows = 2;
+}
+
+// FetchArtifactRequest asks for one artifact stored by the panel.
+message FetchArtifactRequest {
+  // artifact_id comes from the command that needs the artifact.
+  string artifact_id = 1;
+  // offset is where to continue an interrupted download.
+  uint64 offset = 2;
+}
+
+// FetchArtifactResponse is one chunk of an artifact, at most 1 MiB.
+message FetchArtifactResponse {
+  // data is the chunk.
+  bytes data = 1;
+  // total_bytes is the size of the artifact; set on the first chunk.
+  uint64 total_bytes = 2;
+  // sha256 is the hex digest of the whole artifact; set on the first chunk.
+  string sha256 = 3;
+}
+
+// UploadArtifactRequest is the header or one chunk of an uploaded artifact.
+message UploadArtifactRequest {
+  // part is the header (first message) or a chunk (the rest).
+  oneof part {
+    // header describes the artifact.
+    UploadArtifactHeader header = 1;
+    // chunk is a piece of the artifact, at most 1 MiB.
+    bytes chunk = 2;
+  }
+}
+
+// UploadArtifactHeader describes an uploaded artifact.
+message UploadArtifactHeader {
+  // command_id is the command the artifact belongs to.
+  string command_id = 1;
+  // kind says what the artifact is: `diagnostics`, `sql_export` or `restore`.
+  string kind = 2;
+  // file_name is a suggested file name.
+  string file_name = 3;
+  // size_bytes is the expected size, if known.
+  uint64 size_bytes = 4;
+}
+
+// UploadArtifactResponse confirms a stored artifact.
+message UploadArtifactResponse {
+  // artifact_id is the id of the record that holds the file.
+  string artifact_id = 1;
+  // size_bytes is the number of bytes stored.
+  uint64 size_bytes = 2;
+}
+
+// RelayRequest is a chunk of bytes from the tool container to the browser session.
+message RelayRequest {
+  // session_id comes from the command that opened the relay; only the first message needs it.
+  string session_id = 1;
+  // data is the chunk.
+  bytes data = 2 [(pocketcloud.options.v1.sensitive) = true];
+  // closed is set when the tool container closed the connection.
+  bool closed = 3;
+}
+
+// RelayResponse is a chunk of bytes from the browser session to the tool container.
+message RelayResponse {
+  // data is the chunk.
+  bytes data = 1 [(pocketcloud.options.v1.sensitive) = true];
+  // close asks the agent to close the connection to the tool container.
+  bool close = 2;
+}
+
+// RenewCertificateRequest asks for a new client certificate.
+message RenewCertificateRequest {
+  // csr_pem is a PEM-encoded PKCS#10 CSR for a newly generated key.
+  bytes csr_pem = 1;
+}
+
+// RenewCertificateResponse returns the renewed identity.
+message RenewCertificateResponse {
+  // certificate_pem is the new client certificate followed by the agent intermediate.
+  bytes certificate_pem = 1;
+  // expires_at is the expiry time of the new certificate.
+  google.protobuf.Timestamp expires_at = 2;
+}

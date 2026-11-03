@@ -4,7 +4,7 @@ Self-hosted control panel for a homelab or a few VPS: servers, Docker containers
 
 PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (embedded as a library) with a React UI. Every managed server runs a small **agent container** that dials out to the panel over gRPC with mutual TLS, so servers behind NAT need no open ports. Agent updates are done by a short-lived updater container with automatic rollback.
 
-> **Status: design phase.** This repository holds the UI design, the architecture notes and the backlog. No code yet – start with the [Roadmap](https://github.com/oldbear24/PocketServerManager/issues/40).
+> **Status: early development.** The foundations and the agent connection work (milestones M0 and M1 of the [Roadmap](https://github.com/oldbear24/PocketServerManager/issues/40)): servers connect with one command, report their state and containers, and run commands, with a full change audit and diagnostics. Stacks, sites, backups and the rest are still to come, and their pages say so.
 
 <img src="design/screenshots/01-overview.png" width="860" alt="PocketCloud overview screen">
 
@@ -50,19 +50,67 @@ Thirteen screens: overview, server detail, Compose stack, static site, new-site 
 
 The [Roadmap issue](https://github.com/oldbear24/PocketServerManager/issues/40) tracks every issue by milestone.
 
+## Run the panel locally
+
+You need Go 1.27 and Node 22. [Task](https://taskfile.dev) is the task runner (`go install github.com/go-task/task/v3/cmd/task@latest`).
+
+```sh
+task panel                                        # builds the UI and the panel into bin/
+mkdir -p dev-data
+bin/panel keygen --out dev-data/master.key        # once; the panel does not start without a master key
+bin/panel serve --dir dev-data/pb_data --master-key-file dev-data/master.key \
+  --http 127.0.0.1:8090 --public-url http://127.0.0.1:8090 --grpc-addr 127.0.0.1:9443
+```
+
+The panel opens no browser by itself. On the first start its log prints a link with a one-time token: open it to create the first administrator. The panel listens on port 8090 for the UI and the API, and on port 9443 for agents. PocketBase's dashboard is at `/_/`; it needs a superuser, which you create with `bin/panel superuser upsert EMAIL PASSWORD`.
+
+| Flag | Environment variable | Default | Purpose |
+|---|---|---|---|
+| `--dir` | `POCKETCLOUD_DATA_DIR` | `pb_data` next to the binary | Data directory |
+| `--master-key-file` | `POCKETCLOUD_MASTER_KEY_FILE` | `master.key` | The key that encrypts stored secrets; keep a copy elsewhere |
+| `--public-url` | `POCKETCLOUD_PUBLIC_URL` | – | The URL people use |
+| `--grpc-addr` | `POCKETCLOUD_GRPC_ADDR` | `:9443` | Where the gateway listens |
+| `--grpc-public-addr` | `POCKETCLOUD_GRPC_PUBLIC_ADDR` | public URL's host + gRPC port | What agents dial |
+| | `POCKETCLOUD_DIAGNOSTICS` | on | `0` turns the diagnostics plugin off |
+| | `POCKETCLOUD_METRICS_TOKEN` | – | Enables the Prometheus endpoint `/metrics` with this bearer token |
+
+### Without Docker
+
+An agent needs a Docker Engine, but developing does not. `cmd/fakedocker` is an in-memory engine with a few example containers, enough for the agent's inventory and container actions:
+
+```sh
+go run ./cmd/fakedocker &
+PANEL=127.0.0.1:9443 CA_PIN=sha256:… TOKEN=ENR-… NAME=dev-box ROLES=docker \
+  STATE_DIR=dev-data/agent DOCKER_HOST=tcp://127.0.0.1:2399 go run ./cmd/agent run
+```
+
+The values for `CA_PIN` and `TOKEN` come from the “Connect a server” page. For working on the UI, `task dev:panel` and `task dev:web` run the panel and Vite with hot reload.
+
+### Tests and checks
+
+```sh
+task test    # Go and web tests; internal/e2e runs a real panel and real agents over mTLS
+task lint    # golangci-lint, buf lint, ESLint
+task proto   # regenerates gen/go after changing proto/
+task tools   # installs the pinned buf, protoc plugins and golangci-lint
+```
+
 ## Repository layout
 
 ```
-cmd/panel     panel binary (PocketBase + gRPC gateway + UI)      – planned
-cmd/agent     agent (runs as a container)                         – planned
-cmd/updater   temporary container that swaps the agent on update  – planned
-proto/        gRPC API (buf)                                      – planned
-images/php/   PHP-FPM runtime images, one tag per PHP version     – planned
-plugins/      PocketBase plugins, e.g. diagnostics                – planned
-internal/     shared Go packages                                  – planned
-web/          React UI (Vite + TypeScript)                        – planned
-design/       UI design: screenshots, static previews, sources
-docs/         architecture and data model
+cmd/panel       panel binary (PocketBase + gRPC gateway + UI)
+cmd/agent       agent (runs as a container)
+cmd/updater     temporary container that swaps the agent on update
+cmd/fakedocker  in-memory Docker Engine for development and tests
+proto/          gRPC API (buf)
+gen/go/         generated code, committed (docs/adr/0005)
+migrations/     PocketBase collections as Go migrations
+images/         Dockerfiles of the agent, updater and panel images
+plugins/        PocketBase plugins: diagnostics
+internal/       shared Go packages
+web/            React UI (Vite + TypeScript)
+design/         UI design: screenshots, static previews, sources
+docs/           architecture, data model, decisions (docs/adr/)
 ```
 
 ## License

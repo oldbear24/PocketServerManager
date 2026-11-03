@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package pocketcloud.options.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Custom options shared by every PocketCloud protobuf package.
+extend google.protobuf.FieldOptions {
+  // sensitive marks a field whose value is a secret (a password, a private key,
+  // a token). The diagnostics plugin masks such fields in message traces and in
+  // payload captures, regardless of who asked for the capture.
+  bool sensitive = 51000;
+}

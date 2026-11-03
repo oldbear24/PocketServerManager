@@ -1,0 +1,262 @@
+import { describe, expect, it } from "vitest";
+
+import { auditFilter, emptyFilters, initials, lineDiff, windowStart, withContext } from "./audit";
+import {
+  formatBytes,
+  formatDuration,
+  formatRelative,
+  formatSkew,
+  formatVersion,
+  parseDate,
+  percentOf,
+} from "./format";
+import { composeSnippet, dockerRunCommand, scriptCommand, type InstallParams } from "./install";
+import { connectionStrip } from "./strip";
+
+describe("install commands", () => {
+  const params: InstallParams = {
+    panel: "panel.example.cz:9443",
+    caPin: "sha256:abc",
+    token: "ENR-7Q2K",
+    name: "nas-02",
+    roles: ["docker", "edge"],
+    image: "ghcr.io/oldbear24/pocketcloud-agent:0.4.2",
+    origin: "https://panel.example.cz",
+  };
+
+  it("docker run has every mount and value", () => {
+    const command = dockerRunCommand(params);
+
+    for (const part of [
+      "--name pocketcloud-agent",
+      "--restart unless-stopped",
+      "-v /var/run/docker.sock:/var/run/docker.sock",
+      "-v pocketcloud-agent:/var/lib/pocketcloud",
+      "-v /:/host:ro,rslave",
+      "-e PANEL=panel.example.cz:9443",
+      "-e CA_PIN=sha256:abc",
+      "-e TOKEN=ENR-7Q2K",
+      "-e NAME=nas-02",
+      "-e ROLES=docker,edge",
+      "ghcr.io/oldbear24/pocketcloud-agent:0.4.2",
+    ]) {
+      expect(command).toContain(part);
+    }
+  });
+
+  it("compose snippet says the same", () => {
+    const snippet = composeSnippet(params);
+
+    for (const part of [
+      "image: ghcr.io/oldbear24/pocketcloud-agent:0.4.2",
+      "- /:/host:ro,rslave",
+      "CA_PIN: sha256:abc",
+      "TOKEN: ENR-7Q2K",
+      "ROLES: docker,edge",
+    ]) {
+      expect(snippet).toContain(part);
+    }
+  });
+
+  it("the script needs only what the panel cannot know", () => {
+    const script = scriptCommand(params);
+
+    expect(script).toContain("https://panel.example.cz/api/pc/install.sh");
+    expect(script).toContain("TOKEN=ENR-7Q2K");
+    expect(script).toContain("NAME=nas-02");
+    expect(script).toContain("ROLES=docker,edge");
+  });
+});
+
+describe("audit filter", () => {
+  const now = Date.UTC(2026, 9, 16, 12, 0, 0);
+
+  it("selects the category and the time window", () => {
+    const filter = auditFilter("change", emptyFilters, now);
+
+    expect(filter).toContain('category = "change"');
+    expect(filter).toContain('at >= "2026-10-15 12:00:00.000Z"');
+  });
+
+  it("has no time limit for all", () => {
+    expect(windowStart("all", now)).toBeNull();
+    expect(auditFilter("security", { ...emptyFilters, window: "all" }, now)).toBe(
+      'category = "security"',
+    );
+  });
+
+  it("escapes what the user typed", () => {
+    const filter = auditFilter("change", { ...emptyFilters, q: 'a" || 1=1 || "' }, now);
+
+    expect(filter).toContain('record_label ~ "a\\" || 1=1 || \\""');
+  });
+
+  it("adds every set filter", () => {
+    const filter = auditFilter(
+      "change",
+      {
+        ...emptyFilters,
+        host: "h1",
+        action: "update",
+        collection: "stacks",
+        actor: "jana",
+        record: "r1",
+      },
+      now,
+    );
+
+    for (const part of [
+      'host = "h1"',
+      'action = "update"',
+      'collection = "stacks"',
+      'actor_label = "jana"',
+      'record_id = "r1"',
+    ]) {
+      expect(filter).toContain(part);
+    }
+  });
+});
+
+describe("line diff", () => {
+  it("finds added and removed lines", () => {
+    const lines = lineDiff("a\nb\nc", "a\nx\nc\nd");
+
+    expect(lines).toEqual([
+      { kind: "same", text: "a" },
+      { kind: "del", text: "b" },
+      { kind: "add", text: "x" },
+      { kind: "same", text: "c" },
+      { kind: "add", text: "d" },
+    ]);
+  });
+
+  it("is empty of changes for equal text", () => {
+    expect(lineDiff("a\nb", "a\nb").every((line) => line.kind === "same")).toBe(true);
+  });
+
+  it("keeps only the context around changes", () => {
+    const before = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
+    const after = before.replace("line 10", "changed");
+
+    const shown = withContext(lineDiff(before, after), 1);
+
+    expect(shown.map((line) => line.text)).toEqual(["line 9", "line 10", "changed", "line 11"]);
+  });
+
+  it("stays usable for huge files", () => {
+    const huge = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join("\n");
+    expect(lineDiff(huge, "other").length).toBe(3001);
+  });
+});
+
+describe("initials", () => {
+  it.each([
+    ["jana", "JA"],
+    ["admin@example.com", "AE"],
+    ["ci-deploy", "CD"],
+    ["PocketCloud system", "PS"],
+    ["", "?"],
+  ])("of %s", (label, expected) => {
+    expect(initials(label)).toBe(expected);
+  });
+});
+
+describe("formatting", () => {
+  it("parses the dates PocketBase stores", () => {
+    expect(parseDate("2026-10-16 13:42:10.000Z")?.toISOString()).toBe("2026-10-16T13:42:10.000Z");
+    expect(parseDate("")).toBeNull();
+    expect(parseDate("nonsense")).toBeNull();
+  });
+
+  it("formats sizes", () => {
+    expect(formatBytes(0)).toBe("–");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1500)).toBe("1.5 kB");
+    expect(formatBytes(8_000_000_000)).toBe("8 GB");
+  });
+
+  it("formats durations", () => {
+    expect(formatDuration(0)).toBe("–");
+    expect(formatDuration(30)).toBe("30 s");
+    expect(formatDuration(600)).toBe("10 min");
+    expect(formatDuration(7200)).toBe("2 h");
+    expect(formatDuration(86400 * 41)).toBe("41 d");
+  });
+
+  it("formats relative times with the largest unit that fits", () => {
+    const now = Date.UTC(2026, 0, 1);
+    const ago = (seconds: number) => new Date(now - seconds * 1000);
+
+    expect(formatRelative(ago(4), now)).toContain("4 sec");
+    expect(formatRelative(ago(120), now)).toContain("2 min");
+    expect(formatRelative(ago(7200), now)).toContain("2 hr");
+    expect(formatRelative(new Date(now + 86400000 * 3), now)).toContain("3 day");
+    expect(formatRelative(null, now)).toBe("–");
+  });
+
+  it("formats versions", () => {
+    expect(formatVersion("0.4.2")).toBe("v0.4.2");
+    expect(formatVersion("dev")).toBe("dev");
+    expect(formatVersion("5cadcc0-dirty")).toBe("5cadcc0-dirty");
+    expect(formatVersion("")).toBe("–");
+  });
+
+  it("formats clock skew without a negative zero", () => {
+    expect(formatSkew(200)).toBe("+0.2 s");
+    expect(formatSkew(-1800)).toBe("-1.8 s");
+    expect(formatSkew(-4)).toBe("0.0 s");
+    expect(formatSkew(0)).toBe("0.0 s");
+  });
+
+  it("keeps percentages between 0 and 100", () => {
+    expect(percentOf(1, 4)).toBe(25);
+    expect(percentOf(5, 0)).toBe(0);
+    expect(percentOf(9, 3)).toBe(100);
+  });
+});
+
+describe("connection strip", () => {
+  const now = Date.UTC(2026, 0, 2);
+  const hour = 3600 * 1000;
+  const at = (hoursAgo: number) => new Date(now - hoursAgo * hour).toISOString();
+
+  it("is unknown before the first event", () => {
+    expect(connectionStrip([], now, 4)).toEqual(["off", "off", "off", "off"]);
+  });
+
+  it("shows a stable connection", () => {
+    const cells = connectionStrip([{ at: at(20), kind: "connected" }], now, 4);
+    // six-hour cells; the connection started in the first one
+    expect(cells).toEqual(["ok", "ok", "ok", "ok"]);
+  });
+
+  it("marks a period with a drop", () => {
+    const cells = connectionStrip(
+      [
+        { at: at(20), kind: "connected" },
+        { at: at(10), kind: "disconnected", reason: "eof" },
+        { at: at(9), kind: "connected" },
+      ],
+      now,
+      4,
+    );
+    expect(cells).toEqual(["ok", "ok", "warn", "ok"]);
+  });
+
+  it("stays down until the agent comes back", () => {
+    const cells = connectionStrip(
+      [
+        { at: at(23), kind: "connected" },
+        { at: at(15), kind: "disconnected", reason: "keepalive_timeout" },
+      ],
+      now,
+      4,
+    );
+    expect(cells).toEqual(["ok", "err", "err", "err"]);
+  });
+
+  it("counts events from before the window", () => {
+    const cells = connectionStrip([{ at: at(40), kind: "connected" }], now, 2);
+    expect(cells).toEqual(["ok", "ok"]);
+  });
+});

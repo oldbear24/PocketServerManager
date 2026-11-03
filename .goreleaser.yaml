@@ -1,0 +1,40 @@
+version: 2
+
+# Panel binaries. The agent, updater and panel images are built by the release
+# workflow before this runs, so that the digests can be compiled into the panel.
+before:
+  hooks:
+    - npm --prefix web ci
+    - npm --prefix web run build
+
+builds:
+  - id: panel
+    main: ./cmd/panel
+    binary: pocketcloud-panel
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/oldbear24/PocketServerManager/internal/version.Version={{ .Version }}
+      - -X github.com/oldbear24/PocketServerManager/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/oldbear24/PocketServerManager/internal/version.AgentDigest={{ .Env.AGENT_DIGEST }}
+      - -X github.com/oldbear24/PocketServerManager/internal/version.UpdaterDigest={{ .Env.UPDATER_DIGEST }}
+
+archives:
+  - id: panel
+    formats: [tar.gz]
+    name_template: pocketcloud-panel_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  extra_files:
+    - glob: image-digests.json
+
+changelog:
+  use: github

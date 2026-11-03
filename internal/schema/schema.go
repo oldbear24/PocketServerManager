@@ -1,0 +1,155 @@
+// Package schema is the single source of truth for collection names, API rules
+// and which fields hold secrets. See docs/data-model.md.
+package schema
+
+import "slices"
+
+// Collections created by migrations.
+const (
+	Users             = "users"
+	Superusers        = "_superusers"
+	Hosts             = "hosts"
+	RevokedCerts      = "revoked_certs"
+	EnrollmentTokens  = "enrollment_tokens"
+	Commands          = "commands"
+	Events            = "events"
+	Alerts            = "alerts"
+	Stacks            = "stacks"
+	StackRevisions    = "stack_revisions"
+	Containers        = "containers"
+	Volumes           = "volumes"
+	Networks          = "networks"
+	InternalCA        = "internal_ca"
+	Settings          = "settings"
+	AuditLog          = "audit_log"
+	DiagnosticBundles = "diagnostic_bundles"
+)
+
+// Reserved names of collections that land with later features. They are listed
+// here so that nothing else takes them; see docs/data-model.md for their fields.
+var Reserved = []string{
+	"api_tokens", "alert_rules", "notification_channels",
+	"sites", "site_php", "deployments", "scheduled_tasks", "domains",
+	"dns_providers", "dns_zones", "dns_records", "acme_accounts", "certificates",
+	"db_servers", "databases", "db_users", "db_networks",
+	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
+}
+
+// User roles.
+const (
+	RoleAdmin    = "admin"
+	RoleOperator = "operator"
+	RoleViewer   = "viewer"
+)
+
+// API rules. Superusers bypass them, and agents never use the REST API.
+const (
+	RuleViewer   = `@request.auth.role = "viewer" || @request.auth.role = "operator" || @request.auth.role = "admin"`
+	RuleOperator = `@request.auth.role = "operator" || @request.auth.role = "admin"`
+	RuleAdmin    = `@request.auth.role = "admin"`
+)
+
+// Host roles.
+const (
+	HostRoleDocker = "docker"
+	HostRoleEdge   = "edge"
+	HostRoleBackup = "backup"
+)
+
+// Host statuses.
+const (
+	HostOnline   = "online"
+	HostDegraded = "degraded"
+	HostOffline  = "offline"
+)
+
+// Command statuses.
+const (
+	CommandQueued     = "queued"
+	CommandDispatched = "dispatched"
+	CommandRunning    = "running"
+	CommandSucceeded  = "succeeded"
+	CommandFailed     = "failed"
+	CommandTimedOut   = "timed_out"
+	CommandCancelled  = "cancelled"
+)
+
+// Severity of events and alerts.
+const (
+	SeverityInfo     = "info"
+	SeverityWarning  = "warning"
+	SeverityCritical = "critical"
+)
+
+// Alert statuses.
+const (
+	AlertOpen         = "open"
+	AlertAcknowledged = "acknowledged"
+	AlertResolved     = "resolved"
+)
+
+// Encrypted lists the fields marked 🔒 in docs/data-model.md. They are text
+// fields hidden from the API, sealed with the master key before they are stored
+// and never written to the audit log. Collections of later milestones are listed
+// too, so a new collection cannot be added without its secrets being covered.
+var Encrypted = map[string][]string{
+	Stacks:                  {"secrets"},
+	InternalCA:              {"root_key", "agent_intermediate_key", "server_key"},
+	"notification_channels": {"config"},
+	"sites":                 {"webhook_secret", "basic_auth"},
+	"site_php":              {"secrets"},
+	"dns_providers":         {"credentials"},
+	"acme_accounts":         {"key", "eab_hmac"},
+	"certificates":          {"key_pem"},
+	"db_servers":            {"admin_password"},
+	"db_users":              {"password"},
+	"backup_targets":        {"credentials", "repo_password"},
+}
+
+// AuditedCollection describes how changes of one collection are audited.
+type AuditedCollection struct {
+	// Name is the collection name.
+	Name string
+	// Label is the field used as the record's human-readable label.
+	Label string
+	// Host is the relation field that links a record to a host, if any.
+	Host string
+	// Ignore lists fields that are not configuration, such as live status.
+	// A save that changes nothing else produces no audit entry.
+	Ignore []string
+}
+
+// Audited lists the configuration collections covered by the change audit.
+// High-volume or derived data (inventory, metrics, events, diagnostics) is not
+// audited, and commands are shown from the commands collection.
+var Audited = []AuditedCollection{
+	{Name: Users, Label: "email", Ignore: []string{"lastLogin"}},
+	{Name: Hosts, Label: "name", Ignore: []string{
+		"status", "os", "kernel", "arch", "cpu_cores", "mem_bytes", "ip4", "ip6",
+		"agent_version", "agent_image_digest", "agent_container_id", "docker_version",
+		"last_seen", "rtt_ms", "clock_skew_ms", "connected_since", "stream_open",
+		"uptime_s", "load1", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
+		"runtime", "self_checks", "inventory_at", "capabilities",
+		"cert_serial", "cert_prev_serial", "cert_expires_at", "hostname",
+	}},
+	{Name: Stacks, Label: "name", Host: "host", Ignore: []string{"status"}},
+	{Name: Settings, Label: "public_url"},
+	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
+	{Name: "alert_rules", Label: "kind"},
+	{Name: "notification_channels", Label: "kind"},
+	{Name: "sites", Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
+	{Name: "site_php", Label: "site"},
+	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
+	{Name: "domains", Label: "hostname", Ignore: []string{"dns_status"}},
+	{Name: "dns_providers", Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
+	{Name: "certificates", Label: "names", Ignore: []string{"status", "attempts", "last_error"}},
+	{Name: "db_servers", Label: "name", Host: "host", Ignore: []string{"status", "size_bytes"}},
+	{Name: "databases", Label: "name", Ignore: []string{"status", "size_bytes", "connections"}},
+	{Name: "backup_targets", Label: "name", Ignore: []string{"capacity_bytes", "used_bytes"}},
+	{Name: "backup_jobs", Label: "name", Host: "host"},
+}
+
+// IsEncrypted reports whether a field holds a secret.
+func IsEncrypted(collection, field string) bool {
+	return slices.Contains(Encrypted[collection], field)
+}

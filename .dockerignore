@@ -1,0 +1,10 @@
+.git
+.github
+bin
+dev-data
+design
+docs
+web/node_modules
+web/dist
+!web/dist/.gitkeep
+**/*.log

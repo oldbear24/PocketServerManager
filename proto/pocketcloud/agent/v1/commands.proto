@@ -1,0 +1,684 @@
+syntax = "proto3";
+
+package pocketcloud.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+import "pocketcloud/options/v1/options.proto";
+
+// Command is one unit of work for an agent. Commands are created as records in
+// the `commands` collection, which is the command history and the delivery queue
+// at once. Delivery is at-least-once; the agent deduplicates by id.
+//
+// Each payload field is named after its command type with dots replaced by
+// underscores: `container.start` is `container_start`.
+message Command {
+  // id is the id of the `commands` record.
+  string id = 1;
+  // type is the command type, e.g. `container.start`.
+  string type = 2;
+  // parent_id is the parent command of a multi-step flow, if any.
+  string parent_id = 3;
+  // correlation_id is shared by every command of a multi-step flow.
+  string correlation_id = 4;
+  // attempt counts deliveries of this command, starting at 1.
+  int32 attempt = 5;
+  // deadline is when the panel gives up on this command.
+  google.protobuf.Timestamp deadline = 6;
+
+  // payload holds the arguments of the command.
+  oneof payload {
+    // container_start starts a container.
+    ContainerStart container_start = 100;
+    // container_stop stops a container.
+    ContainerStop container_stop = 101;
+    // container_restart restarts a container.
+    ContainerRestart container_restart = 102;
+    // container_remove removes a container.
+    ContainerRemove container_remove = 103;
+
+    // image_pull pulls an image.
+    ImagePull image_pull = 110;
+
+    // stack_deploy writes a stack's files and runs `docker compose up`.
+    StackDeploy stack_deploy = 120;
+    // stack_stop stops a stack's containers without removing them.
+    StackStop stack_stop = 121;
+    // stack_down removes a stack's containers.
+    StackDown stack_down = 122;
+    // stack_pull pulls a stack's images.
+    StackPull stack_pull = 123;
+    // stack_validate runs `docker compose config` without changing anything.
+    StackValidate stack_validate = 124;
+    // stack_restart restarts a stack's containers.
+    StackRestart stack_restart = 125;
+
+    // logs_follow starts streaming logs with StreamLogs.
+    LogsFollow logs_follow = 130;
+    // logs_stop stops a log stream.
+    LogsStop logs_stop = 131;
+
+    // exec_start opens a terminal session with Exec.
+    ExecStart exec_start = 140;
+    // exec_stop ends a terminal session.
+    ExecStop exec_stop = 141;
+
+    // site_deploy builds a site and activates the new release.
+    SiteDeploy site_deploy = 150;
+    // site_rollback switches a site to an older release.
+    SiteRollback site_rollback = 151;
+    // site_remove removes a site's files and containers.
+    SiteRemove site_remove = 152;
+    // site_php_apply creates or updates the PHP-FPM container of a site.
+    SitePhpApply site_php_apply = 153;
+
+    // task_run runs a scheduled task.
+    TaskRun task_run = 160;
+
+    // db_server_create creates a shared database server.
+    DbServerCreate db_server_create = 170;
+    // db_server_upgrade pulls a newer image and recreates a database server.
+    DbServerUpgrade db_server_upgrade = 171;
+    // db_server_remove removes a database server.
+    DbServerRemove db_server_remove = 172;
+    // db_database_create creates a database and its user.
+    DbDatabaseCreate db_database_create = 173;
+    // db_database_drop drops a database after keeping a final dump.
+    DbDatabaseDrop db_database_drop = 174;
+    // db_database_rotate changes the password of a database user.
+    DbDatabaseRotate db_database_rotate = 175;
+    // db_database_clone copies a database into a new one.
+    DbDatabaseClone db_database_clone = 176;
+    // db_database_export uploads an SQL dump to the panel.
+    DbDatabaseExport db_database_export = 177;
+    // db_network_attach connects an application to a database server.
+    DbNetworkAttach db_network_attach = 178;
+    // db_stats collects sizes and connection counts.
+    DbStats db_stats = 179;
+    // db_adminer_start starts a temporary Adminer container and opens a Relay.
+    DbAdminerStart db_adminer_start = 180;
+    // db_adminer_stop removes an Adminer container.
+    DbAdminerStop db_adminer_stop = 181;
+
+    // edge_apply loads a complete edge proxy configuration.
+    EdgeApply edge_apply = 190;
+
+    // cert_install installs a certificate on an edge.
+    CertInstall cert_install = 200;
+    // cert_remove removes a certificate from an edge.
+    CertRemove cert_remove = 201;
+
+    // acme_challenge_present publishes an HTTP-01 challenge response.
+    AcmeChallengePresent acme_challenge_present = 210;
+    // acme_challenge_cleanup removes an HTTP-01 challenge response.
+    AcmeChallengeCleanup acme_challenge_cleanup = 211;
+
+    // backup_init initialises a restic repository.
+    BackupInit backup_init = 220;
+    // backup_run runs one backup job for one target.
+    BackupRun backup_run = 221;
+    // backup_restore restores a snapshot.
+    BackupRestore backup_restore = 222;
+    // backup_snapshots lists the snapshots of a repository.
+    BackupSnapshots backup_snapshots = 223;
+    // backup_browse lists the files of a snapshot.
+    BackupBrowse backup_browse = 224;
+    // backup_check verifies a repository.
+    BackupCheck backup_check = 225;
+    // backup_unlock removes stale locks from a repository.
+    BackupUnlock backup_unlock = 226;
+    // backup_forget applies a retention policy.
+    BackupForget backup_forget = 227;
+
+    // agent_update swaps the agent container using a temporary updater container.
+    AgentUpdate agent_update = 230;
+    // agent_restart restarts the agent container.
+    AgentRestart agent_restart = 231;
+    // agent_rotate_certificate rotates the agent's certificate now.
+    AgentRotateCertificate agent_rotate_certificate = 232;
+    // agent_diagnostics builds a debug bundle and uploads it.
+    AgentDiagnostics agent_diagnostics = 233;
+    // agent_set_log_level changes the log level for a limited time.
+    AgentSetLogLevel agent_set_log_level = 234;
+  }
+}
+
+// ContainerStart starts a stopped container.
+message ContainerStart {
+  // docker_id is the id of the container.
+  string docker_id = 1;
+}
+
+// ContainerStop stops a running container.
+message ContainerStop {
+  // docker_id is the id of the container.
+  string docker_id = 1;
+  // timeout_s is how long to wait before killing it; 0 uses the Docker default.
+  int32 timeout_s = 2;
+}
+
+// ContainerRestart restarts a container.
+message ContainerRestart {
+  // docker_id is the id of the container.
+  string docker_id = 1;
+  // timeout_s is how long to wait before killing it; 0 uses the Docker default.
+  int32 timeout_s = 2;
+}
+
+// ContainerRemove removes a container.
+message ContainerRemove {
+  // docker_id is the id of the container.
+  string docker_id = 1;
+  // remove_volumes also removes the container's anonymous volumes.
+  bool remove_volumes = 2;
+  // force removes the container even if it is running.
+  bool force = 3;
+}
+
+// RegistryAuth holds the credentials of a private image registry.
+message RegistryAuth {
+  // server is the registry host name.
+  string server = 1;
+  // username is the registry user.
+  string username = 2;
+  // password is the registry password or token.
+  string password = 3 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// ImagePull pulls an image.
+message ImagePull {
+  // image is the image reference.
+  string image = 1;
+  // auth holds the registry credentials, if needed.
+  RegistryAuth auth = 2;
+}
+
+// StackDeploy writes a stack's files under /var/lib/pocketcloud/stacks/<name>
+// and runs `docker compose up -d --remove-orphans`, streaming the output.
+message StackDeploy {
+  // name is the Compose project name.
+  string name = 1;
+  // compose_yaml is the content of compose.yaml.
+  string compose_yaml = 2;
+  // env is the content of the .env file without secrets.
+  string env = 3;
+  // secrets are appended to the .env file only for the duration of the deploy.
+  map<string, string> secrets = 4 [(pocketcloud.options.v1.sensitive) = true];
+  // revision is the number of the deployed revision.
+  int32 revision = 5;
+  // pull pulls the images first.
+  bool pull = 6;
+  // registries holds credentials for private registries used by the stack.
+  repeated RegistryAuth registries = 7;
+}
+
+// StackStop stops a stack's containers.
+message StackStop {
+  // name is the Compose project name.
+  string name = 1;
+}
+
+// StackDown removes a stack's containers and networks.
+message StackDown {
+  // name is the Compose project name.
+  string name = 1;
+  // remove_volumes also removes the stack's named volumes.
+  bool remove_volumes = 2;
+}
+
+// StackPull pulls a stack's images.
+message StackPull {
+  // name is the Compose project name.
+  string name = 1;
+}
+
+// StackValidate runs `docker compose config` on the given files.
+message StackValidate {
+  // name is the Compose project name.
+  string name = 1;
+  // compose_yaml is the content of compose.yaml.
+  string compose_yaml = 2;
+  // env is the content of the .env file without secrets.
+  string env = 3;
+}
+
+// StackRestart restarts a stack's containers.
+message StackRestart {
+  // name is the Compose project name.
+  string name = 1;
+}
+
+// LogsFollow starts a log stream. The agent opens StreamLogs with the session id.
+message LogsFollow {
+  // session_id identifies the stream.
+  string session_id = 1;
+  // container_ids lists the containers to follow.
+  repeated string container_ids = 2;
+  // tail is the number of past lines to send first.
+  int32 tail = 3;
+}
+
+// LogsStop stops a log stream.
+message LogsStop {
+  // session_id identifies the stream.
+  string session_id = 1;
+}
+
+// ExecStart opens a terminal session. The agent opens Exec with the session id.
+message ExecStart {
+  // session_id identifies the session.
+  string session_id = 1;
+  // container_id is the target container; empty for a host shell.
+  string container_id = 2;
+  // command is the program to run, e.g. `/bin/sh`.
+  repeated string command = 3;
+  // user is the user to run as; empty uses the container's default.
+  string user = 4;
+  // size is the initial terminal size.
+  TerminalSizeHint size = 5;
+  // host_shell requests a host shell; the agent refuses it unless the host has opted in.
+  bool host_shell = 6;
+}
+
+// TerminalSizeHint is the initial size of a terminal in characters.
+message TerminalSizeHint {
+  // cols is the number of columns.
+  uint32 cols = 1;
+  // rows is the number of rows.
+  uint32 rows = 2;
+}
+
+// ExecStop ends a terminal session.
+message ExecStop {
+  // session_id identifies the session.
+  string session_id = 1;
+}
+
+// SiteDeploy builds a site in a job container and activates the new release.
+// Not implemented before milestone M3.
+message SiteDeploy {
+  // site is the site name, used for paths and container names.
+  string site = 1;
+  // deployment is the deployment number and thus the release directory.
+  int32 deployment = 2;
+  // repo_url is the Git source, if any.
+  string repo_url = 3;
+  // branch is the Git branch.
+  string branch = 4;
+  // git_token authenticates to the Git server, if needed.
+  string git_token = 5 [(pocketcloud.options.v1.sensitive) = true];
+  // artifact_id is the uploaded source, fetched with FetchArtifact.
+  string artifact_id = 6;
+  // build_image is the image of the build job container.
+  string build_image = 7;
+  // build_cmd is the build command.
+  string build_cmd = 8;
+  // output_dir is where the build leaves its output (static sites).
+  string output_dir = 9;
+  // shared_paths are linked into the release from `shared/` (PHP sites).
+  repeated string shared_paths = 10;
+  // release_hook is run after the build (PHP sites).
+  string release_hook = 11;
+  // keep_releases is the number of old releases to keep.
+  int32 keep_releases = 12;
+}
+
+// SiteRollback switches a site's `current` symlink to an older release.
+message SiteRollback {
+  // site is the site name.
+  string site = 1;
+  // deployment is the release to activate.
+  int32 deployment = 2;
+}
+
+// SiteRemove removes a site's files and containers.
+message SiteRemove {
+  // site is the site name.
+  string site = 1;
+}
+
+// SitePhpApply creates or updates the PHP-FPM container of a site.
+message SitePhpApply {
+  // site is the site name.
+  string site = 1;
+  // image is the runtime image, pinned by digest.
+  string image = 2;
+  // fpm_conf is the generated FPM pool configuration.
+  string fpm_conf = 3;
+  // php_ini is the generated php.ini override.
+  string php_ini = 4;
+  // env holds environment variables without secrets.
+  map<string, string> env = 5;
+  // secrets holds resolved secret environment variables.
+  map<string, string> secrets = 6 [(pocketcloud.options.v1.sensitive) = true];
+  // cpu_limit is the CPU limit, e.g. 1.5.
+  double cpu_limit = 7;
+  // mem_limit_bytes is the memory limit.
+  uint64 mem_limit_bytes = 8;
+}
+
+// TaskRun runs a scheduled task with `docker exec`.
+message TaskRun {
+  // task_id is the id of the `scheduled_tasks` record.
+  string task_id = 1;
+  // container_id is the target container.
+  string container_id = 2;
+  // user is the user to run as.
+  string user = 3;
+  // command is the shell command.
+  string command = 4;
+  // timeout_s is when the task gets killed.
+  int32 timeout_s = 5;
+}
+
+// DbServerCreate creates a shared database server as a PocketCloud-owned stack.
+message DbServerCreate {
+  // name is the server name, also the network alias.
+  string name = 1;
+  // engine is `mariadb` or `postgres`.
+  string engine = 2;
+  // image is the image reference.
+  string image = 3;
+  // volume is the named volume for the data.
+  string volume = 4;
+  // admin_user is the administrator's user name.
+  string admin_user = 5;
+  // admin_password is the administrator's password.
+  string admin_password = 6 [(pocketcloud.options.v1.sensitive) = true];
+  // tuning holds engine parameters such as `innodb_buffer_pool_size`.
+  map<string, string> tuning = 7;
+}
+
+// DbServerUpgrade pulls a newer image and recreates a database server.
+message DbServerUpgrade {
+  // name is the server name.
+  string name = 1;
+  // image is the new image reference.
+  string image = 2;
+}
+
+// DbServerRemove removes a database server.
+message DbServerRemove {
+  // name is the server name.
+  string name = 1;
+  // remove_volume also removes the data volume.
+  bool remove_volume = 2;
+}
+
+// DbConnection is how the agent reaches a database server's own client.
+message DbConnection {
+  // container_id is the server container.
+  string container_id = 1;
+  // engine is `mariadb` or `postgres`.
+  string engine = 2;
+  // admin_user is the administrator's user name.
+  string admin_user = 3;
+  // admin_password is passed in the exec environment, never on a command line.
+  string admin_password = 4 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// DbDatabaseCreate creates a database and a user with privileges on it only.
+message DbDatabaseCreate {
+  // connection is the database server.
+  DbConnection connection = 1;
+  // database is the database name.
+  string database = 2;
+  // user is the database user.
+  string user = 3;
+  // password is the new user's password.
+  string password = 4 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// DbDatabaseDrop drops a database and its user after keeping a final dump.
+message DbDatabaseDrop {
+  // connection is the database server.
+  DbConnection connection = 1;
+  // database is the database name.
+  string database = 2;
+  // user is the database user.
+  string user = 3;
+}
+
+// DbDatabaseRotate changes the password of a database user.
+message DbDatabaseRotate {
+  // connection is the database server.
+  DbConnection connection = 1;
+  // user is the database user.
+  string user = 2;
+  // password is the new password.
+  string password = 3 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// DbDatabaseClone copies a database into a new one with dump and restore.
+message DbDatabaseClone {
+  // connection is the database server.
+  DbConnection connection = 1;
+  // source is the source database.
+  string source = 2;
+  // target is the new database.
+  string target = 3;
+  // user is the user of the new database.
+  string user = 4;
+  // password is the password of the new user.
+  string password = 5 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// DbDatabaseExport dumps a database and uploads it with UploadArtifact.
+message DbDatabaseExport {
+  // connection is the database server.
+  DbConnection connection = 1;
+  // database is the database name.
+  string database = 2;
+}
+
+// DbNetworkAttach creates a private network and connects an application to a server.
+message DbNetworkAttach {
+  // network is the network name, `pcdb-<app>`.
+  string network = 1;
+  // server_container_id is the database server's container.
+  string server_container_id = 2;
+  // server_alias is the server's alias on the network.
+  string server_alias = 3;
+  // app_container_ids are the application's containers.
+  repeated string app_container_ids = 4;
+}
+
+// DbStats collects sizes and connection counts of a database server.
+message DbStats {
+  // connection is the database server.
+  DbConnection connection = 1;
+}
+
+// DbAdminerStart starts Adminer on a database's network and opens a Relay.
+message DbAdminerStart {
+  // session_id identifies the Relay.
+  string session_id = 1;
+  // network is the network to attach to.
+  string network = 2;
+  // image is the Adminer image.
+  string image = 3;
+  // ttl_s is when the container gets removed.
+  int32 ttl_s = 4;
+}
+
+// DbAdminerStop removes an Adminer container.
+message DbAdminerStop {
+  // session_id identifies the Relay.
+  string session_id = 1;
+}
+
+// EdgeApply loads a complete edge proxy configuration generated by the panel.
+message EdgeApply {
+  // caddy_json is the complete Caddy configuration.
+  string caddy_json = 1;
+  // caddy_image is the edge proxy image, pinned by digest.
+  string caddy_image = 2;
+  // revision increases with every generated configuration.
+  int64 revision = 3;
+}
+
+// CertInstall installs a certificate on an edge.
+message CertInstall {
+  // certificate_id is the id of the `certificates` record.
+  string certificate_id = 1;
+  // names are the names the certificate covers.
+  repeated string names = 2;
+  // chain_pem is the certificate chain.
+  bytes chain_pem = 3;
+  // key_pem is the private key.
+  bytes key_pem = 4 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// CertRemove removes a certificate from an edge.
+message CertRemove {
+  // certificate_id is the id of the `certificates` record.
+  string certificate_id = 1;
+}
+
+// AcmeChallengePresent makes the edge answer an HTTP-01 challenge.
+message AcmeChallengePresent {
+  // token is the last path segment of `/.well-known/acme-challenge/<token>`.
+  string token = 1;
+  // key_authorization is the response body.
+  string key_authorization = 2;
+}
+
+// AcmeChallengeCleanup removes an HTTP-01 challenge response.
+message AcmeChallengeCleanup {
+  // token is the last path segment of `/.well-known/acme-challenge/<token>`.
+  string token = 1;
+}
+
+// BackupRepository is how an agent reaches one restic repository.
+message BackupRepository {
+  // url is the restic repository URL.
+  string url = 1;
+  // env holds the storage credentials for restic's environment.
+  map<string, string> env = 2 [(pocketcloud.options.v1.sensitive) = true];
+  // password is the repository password.
+  string password = 3 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// BackupInit initialises a restic repository, if it does not exist yet.
+message BackupInit {
+  // repository is the repository.
+  BackupRepository repository = 1;
+}
+
+// BackupRun runs one backup job for one target.
+message BackupRun {
+  // run_id is the id of the `backup_runs` record.
+  string run_id = 1;
+  // repository is the target repository.
+  BackupRepository repository = 2;
+  // volumes lists the Docker volumes to back up, each in a job container.
+  repeated string volumes = 3;
+  // paths lists the host paths to back up, read through /host.
+  repeated string paths = 4;
+  // stdin_command dumps a database for `restic backup --stdin-from-command`.
+  repeated string stdin_command = 5;
+  // stdin_file_name is the file name of the stored dump.
+  string stdin_file_name = 6;
+  // tags are the restic tags of the snapshot.
+  repeated string tags = 7;
+  // env holds the environment of the dump command.
+  map<string, string> env = 8 [(pocketcloud.options.v1.sensitive) = true];
+}
+
+// BackupRestore restores a snapshot in a job container.
+message BackupRestore {
+  // repository is the source repository.
+  BackupRepository repository = 1;
+  // snapshot_id is the snapshot to restore.
+  string snapshot_id = 2;
+  // target_volume is the destination volume, if any.
+  string target_volume = 3;
+  // target_path is the destination host path, if any.
+  string target_path = 4;
+  // include limits the restore to these paths.
+  repeated string include = 5;
+  // dry_run lists what would be restored without changing anything.
+  bool dry_run = 6;
+}
+
+// BackupSnapshots lists the snapshots of a repository.
+message BackupSnapshots {
+  // repository is the repository.
+  BackupRepository repository = 1;
+  // tags limits the list to snapshots with these tags.
+  repeated string tags = 2;
+}
+
+// BackupBrowse lists the files of a snapshot.
+message BackupBrowse {
+  // repository is the repository.
+  BackupRepository repository = 1;
+  // snapshot_id is the snapshot.
+  string snapshot_id = 2;
+  // path is the directory to list.
+  string path = 3;
+}
+
+// BackupCheck verifies a repository with `restic check`.
+message BackupCheck {
+  // repository is the repository.
+  BackupRepository repository = 1;
+  // read_data_subset is restic's `--read-data-subset` value, e.g. `5%`.
+  string read_data_subset = 2;
+}
+
+// BackupUnlock removes stale locks from a repository.
+message BackupUnlock {
+  // repository is the repository.
+  BackupRepository repository = 1;
+}
+
+// BackupForget applies a retention policy with `restic forget --prune`.
+message BackupForget {
+  // repository is the repository.
+  BackupRepository repository = 1;
+  // tags limits the policy to snapshots with these tags.
+  repeated string tags = 2;
+  // keep_last is restic's `--keep-last`.
+  int32 keep_last = 3;
+  // keep_daily is restic's `--keep-daily`.
+  int32 keep_daily = 4;
+  // keep_weekly is restic's `--keep-weekly`.
+  int32 keep_weekly = 5;
+  // keep_monthly is restic's `--keep-monthly`.
+  int32 keep_monthly = 6;
+  // keep_yearly is restic's `--keep-yearly`.
+  int32 keep_yearly = 7;
+}
+
+// AgentUpdate swaps the agent container using a temporary updater container.
+// Both images are always pinned by digest; tags alone are never trusted.
+message AgentUpdate {
+  // agent_image is the new agent image, `repository@sha256:…`.
+  string agent_image = 1;
+  // updater_image is the updater image, `repository@sha256:…`.
+  string updater_image = 2;
+  // version is the agent version that belongs to the image.
+  string version = 3;
+  // health_timeout_s is how long to wait for the new agent before rolling back.
+  int32 health_timeout_s = 4;
+}
+
+// AgentRestart restarts the agent container with a plain `docker restart`.
+message AgentRestart {}
+
+// AgentRotateCertificate rotates the agent's certificate now.
+message AgentRotateCertificate {}
+
+// AgentDiagnostics builds a debug bundle and uploads it with UploadArtifact.
+message AgentDiagnostics {
+  // log_lines is the number of recent log lines to include.
+  int32 log_lines = 1;
+}
+
+// AgentSetLogLevel changes the agent's log level for a limited time.
+message AgentSetLogLevel {
+  // level is `debug` or `info`.
+  string level = 1;
+  // duration_s is when the level falls back to info.
+  int32 duration_s = 2;
+}

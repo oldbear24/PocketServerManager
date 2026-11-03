@@ -1,3 +1,19 @@
 node_modules/
 .DS_Store
 *.log
+
+# build output
+/bin/
+/dist/
+web/dist/*
+!web/dist/.gitkeep
+.task/
+
+# local panel data; a master key must never be committed
+/dev-data/
+pb_data/
+master.key
+*.key
+
+# local editor and assistant settings
+.claude/

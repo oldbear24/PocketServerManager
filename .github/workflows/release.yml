@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write # keyless cosign signatures
+
+env:
+  REGISTRY: ghcr.io/oldbear24
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The agent and updater come first: their digests are compiled into the panel.
+      - name: Build and push the agent image
+        id: agent
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/pocketcloud-agent:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+
+      - name: Build and push the updater image
+        id: updater
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/updater/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/pocketcloud-updater:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+
+      - name: Build and push the panel image
+        id: panel
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/panel/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/pocketcloud-panel:${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            AGENT_DIGEST=${{ steps.agent.outputs.digest }}
+            UPDATER_DIGEST=${{ steps.updater.outputs.digest }}
+
+      - name: Sign the images
+        env:
+          AGENT: ${{ env.REGISTRY }}/pocketcloud-agent@${{ steps.agent.outputs.digest }}
+          UPDATER: ${{ env.REGISTRY }}/pocketcloud-updater@${{ steps.updater.outputs.digest }}
+          PANEL: ${{ env.REGISTRY }}/pocketcloud-panel@${{ steps.panel.outputs.digest }}
+        run: cosign sign --yes "$AGENT" "$UPDATER" "$PANEL"
+
+      - name: Record the image digests in the release
+        env:
+          AGENT_DIGEST: ${{ steps.agent.outputs.digest }}
+          UPDATER_DIGEST: ${{ steps.updater.outputs.digest }}
+          PANEL_DIGEST: ${{ steps.panel.outputs.digest }}
+        run: |
+          cat > image-digests.json <<EOF
+          {
+            "agent": "$AGENT_DIGEST",
+            "updater": "$UPDATER_DIGEST",
+            "panel": "$PANEL_DIGEST"
+          }
+          EOF
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --skip=validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENT_DIGEST: ${{ steps.agent.outputs.digest }}
+          UPDATER_DIGEST: ${{ steps.updater.outputs.digest }}

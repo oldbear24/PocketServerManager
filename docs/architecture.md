@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: proposal. Decisions marked **(spike)** are settled in the spike issue in milestone M0 and recorded as ADRs in `docs/adr/`.
+> Status: M0 and M1 are implemented; later sections describe what is planned. Decisions are recorded as ADRs in [`adr/`](adr/).
 >
 > Diagrams are PNG renders of the Mermaid sources in [`diagrams/`](diagrams/), so they show up everywhere, including the GitHub mobile app. Edit the `.mmd` file and run [`diagrams/render.sh`](diagrams/render.sh).
 
@@ -54,7 +54,13 @@ A container cannot safely replace itself: stopping its own container kills the p
 
 - Images are always pulled by digest; the panel release defines which agent and updater digests belong to it.
 - The new container keeps the old one's environment, mounts, networks, restart policy and labels (recreate from inspect).
-- If the updater itself dies mid-way, the old container still exists (stopped and renamed); recovery is a documented one-liner, and the panel shows the host as offline until then.
+- If the updater itself dies mid-way, the old container still exists (stopped and renamed to `pocketcloud-agent-old`), and the panel shows the host as offline until it is back. To recover by hand:
+
+  ```sh
+  docker rm -f pocketcloud-agent; docker rename pocketcloud-agent-old pocketcloud-agent; docker start pocketcloud-agent
+  ```
+- The updater writes its outcome to the agent volume (`updates/<command id>.json`), and whichever agent runs afterwards reports it for the command.
+- Batch updates go one host at a time, and a failed update stops the batch.
 - Restarting the agent does not need the updater – a plain `docker restart` from the agent is enough.
 
 ## Agent identity and enrollment
@@ -64,10 +70,13 @@ The panel runs an internal CA. Agents authenticate with client certificates; no 
 <img src="diagrams/enrollment.png" width="1012" alt="Server enrollment sequence with a one-time token and a client certificate">
 
 - Certificate SAN `pocketcloud://host/<hostId>` identifies the host on every call.
-- Agent certificates are valid for 180 days and renewed over the existing connection when 30 days remain (`RenewCertificate`).
-- Removing a host revokes its certificate (serial denylist checked on connect).
+- Agent certificates are valid for 180 days and renewed over the existing connection when 30 days remain (`RenewCertificate`). The previous certificate stays valid until the agent first calls with the new one, so a lost response cannot lock it out.
+- Removing a host revokes its certificate. The serial denylist is checked on every call, so a revoked certificate stops working on connections that are already open too.
+- Agents identify the panel by its pinned CA and the name `pocketcloud://panel`, not by host name ([ADR 0006](adr/0006-agents-pin-the-panel-ca.md)).
 
-## gRPC API (v1, draft)
+## gRPC API (v1)
+
+The contract is in [`proto/pocketcloud/agent/v1`](../proto/pocketcloud/agent/v1). The generated Go code is committed ([ADR 0005](adr/0005-generated-code-is-committed.md)), and CI checks it and runs `buf breaking` against `main`.
 
 | RPC | Kind | Purpose |
 |---|---|---|
@@ -84,7 +93,9 @@ The panel runs an internal CA. Agents authenticate with client certificates; no 
 | `Relay` | bidi stream | admin-only byte stream to a temporary tool container (Adminer); opened by a command and bound to one browser session, like `Exec` |
 | `RenewCertificate` | unary | identity rotation |
 
-Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `logs.*`, `exec.*`, `site.*` (static and PHP), `task.*` (scheduled tasks), `db.*`, `edge.*`, `cert.*`, `acme.*`, `backup.*`, `agent.*`. Agents advertise supported types in `capabilities`, which keeps old agents working while new command types are added.
+Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `logs.*`, `exec.*`, `site.*` (static and PHP), `task.*` (scheduled tasks), `db.*`, `edge.*`, `cert.*`, `acme.*`, `backup.*`, `agent.*`. Each field is named after its type with dots as underscores. Agents advertise supported types in `capabilities`, which keeps old agents working while new command types are added; a type the agent does not support fails at once with a message saying so.
+
+Fields holding secrets carry the `sensitive` option from `proto/pocketcloud/options/v1`, and message traces never show them.
 
 ## Command lifecycle
 
@@ -93,6 +104,9 @@ Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `l
 - The dispatcher reacts to new records (`OnRecordAfterCreateSuccess`) and to agent connects.
 - Commands touching the same resource (stack, site, backup repository) run in order; others in parallel.
 - After a reconnect the panel re-sends commands that were dispatched but never finished; the agent acknowledges ids it has already completed without running them again.
+- A command runs **at most once**. The agent records a command in its volume before running it. If it was killed in the middle, the replay does not run the command again: it reports a failure saying the result may be incomplete. Whether to try again is up to whoever asked for it.
+- Queued commands for an offline host expire after `command_queue_ttl_s`; dispatched and running ones time out per command type. No command stays open forever.
+- The panel's own fields of a command (status, attempts, results) cannot be set through the API, and the state machine holds for every save, superusers included.
 - Multi-step flows (new site, restore) are a parent command with children sharing a correlation id, which drives the progress timelines in the UI.
 
 ## Logs and terminal
@@ -103,11 +117,11 @@ The relay is a custom route registered in `OnServe`; it checks the PocketBase au
 
 ## Static sites, domains and TLS
 
-Servers with the `edge` role run Caddy in its own container (`pocketcloud-edge`) managed by the agent, so agent updates never interrupt traffic **(spike confirms the integration details)**. The panel generates each edge's complete route table from sites, domains and container labels and sends it with `edge.apply`; the agent validates it, loads it and keeps the last good config.
+Servers with the `edge` role run Caddy in its own container (`pocketcloud-edge`) managed by the agent, so agent updates never interrupt traffic ([ADR 0002](adr/0002-edge-proxy-integration.md)). The panel generates each edge's complete route table from sites, domains and container labels and sends it with `edge.apply`; the agent loads it through Caddy's admin API on a Unix socket, which keeps the last good config when a new one is invalid.
 
-Certificates are issued **centrally by the panel** **(spike: certmagic vs lego)**, stored encrypted and distributed with `cert.install` to every edge that serves the names. One ACME account, wildcard reuse across servers, and a single place to see expiry.
+Certificates are issued **centrally by the panel** with lego ([ADR 0001](adr/0001-acme-and-dns-libraries.md)), stored encrypted and distributed with `cert.install` to every edge that serves the names. One ACME account, wildcard reuse across servers, and a single place to see expiry.
 
-- **HTTP-01**: the panel asks the edge agent to answer `/.well-known/acme-challenge/<token>`.
+- **HTTP-01**: the panel asks the edge agent to write the answer into the volume shared with Caddy, which serves it at `/.well-known/acme-challenge/<token>`.
 - **DNS-01**: the panel creates the TXT record through the DNS provider API (required for wildcards and non-public names).
 - Renewal 30 days before expiry; alert at 14 days or on failure.
 
@@ -117,7 +131,7 @@ New site provisioning (one parent command):
 
 If the zone is not at a connected provider, the wizard shows the records to create at the registrar and polls until they resolve.
 
-Site releases live on the `pocketcloud-sites` volume shared by the agent and the edge container (`<site>/releases/<n>` with a `current` symlink); builds run in job containers; rollback switches the symlink without rebuilding.
+Site releases live on the `pocketcloud-sites` volume shared by the agent and the edge container (`<site>/releases/<n>` with a `current` symlink); builds run in job containers on the target host ([ADR 0004](adr/0004-site-build-location.md)); rollback switches the symlink without rebuilding.
 
 LAN-only names use DNS rewrites (AdGuard Home, Pi-hole) and certificates from the internal CA.
 
@@ -176,6 +190,8 @@ Detailed diagnostics live in a separate PocketBase plugin, `plugins/diagnostics`
 - **Agent side** – heartbeats carry light runtime stats (goroutines, heap, worker pool, Docker API latency, free space on the agent volume); periodic self-checks (Docker socket, host mount, edge container, restic, time sync); `agent.diagnostics` builds a bundle uploaded with `UploadArtifact`; `agent.set_log_level` enables debug logging for a limited time.
 - **Payload capture** – off by default. An admin can capture message payloads of one agent for 10 minutes; fields marked with a custom `sensitive` proto field option are always masked.
 - **Output** – the Diagnostika page (System section of the UI), an optional token-protected Prometheus endpoint, and downloadable debug bundles (`diagnostic_bundles`, with expiry).
+- **Disconnects** – the gateway pings silent connections every 10 s with a 5 s timeout, so a cut network shows up within about 15 s, before the host is marked offline after 30 s.
+- **Overhead** – about 300 ns per traced message (`BenchmarkInterceptor`; no allocation that stays). With 20 agents and a few messages per second each that is far below 0.01 % of one CPU. Memory is bounded by the ring buffers: an estimated 2–3 MB for 20 agents. A disabled plugin adds no interceptors and no routes.
 
 ## Change audit
 
@@ -184,7 +200,9 @@ Every configuration change is written to the append-only `audit_log` collection:
 <img src="diagrams/change-audit.png" width="626" alt="Change audit flow from record hooks through the audit writer to the audit log">
 
 - **Scope** – configuration collections: hosts, stacks, sites, domains, DNS providers, certificates, backup targets and jobs, database servers and databases, scheduled tasks, users and roles, API tokens, alert rules, PocketCloud and PocketBase settings, collection schema. High-volume or derived data (inventory, metrics, events, diagnostics) is not audited; commands are shown from `commands` in their own tab.
-- **Writer** – one component registered on PocketBase's record hooks (after a successful create, update or delete) for the audited collections. It compares the record with `Original()` and stores field-level diffs; a deletion stores the last state. The actor (user, API token or superuser), IP, user agent and source (UI, API, PocketBase dashboard) come from the request; changes without a request are attributed to the component that made them (scheduler, ACME manager, agent report, migration).
+- **Writer** – one component on PocketBase's execute hooks for the audited collections. The change and its entry are written in the same transaction, so a crash can never lose one without the other. It compares the record with the row in the database and stores field-level diffs; a deletion stores the last state. (`Record.Original()` is not enough: it stays blank for a record created in the same process, and a save does not refresh it.)
+- **Actor** – PocketBase does not pass the request context to model hooks for API saves. So the request hooks remember the actor by the model being saved, and the transaction carries it on to nested saves such as cascade deletes. The actor (user, API token or superuser), IP, user agent and source (UI, API, PocketBase dashboard) come from the request; changes without a request are attributed to the component that made them (scheduler, ACME manager, agent report, migration).
+- **Overhead** – about 0.7 ms per audited save (0.25 ms without the audit, 0.93 ms with it; `BenchmarkSave`). A save that only touches live status, such as a heartbeat, adds one small read and no entry.
 - **Secrets** – values of fields marked 🔒 never reach the audit; the entry only records that the field changed.
 - **Links** – an entry points to the command it caused (a saved stack → `stack.deploy`), to the revision (stack r7 → r8) and can carry a note from the user.
 - **Integrity** – each entry stores `prev_hash` and `hash = SHA-256(prev_hash ‖ canonical JSON of the entry)` (RFC 8785). A daily job and the “Ověřit integritu” button verify the chain; a break raises an alert. Updates and deletions of audit entries are rejected in hooks, for superusers too; only retention removes old entries, and it first writes a checkpoint entry with the hash the chain continues from.
