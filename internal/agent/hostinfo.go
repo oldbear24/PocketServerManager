@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -333,7 +332,7 @@ func (h *hostInfo) facts() *agentv1.HostFacts {
 		facts.MemBytes, _ = parseMeminfo(string(raw))
 	}
 
-	facts.Ip4, facts.Ip6 = primaryAddresses()
+	facts.Ip4, facts.Ip6 = h.addresses()
 
 	return facts
 }
@@ -369,22 +368,4 @@ func parseOSRelease(content string) string {
 		}
 	}
 	return "Linux"
-}
-
-// primaryAddresses returns the addresses used for outgoing traffic. No packet is
-// sent: connecting a UDP socket only makes the kernel pick a source address.
-func primaryAddresses() (ip4, ip6 string) {
-	if conn, err := net.Dial("udp4", "192.0.2.1:9"); err == nil {
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			ip4 = addr.IP.String()
-		}
-		conn.Close()
-	}
-	if conn, err := net.Dial("udp6", "[2001:db8::1]:9"); err == nil {
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			ip6 = addr.IP.String()
-		}
-		conn.Close()
-	}
-	return ip4, ip6
 }
