@@ -108,7 +108,7 @@ export function ServersPage() {
                     {host.status === "offline" ? "–" : formatNumber(host.load1, 2)}
                   </td>
                   <td className="num">{formatVersion(host.agent_version)}</td>
-                  <td className="muted">{formatRelative(host.last_seen, now)}</td>
+                  <td className="muted">{formatRelative(host.last_seen, now, { past: true })}</td>
                 </tr>
               ))}
             </tbody>

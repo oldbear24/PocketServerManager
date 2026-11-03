@@ -10,7 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { TFunction } from "i18next";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
@@ -86,13 +86,14 @@ export function ServerDetailPage() {
     return <EmptyState title={t("server.notFound")} />;
   }
 
-  const facts = [
+  // addresses are set in the mono face, like every other technical value
+  const facts: ReactNode[] = [
     host.os,
     host.cpu_cores ? t("server.cores", { count: host.cpu_cores }) : "",
     host.mem_bytes ? `${formatBytes(host.mem_bytes)} RAM` : "",
     host.disk_total_bytes ? formatBytes(host.disk_total_bytes) : "",
-    host.ip4,
-    host.ip6,
+    host.ip4 ? <span className="mono">{host.ip4}</span> : "",
+    host.ip6 ? <span className="mono">{host.ip6}</span> : "",
     host.uptime_s ? t("server.uptime", { value: formatDuration(host.uptime_s) }) : "",
   ].filter(Boolean);
 
@@ -115,7 +116,12 @@ export function ServerDetailPage() {
             ))}
           </>
         }
-        description={facts.join(" · ")}
+        description={facts.map((fact, index) => (
+          <Fragment key={index}>
+            {index > 0 && " · "}
+            {fact}
+          </Fragment>
+        ))}
         actions={<HostActions host={host} />}
       />
 
@@ -342,7 +348,7 @@ function AgentCard({ host }: { host: Host }) {
         </dd>
         <dt>Heartbeat</dt>
         <dd>
-          {formatRelative(host.last_seen, now)} · {t("server.interval")}
+          {formatRelative(host.last_seen, now, { past: true })} · {t("server.interval")}
         </dd>
         <dt>RTT</dt>
         <dd className="num">{host.rtt_ms ? `${formatNumber(host.rtt_ms, 1)} ms` : "–"}</dd>
@@ -488,6 +494,22 @@ function DisksCard({ mounts }: { mounts: MountUsage[] }) {
   );
 }
 
+/**
+ * How a container can be reached: its published ports, each once (Docker lists a
+ * port for IPv4 and again for IPv6), or only from its Docker networks.
+ */
+function exposure(container: Container, t: TFunction): string {
+  const ports = container.ports ?? [];
+  const published = [...new Set(ports.filter((port) => port.public).map((port) => port.public))];
+  if (published.length > 0) {
+    return published.map((port) => `:${port}`).join(" ");
+  }
+  if (ports.length > 0 && container.state === "running") {
+    return t("server.internalOnly");
+  }
+  return "–";
+}
+
 /** The stack of a container: a link if PocketCloud manages it, else the project's name. */
 function StackLink({ container }: { container: Container }) {
   if (container.stack) {
@@ -600,12 +622,7 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
                   </td>
                   <td className="num">{usage ? `${formatNumber(usage.cpu, 1)} %` : "–"}</td>
                   <td className="num">{usage ? formatBytes(usage.mem) : "–"}</td>
-                  <td className="mono small">
-                    {(container.ports ?? [])
-                      .filter((port) => port.public)
-                      .map((port) => `:${port.public}`)
-                      .join(" ") || "–"}
-                  </td>
+                  <td className="mono small">{exposure(container, t)}</td>
                   <td className="muted">
                     {isRunning && parseDate(container.started_at)
                       ? formatDuration((now - parseDate(container.started_at)!.getTime()) / 1000)
@@ -969,7 +986,9 @@ function AgentTab({ host }: { host: Host }) {
         <AgentCard host={host} />
         <Card
           title={t("server.selfChecks")}
-          side={t("server.lastHeartbeat", { when: formatRelative(host.last_seen, now) })}
+          side={t("server.lastHeartbeat", {
+            when: formatRelative(host.last_seen, now, { past: true }),
+          })}
           flush
         >
           {(host.self_checks ?? []).length === 0 ? (

@@ -204,6 +204,9 @@ describe("formatting", () => {
     expect(formatRelative(ago(7200), now)).toContain("2 hr");
     expect(formatRelative(new Date(now + 86400000 * 3), now)).toContain("3 day");
     expect(formatRelative(null, now)).toBe("–");
+    // a heartbeat a moment ahead of the browser's clock has just happened
+    expect(formatRelative(new Date(now + 2000), now)).toContain("in 2 sec");
+    expect(formatRelative(new Date(now + 2000), now, { past: true })).toBe("now");
   });
 
   it("formats versions", () => {

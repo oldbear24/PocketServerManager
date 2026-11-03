@@ -242,6 +242,7 @@
     "proxyLater": "The edge proxy, sites and their routes arrive in milestone M3.",
     "backupsLater": "Backup jobs for this server arrive in milestone M4.",
     "openTerminal": "Terminal in {{name}}",
+    "internalOnly": "internal network only",
     "restarts_one": "{{count}}× restarted",
     "restarts_other": "{{count}}× restarted",
     "load1": "Load"

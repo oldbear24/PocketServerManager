@@ -252,6 +252,7 @@
     "proxyLater": "Edge proxy, weby a jejich trasy přijdou v milníku M3.",
     "backupsLater": "Zálohovací úlohy tohoto serveru přijdou v milníku M4.",
     "openTerminal": "Terminál v {{name}}",
+    "internalOnly": "jen interní síť",
     "restarts_one": "{{count}}× restart",
     "restarts_few": "{{count}}× restart",
     "restarts_many": "{{count}}× restart",

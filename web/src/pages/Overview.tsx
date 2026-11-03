@@ -72,7 +72,7 @@ function HostRow({ host, containers, now }: { host: Host; containers: number; no
         <div>{formatVersion(host.agent_version)}</div>
         <div className="cell-sub">
           {offline
-            ? formatRelative(host.last_seen, now)
+            ? formatRelative(host.last_seen, now, { past: true })
             : host.rtt_ms
               ? `${formatNumber(host.rtt_ms)} ms`
               : "–"}
@@ -147,7 +147,7 @@ export function OverviewPage() {
               <span className="err-text">
                 {t("overview.agentOffline", {
                   name: offline[0].name,
-                  when: formatRelative(offline[0].last_seen, now),
+                  when: formatRelative(offline[0].last_seen, now, { past: true }),
                 })}
               </span>
             ) : hosts.items.length === 0 ? (
@@ -263,7 +263,9 @@ export function OverviewPage() {
                           )}
                         </div>
                         <div className="cell-sub">
-                          {t("overview.since", { when: formatRelative(alert.first_seen, now) })}
+                          {t("overview.since", {
+                            when: formatRelative(alert.first_seen, now, { past: true }),
+                          })}
                         </div>
                       </div>
                     </div>

@@ -62,13 +62,22 @@ export function formatDay(value: string | null | undefined): string {
 }
 
 /** "4 s ago", "in 12 days": the largest unit that fits. */
-export function formatRelative(value: string | Date | null | undefined, now = Date.now()): string {
+export function formatRelative(
+  value: string | Date | null | undefined,
+  now = Date.now(),
+  options: { past?: boolean } = {},
+): string {
   const date = value instanceof Date ? value : parseDate(value);
   if (!date) {
     return "–";
   }
 
-  const seconds = Math.round((date.getTime() - now) / 1000);
+  let seconds = Math.round((date.getTime() - now) / 1000);
+  // A moment that has passed, such as a heartbeat, can look a little ahead of a
+  // clock that ticks every few seconds or runs behind the panel's.
+  if (options.past && seconds > 0) {
+    seconds = 0;
+  }
   const absolute = Math.abs(seconds);
   const format = new Intl.RelativeTimeFormat(locale(), { numeric: "auto", style: "short" });
 

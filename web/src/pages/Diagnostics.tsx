@@ -307,7 +307,7 @@ function AgentRow({
         </StatusPill>
       </td>
       <td className="muted">
-        {agent.connected ? formatRelative(agent.connected_since, now) : "–"}
+        {agent.connected ? formatRelative(agent.connected_since, now, { past: true }) : "–"}
       </td>
       <td className="num">
         {agent.connected
@@ -453,7 +453,9 @@ function AgentDetailView({
           title={t("diag.agentState")}
           side={
             host
-              ? t("server.lastHeartbeat", { when: formatRelative(host.last_seen, now) })
+              ? t("server.lastHeartbeat", {
+                  when: formatRelative(host.last_seen, now, { past: true }),
+                })
               : undefined
           }
         >
