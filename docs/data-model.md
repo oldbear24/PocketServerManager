@@ -1,36 +1,38 @@
 # Data model (proposal)
 
-PocketBase collections, created by Go migrations (see the schema issue in milestone M0). Names and fields are a starting point; `docs/data-model.md` is updated together with the migrations.
+PocketBase collections, created by Go migrations in [`migrations/`](../migrations/). The collections of M0 to M2 exist and are described as implemented; the others are reserved and land with their features. `internal/schema` lists the names, the encrypted fields and what the audit covers, and this document is updated together with the migrations.
 
 Conventions:
 
 - Every collection has PocketBase's `id`, `created` and `updated`.
-- Fields marked 🔒 are encrypted with the master key before they are stored.
+- Fields marked 🔒 are text fields, hidden from the API, sealed with the master key before they are stored, and never written to the audit log.
 - Agents never use the REST API; everything agents report arrives over gRPC and is written by the panel.
 
 ## Identity and access
 
 | Collection | Purpose | Key fields |
 |---|---|---|
-| `users` (auth, built-in) | People using the panel | `role` (admin / operator / viewer), MFA settings |
+| `users` (auth, built-in) | People using the panel. There is no public sign-up: the first account comes from the setup link in the panel's log, later ones from admins | `role` (admin / operator / viewer), MFA settings |
 | `api_tokens` | Scoped tokens for automation (CI) | `name`, `token_hash`, `scopes[]`, `expires_at`, `last_used_at`, `last_used_ip`, `created_by`, `revoked_at` |
-| `enrollment_tokens` | One-time tokens for connecting servers | `token_hash`, `name`, `roles[]`, `expires_at`, `used_at`, `created_by`, `host` |
-| `audit_log` | Append-only change and security log | `seq`, `category` (change / security), `action` (create / update / delete / revert / sign_in / …), `actor_kind` (user / token / superuser / system), `actor`, `actor_label`, `source` (ui / api / pb_admin / scheduler / agent / acme), `ip`, `user_agent`, `collection`, `record_id`, `record_label`, `host`, `changes` (json: field → from / to, secrets only as “changed”), `snapshot` (json, on delete), `command`, `revision`, `note`, `prev_hash`, `hash` |
+| `enrollment_tokens` | One-time tokens for connecting servers | `token_hash` (hidden), `hint`, `name`, `roles[]`, `expires_at`, `used_at`, `created_by`, `host` |
+| `audit_log` | Append-only change and security log | `seq`, `at`, `category` (change / security / system), `action` (create / update / delete / revert / sign_in / checkpoint / …), `actor_kind` (user / token / superuser / system / anonymous), `actor`, `actor_label`, `source` (ui / api / pb_admin / migration / scheduler / agent / panel), `ip`, `user_agent`, `collection`, `record_id`, `record_label`, `host`, `changes` (json: field → from / to, secrets only as “changed”), `snapshot` (json: the last state on delete, details of security events), `command`, `revision`, `note`, `prev_hash`, `hash` |
 
-`audit_log` has no create, update or delete API rules; entries are written only by the audit writer, and hooks reject updates and deletions (retention excepted, see [Change audit](architecture.md#change-audit)).
+`audit_log` has no create, update or delete API rules; entries are written only by the audit writer, and hooks reject every other write, for superusers too (retention excepted, see [Change audit](architecture.md#change-audit)). Admins read everything; operators only see the category `change`.
+
+API rules in short: viewers read, operators manage workloads, admins do everything. Collections the panel itself maintains (`containers`, `events`, `stack_revisions` and others) cannot be written through the API at all.
 
 ## Hosts and agents
 
 | Collection | Purpose | Key fields |
 |---|---|---|
-| `hosts` | A managed server and its agent | `name`, `roles[]` (docker / edge / backup), `status` (online / degraded / offline), `os`, `arch`, `cpu_cores`, `mem_bytes`, `ip4`, `ip6`, `labels`, `agent_version`, `agent_image_digest`, `agent_container_id`, `docker_version`, `last_seen`, `rtt_ms`, `connected_since`, `cert_serial`, `cert_expires_at` |
-| `revoked_certs` | Agent certificate denylist | `serial`, `host`, `reason` |
-| `commands` | Audit trail and delivery queue | `host`, `type`, `payload` (json, 🔒 parts), `status`, `requested_by`, `parent`, `correlation_id`, `attempts`, `dispatched_at`, `started_at`, `finished_at`, `expires_at`, `result` (json), `error`, `output` (file) |
-| `events` | Timeline per host and resource | `host`, `kind`, `severity`, `message`, `data` |
-| `alerts` | Open problems | `rule`, `target`, `severity`, `status` (open / acknowledged / resolved), `first_seen`, `last_seen`, `message`, `acknowledged_by` |
+| `hosts` | A managed server and its agent | `name`, `roles[]` (docker / edge / backup), `status` (online / degraded / offline), `hostname`, `os`, `kernel`, `arch`, `cpu_cores`, `mem_bytes`, `ip4`, `ip6`, `labels`, `agent_version`, `agent_image_digest`, `agent_container_id`, `capabilities`, `docker_version`, `last_seen`, `rtt_ms`, `clock_skew_ms`, `connected_since`, `stream_open`, `uptime_s`, `load1`, `cpu_percent`, `mem_used_bytes`, `disk_used_bytes`, `disk_total_bytes`, `runtime` (json), `self_checks` (json), `inventory_at`, `cert_serial`, `cert_prev_serial`, `cert_expires_at`, `host_shell_enabled` |
+| `revoked_certs` | Agent certificate denylist | `serial`, `host`, `host_name`, `reason` |
+| `commands` | Audit trail and delivery queue. A payload holds no secrets: they are read when the command is delivered | `host`, `host_name`, `type`, `label`, `payload` (json), `status` (queued / dispatched / running / succeeded / failed / timed_out / cancelled), `requested_by`, `requested_label`, `resource` (ordering key), `parent`, `correlation_id`, `attempts`, `last_sequence`, `timeout_s`, `dispatched_at`, `started_at`, `finished_at`, `expires_at`, `progress` (json), `result` (json), `error`, `output` (file) |
+| `events` | Timeline per host and resource; removed after 30 days | `host`, `kind`, `severity`, `message`, `data` |
+| `alerts` | Open problems | `rule`, `target`, `host`, `severity`, `status` (open / acknowledged / resolved), `first_seen`, `last_seen`, `resolved_at`, `message`, `acknowledged_by` |
 | `alert_rules` | Thresholds and channels | `kind`, `params`, `channels[]`, `enabled` |
 | `notification_channels` | E-mail, ntfy, Gotify, webhook | `kind`, `config` 🔒 |
-| `diagnostic_bundles` | Debug bundles from agents or the panel | `host` (empty = panel), `requested_by`, `file`, `size_bytes`, `expires_at` |
+| `diagnostic_bundles` | Debug bundles from agents | `host`, `requested_by`, `command`, `file`, `size_bytes`, `expires_at` |
 
 Live diagnostics (connection stats, message trace, queue latencies) are kept in memory by the diagnostics plugin and are not stored in collections.
 
@@ -38,12 +40,13 @@ Live diagnostics (connection stats, message trace, queue latencies) are kept in 
 
 | Collection | Purpose | Key fields |
 |---|---|---|
-| `stacks` | Compose project on a host | `host`, `name`, `compose_yaml`, `env`, `secrets` 🔒, `current_revision`, `status` |
-| `stack_revisions` | History of compose files | `stack`, `number`, `compose_yaml`, `env_keys[]`, `author`, `deployed_at`, `note` |
-| `containers` | Inventory snapshot from the agent | `host`, `stack`, `docker_id`, `name`, `image`, `state`, `health`, `restart_count`, `ports`, `labels`, `started_at` |
+| `stacks` | Compose project on a host | `host`, `name`, `compose_yaml`, `env`, `secrets` 🔒, `secret_keys`, `current_revision`, `status` |
+| `stack_revisions` | History of compose files | `stack`, `number`, `compose_yaml`, `env`, `env_keys[]`, `author`, `deployed_at`, `note` |
+| `containers` | Inventory snapshot from the agent | `host`, `stack`, `project`, `service`, `docker_id`, `name`, `image`, `state`, `status_text`, `health`, `system_role`, `restart_count`, `ports`, `labels`, `started_at` |
 | `volumes` | Inventory | `host`, `name`, `driver`, `size_bytes`, `labels` |
-| `networks` | Inventory | `host`, `name`, `driver`, `labels` |
-| `metrics` | Time-series samples **(spike: storage)** | `host`, `container`, `resolution` (10s / 1m / 1h), `ts`, `cpu`, `mem`, `disk`, `net_in`, `net_out` |
+| `networks` | Inventory | `host`, `name`, `docker_id`, `driver`, `labels` |
+
+Metrics are not a collection: they live in their own SQLite file with rollups, see [ADR 0003](adr/0003-metrics-storage.md).
 
 ## Sites, domains and TLS
 
@@ -59,7 +62,7 @@ Live diagnostics (connection stats, message trace, queue latencies) are kept in 
 | `dns_records` | Records created by PocketCloud | `zone`, `type`, `name`, `value`, `ttl`, `provider_record_id`, `domain`, `status` |
 | `acme_accounts` | ACME registrations | `directory_url`, `email`, `key` 🔒, `eab_kid`, `eab_hmac` 🔒 |
 | `certificates` | Issued certificates | `names[]`, `issuer`, `challenge`, `not_before`, `not_after`, `status`, `renew_after`, `attempts`, `last_error`, `chain_pem`, `key_pem` 🔒, `hosts[]` |
-| `internal_ca` | Internal CA material (single record) | `root_cert`, `root_key` 🔒, `agent_intermediate_cert`, `agent_intermediate_key` 🔒 |
+| `internal_ca` | Internal CA material (single record, no API access at all) | `root_cert`, `root_key` 🔒, `agent_intermediate_cert`, `agent_intermediate_key` 🔒, `server_cert`, `server_key` 🔒, `server_names`, `server_expires_at` |
 
 ## Databases
 
@@ -85,4 +88,4 @@ Snapshots are not stored; they are listed on demand from the repository through 
 
 ## Settings
 
-Panel-wide settings (public URL, gRPC address, defaults for retention and renewal, `audit.retention_days`, the SMTP relay used by PHP sites, supported PHP versions with their end-of-life dates) live in a single `settings` record next to PocketBase's own settings (SMTP, S3 for files).
+Panel-wide settings live in a single `settings` record next to PocketBase's own settings (SMTP, S3 for files): `public_url`, `grpc_address`, `audit_retention_days`, `command_queue_ttl_s`. Defaults for renewal, the SMTP relay used by PHP sites and supported PHP versions with their end-of-life dates join them with their features.
