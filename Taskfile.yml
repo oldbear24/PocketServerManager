@@ -1,0 +1,106 @@
+version: "3"
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+  VERSION_PKG: github.com/oldbear24/PocketServerManager/internal/version
+  LDFLAGS: -s -w -X {{.VERSION_PKG}}.Version={{.VERSION}} -X {{.VERSION_PKG}}.Commit={{.COMMIT}}
+  IMAGE_PREFIX: ghcr.io/oldbear24/pocketcloud
+
+tasks:
+  default:
+    desc: Build everything
+    cmds:
+      - task: build
+
+  tools:
+    desc: Install the pinned development tools with `go install`
+    cmds:
+      - go install github.com/bufbuild/buf/cmd/buf@v1.75.0
+      - go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+      - go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+      - go install golang.org/x/vuln/cmd/govulncheck@latest
+
+  proto:
+    desc: Regenerate the Go code in gen/go from proto/
+    cmds:
+      - buf generate
+
+  web:
+    desc: Build the web UI into web/dist, ready to be embedded in the panel
+    dir: web
+    cmds:
+      - npm ci
+      - npm run build
+    sources:
+      - src/**/*
+      - index.html
+      - package-lock.json
+      - vite.config.ts
+    generates:
+      - dist/index.html
+
+  panel:
+    desc: Build the panel binary with the embedded UI
+    deps: [web]
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/panel{{exeExt}} ./cmd/panel
+
+  agent:
+    desc: Build the agent binary (for development; production runs the image)
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/pocketcloud-agent{{exeExt}} ./cmd/agent
+
+  updater:
+    desc: Build the updater binary (for development; production runs the image)
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/pocketcloud-updater{{exeExt}} ./cmd/updater
+
+  build:
+    desc: Build the panel binary, and the agent and updater images if Docker is available
+    cmds:
+      - task: panel
+      - task: agent
+      - task: updater
+      - cmd: |
+          if command -v docker >/dev/null 2>&1; then
+            task images
+          else
+            echo "Docker is not available: skipping the agent and updater images"
+          fi
+
+  images:
+    desc: Build the agent and updater images for the local platform
+    preconditions:
+      - sh: command -v docker
+        msg: Building the images needs Docker
+    cmds:
+      - docker build -f images/agent/Dockerfile --build-arg VERSION={{.VERSION}} --build-arg COMMIT={{.COMMIT}} -t {{.IMAGE_PREFIX}}-agent:{{.VERSION}} .
+      - docker build -f images/updater/Dockerfile --build-arg VERSION={{.VERSION}} --build-arg COMMIT={{.COMMIT}} -t {{.IMAGE_PREFIX}}-updater:{{.VERSION}} .
+
+  test:
+    desc: Run the Go and web tests
+    cmds:
+      - go test ./...
+      - npm --prefix web test
+
+  lint:
+    desc: Run every linter
+    cmds:
+      - golangci-lint run
+      - buf lint
+      - npm --prefix web run lint
+
+  dev:panel:
+    desc: Run the panel from source for local development
+    cmds:
+      - go run ./cmd/panel serve --dev --master-key-file=dev-data/master.key --dir=dev-data/pb_data --public-url=http://localhost:8090
+
+  dev:web:
+    desc: Run the Vite dev server against a panel on localhost:8090
+    dir: web
+    cmds:
+      - npm run dev
