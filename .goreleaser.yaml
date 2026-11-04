@@ -33,6 +33,8 @@ checksum:
   name_template: checksums.txt
 
 release:
+  # tags like v0.1.0-alpha.1 are published as pre-releases
+  prerelease: auto
   extra_files:
     - glob: image-digests.json
 
