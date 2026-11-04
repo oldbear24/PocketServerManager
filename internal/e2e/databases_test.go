@@ -324,7 +324,11 @@ func TestADatabaseReachesItsStackWithoutItsPasswordBeingStored(t *testing.T) {
 		if network == nil {
 			return false
 		}
-		_, app := network.Members[d.docker.Find("shop-web-1").ID]
+		web := d.docker.Find("shop-web-1")
+		if web == nil {
+			return false
+		}
+		_, app := network.Members[web.ID]
 		return app
 	})
 	if !network.Internal {

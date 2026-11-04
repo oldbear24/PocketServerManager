@@ -742,7 +742,11 @@ func TestRollbackDeploysAnOldRevisionAsANewOne(t *testing.T) {
 	if len(revisions) != 5 || revisions[4].GetString("compose_yaml") != first {
 		t.Errorf("after the revert: %d revisions", len(revisions))
 	}
-	c.waitFor("the old image to be back", func() bool { return c.docker.Find("shop-web-1").Image == "nginx:1" })
+	// Compose removes the container before it creates it again
+	c.waitFor("the old image to be back", func() bool {
+		web := c.docker.Find("shop-web-1")
+		return web != nil && web.Image == "nginx:1"
+	})
 
 	// a change without a revision has nothing to go back to
 	created, err := c.app.FindRecordsByFilter(schema.AuditLog, "collection='stacks' && record_id={:id} && action='create'", "", 1, 0, dbx.Params{"id": stackID})

@@ -436,8 +436,12 @@ func TestADatabaseMovesToANewerSharedServer(t *testing.T) {
 		if network == nil {
 			return false
 		}
-		_, newServer := network.Members[d.docker.Find("pg-next-db-1").ID]
-		_, oldServer := network.Members[d.docker.Find("pg-main-db-1").ID]
+		next, old := d.docker.Find("pg-next-db-1"), d.docker.Find("pg-main-db-1")
+		if next == nil || old == nil {
+			return false
+		}
+		_, newServer := network.Members[next.ID]
+		_, oldServer := network.Members[old.ID]
 		return newServer && !oldServer
 	})
 	d.waitFor("the application to be deployed again", func() bool {
