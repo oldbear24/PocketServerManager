@@ -140,6 +140,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// the edge keeps serving without the panel; one that is gone comes back
 	go a.restoreEdge(ctx)
+	go a.watchUpstreams(ctx)
 
 	a.setHealth(false)
 	defer a.setHealth(false)

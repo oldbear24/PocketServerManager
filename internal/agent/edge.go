@@ -46,7 +46,10 @@ const (
 	edgeAdminWait  = 30 * time.Second
 	edgeLoadLimit  = 2 * time.Minute
 	edgeProbeLimit = 3 * time.Second
-	edgeStopLimit  = 10
+	// edgeMetricsLimit is short: the heartbeat waits for it
+	edgeMetricsLimit = time.Second
+	edgeSwapLimit    = time.Minute
+	edgeStopLimit    = 10
 
 	// minSubpathAPI is the first Engine API with volume subpaths (Engine 26).
 	minSubpathAPI = "1.45"
@@ -416,6 +419,16 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 		return noSwap(), err
 	}
 
+	// a container left from a create whose check never ran, as when the agent
+	// was killed in between, is checked before it starts
+	if current != nil && checkEdgeMounts(current, mounts) != nil {
+		a.Log.Warn("removing an edge container whose mounts are not the edge's own")
+		if err := a.Docker.Remove(ctx, current.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
+			return noSwap(), fmt.Errorf("refusing to start the edge: its container has other mounts and cannot be removed: %w", err)
+		}
+		current = nil
+	}
+
 	if current != nil {
 		labels, _ := current.Config["Labels"].(map[string]any)
 		currentImage, _ := current.Config["Image"].(string)
@@ -444,8 +457,11 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 	}
 
 	// a replacement: both cannot publish 80 and 443, so the edge is down for a
-	// moment, and the old container stays until the new one has loaded the config
+	// moment, and the old container stays until the new one has loaded the config.
+	// Putting it back must work even when the command was cancelled or ran out
+	// of time meanwhile, so the swap does not use the command's context.
 	_, _ = fmt.Fprintln(output, "Replacing the edge container")
+	ctx = context.WithoutCancel(ctx)
 	if leftover, err := a.Docker.Inspect(ctx, edgeOldName); err == nil {
 		if err := a.Docker.Remove(ctx, leftover.ID, false, true); err != nil {
 			return noSwap(), err
@@ -460,6 +476,8 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 	}
 
 	restore := func(newID string) {
+		ctx, cancel := context.WithTimeout(ctx, edgeSwapLimit)
+		defer cancel()
 		if newID != "" {
 			if err := a.Docker.Remove(ctx, newID, false, true); err != nil && !dockerapi.IsNotFound(err) {
 				a.Log.Error("failed to remove the new edge container", "error", err)
@@ -482,6 +500,8 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 	oldImage, _ := current.Config["Image"].(string)
 	return edgeSwap{
 		commit: func() {
+			ctx, cancel := context.WithTimeout(ctx, edgeSwapLimit)
+			defer cancel()
 			if err := a.Docker.Remove(ctx, current.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
 				a.Log.Warn("failed to remove the old edge container", "error", err)
 			}
@@ -770,6 +790,34 @@ func (a *Agent) restoreEdge(ctx context.Context) {
 	a.checks.runEdge(ctx)
 }
 
+// watchUpstreams keeps the upstream containers on the edge's network for as long
+// as the agent runs, whether or not the panel is reachable: it follows Docker's
+// events and, whenever it (re)starts following them, attaches them all, as
+// events may have been missed in between.
+func (a *Agent) watchUpstreams(ctx context.Context) {
+	for ctx.Err() == nil {
+		if state, err := a.loadEdgeState(); err == nil && state != nil && len(state.Attach) > 0 {
+			a.attachUpstreams(ctx, state.Attach, io.Discard)
+		}
+		err := a.Docker.Events(ctx, func(event dockerapi.Event) {
+			if event.Type == "container" && event.Action == "start" {
+				if name := event.Actor.Attributes["name"]; name != "" && name != edgeName {
+					a.reattachUpstream(ctx, name)
+				}
+			}
+		})
+		if ctx.Err() != nil {
+			return
+		}
+		a.Log.Debug("the Docker event stream of the edge's upstreams ended", "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(dockerRetryDelay):
+		}
+	}
+}
+
 // reattachUpstream puts a container the routes forward to back on the edge's
 // network when it starts: Compose recreates containers, and a new one is not on
 // the networks its predecessor was connected to by hand.
@@ -825,7 +873,7 @@ func (a *Agent) edgeStatus(ctx context.Context) *agentv1.EdgeStatus {
 // edgeRequestCount sums Caddy's request counters of the handlers that answer
 // requests, so that a request passing several handlers counts once.
 func (a *Agent) edgeRequestCount(ctx context.Context) (float64, error) {
-	body, status, err := a.edgeRequest(ctx, http.MethodGet, "/metrics", nil, edgeProbeLimit)
+	body, status, err := a.edgeRequest(ctx, http.MethodGet, "/metrics", nil, edgeMetricsLimit)
 	if err != nil {
 		return 0, err
 	}
@@ -865,27 +913,52 @@ func countRequests(metrics []byte) float64 {
 	return total
 }
 
-// usedCertFiles lists the certificate files the loaded config refers to.
+// usedCertFiles lists the certificate files the loaded config refers to, from
+// its load_files, as Caddy reads them.
 func (a *Agent) usedCertFiles() (map[string]bool, error) {
 	used := map[string]bool{}
 	state, err := a.loadEdgeState()
-	if err != nil || state == nil {
+	if err != nil || state == nil || len(state.Config) == 0 {
 		return used, err
 	}
-	prefix := edge.CertDir + "/"
-	text := string(state.Config)
-	for {
-		index := strings.Index(text, prefix)
-		if index < 0 {
-			return used, nil
-		}
-		text = text[index+len(prefix):]
-		end := strings.IndexAny(text, `"\`)
-		if end < 0 {
-			return used, nil
-		}
-		used[text[:end]] = true
+	var config struct {
+		Apps struct {
+			TLS struct {
+				Certificates struct {
+					LoadFiles []struct {
+						Certificate string `json:"certificate"`
+						Key         string `json:"key"`
+					} `json:"load_files"`
+				} `json:"certificates"`
+			} `json:"tls"`
+		} `json:"apps"`
 	}
+	if err := json.Unmarshal(state.Config, &config); err != nil {
+		return nil, fmt.Errorf("the edge's stored config cannot be read: %w", err)
+	}
+	for _, files := range config.Apps.TLS.Certificates.LoadFiles {
+		for _, file := range []string{files.Certificate, files.Key} {
+			if path.Dir(path.Clean(file)) == edge.CertDir {
+				used[path.Base(file)] = true
+			}
+		}
+	}
+	return used, nil
+}
+
+// isCertFile tells whether a file base name belongs to a certificate: its id,
+// a dash and the 16 hex characters of edge.CertFileID, nothing else.
+func isCertFile(base, id string) bool {
+	fingerprint, ok := strings.CutPrefix(base, id+"-")
+	if !ok || len(fingerprint) != 16 {
+		return false
+	}
+	for _, r := range fingerprint {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // removeCertFiles removes the files of a certificate that the loaded config does
@@ -905,7 +978,7 @@ func (a *Agent) removeCertFiles(id, keep string) (removed []string, inUse []stri
 	for _, entry := range entries {
 		name := entry.Name()
 		base := strings.TrimSuffix(strings.TrimSuffix(name, ".crt"), ".key")
-		if !strings.HasPrefix(base, id+"-") || base == keep {
+		if !isCertFile(base, id) || base == keep {
 			continue
 		}
 		if used[name] {

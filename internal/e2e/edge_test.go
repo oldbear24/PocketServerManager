@@ -20,6 +20,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/agent"
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
@@ -40,6 +41,7 @@ type fakeEdge struct {
 	mu     sync.Mutex
 	caddy  *fakecaddy.Server
 	reject func(map[string]any) error
+	delay  time.Duration
 	starts int
 }
 
@@ -55,6 +57,7 @@ func (f *fakeEdge) start() {
 		return
 	}
 	server.Reject = f.reject
+	server.Delay = f.delay
 	f.caddy = server
 	f.starts++
 }
@@ -671,4 +674,83 @@ func selfSigned(t *testing.T, name string) (chain, key []byte) {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+}
+
+// TestAnEdgeWithOtherMountsIsReplaced: a container left behind by a create whose
+// check never ran (the agent was killed in between) is not started as it is.
+func TestAnEdgeWithOtherMountsIsReplaced(t *testing.T) {
+	h := newHarness(t)
+	running, host, _ := h.edgeAgent("edge-mounts")
+
+	record := h.create(host.Id, edgeApply(t, version.EdgeRef(), 1, oneRoute))
+	h.waitForStatus(record.Id, schema.CommandSucceeded)
+	first := h.docker.Find("pocketcloud-edge")
+
+	// the same labels, but the whole state directory mounted, and stopped
+	tampered := map[string]any{}
+	for key, value := range first.Host {
+		tampered[key] = value
+	}
+	tampered["Mounts"] = []any{map[string]any{"Type": "bind", "Source": running.config.StateDir, "Target": "/pocketcloud/run"}}
+	h.docker.SetHostConfig("pocketcloud-edge", tampered)
+	h.docker.SetStatus(first.ID, "exited")
+
+	record = h.create(host.Id, edgeApply(t, version.EdgeRef(), 2, oneRoute))
+	if done := h.waitForStatus(record.Id, schema.CommandSucceeded, schema.CommandFailed); done.GetString("status") != schema.CommandSucceeded {
+		t.Fatalf("%s", done.GetString("error"))
+	}
+	replaced := h.docker.Find("pocketcloud-edge")
+	mounts, _ := replaced.Host["Mounts"].([]any)
+	if replaced.ID == first.ID || len(mounts) != 4 {
+		t.Errorf("the edge with other mounts was started as it was: %v", mounts)
+	}
+}
+
+// TestACancelledSwapPutsTheOldEdgeBack: a replacement cancelled while the new
+// edge loads its config must still bring the old one back.
+func TestACancelledSwapPutsTheOldEdgeBack(t *testing.T) {
+	h := newHarness(t)
+	_, host, fake := h.edgeAgent("edge-cancel")
+
+	first := "docker.io/library/caddy:2.11.6@sha256:" + strings.Repeat("a", 64)
+	record := h.create(host.Id, edgeApply(t, first, 1, oneRoute))
+	h.waitForStatus(record.Id, schema.CommandSucceeded)
+	firstID := h.docker.Find("pocketcloud-edge").ID
+
+	fake.mu.Lock()
+	fake.delay = 3 * time.Second
+	fake.mu.Unlock()
+
+	record = h.create(host.Id, edgeApply(t, "docker.io/library/caddy:2.11.7@sha256:"+strings.Repeat("b", 64), 2, oneRoute))
+	h.waitForStatus(record.Id, schema.CommandRunning)
+	time.Sleep(time.Second)
+	if err := h.panel.Commands.Cancel(record.Id, "cancelled by the test"); err != nil {
+		t.Fatal(err)
+	}
+
+	h.waitFor("the old edge to come back", func() bool {
+		back := h.docker.Find("pocketcloud-edge")
+		return back != nil && back.ID == firstID && back.Status == "running" && h.docker.Find("pocketcloud-edge-old") == nil
+	})
+}
+
+// TestUpstreamsRejoinWithoutThePanel: Compose recreates a container while the
+// panel is away; it joins the edge's network all the same.
+func TestUpstreamsRejoinWithoutThePanel(t *testing.T) {
+	h := newHarness(t)
+	h.docker.AddContainer("web", "nginx:1", nil)
+	running, host, _ := h.edgeAgent("edge-away")
+
+	record := h.create(host.Id, edgeApply(t, version.EdgeRef(), 1, oneRoute, "web"))
+	h.waitForStatus(record.Id, schema.CommandSucceeded)
+
+	h.panel.Gateway.Stop()
+	h.waitFor("the agent to lose the panel", func() bool { return agent.Healthy(running.config) != nil })
+
+	h.docker.RemoveContainer(h.docker.Find("web").ID)
+	id := h.docker.AddContainer("web", "nginx:1", nil)
+
+	h.waitFor("the new container to join the edge's network", func() bool {
+		return slices.Contains(h.docker.NetworksOf(id), "pocketcloud-edge")
+	})
 }
