@@ -317,20 +317,33 @@ func (a *Agent) ensureNetwork(ctx context.Context, name string) error {
 }
 
 // attach connects a container to a network, under aliases, unless it is there.
+// Another command may attach it at the same moment: the engine then refuses one
+// of the two ("endpoint ... already exists"), and that one is done all the same.
 func (a *Agent) attach(ctx context.Context, network, container string, aliases []string) error {
-	info, err := a.Docker.Inspect(ctx, container)
-	if err != nil {
-		return err
+	member := func() (bool, error) {
+		info, err := a.Docker.Inspect(ctx, container)
+		if err != nil {
+			return false, err
+		}
+		_, found := info.NetworkSettings.Networks[network]
+		return found, nil
 	}
-	if _, member := info.NetworkSettings.Networks[network]; member {
-		return nil
+
+	if found, err := member(); err != nil || found {
+		return err
 	}
 
 	var endpoint map[string]any
 	if len(aliases) > 0 {
 		endpoint = map[string]any{"Aliases": aliases}
 	}
-	return a.Docker.ConnectNetwork(ctx, network, container, endpoint)
+	err := a.Docker.ConnectNetwork(ctx, network, container, endpoint)
+	if err != nil {
+		if found, inspectErr := member(); inspectErr == nil && found {
+			return nil
+		}
+	}
+	return err
 }
 
 // prepareNetworks makes a deploy's database networks exist, with their servers on
