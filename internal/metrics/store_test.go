@@ -485,7 +485,7 @@ func TestStorageGrowth(t *testing.T) {
 	took := time.Since(before)
 	t.Logf("rolling up an hour of %d rows took %s", rows, took)
 
-	if took > 30*time.Second {
+	if took > 30*time.Second && !raceEnabled {
 		t.Errorf("a rollup took %s", took)
 	}
 
