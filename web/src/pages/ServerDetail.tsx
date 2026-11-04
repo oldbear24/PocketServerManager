@@ -525,12 +525,31 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
   const now = useNow(30000);
   const values = useContainerValues(host.id).data ?? {};
 
-  const [removing, setRemoving] = useState<Container | null>(null);
+  const [removing, setRemoving] = useState<Container[] | null>(null);
   const [removeVolumes, setRemoveVolumes] = useState(false);
   const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const canAct = hasRole(user, "operator");
   const isAdmin = hasRole(user, "admin");
+
+  // system containers are not chosen with others: they cannot be stopped or removed here
+  const selectable = canAct
+    ? containers.filter((container) => !protectedRoles.includes(container.system_role))
+    : [];
+  const chosen = selectable.filter((container) => selected.has(container.id));
+  const allChosen = selectable.length > 0 && chosen.length === selectable.length;
+
+  const toggle = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
 
   const running = containers.filter((container) => container.state === "running").length;
   const restarting = containers.filter((container) => container.state === "restarting").length;
@@ -561,6 +580,25 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
     }
   };
 
+  const runAll = (list: Container[], type: string) => {
+    for (const container of list) {
+      void act(container, type, {});
+    }
+  };
+
+  // an image shared by several containers is pulled once
+  const pullImages = async (list: Container[]) => {
+    const images = [...new Set(list.map((container) => container.image))];
+    try {
+      await Promise.all(
+        images.map((image) => api.runCommand(host.id, "image.pull", { image }, image)),
+      );
+      toast.success(t("server.pullQueued", { count: images.length }));
+    } catch (err) {
+      toast.error(err);
+    }
+  };
+
   return (
     <Card
       title={t("server.containers")}
@@ -574,12 +612,87 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
       }
       flush
     >
+      {chosen.length > 0 && (
+        <div className="bulk-bar" role="toolbar" aria-label={t("server.bulkActions")}>
+          <span className="bulk-count">{t("server.selectedCount", { count: chosen.length })}</span>
+          <Button
+            size="small"
+            onClick={() =>
+              runAll(
+                chosen.filter((container) => container.state !== "running"),
+                "container.start",
+              )
+            }
+          >
+            <Play size={14} aria-hidden="true" />
+            {t("server.bulkStart")}
+          </Button>
+          <Button
+            size="small"
+            onClick={() =>
+              runAll(
+                chosen.filter((container) => container.state === "running"),
+                "container.stop",
+              )
+            }
+          >
+            <Square size={14} aria-hidden="true" />
+            {t("server.bulkStop")}
+          </Button>
+          <Button size="small" onClick={() => runAll(chosen, "container.restart")}>
+            <RefreshCw size={14} aria-hidden="true" />
+            {t("server.bulkRestart")}
+          </Button>
+          <Button size="small" onClick={() => void pullImages(chosen)}>
+            <Download size={14} aria-hidden="true" />
+            {t("server.bulkPull")}
+          </Button>
+          <Button
+            size="small"
+            variant="danger"
+            onClick={() => {
+              setRemoveVolumes(false);
+              setRemoving(chosen);
+            }}
+          >
+            <Trash2 size={14} aria-hidden="true" />
+            {t("server.bulkRemove")}
+          </Button>
+          <button
+            type="button"
+            className="link-button small"
+            onClick={() => setSelected(new Set())}
+          >
+            {t("server.clearSelection")}
+          </button>
+        </div>
+      )}
       {containers.length === 0 ? (
         <EmptyState title={t("server.noContainers")}>{t("server.noContainersText")}</EmptyState>
       ) : (
         <Table label={t("server.containers")}>
           <thead>
             <tr>
+              {canAct && (
+                <th className="select-cell">
+                  <input
+                    type="checkbox"
+                    aria-label={t("server.selectAll")}
+                    checked={allChosen}
+                    disabled={selectable.length === 0}
+                    ref={(input) => {
+                      if (input) {
+                        input.indeterminate = chosen.length > 0 && !allChosen;
+                      }
+                    }}
+                    onChange={() =>
+                      setSelected(
+                        allChosen ? new Set() : new Set(selectable.map((item) => item.id)),
+                      )
+                    }
+                  />
+                </th>
+              )}
               <th>{t("server.container")}</th>
               <th>Stack</th>
               <th>{t("host.state")}</th>
@@ -598,7 +711,22 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
               const usage = isRunning ? values[container.docker_id] : undefined;
 
               return (
-                <tr key={container.id}>
+                <tr
+                  key={container.id}
+                  aria-selected={canAct ? selected.has(container.id) : undefined}
+                >
+                  {canAct && (
+                    <td className="select-cell">
+                      {!isSystem && (
+                        <input
+                          type="checkbox"
+                          aria-label={t("server.selectContainer", { name: container.name })}
+                          checked={selected.has(container.id)}
+                          onChange={() => toggle(container.id)}
+                        />
+                      )}
+                    </td>
+                  )}
                   <td>
                     <Link
                       className="cell-title"
@@ -685,7 +813,7 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
                           aria-label={t("server.removeContainer", { name: container.name })}
                           onClick={() => {
                             setRemoveVolumes(false);
-                            setRemoving(container);
+                            setRemoving([container]);
                           }}
                         >
                           <Trash2 size={16} aria-hidden="true" />
@@ -703,19 +831,31 @@ export function ContainersCard({ containers, host }: { containers: Container[]; 
       <ConfirmDialog
         open={removing !== null}
         danger
-        title={t("server.removeConfirm", { name: removing?.name })}
+        title={
+          removing && removing.length > 1
+            ? t("server.removeManyConfirm", { count: removing.length })
+            : t("server.removeConfirm", { name: removing?.[0]?.name })
+        }
         confirmLabel={t("server.removeAction")}
         onCancel={() => setRemoving(null)}
         onConfirm={() => {
-          if (removing) {
-            void act(removing, "container.remove", {
+          for (const container of removing ?? []) {
+            void act(container, "container.remove", {
               remove_volumes: removeVolumes,
               force: true,
             });
           }
+          if (removing && removing.length > 1) {
+            setSelected(new Set());
+          }
           setRemoving(null);
         }}
       >
+        {removing && removing.length > 1 && (
+          <p className="muted" style={{ marginBottom: 10 }}>
+            {removing.map((container) => container.name).join(", ")}
+          </p>
+        )}
         <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             type="checkbox"

@@ -294,6 +294,13 @@ func (c *Client) Remove(ctx context.Context, id string, volumes, force bool) err
 	}, nil, nil)
 }
 
+// SetRestartPolicy changes when Docker starts a container by itself, such as
+// "no" for a container that must stay stopped.
+func (c *Client) SetRestartPolicy(ctx context.Context, id, policy string) error {
+	body := map[string]any{"RestartPolicy": map[string]any{"Name": policy}}
+	return c.do(ctx, http.MethodPost, "/containers/"+id+"/update", nil, body, nil)
+}
+
 // Rename renames a container.
 func (c *Client) Rename(ctx context.Context, id, name string) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+id+"/rename", url.Values{"name": {name}}, nil, nil)

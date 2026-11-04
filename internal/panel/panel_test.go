@@ -39,7 +39,8 @@ func TestFreshDataDirHasAllCollections(t *testing.T) {
 		schema.Users, schema.Hosts, schema.RevokedCerts, schema.EnrollmentTokens, schema.Commands,
 		schema.Events, schema.Alerts, schema.Stacks, schema.StackRevisions, schema.Containers,
 		schema.Volumes, schema.Networks, schema.InternalCA, schema.Settings, schema.AuditLog,
-		schema.DiagnosticBundles,
+		schema.DiagnosticBundles, schema.DBServers, schema.Databases, schema.DBUsers, schema.DBNetworks,
+		schema.DBDumps, schema.DBMoves,
 	} {
 		if _, err := app.FindCollectionByNameOrId(name); err != nil {
 			t.Errorf("collection %s is missing: %v", name, err)

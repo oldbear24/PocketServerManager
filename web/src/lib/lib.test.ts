@@ -12,7 +12,15 @@ import {
   parseDate,
   percentOf,
 } from "./format";
-import { connectionShare, envSnippet, serverLabel, type DbServer } from "./databases";
+import {
+  connectionShare,
+  envSnippet,
+  isMySQL,
+  moveTargets,
+  serverLabel,
+  seriesOf,
+  type DbServer,
+} from "./databases";
 import { composeSnippet, dockerRunCommand, scriptCommand, type InstallParams } from "./install";
 import {
   compileFilter,
@@ -438,5 +446,79 @@ describe("databases", () => {
     expect(connectionShare(server({ connections: 23, max_connections: 200 }))).toBe(12);
     expect(connectionShare(server({ connections: 5 }))).toBe(0);
     expect(connectionShare(server({ connections: 500, max_connections: 100 }))).toBe(100);
+  });
+});
+
+describe("moveTargets", () => {
+  const server = (id: string, engine: "mariadb" | "postgres", version: string, kind = "shared") =>
+    ({
+      id,
+      name: id,
+      host: "h1",
+      engine,
+      version,
+      kind,
+      image: `${engine}:${version}`,
+      status: "ready",
+      stack: "s1",
+      extensions: null,
+    }) as unknown as DbServer;
+
+  it("offers MariaDB servers of the same or a newer series only", () => {
+    const source = server("own", "mariadb", "11.8.2-MariaDB", "dedicated");
+    const targets = moveTargets(source, [
+      server("old", "mariadb", "11.4.13-MariaDB"),
+      server("same", "mariadb", "11.8.5-MariaDB"),
+      server("pg", "postgres", "17.2"),
+    ]);
+    expect(targets.map((item) => item.id)).toEqual(["same"]);
+    expect(seriesOf(server("x", "mariadb", "10.11.9-MariaDB"))).toEqual([10, 11]);
+  });
+
+  it("treats PostgreSQL's minor releases as one series", () => {
+    const source = server("own", "postgres", "17.6", "dedicated");
+    const targets = moveTargets(source, [
+      server("a", "postgres", "17.2"),
+      server("b", "postgres", "16.9"),
+    ]);
+    expect(targets.map((item) => item.id)).toEqual(["a"]);
+  });
+});
+
+describe("moves that the panel refuses", () => {
+  it("offers no move for MySQL or a server outside a stack", () => {
+    const shared = {
+      id: "main",
+      host: "h1",
+      engine: "mariadb",
+      version: "11.8.2-MariaDB",
+      kind: "shared",
+      image: "mariadb:11.8",
+      status: "ready",
+      extensions: null,
+    } as unknown as DbServer;
+    const mysql = {
+      ...shared,
+      id: "own",
+      kind: "dedicated",
+      image: "mysql:8.0",
+      version: "8.0.36",
+      stack: "s1",
+    } as DbServer;
+    const loose = {
+      ...shared,
+      id: "loose",
+      kind: "dedicated",
+      image: "mariadb:10.11",
+      version: "10.11.9",
+      stack: "",
+    } as DbServer;
+    expect(isMySQL("docker.io/library/mysql:8.0@sha256:abc")).toBe(true);
+    expect(isMySQL("mariadb:11.4")).toBe(false);
+    expect(moveTargets(mysql, [shared])).toEqual([]);
+    expect(moveTargets(loose, [shared])).toEqual([]);
+    expect(
+      moveTargets({ ...loose, stack: "s1" } as DbServer, [shared]).map((item) => item.id),
+    ).toEqual(["main"]);
   });
 });

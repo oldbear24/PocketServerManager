@@ -101,14 +101,35 @@ func MajorVersion(version string) int {
 }
 
 // CanMoveTo tells whether a dedicated server's databases fit on a shared server:
-// the same engine, nothing the shared server lacks, and a version that is not
-// older, because a dump does not restore into an older server.
+// the same engine, nothing the shared server lacks, and a release series that is
+// not older, because a dump does not restore into an older server.
 func CanMoveTo(dedicated Candidate, sharedEngine, sharedVersion string) bool {
 	if dedicated.Engine.Name != sharedEngine || dedicated.Product != "" || len(dedicated.Extensions) > 0 {
 		return false
 	}
-	have, want := MajorVersion(sharedVersion), MajorVersion(dedicated.Version)
-	return have > 0 && want > 0 && have >= want
+	haveMajor, haveMinor := seriesOf(sharedEngine, sharedVersion)
+	wantMajor, wantMinor := seriesOf(sharedEngine, dedicated.Version)
+	if haveMajor == 0 || wantMajor == 0 {
+		return false
+	}
+	return haveMajor > wantMajor || haveMajor == wantMajor && haveMinor >= wantMinor
+}
+
+// seriesOf is the release series of a version: its major version for PostgreSQL,
+// whose minor releases keep one format, and major.minor for MariaDB, whose
+// minor numbers are releases of their own (11.4 is older than 11.8). A version
+// without a minor number counts as the series' first.
+func seriesOf(engine, version string) (major, minor int) {
+	match := leadingVersion.FindStringSubmatch(strings.TrimSpace(version))
+	if match == nil {
+		return 0, 0
+	}
+	number, rest, _ := strings.Cut(match[1], ".")
+	major, _ = strconv.Atoi(number)
+	if engine == MariaDB.Name && rest != "" {
+		minor, _ = strconv.Atoi(rest)
+	}
+	return major, minor
 }
 
 // Credentials are what a stack's Compose file says about the administrator of a
@@ -116,6 +137,9 @@ func CanMoveTo(dedicated Candidate, sharedEngine, sharedVersion string) bool {
 type Credentials struct {
 	User        string `json:"admin_user"`
 	PasswordVar string `json:"password_key"`
+	// Password is a password written into the Compose file itself, which only a
+	// move reads; it never leaves the panel.
+	Password string `json:"-"`
 }
 
 var variableReference = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)(?:[:?-][^}]*)?\}?$`)
@@ -124,13 +148,85 @@ var variableReference = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)(?:[:?
 // file. A password written into the file itself is not a variable, and the
 // person linking the server types it instead.
 func SuggestCredentials(compose, service string, engine Engine) Credentials {
+	env, ok := serviceEnvironment(compose, service)
+	if !ok {
+		return Credentials{User: engine.AdminUser}
+	}
+	first := firstOf(env)
+
+	if engine.Name == Postgres.Name {
+		user := first("POSTGRES_USER", "POSTGRESQL_USERNAME")
+		if user == "" {
+			user = engine.AdminUser
+		}
+		return Credentials{User: user, PasswordVar: variableOf(first("POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"))}
+	}
+
+	if root := first("MARIADB_ROOT_PASSWORD", "MYSQL_ROOT_PASSWORD"); root != "" {
+		return Credentials{User: engine.AdminUser, PasswordVar: variableOf(root)}
+	}
+	// without a root password, the application's own user is all there is
+	if user := first("MARIADB_USER", "MYSQL_USER"); user != "" {
+		return Credentials{User: user, PasswordVar: variableOf(first("MARIADB_PASSWORD", "MYSQL_PASSWORD"))}
+	}
+	return Credentials{User: engine.AdminUser}
+}
+
+// ApplicationCredentials reads the user the rest of a stack signs in with on its
+// own database container, and the variable with its password: what its database
+// keeps when it moves to a shared server. PostgreSQL images make POSTGRES_USER
+// the administrator and the application's user at once; MariaDB and MySQL images
+// have an application user of their own. An empty user means none is named.
+// ApplicationLogin is the user and password an application signs in with, from the
+// environment of its database service as Compose resolved it. A PostgreSQL
+// service without a user of its own signs in as the administrator.
+func ApplicationLogin(engine Engine, environment map[string]string) (user, password string) {
+	first := firstOf(environment)
+	if engine.Name == Postgres.Name {
+		user = first("POSTGRES_USER", "POSTGRESQL_USERNAME")
+		if user == "" {
+			user = engine.AdminUser
+		}
+		return user, first("POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD")
+	}
+	return first("MARIADB_USER", "MYSQL_USER"), first("MARIADB_PASSWORD", "MYSQL_PASSWORD")
+}
+
+func ApplicationCredentials(compose, service string, engine Engine) Credentials {
+	env, ok := serviceEnvironment(compose, service)
+	if !ok {
+		return Credentials{}
+	}
+	first := firstOf(env)
+
+	login := func(user, password string) Credentials {
+		credentials := Credentials{User: user, PasswordVar: variableOf(password)}
+		if credentials.PasswordVar == "" {
+			credentials.Password = password
+		}
+		return credentials
+	}
+
+	if engine.Name == Postgres.Name {
+		user := first("POSTGRES_USER", "POSTGRESQL_USERNAME")
+		if user == "" {
+			user = engine.AdminUser
+		}
+		return login(user, first("POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"))
+	}
+	return login(first("MARIADB_USER", "MYSQL_USER"), first("MARIADB_PASSWORD", "MYSQL_PASSWORD"))
+}
+
+// serviceEnvironment reads the environment of a service, in either of Compose's
+// two forms.
+func serviceEnvironment(compose, service string) (map[string]string, bool) {
 	var file struct {
 		Services map[string]struct {
 			Environment any `yaml:"environment"`
 		} `yaml:"services"`
 	}
 	if yaml.Unmarshal([]byte(compose), &file) != nil {
-		return Credentials{User: engine.AdminUser}
+		return nil, false
 	}
 
 	env := map[string]string{}
@@ -146,8 +242,11 @@ func SuggestCredentials(compose, service string, engine Engine) Credentials {
 			}
 		}
 	}
+	return env, true
+}
 
-	first := func(keys ...string) string {
+func firstOf(env map[string]string) func(keys ...string) string {
+	return func(keys ...string) string {
 		for _, key := range keys {
 			if env[key] != "" {
 				return env[key]
@@ -155,27 +254,12 @@ func SuggestCredentials(compose, service string, engine Engine) Credentials {
 		}
 		return ""
 	}
-	variable := func(value string) string {
-		if match := variableReference.FindStringSubmatch(strings.TrimSpace(value)); match != nil {
-			return match[1]
-		}
-		return ""
-	}
+}
 
-	if engine.Name == Postgres.Name {
-		user := first("POSTGRES_USER", "POSTGRESQL_USERNAME")
-		if user == "" {
-			user = engine.AdminUser
-		}
-		return Credentials{User: user, PasswordVar: variable(first("POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD"))}
+// variableOf returns the variable a value refers to, as in "${DB_PASS}".
+func variableOf(value string) string {
+	if match := variableReference.FindStringSubmatch(strings.TrimSpace(value)); match != nil {
+		return match[1]
 	}
-
-	if root := first("MARIADB_ROOT_PASSWORD", "MYSQL_ROOT_PASSWORD"); root != "" {
-		return Credentials{User: engine.AdminUser, PasswordVar: variable(root)}
-	}
-	// without a root password, the application's own user is all there is
-	if user := first("MARIADB_USER", "MYSQL_USER"); user != "" {
-		return Credentials{User: user, PasswordVar: variable(first("MARIADB_PASSWORD", "MYSQL_PASSWORD"))}
-	}
-	return Credentials{User: engine.AdminUser}
+	return ""
 }

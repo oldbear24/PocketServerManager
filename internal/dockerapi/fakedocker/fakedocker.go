@@ -521,6 +521,20 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		e.broadcast("container", "restart", container.ID, nil)
 		w.WriteHeader(http.StatusNoContent)
 
+	case action == "update" && r.Method == http.MethodPost:
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if container.Host == nil {
+			container.Host = map[string]any{}
+		}
+		if policy, ok := body["RestartPolicy"]; ok {
+			container.Host["RestartPolicy"] = policy
+		}
+		writeJSON(w, map[string]any{"Warnings": []string{}})
+
 	case action == "rename":
 		container.Name = r.URL.Query().Get("name")
 		e.broadcast("container", "rename", container.ID, nil)

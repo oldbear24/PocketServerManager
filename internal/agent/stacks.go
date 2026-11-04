@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
 )
 
 const (
@@ -27,6 +28,9 @@ const (
 	// cleanEnvFile holds the env file without secrets while a deploy runs. If the
 	// agent dies in the middle, the next start puts it back in place.
 	cleanEnvFile = ".env.clean"
+
+	composeProjectLabel = "com.docker.compose.project"
+	composeServiceLabel = "com.docker.compose.service"
 
 	composeVersionTimeout = 5 * time.Second
 	composeVersionMaxAge  = 10 * time.Minute
@@ -373,7 +377,50 @@ func (a *Agent) handleStackPull(ctx context.Context, command *agentv1.Command, r
 }
 
 func (a *Agent) handleStackRestart(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
-	return nil, a.composeByName(ctx, command.GetStackRestart().GetName(), reporter, "restart")
+	name := command.GetStackRestart().GetName()
+	services, err := a.liveServices(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return nil, a.composeByName(ctx, name, reporter, append([]string{"restart"}, services...)...)
+}
+
+// liveServices are the services of a stack to restart by name: none named, which
+// means all of them, unless the stack's override keeps some stopped because their
+// data moved to a shared server. Without its files, `restart` would start those too.
+func (a *Agent) liveServices(ctx context.Context, name string) ([]string, error) {
+	dir, err := a.stackDir(name)
+	if err != nil {
+		return nil, err
+	}
+	override, err := os.ReadFile(filepath.Join(dir, overrideFile))
+	if err != nil {
+		return nil, nil //nolint:nilerr // no override, nothing kept stopped
+	}
+	retired := databases.RetiredServices(string(override))
+	if len(retired) == 0 {
+		return nil, nil
+	}
+
+	containers, err := a.Docker.Containers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	services := []string{}
+	for _, container := range containers {
+		if container.Labels[composeProjectLabel] != name {
+			continue
+		}
+		service := container.Labels[composeServiceLabel]
+		if service != "" && !slices.Contains(retired, service) && !slices.Contains(services, service) {
+			services = append(services, service)
+		}
+	}
+	if len(services) == 0 {
+		return nil, fmt.Errorf("%s has nothing to restart but services kept stopped", name)
+	}
+	slices.Sort(services)
+	return services, nil
 }
 
 // handleStackValidate checks files with the same Compose version that will run

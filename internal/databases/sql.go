@@ -143,6 +143,42 @@ func DropSQL(engine Engine, database, user string) string {
 	return "DROP DATABASE IF EXISTS " + postgresIdent(database) + " WITH (FORCE);\nDROP ROLE IF EXISTS " + postgresIdent(user) + ";"
 }
 
+// DropManySQL removes databases, then their users, as a user may own several of
+// them and PostgreSQL keeps a role that still owns a database.
+func DropManySQL(engine Engine, names, users []string) string {
+	lines := []string{}
+	for _, name := range names {
+		if engine.Name == MariaDB.Name {
+			lines = append(lines, "DROP DATABASE IF EXISTS "+mariadbIdent(name)+";")
+		} else {
+			lines = append(lines, "DROP DATABASE IF EXISTS "+postgresIdent(name)+" WITH (FORCE);")
+		}
+	}
+	seen := map[string]bool{}
+	for _, user := range users {
+		if seen[user] {
+			continue
+		}
+		seen[user] = true
+		if engine.Name == MariaDB.Name {
+			lines = append(lines, "DROP USER IF EXISTS "+mariadbString(user)+"@'%';")
+		} else {
+			lines = append(lines, "DROP ROLE IF EXISTS "+postgresIdent(user)+";")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RevokeSQL takes a user's privileges on a database away. MariaDB keeps them
+// when the database is dropped, so they would reach a later database of the same
+// name; PostgreSQL's go with the database.
+func RevokeSQL(engine Engine, database, user string) string {
+	if engine.Name != MariaDB.Name {
+		return ""
+	}
+	return "REVOKE ALL PRIVILEGES ON " + mariadbIdent(database) + ".* FROM " + mariadbString(user) + "@'%';"
+}
+
 // StatsSQL reads the size and the connections of every database, and the
 // server's limit and version, as rows of kind, name and value.
 func StatsSQL(engine Engine) string {
@@ -228,4 +264,101 @@ func ParseStats(engine Engine, output string) (Stats, error) {
 	}
 
 	return stats, scanner.Err()
+}
+
+// RestoreFile restores a dump that lies in the server's container into an existing
+// database, and removes the file whatever happens. A PostgreSQL restore runs as
+// the database's owner, so that what it creates belongs to that user.
+func RestoreFile(engine Engine, user, password, database, owner, file string) Script {
+	var restore string
+	if engine.Name == MariaDB.Name {
+		restore = selectClient + `"$client" --user="$PC_ADMIN_USER" "$PC_DATABASE" < "$PC_FILE"`
+	} else {
+		restore = `{ printf 'SET ROLE "%s";\n' "$PC_OWNER"; cat "$PC_FILE"; } | psql -X -q -v ON_ERROR_STOP=1 --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE"`
+	}
+
+	return Script{
+		Cmd: []string{"sh", "-c", restore + "\nstatus=$?\nrm -f \"$PC_FILE\"\nexit $status"},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database, "PC_OWNER="+owner, "PC_FILE="+file),
+	}
+}
+
+// ExistsSQL tells whether a database and a user of these names exist, as rows of
+// kind and count.
+func ExistsSQL(engine Engine, database, user string) string {
+	if engine.Name == MariaDB.Name {
+		return "SELECT 'database', COUNT(*) FROM information_schema.schemata WHERE schema_name = " + mariadbString(database) + ";\n" +
+			"SELECT 'user', COUNT(*) FROM mysql.user WHERE user = " + mariadbString(user) + ";"
+	}
+	return "SELECT 'database', count(*) FROM pg_database WHERE datname = " + postgresString(database) + ";\n" +
+		"SELECT 'user', count(*) FROM pg_roles WHERE rolname = " + postgresString(user) + ";"
+}
+
+// SignIn signs in as a user over the container's own address, where the server
+// checks the password, unlike on its local socket, and runs nothing. It tells
+// whether the password is the one the server knows.
+func SignIn(engine Engine, user, password, database string) Script {
+	address := `"$(hostname -i | cut -d' ' -f1)"`
+	var script string
+	if engine.Name == MariaDB.Name {
+		script = selectClient + `"$client" --host=` + address + ` --user="$PC_ADMIN_USER" --batch --skip-column-names -e "SELECT 1" "$PC_DATABASE" >/dev/null`
+	} else {
+		script = `psql -X -q -A -t --host=` + address + ` --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE" -c "SELECT 1" >/dev/null`
+	}
+	return Script{
+		Cmd: []string{"sh", "-c", script},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database),
+	}
+}
+
+// DatabasesSQL lists a server's databases, one name per line, without those the
+// engine keeps for itself.
+func DatabasesSQL(engine Engine) string {
+	if engine.Name == MariaDB.Name {
+		return "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys');"
+	}
+	return "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres';"
+}
+
+// ParseNames reads a list of names, one per line.
+func ParseNames(output string) []string {
+	names := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ParseExists reads the output of ExistsSQL.
+func ParseExists(output string) (database, user bool) {
+	for _, line := range strings.Split(output, "\n") {
+		kind, count, found := strings.Cut(strings.TrimSpace(line), "\t")
+		if !found || strings.TrimSpace(count) == "0" {
+			continue
+		}
+		switch kind {
+		case "database":
+			database = true
+		case "user":
+			user = true
+		}
+	}
+	return database, user
+}
+
+// CountTables prints how many tables and views a database has, for comparing a
+// restored database with its original.
+func CountTables(engine Engine, user, password, database string) Script {
+	var script string
+	if engine.Name == MariaDB.Name {
+		script = selectClient + `"$client" --user="$PC_ADMIN_USER" --batch --skip-column-names -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()" "$PC_DATABASE"`
+	} else {
+		script = `psql -X -q -A -t --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE" -c "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"`
+	}
+	return Script{
+		Cmd: []string{"sh", "-c", script},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database),
+	}
 }

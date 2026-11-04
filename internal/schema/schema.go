@@ -28,6 +28,7 @@ const (
 	DBUsers           = "db_users"
 	DBNetworks        = "db_networks"
 	DBDumps           = "db_dumps"
+	DBMoves           = "db_moves"
 )
 
 // Reserved names of collections that land with later features. They are listed
@@ -93,6 +94,15 @@ const (
 const (
 	DumpExport = "export"
 	DumpFinal  = "final"
+	// DumpMove is the copy of a database as it was when it moved to another server.
+	DumpMove = "move"
+)
+
+// States of a move of databases to another server.
+const (
+	MoveRunning = "moving"
+	MoveDone    = "moved"
+	MoveFailed  = "failed"
 )
 
 // Severity of events and alerts.
@@ -124,6 +134,7 @@ var Encrypted = map[string][]string{
 	"certificates":          {"key_pem"},
 	DBServers:               {"admin_password"},
 	DBUsers:                 {"password", "pending_password"},
+	DBMoves:                 {"secrets"},
 	"backup_targets":        {"credentials", "repo_password"},
 }
 
@@ -173,6 +184,7 @@ var Audited = []AuditedCollection{
 	{Name: Databases, Label: "name", Ignore: []string{"status", "size_bytes", "connections", "last_error"}},
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
+	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
 	{Name: "backup_targets", Label: "name", Ignore: []string{"capacity_bytes", "used_bytes"}},
 	{Name: "backup_jobs", Label: "name", Host: "host"},
 }

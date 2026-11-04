@@ -45,16 +45,48 @@ export type DbUser = RecordModel & {
   databases: string[];
   secret_name: string;
   rotated_at: string;
+  /** The application keeps this password in its own settings: the panel does not change it. */
+  app_password: boolean;
 };
 
 export type DbDump = RecordModel & {
   server: string;
   database_name: string;
-  kind: "export" | "final";
+  kind: "export" | "final" | "move";
   command: string;
   file: string;
   size_bytes: number;
   expires_at: string;
+};
+
+/** A server on an application's database network. */
+export type DbNetwork = RecordModel & {
+  server: string;
+  name: string;
+  stack: string;
+  /** The names of the application's old database service, which the server answers to. */
+  aliases: string[] | null;
+};
+
+/** A move of databases from one server into a shared one. */
+export type DbMove = RecordModel & {
+  host: string;
+  stack: string;
+  target: string;
+  target_name: string;
+  source_name: string;
+  source_kind: "shared" | "dedicated";
+  source_container: string;
+  source_service: string;
+  source_volume: string;
+  source_version: string;
+  databases: { name: string; user: string }[] | null;
+  status: "moving" | "moved" | "failed";
+  command: string;
+  error: string;
+  moved_at: string;
+  remove_after: string;
+  removed_at: string;
 };
 
 /** A database container found inside a stack, not linked yet. */
@@ -78,9 +110,10 @@ export type DbCandidate = {
   password_key: string;
 };
 
-export const engines: { value: DbEngine; label: string; port: number }[] = [
-  { value: "mariadb", label: "MariaDB", port: 3306 },
-  { value: "postgres", label: "PostgreSQL", port: 5432 },
+/** The series a new shared server can run, the recommended one first, as the panel offers them. */
+export const engines: { value: DbEngine; label: string; port: number; versions: string[] }[] = [
+  { value: "mariadb", label: "MariaDB", port: 3306, versions: ["11.8", "11.4"] },
+  { value: "postgres", label: "PostgreSQL", port: 5432, versions: ["17", "18", "16"] },
 ];
 
 export function engineLabel(engine: string): string {
@@ -103,6 +136,60 @@ export function serverLabel(server: DbServer): string {
   const label = `${engineLabel(server.engine)}${version ? ` ${version}` : ""}`;
   const extensions = server.extensions ?? [];
   return extensions.length ? `${label} + ${extensions.join(", ")}` : label;
+}
+
+/** Whether an image is MySQL's, as the panel recognises it, which moves nowhere. */
+export function isMySQL(image: string): boolean {
+  const repository = image
+    .split("@")[0]
+    .replace(/:[^/]*$/, "")
+    .replace(/^docker\.io\//, "");
+  return /^(library\/)?mysql$|^bitnami\/mysql$|^mysql\/mysql-server$/.test(repository);
+}
+
+/** The major version of a server, from what it said or from its image tag. */
+export const majorOf = (server: DbServer) =>
+  Number.parseInt(server.version || imageTag(server.image), 10) || 0;
+
+/**
+ * The release series of a server, as [major, minor]: PostgreSQL's minor releases
+ * share one format, while MariaDB's minor numbers are releases of their own.
+ */
+export function seriesOf(server: DbServer): [number, number] {
+  const [major, minor] = (server.version || imageTag(server.image))
+    .replace(/^pg/, "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10) || 0);
+  return [major ?? 0, server.engine === "mariadb" ? (minor ?? 0) : 0];
+}
+
+/**
+ * The shared servers a server's databases could move to: on its host, of its
+ * engine and not of an older series, as a dump does not restore into an older server.
+ */
+export function moveTargets(server: DbServer, servers: DbServer[]): DbServer[] {
+  // MySQL is not MariaDB, whatever its version; a server outside a stack has no
+  // application to switch over
+  if (
+    (server.extensions ?? []).length > 0 ||
+    isMySQL(server.image) ||
+    (server.kind === "dedicated" && !server.stack)
+  ) {
+    return [];
+  }
+  const [major, minor] = seriesOf(server);
+  return servers.filter((other) => {
+    const [otherMajor, otherMinor] = seriesOf(other);
+    return (
+      other.id !== server.id &&
+      other.kind === "shared" &&
+      other.status === "ready" &&
+      other.host === server.host &&
+      other.engine === server.engine &&
+      major > 0 &&
+      (otherMajor > major || (otherMajor === major && otherMinor >= minor))
+    );
+  });
 }
 
 export const databaseNamePattern = /^[a-z][a-z0-9_]{0,62}$/;
@@ -138,7 +225,7 @@ export function connectionShare(server: DbServer): number {
 }
 
 export const dbApi = {
-  createServer: (body: { host: string; name: string; engine: DbEngine }) =>
+  createServer: (body: { host: string; name: string; engine: DbEngine; version: string }) =>
     pb.send<{ server: DbServer; command: Command }>("/api/pc/db-servers", {
       method: "POST",
       body,
@@ -155,6 +242,17 @@ export const dbApi = {
   }) => pb.send<DbServer>("/api/pc/db-servers/link", { method: "POST", body }),
 
   stats: (id: string) => pb.send<Command>(`/api/pc/db-servers/${id}/stats`, { method: "POST" }),
+
+  /** Moves a stack's own server into a shared one, or one database of a shared server. */
+  move: (id: string, body: { target: string; database?: string }) =>
+    pb.send<{ move: DbMove; command: Command }>(`/api/pc/db-servers/${id}/move`, {
+      method: "POST",
+      body,
+    }),
+
+  /** Pulls the newest image of a shared server's series and recreates its container. */
+  updateServer: (id: string) =>
+    pb.send<Command>(`/api/pc/db-servers/${id}/update`, { method: "POST" }),
 
   removeServer: (id: string, removeVolume: boolean) =>
     pb.send(`/api/pc/db-servers/${id}?remove_volume=${removeVolume}`, { method: "DELETE" }),

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -42,6 +43,8 @@ const (
 	exportLifetime    = 7 * 24 * time.Hour
 	finalDumpLifetime = 30 * 24 * time.Hour
 	statsInterval     = time.Minute
+	// statsAfterDeploy gives a server time to start before it is asked its version
+	statsAfterDeploy = 15 * time.Second
 )
 
 var dbActor = audit.System("databases", "panel")
@@ -67,6 +70,10 @@ func (p *Panel) registerDatabases() {
 	p.App.OnRecordDeleteRequest(schema.Stacks).BindFunc(func(e *core.RecordRequestEvent) error {
 		if e.Record.GetString("source") == stackSourceDBServer {
 			return e.BadRequestError("This stack is a database server: remove it on the Databases page.", nil)
+		}
+		// the record of a move goes with its stack, and the move's holds with it
+		if move := p.moveHolding(e.Record); move != nil {
+			return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: remove the stack once that is done.", e.Record.GetString("name"), move.GetString("target_name")), nil)
 		}
 		return e.Next()
 	})
@@ -164,10 +171,12 @@ func (p *Panel) secretResolver(stack *core.Record) func(string) (string, error) 
 }
 
 // stackOverride generates the second Compose file of a deploy, which puts a stack on
-// its database networks, and the networks the agent prepares for it. Most stacks
-// have none.
+// its database networks and keeps a database service stopped whose data moved to
+// a shared server, and the networks the agent prepares for it. Most stacks have
+// neither.
 func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*agentv1.DbNetworkAttach, error) {
-	// a shared server joins the networks of every application that uses it
+	// a shared server joins the networks of every application that uses it, under
+	// its own name and those of the database services that moved to it
 	if stack.GetString("source") == stackSourceDBServer {
 		server, err := p.App.FindFirstRecordByFilter(schema.DBServers, "stack={:stack}", dbx.Params{"stack": stack.Id})
 		if err != nil {
@@ -179,25 +188,33 @@ func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*ag
 			return "", nil, err
 		}
 
-		names := []string{}
+		joins := []databases.Join{}
 		attach := []*agentv1.DbNetworkAttach{}
 		for _, network := range networks {
-			if !slices.Contains(names, network.GetString("name")) {
-				names = append(names, network.GetString("name"))
-				attach = append(attach, &agentv1.DbNetworkAttach{Network: network.GetString("name")})
-			}
+			joins = append(joins, databases.Join{
+				Network: network.GetString("name"),
+				Aliases: append([]string{server.GetString("name")}, aliasesOf(network)...),
+			})
+			attach = append(attach, &agentv1.DbNetworkAttach{Network: network.GetString("name")})
 		}
 
-		override, err := databases.Override(compose, names, databases.ServerService, []string{server.GetString("name")})
+		override, err := databases.Override(compose, joins, databases.ServerService, nil)
 		return override, attach, err
 	}
 
 	networks, err := p.App.FindRecordsByFilter(schema.DBNetworks, "stack={:stack}", "name", 0, 0, dbx.Params{"stack": stack.Id})
-	if err != nil || len(networks) == 0 {
+	if err != nil {
 		return "", nil, err
 	}
+	retired, err := p.retiredServices(stack)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(networks) == 0 && len(retired) == 0 {
+		return "", nil, nil
+	}
 
-	names := []string{}
+	joins := []databases.Join{}
 	attach := []*agentv1.DbNetworkAttach{}
 	for _, network := range networks {
 		server, err := p.App.FindRecordById(schema.DBServers, network.GetString("server"))
@@ -208,14 +225,24 @@ func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*ag
 			Network:           network.GetString("name"),
 			ServerContainerId: server.GetString("container_ref"),
 			ServerAlias:       server.GetString("name"),
+			ExtraAliases:      aliasesOf(network),
 		})
-		if !slices.Contains(names, network.GetString("name")) {
-			names = append(names, network.GetString("name"))
+		if !slices.ContainsFunc(joins, func(join databases.Join) bool { return join.Network == network.GetString("name") }) {
+			joins = append(joins, databases.Join{Network: network.GetString("name")})
 		}
 	}
 
-	override, err := databases.Override(compose, names, "", nil)
+	override, err := databases.Override(compose, joins, "", retired)
 	return override, attach, err
+}
+
+// aliasesOf reads the extra names a server answers to on a database network.
+func aliasesOf(network *core.Record) []string {
+	var aliases []string
+	if err := network.UnmarshalJSONField("aliases", &aliases); err != nil {
+		return nil
+	}
+	return aliases
 }
 
 // enrichDatabaseCommand adds the passwords to a database command right before it
@@ -433,6 +460,7 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 		Connection commandConnection `json:"connection"`
 		Database   string            `json:"database"`
 		User       string            `json:"user"`
+		KeepUser   bool              `json:"keep_user"`
 	}
 	if payloadInto(record, &payload) != nil {
 		return
@@ -453,7 +481,7 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 	ctx := audit.WithActor(context.Background(), dbActor)
 	stackID := database.GetString("stack")
 
-	if account, err := p.userOf(server, payload.User); err == nil {
+	if account, err := p.userOf(server, payload.User); err == nil && !payload.KeepUser {
 		if err := p.App.DeleteWithContext(ctx, account); err != nil {
 			p.Log.Error("failed to remove a database user", "user", account.Id, "error", err)
 		}
@@ -640,6 +668,16 @@ func (p *Panel) serverDeployFinished(record *core.Record) {
 		server.Set("last_error", record.GetString("error"))
 	}
 	p.saveAs(server)
+
+	// an update may have brought a new version: the server says which once it
+	// accepts connections again
+	if record.GetString("status") == schema.CommandSucceeded && server.GetString("admin_password") != "" {
+		p.later.after(statsAfterDeploy, func() {
+			if _, err := p.statsCommand(context.Background(), server, ""); err != nil {
+				p.Log.Debug("failed to ask a database server for its numbers", "server", server.Id, "error", err)
+			}
+		})
+	}
 }
 
 // isLive tells whether a stack runs or is about to: a deploy that is under way
@@ -852,6 +890,11 @@ func (p *Panel) queueStats(ctx context.Context, server *core.Record, userID stri
 		return recent[0], errStatsRunning
 	}
 
+	return p.statsCommand(ctx, server, userID)
+}
+
+// statsCommand asks a server for its numbers.
+func (p *Panel) statsCommand(ctx context.Context, server *core.Record, userID string) (*core.Record, error) {
 	return p.Commands.Create(ctx, commands.Options{
 		Host:        server.GetString("host"),
 		Label:       server.GetString("name"),

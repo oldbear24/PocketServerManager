@@ -28,6 +28,10 @@ type Spec struct {
 	// Resource returns the ordering key: commands with the same key run one after
 	// another, the others in parallel.
 	Resource func(*agentv1.Command) string
+	// Uninterruptible commands cannot be cancelled once they left the queue: only
+	// the agent knows whether a cancel would land where it can still undo its
+	// work, so it decides by itself, within the command's timeout.
+	Uninterruptible bool
 }
 
 func stack(c *agentv1.Command) string {
@@ -55,6 +59,15 @@ func stack(c *agentv1.Command) string {
 // and the engine refuses the second.
 func databaseNetwork(c *agentv1.Command) string {
 	if name, ok := strings.CutPrefix(c.GetDbNetworkAttach().GetNetwork(), "pcdb-"); ok && name != "" {
+		return "stack:" + name
+	}
+	return ""
+}
+
+// databaseMove orders a move with the deploys of the stack whose databases move:
+// the panel deploys the stack again right after, and none may run in between.
+func databaseMove(c *agentv1.Command) string {
+	if name := c.GetDbServerMove().GetStack(); name != "" {
 		return "stack:" + name
 	}
 	return ""
@@ -158,6 +171,7 @@ var Specs = map[string]Spec{
 	"db.database.clone":  {Timeout: 6 * time.Hour},
 	"db.database.export": {Timeout: 6 * time.Hour},
 	"db.network.attach":  {Timeout: 2 * time.Minute, Resource: databaseNetwork},
+	"db.server.move":     {Timeout: 6 * time.Hour, Resource: databaseMove, Uninterruptible: true},
 	"db.stats":           {Timeout: 2 * time.Minute},
 	"db.adminer.start":   {Timeout: 5 * time.Minute},
 	"db.adminer.stop":    {Timeout: 2 * time.Minute},

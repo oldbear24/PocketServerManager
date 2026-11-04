@@ -55,6 +55,7 @@ type Panel struct {
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions
+	later           laterWork
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -91,6 +92,7 @@ func (p *Panel) Register() {
 	p.Streams.Register()
 	p.registerStacks()
 	p.registerDatabases()
+	p.registerMoves()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -130,10 +132,13 @@ func (p *Panel) Register() {
 	})
 
 	p.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		p.later.stop()
 		p.Streams.Close()
 		if p.Gateway != nil {
 			p.Gateway.Stop()
 		}
+		// after the gateway, whose handlers deliver commands too
+		p.Commands.Close()
 		if p.Metrics != nil {
 			if err := p.Metrics.Close(); err != nil {
 				p.Log.Error("failed to close the metrics database", "error", err)

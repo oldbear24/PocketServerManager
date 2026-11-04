@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -63,6 +64,39 @@ func (c *Client) CopyFile(ctx context.Context, container, dir, name string, cont
 
 	query := url.Values{"path": {dir}}
 	res, err := c.requestRaw(ctx, http.MethodPut, "/containers/"+container+"/archive", query, &archive, "application/x-tar")
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+
+	return nil
+}
+
+// CopyFileFrom writes one file into a container like CopyFile, streaming its
+// content: a database dump need not fit in memory.
+func (c *Client) CopyFileFrom(ctx context.Context, container, dir, name string, content io.Reader, size, mode int64) error {
+	reader, writer := io.Pipe()
+	go func() {
+		archive := tar.NewWriter(writer)
+		err := archive.WriteHeader(&tar.Header{Name: name, Mode: mode, Size: size, ModTime: time.Now()})
+		if err == nil {
+			var copied int64
+			copied, err = io.Copy(archive, content)
+			if err == nil && copied != size {
+				err = fmt.Errorf("the file has %d bytes, not %d", copied, size)
+			}
+		}
+		if err == nil {
+			err = archive.Close()
+		}
+		writer.CloseWithError(err)
+	}()
+
+	query := url.Values{"path": {dir}}
+	res, err := c.requestRaw(ctx, http.MethodPut, "/containers/"+container+"/archive", query, reader, "application/x-tar")
+	// the writer stops at once if the request ended early
+	reader.Close()
 	if err != nil {
 		return err
 	}

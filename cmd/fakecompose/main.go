@@ -143,11 +143,11 @@ func run(args []string) error {
 	case "up":
 		return up(ctx, client, parsed)
 	case "stop":
-		return forEachContainer(ctx, client, parsed.Project, "Stopped", func(id string) error { return client.Stop(ctx, id, 0) })
+		return forEachContainer(ctx, client, parsed, "Stopped", func(id string) error { return client.Stop(ctx, id, 0) })
 	case "restart":
-		return forEachContainer(ctx, client, parsed.Project, "Restarted", func(id string) error { return client.Restart(ctx, id, 0) })
+		return forEachContainer(ctx, client, parsed, "Restarted", func(id string) error { return client.Restart(ctx, id, 0) })
 	case "down":
-		return forEachContainer(ctx, client, parsed.Project, "Removed", func(id string) error { return client.Remove(ctx, id, false, true) })
+		return forEachContainer(ctx, client, parsed, "Removed", func(id string) error { return client.Remove(ctx, id, false, true) })
 	}
 
 	return fmt.Errorf("unknown command %s", parsed.Verb)
@@ -336,6 +336,10 @@ func up(ctx context.Context, client *dockerapi.Client, parsed *call) error {
 			if _, known := project.Services[container.Labels[labelService]]; known {
 				continue
 			}
+			// like the real one, a service of a profile nobody activated is no orphan
+			if _, disabled := project.DisabledServices[container.Labels[labelService]]; disabled {
+				continue
+			}
 			fmt.Printf(" Container %s Removed\n", strings.TrimPrefix(container.Names[0], "/"))
 			if err := client.Remove(ctx, container.ID, false, true); err != nil {
 				return err
@@ -406,13 +410,39 @@ func containersOf(ctx context.Context, client *dockerapi.Client, project string)
 	return result, nil
 }
 
-func forEachContainer(ctx context.Context, client *dockerapi.Client, project, done string, action func(id string) error) error {
-	containers, err := containersOf(ctx, client, project)
+// forEachContainer acts on the containers of a project. Like the real one, it
+// leaves alone those of services in a profile nobody activated.
+func forEachContainer(ctx context.Context, client *dockerapi.Client, parsed *call, done string, action func(id string) error) error {
+	containers, err := containersOf(ctx, client, parsed.Project)
 	if err != nil {
 		return err
 	}
 
+	disabled := types.Services{}
+	if len(parsed.Files) > 0 {
+		project, err := load(ctx, parsed)
+		if err != nil {
+			return err
+		}
+		disabled = project.DisabledServices
+	}
+
+	// the services named after the verb, or all of them
+	named := []string{}
+	for _, arg := range parsed.VerbArgs {
+		if !strings.HasPrefix(arg, "-") {
+			named = append(named, arg)
+		}
+	}
+
 	for _, container := range containers {
+		service := container.Labels[labelService]
+		if _, skip := disabled[service]; skip {
+			continue
+		}
+		if len(named) > 0 && !slices.Contains(named, service) {
+			continue
+		}
 		if err := action(container.ID); err != nil {
 			return err
 		}
