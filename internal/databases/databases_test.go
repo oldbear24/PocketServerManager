@@ -582,3 +582,87 @@ func TestNewServersChooseAVersionSeries(t *testing.T) {
 		t.Errorf("compose of PostgreSQL 18:\n%s", compose)
 	}
 }
+
+func TestMariaDBMovesOnlyToTheSameOrANewerSeries(t *testing.T) {
+	for _, tc := range []struct {
+		from, to string
+		ok       bool
+	}{
+		{"11.4", "11.8.2-MariaDB-ubu2404", true},
+		{"11.8.2-MariaDB", "11.8.5-MariaDB", true},
+		{"11.8.5-MariaDB", "11.8.2-MariaDB", true},
+		{"11.8", "11.4.13-MariaDB-ubu2404", false},
+		{"10.11", "11.4", true},
+		{"11", "11.4", true},
+		{"12.1", "11.8", false},
+	} {
+		if got := CanMoveTo(Candidate{Engine: MariaDB, Version: tc.from}, "mariadb", tc.to); got != tc.ok {
+			t.Errorf("%s to %s: %v", tc.from, tc.to, got)
+		}
+	}
+	// PostgreSQL's minor releases are one format
+	if !CanMoveTo(Candidate{Engine: Postgres, Version: "17.6"}, "postgres", "17.2") {
+		t.Error("PostgreSQL 17.6 to 17.2")
+	}
+}
+
+const anchoredCompose = `x-app: &app
+  image: alpine:3.22
+  depends_on:
+    db:
+      condition: service_healthy
+    cache:
+      condition: service_started
+      restart: true
+x-net: &net
+  network_mode: bridge
+services:
+  db:
+    image: postgres:16
+  cache:
+    image: redis:7
+  app:
+    <<: *app
+  worker:
+    <<: [*net, *app]
+    command: ["work"]
+  side: *app
+`
+
+func TestOverrideFollowsMergedAndAliasedServices(t *testing.T) {
+	override, err := Override(anchoredCompose, nil, "", []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(override, "*") || strings.Contains(override, "&") {
+		t.Errorf("the override refers to anchors of the stack's file:\n%s", override)
+	}
+
+	project := load(t, nil, anchoredCompose, override)
+	for _, name := range []string{"app", "worker", "side"} {
+		service := project.Services[name]
+		if len(service.DependsOn) != 1 || service.DependsOn["cache"].Condition != "service_started" || !service.DependsOn["cache"].Restart {
+			t.Errorf("%s depends on %+v", name, service.DependsOn)
+		}
+	}
+	if _, active := project.Services["db"]; active {
+		t.Error("the moved database is still active")
+	}
+
+	// a merged network_mode counts: worker cannot share the database network
+	joined, err := Override(anchoredCompose, []Join{{Network: "pcdb-x"}}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project = load(t, nil, anchoredCompose, joined)
+	if _, ok := project.Services["worker"].Networks["pcdb-x"]; ok {
+		t.Error("a service with a network_mode joined a network")
+	}
+	if _, ok := project.Services["app"].Networks["pcdb-x"]; !ok {
+		t.Error("app is not on the database network")
+	}
+
+	if err := RetireProblem(strings.Replace(anchoredCompose, "network_mode: bridge", "network_mode: service:db", 1), "db"); err == nil {
+		t.Error("a merged network_mode of the database service is no problem")
+	}
+}

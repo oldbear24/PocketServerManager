@@ -101,14 +101,35 @@ func MajorVersion(version string) int {
 }
 
 // CanMoveTo tells whether a dedicated server's databases fit on a shared server:
-// the same engine, nothing the shared server lacks, and a version that is not
-// older, because a dump does not restore into an older server.
+// the same engine, nothing the shared server lacks, and a release series that is
+// not older, because a dump does not restore into an older server.
 func CanMoveTo(dedicated Candidate, sharedEngine, sharedVersion string) bool {
 	if dedicated.Engine.Name != sharedEngine || dedicated.Product != "" || len(dedicated.Extensions) > 0 {
 		return false
 	}
-	have, want := MajorVersion(sharedVersion), MajorVersion(dedicated.Version)
-	return have > 0 && want > 0 && have >= want
+	haveMajor, haveMinor := seriesOf(sharedEngine, sharedVersion)
+	wantMajor, wantMinor := seriesOf(sharedEngine, dedicated.Version)
+	if haveMajor == 0 || wantMajor == 0 {
+		return false
+	}
+	return haveMajor > wantMajor || haveMajor == wantMajor && haveMinor >= wantMinor
+}
+
+// seriesOf is the release series of a version: its major version for PostgreSQL,
+// whose minor releases keep one format, and major.minor for MariaDB, whose
+// minor numbers are releases of their own (11.4 is older than 11.8). A version
+// without a minor number counts as the series' first.
+func seriesOf(engine, version string) (major, minor int) {
+	match := leadingVersion.FindStringSubmatch(strings.TrimSpace(version))
+	if match == nil {
+		return 0, 0
+	}
+	number, rest, _ := strings.Cut(match[1], ".")
+	major, _ = strconv.Atoi(number)
+	if engine == MariaDB.Name && rest != "" {
+		minor, _ = strconv.Atoi(rest)
+	}
+	return major, minor
 }
 
 // Credentials are what a stack's Compose file says about the administrator of a

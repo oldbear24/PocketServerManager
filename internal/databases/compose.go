@@ -139,9 +139,9 @@ func Override(compose string, joins []Join, service string, retired []string) (s
 
 		entry := &yaml.Node{Kind: yaml.MappingNode}
 
-		if len(joins) > 0 && (service == "" || name == service) && mappingValue(definition, "network_mode") == nil {
+		if len(joins) > 0 && (service == "" || name == service) && serviceValue(definition, "network_mode") == nil {
 			joined := &yaml.Node{Kind: yaml.MappingNode}
-			if mappingValue(definition, "networks") == nil {
+			if serviceValue(definition, "networks") == nil {
 				joined.Content = append(joined.Content, scalar("default"), &yaml.Node{Kind: yaml.MappingNode})
 			}
 			for _, join := range joins {
@@ -154,7 +154,7 @@ func Override(compose string, joins []Join, service string, retired []string) (s
 			entry.Content = append(entry.Content, scalar("networks"), joined)
 		}
 
-		if dependencies := withoutRetired(mappingValue(definition, "depends_on"), retired); dependencies != nil {
+		if dependencies := withoutRetired(serviceValue(definition, "depends_on"), retired); dependencies != nil {
 			entry.Content = append(entry.Content, scalar("depends_on"), dependencies)
 		}
 
@@ -206,19 +206,22 @@ func withoutRetired(dependsOn *yaml.Node, retired []string) *yaml.Node {
 	switch dependsOn.Kind {
 	case yaml.SequenceNode:
 		for _, item := range dependsOn.Content {
-			if slices.Contains(retired, item.Value) {
+			name := resolve(item).Value
+			if slices.Contains(retired, name) {
 				changed = true
 				continue
 			}
-			kept.Content = append(kept.Content, scalar(item.Value), mapping("condition", scalar("service_started")))
+			kept.Content = append(kept.Content, scalar(name), mapping("condition", scalar("service_started")))
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(dependsOn.Content); i += 2 {
-			if slices.Contains(retired, dependsOn.Content[i].Value) {
+			name := resolve(dependsOn.Content[i]).Value
+			if slices.Contains(retired, name) {
 				changed = true
 				continue
 			}
-			kept.Content = append(kept.Content, dependsOn.Content[i], dependsOn.Content[i+1])
+			// the override is a document of its own: no anchors or aliases into the stack's file
+			kept.Content = append(kept.Content, scalar(name), plain(dependsOn.Content[i+1]))
 		}
 	}
 
@@ -247,16 +250,16 @@ func RetireProblem(compose, service string) error {
 		if name == service {
 			continue
 		}
-		if mode := mappingValue(definition, "network_mode"); mode != nil && (mode.Value == "service:"+service || mode.Value == "container:"+service) {
+		if mode := serviceValue(definition, "network_mode"); mode != nil && (mode.Value == "service:"+service || mode.Value == "container:"+service) {
 			return fmt.Errorf("%s uses the network of %s", name, service)
 		}
 		for _, key := range []string{"links", "volumes_from"} {
-			list := mappingValue(definition, key)
+			list := serviceValue(definition, key)
 			if list == nil {
 				continue
 			}
 			for _, item := range list.Content {
-				target, _, _ := strings.Cut(strings.TrimPrefix(item.Value, "service:"), ":")
+				target, _, _ := strings.Cut(strings.TrimPrefix(resolve(item).Value, "service:"), ":")
 				if target == service {
 					return fmt.Errorf("%s has %s to %s", name, key, service)
 				}
@@ -266,7 +269,6 @@ func RetireProblem(compose, service string) error {
 	return nil
 }
 
-// composeServices reads the services of a Compose file as YAML nodes.
 // RetiredServices are the services an override keeps stopped for good, as their
 // data moved to a shared server.
 func RetiredServices(override string) []string {
@@ -288,6 +290,7 @@ func RetiredServices(override string) []string {
 	return retired
 }
 
+// composeServices reads the services of a Compose file as YAML nodes.
 func composeServices(compose string) (map[string]*yaml.Node, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal([]byte(compose), &document); err != nil {
@@ -303,9 +306,55 @@ func composeServices(compose string) (map[string]*yaml.Node, error) {
 		return services, nil
 	}
 	for i := 0; i+1 < len(list.Content); i += 2 {
-		services[list.Content[i].Value] = list.Content[i+1]
+		services[list.Content[i].Value] = resolve(list.Content[i+1])
 	}
 	return services, nil
+}
+
+// resolve follows an alias to the node it names.
+func resolve(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
+}
+
+// serviceValue is a key of a service as Compose sees it: set on the service, or
+// on a mapping merged into it with `<<: *anchor`, the first one that has it.
+func serviceValue(service *yaml.Node, key string) *yaml.Node {
+	service = resolve(service)
+	if value := mappingValue(service, key); value != nil {
+		return resolve(value)
+	}
+	merged := resolve(mappingValue(service, "<<"))
+	if merged == nil {
+		return nil
+	}
+	sources := []*yaml.Node{merged}
+	if merged.Kind == yaml.SequenceNode {
+		sources = merged.Content
+	}
+	for _, source := range sources {
+		if value := serviceValue(source, key); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+// plain is a copy of a node with its aliases resolved and without anchors.
+func plain(node *yaml.Node) *yaml.Node {
+	node = resolve(node)
+	if node == nil {
+		return nil
+	}
+	copied := *node
+	copied.Anchor = ""
+	copied.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		copied.Content[i] = plain(child)
+	}
+	return &copied
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
