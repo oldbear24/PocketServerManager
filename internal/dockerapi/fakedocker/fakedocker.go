@@ -62,9 +62,17 @@ type Engine struct {
 	// BlockOn makes requests whose "METHOD path" contains the key wait on the channel.
 	BlockOn map[string]chan struct{}
 	// OnStart decides what a started container turns into: status and health.
+	// It runs with the engine locked, so it must not call the engine.
 	OnStart func(c *Container) (status, health string)
+	// OnStop is told about a running container that stops or is removed. It
+	// runs with the engine locked too.
+	OnStop func(c *Container)
 	// OnPull is called for each pulled image.
 	OnPull func(image string)
+	// APIVersion is the Engine API version the fake reports; empty is 1.47.
+	APIVersion string
+	// VolumeRoot is where volumes say their directories are on the host.
+	VolumeRoot string
 }
 
 func newEngine() *Engine {
@@ -150,7 +158,7 @@ func (e *Engine) AddContainer(name, image string, labels map[string]string) stri
 		Host: map[string]any{"NetworkMode": "bridge", "RestartPolicy": map[string]any{"Name": "unless-stopped"}},
 	}
 
-	e.broadcast("container", "start", id, nil)
+	e.broadcast("container", "start", id, map[string]string{"name": name})
 
 	return id
 }
@@ -173,8 +181,16 @@ func (e *Engine) SetStatus(id, status string) {
 	defer e.mu.Unlock()
 
 	if container := e.containers[id]; container != nil {
+		e.stopping(container)
 		container.Status = status
 		e.broadcast("container", "die", id, nil)
+	}
+}
+
+// stopping tells OnStop about a running container that stops.
+func (e *Engine) stopping(container *Container) {
+	if e.OnStop != nil && container.Status == "running" {
+		e.OnStop(container)
 	}
 }
 
@@ -183,6 +199,9 @@ func (e *Engine) RemoveContainer(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if container := e.containers[id]; container != nil {
+		e.stopping(container)
+	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
 	e.broadcast("container", "destroy", id, nil)
@@ -355,7 +374,13 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/_ping":
 		_, _ = w.Write([]byte("OK"))
 	case path == "/version":
-		writeJSON(w, map[string]string{"Version": "27.3.1", "ApiVersion": "1.47", "Os": "linux", "Arch": "amd64"})
+		e.mu.Lock()
+		api := e.APIVersion
+		e.mu.Unlock()
+		if api == "" {
+			api = "1.47"
+		}
+		writeJSON(w, map[string]string{"Version": "27.3.1", "ApiVersion": api, "Os": "linux", "Arch": "amd64"})
 	case path == "/info":
 		writeJSON(w, map[string]any{
 			"Name": "fake-host", "OperatingSystem": "Fake Linux 1.0", "KernelVersion": "6.1.0-fake",
@@ -375,6 +400,8 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 		e.imageRoute(w, r, strings.TrimPrefix(path, "/images/"))
 	case path == "/volumes":
 		e.listVolumes(w)
+	case strings.HasPrefix(path, "/volumes/") && r.Method == http.MethodGet:
+		e.inspectVolume(w, strings.TrimPrefix(path, "/volumes/"))
 	case path == "/networks":
 		e.listNetworks(w)
 	case path == "/networks/create":
@@ -486,6 +513,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 			writeError(w, http.StatusConflict, "the container is running")
 			return
 		}
+		e.stopping(container)
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
@@ -508,10 +536,11 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		container.Status = status
 		container.Health = health
 		container.Started = time.Now().UTC()
-		e.broadcast("container", "start", container.ID, nil)
+		e.broadcast("container", "start", container.ID, map[string]string{"name": container.Name})
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "stop":
+		e.stopping(container)
 		container.Status = "exited"
 		e.broadcast("container", "die", container.ID, nil)
 		w.WriteHeader(http.StatusNoContent)
@@ -710,4 +739,33 @@ func (e *Engine) streamEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (e *Engine) inspectVolume(w http.ResponseWriter, name string) {
+	e.mu.Lock()
+	labels, ok := e.volumes[name]
+	root := e.VolumeRoot
+	e.mu.Unlock()
+
+	if !ok {
+		writeError(w, http.StatusNotFound, "get "+name+": no such volume")
+		return
+	}
+	if root == "" {
+		root = "/var/lib/docker/volumes"
+	}
+	writeJSON(w, map[string]any{"Name": name, "Driver": "local", "Labels": labels, "Mountpoint": root + "/" + name + "/_data"})
+}
+
+// Fail makes requests whose "METHOD path" contains key fail with message, from
+// now on; an empty message ends it. Unlike FailOn, it is safe while the engine
+// serves requests.
+func (e *Engine) Fail(key, message string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if message == "" {
+		delete(e.FailOn, key)
+		return
+	}
+	e.FailOn[key] = message
 }

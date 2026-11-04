@@ -143,6 +143,11 @@ func (a *Agent) eventsLoop(ctx context.Context, client agentv1.AgentServiceClien
 			if sendErr != nil {
 				return
 			}
+			if event.Type == "container" && event.Action == "start" {
+				if name := event.Actor.Attributes["name"]; name != "" && name != edgeName {
+					go a.reattachUpstream(ctx, name)
+				}
+			}
 			update := a.eventToUpdate(ctx, event)
 			if update != nil {
 				sendErr = stream.Send(update)

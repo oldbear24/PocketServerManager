@@ -422,6 +422,8 @@ type Volume struct {
 	Name   string            `json:"Name"`
 	Driver string            `json:"Driver"`
 	Labels map[string]string `json:"Labels"`
+	// Mountpoint is the volume's directory on the host, for the local driver.
+	Mountpoint string `json:"Mountpoint"`
 }
 
 // Volumes lists every volume.
