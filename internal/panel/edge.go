@@ -56,7 +56,8 @@ func (p *Panel) registerEdge() {
 
 	changed := func(e *core.RecordEvent) error {
 		hosts := []string{e.Record.GetString("host")}
-		if original := e.Record.Original(); original != nil && original.GetString("host") != hosts[0] {
+		// a record just created has a blank original
+		if original := e.Record.Original(); original != nil && original.GetString("host") != "" && original.GetString("host") != hosts[0] {
 			hosts = append(hosts, original.GetString("host"))
 		}
 		p.later.after(edgeSettle, func() {
@@ -76,6 +77,17 @@ func (p *Panel) registerEdge() {
 			id := e.Record.Id
 			p.later.after(edgeSettle, func() { p.applyEdgeLogged(id, false) })
 		}
+		return e.Next()
+	})
+
+	// whoever creates a certificate, it is installed nowhere yet
+	p.App.OnRecordCreate(schema.Certificates).BindFunc(func(e *core.RecordEvent) error {
+		e.Record.Set("installed", nil)
+		return e.Next()
+	})
+	// whoever removes a certificate, the edges stop using it and lose its files
+	p.App.OnRecordAfterDeleteSuccess(schema.Certificates).BindFunc(func(e *core.RecordEvent) error {
+		p.certificateRemoved(e.Record)
 		return e.Next()
 	})
 
@@ -210,6 +222,10 @@ func (p *Panel) certificates(app core.App) ([]certificateRecord, error) {
 	}
 	out := make([]certificateRecord, 0, len(records))
 	for _, record := range records {
+		// one without its key cannot be installed anywhere
+		if record.GetString("key_pem") == "" {
+			continue
+		}
 		var names []string
 		if err := json.Unmarshal([]byte(record.GetString("names")), &names); err != nil {
 			continue
@@ -395,14 +411,21 @@ func (p *Panel) applyEdge(hostID string, force bool, requester string) (*core.Re
 	if err != nil {
 		return nil, err
 	}
+	// the ones still waiting with another config are replaced by this one
+	for _, command := range open {
+		if command.GetString("status") == schema.CommandQueued && commandDigest(command) != digest {
+			if err := p.Commands.Cancel(command.Id, "replaced by a newer config of the edge"); err != nil {
+				p.Log.Warn("failed to cancel an older edge.apply", "command", command.Id, "error", err)
+			}
+		}
+	}
 	for _, command := range open {
 		if commandDigest(command) == digest && !force {
 			return nil, nil
 		}
 	}
-	// the ones still waiting are replaced by this one
 	for _, command := range open {
-		if command.GetString("status") == schema.CommandQueued {
+		if command.GetString("status") == schema.CommandQueued && commandDigest(command) == digest {
 			if err := p.Commands.Cancel(command.Id, "replaced by a newer config of the edge"); err != nil {
 				p.Log.Warn("failed to cancel an older edge.apply", "command", command.Id, "error", err)
 			}
@@ -575,8 +598,12 @@ func (p *Panel) setInstalled(cert *core.Record, hostID, file string) {
 }
 
 func (p *Panel) certInstallFinished(command *core.Record) {
-	cert, _ := p.certificateOf(command)
+	cert, id := p.certificateOf(command)
 	if cert == nil {
+		// removed while it was being installed: its files go again
+		if command.GetString("status") == schema.CommandSucceeded && id != "" {
+			p.queueCertRemove(command.GetString("host"), id, "")
+		}
 		return
 	}
 	if command.GetString("status") != schema.CommandSucceeded {
@@ -609,6 +636,10 @@ func (p *Panel) onEdgeStatus(hostID string) {
 	}
 	host, err := p.App.FindRecordById(schema.Hosts, hostID)
 	if err != nil {
+		return
+	}
+	// an agent without an edge cannot get one; the page says to update it
+	if capabilities := host.GetStringSlice("capabilities"); len(capabilities) > 0 && !slices.Contains(capabilities, "edge.apply") {
 		return
 	}
 	wanted, applied := host.GetString("edge_digest"), host.GetString("edge_applied_digest")
@@ -798,16 +829,34 @@ type parsedCertificate struct {
 // parseCertificate checks an uploaded chain and key: they belong together, the
 // certificate names hostnames and has not expired.
 func parseCertificate(chainPEM, keyPEM string) (*parsedCertificate, error) {
+	if strings.Contains(keyPEM, "ENCRYPTED") {
+		return nil, errors.New("the key is protected by a password: remove it first, for example with openssl pkey -in key.pem -out plain.pem")
+	}
 	pair, err := tls.X509KeyPair([]byte(chainPEM), []byte(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("the certificate and the key do not fit together: %w", err)
 	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return nil, err
+	links := make([]*x509.Certificate, 0, len(pair.Certificate))
+	for _, der := range pair.Certificate {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, cert)
 	}
+	leaf := links[0]
 	if time.Now().After(leaf.NotAfter) {
 		return nil, fmt.Errorf("the certificate expired on %s", leaf.NotAfter.UTC().Format("2006-01-02"))
+	}
+	// clients refuse a chain whose links do not sign each other, or one with an
+	// expired intermediate
+	for i := 1; i < len(links); i++ {
+		if err := links[i-1].CheckSignatureFrom(links[i]); err != nil {
+			return nil, fmt.Errorf("certificate %d of the chain did not sign certificate %d: put the certificate first, then each issuer in order", i+1, i)
+		}
+		if time.Now().After(links[i].NotAfter) {
+			return nil, fmt.Errorf("certificate %d of the chain (%s) expired on %s", i+1, links[i].Subject.CommonName, links[i].NotAfter.UTC().Format("2006-01-02"))
+		}
 	}
 
 	names := []string{}
@@ -917,35 +966,53 @@ func (p *Panel) applyEdgesCovering(names []string, requester string) {
 	}
 }
 
-// handleCertificateRemove takes a certificate off every edge and then removes
-// it: first a config without it, then its files.
+// handleCertificateRemove removes a certificate; the delete hook takes it off
+// the edges.
 func (p *Panel) handleCertificateRemove(e *core.RequestEvent) error {
 	cert, err := e.App.FindRecordById(schema.Certificates, e.Request.PathValue("id"))
 	if err != nil {
 		return e.NotFoundError("The certificate does not exist.", err)
 	}
-
-	installed := installedOf(cert)
-
 	if err := e.App.DeleteWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), cert); err != nil {
 		return e.BadRequestError("Failed to remove the certificate.", err)
 	}
+	return e.NoContent(http.StatusNoContent)
+}
 
-	requester := requesterOf(e)
-	for hostID := range installed {
-		if _, err := p.applyEdge(hostID, false, requester); err != nil {
-			p.Log.Error("failed to send the edge its config", "host", hostID, "error", err)
-		}
-		_, err := p.Commands.Create(context.Background(), commands.Options{
-			Host:      hostID,
-			Command:   &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: cert.Id}}},
-			Label:     "Remove a certificate from the edge",
-			Requester: requester,
-		})
-		if err != nil {
-			p.Log.Error("failed to queue the removal of a certificate", "host", hostID, "error", err)
+// certificateRemoved takes a removed certificate off every edge: first a config
+// without it, then its files, on the hosts it was installed on and those where
+// an install of it is under way.
+func (p *Panel) certificateRemoved(cert *core.Record) {
+	hosts := map[string]bool{}
+	for host := range installedOf(cert) {
+		hosts[host] = true
+	}
+	pending, err := p.App.FindRecordsByFilter(schema.Commands,
+		"type='cert.install' && (status='queued' || status='dispatched' || status='running')", "", 0, 0)
+	if err == nil {
+		for _, command := range pending {
+			if _, id := p.certificateOf(command); id == cert.Id {
+				hosts[command.GetString("host")] = true
+			}
 		}
 	}
 
-	return e.NoContent(http.StatusNoContent)
+	for host := range hosts {
+		if _, err := p.applyEdge(host, false, ""); err != nil {
+			p.Log.Error("failed to send the edge its config", "host", host, "error", err)
+		}
+		p.queueCertRemove(host, cert.Id, "")
+	}
+}
+
+func (p *Panel) queueCertRemove(hostID, certificateID, requester string) {
+	_, err := p.Commands.Create(context.Background(), commands.Options{
+		Host:      hostID,
+		Command:   &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: certificateID}}},
+		Label:     "Remove a certificate from the edge",
+		Requester: requester,
+	})
+	if err != nil {
+		p.Log.Error("failed to queue the removal of a certificate", "host", hostID, "error", err)
+	}
 }

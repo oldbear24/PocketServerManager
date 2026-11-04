@@ -257,8 +257,13 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 // applyEdgeStatus stores what the agent says of its edge proxy; a heartbeat
 // without one comes from a server that runs none.
 func applyEdgeStatus(host *core.Record, status *agentv1.EdgeStatus) {
-	host.Set("edge_applied_digest", status.GetDigest())
-	host.Set("edge_applied_revision", status.GetRevision())
+	// a heartbeat the agent built before an apply finished must not undo what the
+	// finished apply recorded
+	stale := status != nil && status.GetDigest() != "" && status.GetRevision() < int64(host.GetInt("edge_applied_revision"))
+	if !stale {
+		host.Set("edge_applied_digest", status.GetDigest())
+		host.Set("edge_applied_revision", status.GetRevision())
+	}
 	host.Set("edge_running", status.GetRunning())
 	host.Set("edge_error", status.GetError())
 	host.Set("edge_requests_per_s", status.GetRequestsPerS())

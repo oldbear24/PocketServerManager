@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 
+	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
@@ -395,4 +396,66 @@ func TestAnApplyThatNeverArrivedIsSentAgain(t *testing.T) {
 	h.waitFor("the config to be tried again after the reconnect", func() bool {
 		return h.edgeApplies(host.Id) > refused && h.host(host.Id).GetString("edge_applied_digest") == h.host(host.Id).GetString("edge_digest")
 	})
+}
+
+// TestACertificateRemovedAnyWayLeavesTheEdge: deleting the record from the
+// dashboard, not through the panel's route, takes it off the edge all the same,
+// and the audit cannot bring back a certificate without its key.
+func TestACertificateRemovedAnyWayLeavesTheEdge(t *testing.T) {
+	h := newHarness(t)
+	h.docker.AddContainer("web", "nginx:1", nil)
+	_, host, _ := h.managedEdge("dashboard")
+	h.waitInSync(host.Id)
+
+	_, admin := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
+	_, superuser := testutil.NewSuperuser(t, h.app)
+	if status, response := addDomain(t, h, admin, fmt.Sprintf(`{"hostname":"app.example.com","host":%q,"target_kind":"container","container":"web","port":80}`, host.Id)); status != http.StatusOK {
+		t.Fatalf("%d %s", status, response)
+	}
+	chain, key := selfSigned(t, "app.example.com")
+	raw, _ := json.Marshal(map[string]string{"chain_pem": string(chain), "key_pem": string(key)})
+	status, response := testutil.Do(t, h.handler, testutil.Request{Method: "POST", URL: "/api/pc/certificates", Token: admin, Body: string(raw)})
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, response)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(response), &created)
+	h.waitFor("HTTPS", func() bool { return h.edgeState(host.Id, admin).Routes[0].TLS == "expiring" })
+
+	// the audit's revert of the upload is refused
+	entry, err := h.app.FindFirstRecordByFilter(schema.AuditLog, "collection='certificates' && action='create'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := testutil.Do(t, h.handler, testutil.Request{Method: "POST", URL: "/api/pc/audit/" + entry.Id + "/revert", Token: admin}); status == http.StatusOK {
+		t.Error("the upload of a certificate was reverted")
+	}
+
+	if status, _ := testutil.Do(t, h.handler, testutil.Request{Method: "DELETE", URL: "/api/collections/certificates/records/" + created.ID, Token: superuser}); status != http.StatusNoContent {
+		t.Fatalf("a superuser's delete: %d", status)
+	}
+	h.waitFor("the edge to drop the certificate", func() bool {
+		removed, err := h.app.FindRecordsByFilter(schema.Commands, "host={:h} && type='cert.remove' && status='succeeded'", "", 0, 0, dbx.Params{"h": host.Id})
+		return err == nil && len(removed) == 1 && h.edgeState(host.Id, admin).Routes[0].TLS == "none"
+	})
+}
+
+// TestAnInstallUnderWayIsUndoneWithItsCertificate: the certificate goes while its
+// install waits for an offline server; that server gets the removal too.
+func TestAnInstallUnderWayIsUndoneWithItsCertificate(t *testing.T) {
+	h := newHarness(t)
+	host := testutil.NewHost(t, h.app, "offline-edge")
+	cert := h.storeCertificate(selfSigned(t, "app.example.com"))
+
+	install := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertInstall{CertInstall: &agentv1.CertInstall{CertificateId: cert.Id}}})
+	if err := h.app.Delete(cert); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor("the removal to be queued", func() bool {
+		removals, err := h.app.FindRecordsByFilter(schema.Commands, "host={:h} && type='cert.remove'", "", 0, 0, dbx.Params{"h": host.Id})
+		return err == nil && len(removals) == 1 && strings.Contains(fmt.Sprint(removals[0].Get("payload")), cert.Id)
+	})
+	_ = install
 }
