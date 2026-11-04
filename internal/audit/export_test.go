@@ -51,3 +51,16 @@ func Rehash(app core.App, seq int) error {
 		Bind(dbx.Params{"seq": last, "hash": lastHash}).Execute()
 	return err
 }
+
+var (
+	WithKeyless   = withKeyless
+	KeylessRanges = keylessRanges
+)
+
+// ForgetSealMarks forgets how far each log was sealed, as a restart of the
+// panel does: someone with the database edits it while the panel is stopped.
+func ForgetSealMarks() {
+	marks.Lock()
+	defer marks.Unlock()
+	marks.seq = map[string]int{}
+}

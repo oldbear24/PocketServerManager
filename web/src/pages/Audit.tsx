@@ -304,6 +304,7 @@ function Filters({
               "cert_revoked",
               "terminal_session",
               "integrity_broken",
+              "chain_sealed",
             ]
         ).map((action) => (
           <option key={action} value={action}>

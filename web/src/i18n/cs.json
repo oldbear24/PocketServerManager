@@ -411,6 +411,7 @@
       "adminer_session": "Relace Admineru",
       "payload_capture": "Zachycení obsahu",
       "integrity_broken": "Porušená integrita",
+      "chain_sealed": "Zapečetění logu",
       "terminal_session_end": "Terminál zavřen"
     },
     "verb": {
@@ -431,6 +432,7 @@
       "adminer_session": "otevřel Adminer na",
       "payload_capture": "spustil zachycení obsahu na",
       "integrity_broken": "našel porušený řetězec v",
+      "chain_sealed": "zapečetil neověřené záznamy v",
       "terminal_session_end": "zavřel(a) terminál na"
     },
     "source": {
@@ -441,7 +443,8 @@
       "agent": "Agent",
       "acme": "ACME",
       "migration": "Migrace",
-      "panel": "Systém"
+      "panel": "Systém",
+      "command": "Příkazová řádka"
     },
     "actorKind": {
       "user": "uživatel",

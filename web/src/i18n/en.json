@@ -385,6 +385,7 @@
       "adminer_session": "Adminer session",
       "payload_capture": "Payload capture",
       "integrity_broken": "Integrity broken",
+      "chain_sealed": "Log sealed",
       "terminal_session_end": "Terminal closed"
     },
     "verb": {
@@ -405,6 +406,7 @@
       "adminer_session": "opened Adminer on",
       "payload_capture": "started a payload capture on",
       "integrity_broken": "found a broken chain in",
+      "chain_sealed": "sealed the unproven entries of",
       "terminal_session_end": "closed a terminal on"
     },
     "source": {
@@ -415,7 +417,8 @@
       "agent": "Agent",
       "acme": "ACME",
       "migration": "Migration",
-      "panel": "System"
+      "panel": "System",
+      "command": "Command line"
     },
     "actorKind": {
       "user": "user",

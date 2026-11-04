@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 
@@ -30,9 +31,10 @@ import (
 // without the key, so that nobody can pass off entries of their own as such
 // without it showing.
 //
-// A head that was never sealed is trusted only by the process that created it:
-// the one that ran the migration or wrote the first entry. A head whose seal
-// was removed is never trusted again.
+// Only an empty log is trusted unseen: the head is created with the first
+// entry, sealed when the key is there. A head that was never sealed, because
+// the log predates the seal or was only ever written without the key, or whose
+// seal was removed, is sealed only on request, by `panel audit seal` (Seal).
 const HeadTable = "_pc_audit_head"
 
 // SealPurpose names the key derived from the master key for the seal.
@@ -54,39 +56,34 @@ type head struct {
 	Keyless string `db:"keyless"`
 }
 
-// trustedHeads holds the data directories whose head this process created and
-// has not sealed yet.
-var trustedHeads sync.Map
+const createHeadTable = `CREATE TABLE IF NOT EXISTS {{` + HeadTable + `}} (
+	[[id]] INTEGER PRIMARY KEY CHECK ([[id]] = 1),
+	[[seq]] INTEGER NOT NULL,
+	[[hash]] TEXT NOT NULL,
+	[[mac]] TEXT NOT NULL DEFAULT '',
+	[[sealed_seq]] INTEGER NOT NULL DEFAULT 0,
+	[[sealed_hash]] TEXT NOT NULL DEFAULT '',
+	[[sealed_mac]] TEXT NOT NULL DEFAULT '',
+	[[keyless]] TEXT NOT NULL DEFAULT '[]'
+)`
 
-func trustHead(app core.App)        { trustedHeads.Store(app.DataDir(), true) }
-func untrustHead(app core.App)      { trustedHeads.Delete(app.DataDir()) }
-func headTrusted(app core.App) bool { _, ok := trustedHeads.Load(app.DataDir()); return ok }
-
-// CreateHeadTable creates the table, starting from the newest entry, unsealed:
-// the first write with the master key seals it.
+// CreateHeadTable is the migration of the head. An empty log gets its head with
+// its first entry. A log that already has entries gets a head at the newest
+// one, unsealed: nothing proves those entries, so only `panel audit seal`
+// seals it, and the check reports it until then. Running it again creates no
+// trust either.
 func CreateHeadTable(app core.App) error {
-	_, err := app.DB().NewQuery(`CREATE TABLE IF NOT EXISTS {{` + HeadTable + `}} (
-		[[id]] INTEGER PRIMARY KEY CHECK ([[id]] = 1),
-		[[seq]] INTEGER NOT NULL,
-		[[hash]] TEXT NOT NULL,
-		[[mac]] TEXT NOT NULL DEFAULT '',
-		[[sealed_seq]] INTEGER NOT NULL DEFAULT 0,
-		[[sealed_hash]] TEXT NOT NULL DEFAULT '',
-		[[sealed_mac]] TEXT NOT NULL DEFAULT '',
-		[[keyless]] TEXT NOT NULL DEFAULT '[]'
-	)`).Execute()
-	if err != nil {
+	lastSeq, _, err := tail(app.DB())
+	if err != nil || lastSeq == 0 {
 		return err
 	}
 
+	if _, err := app.DB().NewQuery(createHeadTable).Execute(); err != nil {
+		return err
+	}
 	_, err = app.DB().NewQuery(`INSERT OR IGNORE INTO {{` + HeadTable + `}} ([[id]], [[seq]], [[hash]])
 		SELECT 1, [[seq]], [[hash]] FROM {{` + schema.AuditLog + `}} ORDER BY [[seq]] DESC LIMIT 1`).Execute()
-	if err != nil {
-		return err
-	}
-
-	trustHead(app)
-	return nil
+	return err
 }
 
 // DropHeadTable removes the table.
@@ -163,11 +160,25 @@ func withKeyless(text string, from, to int) (string, error) {
 	} else {
 		ranges = append(ranges, [2]int{from, to})
 	}
-	if len(ranges) > maxKeylessRanges {
-		ranges = ranges[len(ranges)-maxKeylessRanges:]
+	for len(ranges) > maxKeylessRanges {
+		ranges = mergeClosest(ranges)
 	}
 	raw, err := json.Marshal(ranges)
 	return string(raw), err
+}
+
+// mergeClosest merges the two neighbouring ranges with the smallest gap. The
+// list then names a few entries written with the key as well, which errs on the
+// safe side; dropping a range would hide entries written without it.
+func mergeClosest(ranges [][2]int) [][2]int {
+	closest := 0
+	for i := 1; i < len(ranges)-1; i++ {
+		if ranges[i+1][0]-ranges[i][1] < ranges[closest+1][0]-ranges[closest][1] {
+			closest = i
+		}
+	}
+	ranges[closest][1] = ranges[closest+1][1]
+	return append(ranges[:closest+1], ranges[closest+2:]...)
 }
 
 // tail returns the seq and hash of the newest entry, or zero values for an empty log.
@@ -197,26 +208,41 @@ func hashAt(db dbx.Builder, seq int) (string, bool, error) {
 
 // intact reports whether the stored head describes the entry the chain goes on
 // from, so that sealing a new head does not cover up a change made before it.
-// trusted says that this process created the head and may seal it unseen.
-func (h head) intact(db dbx.Builder, key []byte, trusted, found bool, lastSeq int, lastHash string) (bool, error) {
+// Only an empty log without a head table is intact without a seal.
+func (h head) intact(db dbx.Builder, key []byte, mark, lastSeq int, lastHash string, tableFound, found bool) (bool, error) {
 	if !found {
-		// only an empty log has no head yet
-		return lastSeq == 0, nil
+		// an empty log has no head table yet; a table without its row lost it
+		return !tableFound && lastSeq == 0 && mark == 0, nil
 	}
-	if h.Seq != lastSeq || h.Hash != lastHash {
+	if h.Seq != lastSeq || h.Hash != lastHash || h.provenSeq() < mark {
 		return false, nil
 	}
 	if h.MAC != "" {
 		return sealed(key, h.Seq, h.Hash, h.Keyless, h.MAC), nil
 	}
 	if h.SealedSeq == 0 {
-		return trusted, nil
+		// never sealed, or its seal was removed
+		return false, nil
 	}
+	return h.sealedPointIntact(db, key)
+}
+
+// sealedPointIntact reports whether the last sealed point is sealed and the
+// entry it names is still the one that was sealed.
+func (h head) sealedPointIntact(db dbx.Builder, key []byte) (bool, error) {
 	if !sealed(key, h.SealedSeq, h.SealedHash, h.Keyless, h.SealedMAC) {
 		return false, nil
 	}
 	stored, ok, err := hashAt(db, h.SealedSeq)
 	return ok && stored == h.SealedHash, err
+}
+
+// provenSeq is the newest entry the seal vouches for, if it is valid.
+func (h head) provenSeq() int {
+	if h.MAC != "" {
+		return h.Seq
+	}
+	return h.SealedSeq
 }
 
 // sealAt seals the head at seq and hash. Entries since the last sealed point,
@@ -240,19 +266,50 @@ func (h head) sealAt(key []byte, seq int, hash string, keylessTo int) (head, err
 // next is the head after an entry was appended at seq with hash. With the key
 // and an intact head it is sealed; otherwise it moves on unsealed and keeps the
 // last sealed point, so that a check still finds whatever broke it.
-func (h head) next(db dbx.Builder, key []byte, trusted, found bool, lastSeq int, lastHash string, seq int, hash string) (head, error) {
+func (h head) next(db dbx.Builder, key []byte, mark, lastSeq int, lastHash string, tableFound, found bool, seq int, hash string) (head, error) {
 	following := head{Seq: seq, Hash: hash, SealedSeq: h.SealedSeq, SealedHash: h.SealedHash, SealedMAC: h.SealedMAC, Keyless: h.Keyless}
 
 	if key == nil {
 		return following, nil
 	}
 
-	ok, err := h.intact(db, key, trusted, found, lastSeq, lastHash)
+	ok, err := h.intact(db, key, mark, lastSeq, lastHash, tableFound, found)
 	if err != nil || !ok {
 		return following, err
 	}
 
 	return h.sealAt(key, seq, hash, lastSeq)
+}
+
+// marks holds, per data directory, the newest entry this process proved sealed.
+// A check that finds the log, or its seal, ending before it reports that an
+// older copy was put back, which the seal alone cannot tell.
+var marks = struct {
+	sync.Mutex
+	seq map[string]int
+}{seq: map[string]int{}}
+
+func sealMark(app core.App) int {
+	marks.Lock()
+	defer marks.Unlock()
+	return marks.seq[app.DataDir()]
+}
+
+// raiseSealMark is called only after the seal it reports was committed, so that
+// a check that starts later reads at least as far.
+func raiseSealMark(app core.App, seq int) {
+	marks.Lock()
+	defer marks.Unlock()
+	marks.seq[app.DataDir()] = max(marks.seq[app.DataDir()], seq)
+}
+
+func headTableExists(db dbx.Builder) (bool, error) {
+	row := struct {
+		N int `db:"n"`
+	}{}
+	err := db.NewQuery(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = {:name}`).
+		Bind(dbx.Params{"name": HeadTable}).One(&row)
+	return row.N > 0, err
 }
 
 // SealHead seals a head that commands without the master key left unsealed. The
@@ -263,7 +320,8 @@ func (w *Writer) SealHead() error {
 		return nil
 	}
 
-	return w.app.RunInTransaction(func(tx core.App) error {
+	sealedSeq := 0
+	err := w.app.RunInTransaction(func(tx core.App) error {
 		if !tx.HasTable(HeadTable) {
 			return nil
 		}
@@ -277,7 +335,7 @@ func (w *Writer) SealHead() error {
 			return err
 		}
 
-		ok, err := h.intact(tx.DB(), key, headTrusted(tx), found, lastSeq, lastHash)
+		ok, err := h.intact(tx.DB(), key, sealMark(tx), lastSeq, lastHash, true, found)
 		if err != nil || !ok {
 			// a broken head stays as it is, for the check to report
 			return err
@@ -290,9 +348,110 @@ func (w *Writer) SealHead() error {
 		if err := writeHead(tx.DB(), sealedHead); err != nil {
 			return err
 		}
-		untrustHead(tx)
+		sealedSeq = sealedHead.Seq
 		return nil
 	})
+	if err == nil {
+		raiseSealMark(w.app, sealedSeq)
+	}
+	return err
+}
+
+// SealResult names the entries Seal listed as written without the key.
+type SealResult struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
+// Seal seals a head that nothing proves: a log that predates the seal or was
+// only written without the master key, or one whose seal was removed. It is
+// what `panel audit seal` runs, at the owner's request, as it vouches for what
+// it cannot check. It refuses a chain whose hashes do not match. Every entry
+// after the last valid sealed point (all of them, if there is none) is listed
+// as written without the key, and the seal itself is recorded as a security
+// event, so the audit page shows what was taken on trust. An intact seal is
+// left as it is.
+func (w *Writer) Seal(actor Actor) (SealResult, error) {
+	key := w.sealKey()
+	if key == nil {
+		return SealResult{}, errors.New("sealing the audit log needs the master key")
+	}
+	collection, err := w.app.FindCachedCollectionByNameOrId(schema.AuditLog)
+	if err != nil {
+		return SealResult{}, err
+	}
+
+	var result SealResult
+	err = w.app.RunInTransaction(func(tx core.App) error {
+		mark := sealMark(tx)
+		check, err := verifyIn(tx.DB(), collection, nil, mark)
+		if err != nil {
+			return err
+		}
+		if !check.OK {
+			return fmt.Errorf("the audit log is not sealed: entry %d does not check (%s)", check.BadSeq, check.Reason)
+		}
+		if check.LastSeq == 0 {
+			return nil
+		}
+		if keyed, err := verifyIn(tx.DB(), collection, key, mark); err != nil || keyed.OK && keyed.Unsealed == 0 {
+			// sealed already
+			return err
+		}
+
+		fromSeq, _, _, err := chainStart(tx.DB())
+		if err != nil {
+			return err
+		}
+		lastSeq, lastHash, err := tail(tx.DB())
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.DB().NewQuery(createHeadTable).Execute(); err != nil {
+			return err
+		}
+		h, found, err := readHead(tx.DB())
+		if err != nil {
+			return err
+		}
+		keyless, from := "[]", fromSeq
+		if found && h.SealedSeq > 0 && h.SealedSeq >= mark {
+			ok, err := h.sealedPointIntact(tx.DB(), key)
+			if err != nil {
+				return err
+			}
+			if ok {
+				keyless, from = h.Keyless, h.SealedSeq+1
+			}
+		}
+		if keyless, err = withKeyless(keyless, from, lastSeq); err != nil {
+			return err
+		}
+
+		mac := seal(key, lastSeq, lastHash, keyless)
+		err = writeHead(tx.DB(), head{Seq: lastSeq, Hash: lastHash, MAC: mac, SealedSeq: lastSeq, SealedHash: lastHash, SealedMAC: mac, Keyless: keyless})
+		if err != nil {
+			return err
+		}
+		result = SealResult{From: from, To: lastSeq}
+
+		// sealed in turn, as the head before it now is
+		return w.append(tx, entry{
+			Category:    CategorySecurity,
+			Action:      ActionChainSealed,
+			Actor:       actor,
+			RecordLabel: schema.AuditLog,
+			Snapshot:    map[string]any{"from": from, "to": lastSeq},
+		})
+	})
+	if err != nil {
+		return SealResult{}, err
+	}
+	if result.To > 0 {
+		raiseSealMark(w.app, result.To+1)
+	}
+	return result, nil
 }
 
 func (w *Writer) sealKey() []byte {

@@ -102,6 +102,8 @@ func Verify(app core.App, key []byte) (VerifyResult, error) {
 	if !ok {
 		return VerifyResult{}, errors.New("the database does not support read transactions")
 	}
+	// read before the snapshot starts: whatever raised the mark was committed
+	mark := sealMark(app)
 	tx, err := db.Begin()
 	if err != nil {
 		return VerifyResult{}, err
@@ -109,10 +111,16 @@ func Verify(app core.App, key []byte) (VerifyResult, error) {
 	// it only reads
 	defer func() { _ = tx.Rollback() }()
 
-	return verifyIn(tx, collection, key)
+	result, err := verifyIn(tx, collection, key, mark)
+	if err == nil && result.OK && result.Sealed {
+		raiseSealMark(app, result.LastSeq-result.Unsealed)
+	}
+	return result, err
 }
 
-func verifyIn(tx *dbx.Tx, collection *core.Collection, key []byte) (VerifyResult, error) {
+// verifyIn checks the chain as db sees it. mark is the newest entry this process
+// saw sealed.
+func verifyIn(tx dbx.Builder, collection *core.Collection, key []byte, mark int) (VerifyResult, error) {
 	fromSeq, prevHash, checkpointSeq, err := chainStart(tx)
 	if err != nil {
 		return VerifyResult{}, err
@@ -155,7 +163,10 @@ func verifyIn(tx *dbx.Tx, collection *core.Collection, key []byte) (VerifyResult
 			return result, err
 		}
 		if len(rows) == 0 {
-			return checkHead(tx, key, result, fromSeq, prevHash)
+			if broken, err := duplicateSeq(tx, result); err != nil || !broken.OK {
+				return broken, err
+			}
+			return checkHead(tx, key, result, chainPoint{fromSeq, checkpointSeq, mark}, prevHash)
 		}
 
 		for _, row := range rows {
@@ -208,15 +219,59 @@ func rowValues(collection *core.Collection, row dbx.NullStringMap) map[string]an
 	return values
 }
 
+// duplicateSeq looks for entries the walk skipped: with the unique index on seq
+// removed, a second entry with the seq of another one is not read by a walk
+// that pages by seq.
+func duplicateSeq(db dbx.Builder, result VerifyResult) (VerifyResult, error) {
+	row := struct {
+		N int `db:"n"`
+	}{}
+	if err := db.NewQuery(`SELECT count(*) AS n FROM {{` + schema.AuditLog + `}}`).One(&row); err != nil {
+		return result, err
+	}
+	if row.N == result.Checked {
+		return result, nil
+	}
+
+	duplicate := struct {
+		Seq int `db:"seq"`
+	}{}
+	err := db.NewQuery(`SELECT [[seq]] FROM {{` + schema.AuditLog + `}} GROUP BY [[seq]] HAVING count(*) > 1 ORDER BY [[seq]] LIMIT 1`).One(&duplicate)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	return result.fail(duplicate.Seq, fmt.Sprintf("the log holds %d entries, but the chain only %d: entries share a seq", row.N, result.Checked)), nil
+}
+
+// chainPoint is where the walk started and how far the log was sealed before.
+type chainPoint struct {
+	fromSeq       int
+	checkpointSeq int
+	// mark is the newest entry this process saw sealed
+	mark int
+}
+
 // checkHead compares the head of the chain with the newest entry the walk
 // reached, whose hash is lastHash, and proves it with the seal key.
-func checkHead(db dbx.Builder, key []byte, result VerifyResult, fromSeq int, lastHash string) (VerifyResult, error) {
-	h, found, err := readHead(db)
+func checkHead(db dbx.Builder, key []byte, result VerifyResult, at chainPoint, lastHash string) (VerifyResult, error) {
+	tableFound, err := headTableExists(db)
 	if err != nil {
 		return result, err
 	}
+	var h head
+	found := false
+	if tableFound {
+		if h, found, err = readHead(db); err != nil {
+			return result, err
+		}
+	}
 
 	switch {
+	case !found && result.LastSeq == 0 && at.mark > 0:
+		return result.fail(1, fmt.Sprintf("the log is empty, but it held %d entries when it was checked before: it was wiped", at.mark)), nil
+	case !found && result.LastSeq == 0 && tableFound:
+		// the head is created with the first entry
+		return result.fail(1, "the log is empty, but it had a head: it was wiped"), nil
 	case !found && result.LastSeq == 0:
 		// an empty log
 		return result, nil
@@ -226,6 +281,8 @@ func checkHead(db dbx.Builder, key []byte, result VerifyResult, fromSeq int, las
 		return result.fail(result.LastSeq+1, fmt.Sprintf("entry %d is missing", result.LastSeq+1)), nil
 	case h.Seq != result.LastSeq || h.Hash != lastHash:
 		return result.fail(result.LastSeq, fmt.Sprintf("the head of the chain does not match entry %d", result.LastSeq)), nil
+	case result.LastSeq < at.mark:
+		return result.fail(result.LastSeq+1, fmt.Sprintf("the log ends at entry %d, but it was sealed up to %d before: it was rolled back", result.LastSeq, at.mark)), nil
 	}
 
 	if key == nil {
@@ -246,7 +303,7 @@ func checkHead(db dbx.Builder, key []byte, result VerifyResult, fromSeq int, las
 	case h.SealedSeq == 0:
 		// only the process that created a head trusts it before its first seal,
 		// and it seals it right away; a seal that is gone was removed
-		return result.fail(h.Seq, "the chain has no seal: it was removed, or the log was only ever written without the master key"), nil
+		return result.fail(h.Seq, "the chain has no seal: it was removed, or the log predates the seal or was only written without the master key; then `panel audit seal` seals it"), nil
 	default:
 		// entries written without the master key since the last sealed point
 		if !sealed(key, h.SealedSeq, h.SealedHash, h.Keyless, h.SealedMAC) {
@@ -262,15 +319,34 @@ func checkHead(db dbx.Builder, key []byte, result VerifyResult, fromSeq int, las
 		result.Unsealed = result.LastSeq - h.SealedSeq
 	}
 
+	if proven := h.provenSeq(); proven < at.mark {
+		return result.fail(proven+1, fmt.Sprintf("the seal ends at entry %d, but the log was sealed up to %d before: an older head was put back", proven, at.mark)), nil
+	}
+
+	// only retention writes checkpoints, and only with the key; one written
+	// without it moves the start of the chain past entries that were sealed
+	if at.checkpointSeq > h.provenSeq() || inRanges(keyless, at.checkpointSeq) {
+		return result.fail(at.checkpointSeq, "the retention checkpoint was written without the master key"), nil
+	}
+
 	result.Sealed = true
 	for _, r := range keyless {
 		// retention may have removed some of them
-		if r[1] >= fromSeq {
-			result.Keyless = append(result.Keyless, [2]int{max(r[0], fromSeq), r[1]})
+		if r[1] >= at.fromSeq {
+			result.Keyless = append(result.Keyless, [2]int{max(r[0], at.fromSeq), r[1]})
 		}
 	}
 
 	return result, nil
+}
+
+func inRanges(ranges [][2]int, seq int) bool {
+	for _, r := range ranges {
+		if r[0] <= seq && seq <= r[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // chainStart returns where the chain begins: the first entry if nothing has been

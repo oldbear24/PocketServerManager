@@ -27,6 +27,8 @@ const (
 	SourceScheduler = "scheduler"
 	SourceAgent     = "agent"
 	SourcePanel     = "panel"
+	// SourceCommand is a panel command run on the command line.
+	SourceCommand = "command"
 )
 
 const (

@@ -25,6 +25,9 @@ const (
 	ActionAdminerSession     = "adminer_session"
 	ActionPayloadCapture     = "payload_capture"
 	ActionIntegrityBroken    = "integrity_broken"
+	// ActionChainSealed records `panel audit seal`, which vouches for entries
+	// nothing proved.
+	ActionChainSealed = "chain_sealed"
 )
 
 var sensitiveSetting = regexp.MustCompile(`(?i)password|secret|token|key`)

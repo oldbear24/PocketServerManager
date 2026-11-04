@@ -350,31 +350,27 @@ func (w *Writer) append(tx core.App, e entry) error {
 		return err
 	}
 
-	// the head moves in the same transaction as the entry; the migrations before
-	// the one that creates its table write entries too
-	if !tx.HasTable(HeadTable) {
-		return nil
+	// the head moves in the same transaction as the entry. The first entry of a
+	// log creates its table; a log written before the table existed gets it from
+	// its migration
+	tableFound := tx.HasTable(HeadTable)
+	if !tableFound {
+		if last.Seq > 0 {
+			return nil
+		}
+		if _, err := tx.DB().NewQuery(createHeadTable).Execute(); err != nil {
+			return err
+		}
 	}
 	current, found, err := readHead(tx.DB())
 	if err != nil {
 		return err
 	}
-	trusted := headTrusted(tx) || !found && last.Seq == 0
-	following, err := current.next(tx.DB(), w.sealKey(), trusted, found, last.Seq, last.Hash, last.Seq+1, hash)
+	following, err := current.next(tx.DB(), w.sealKey(), sealMark(tx), last.Seq, last.Hash, tableFound, found, last.Seq+1, hash)
 	if err != nil {
 		return err
 	}
-	if err := writeHead(tx.DB(), following); err != nil {
-		return err
-	}
-	if following.MAC != "" {
-		untrustHead(tx)
-	} else if !found {
-		// the first entry of a new log, written without the key: the head
-		// stays trusted for the rest of this process
-		trustHead(tx)
-	}
-	return nil
+	return writeHead(tx.DB(), following)
 }
 
 // Security records a security event outside of any record change.
