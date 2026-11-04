@@ -59,6 +59,15 @@ export type DbDump = RecordModel & {
   expires_at: string;
 };
 
+/** A server on an application's database network. */
+export type DbNetwork = RecordModel & {
+  server: string;
+  name: string;
+  stack: string;
+  /** The names of the application's old database service, which the server answers to. */
+  aliases: string[] | null;
+};
+
 /** A move of databases from one server into a shared one. */
 export type DbMove = RecordModel & {
   host: string;
@@ -127,6 +136,45 @@ export function serverLabel(server: DbServer): string {
   const label = `${engineLabel(server.engine)}${version ? ` ${version}` : ""}`;
   const extensions = server.extensions ?? [];
   return extensions.length ? `${label} + ${extensions.join(", ")}` : label;
+}
+
+/** The major version of a server, from what it said or from its image tag. */
+export const majorOf = (server: DbServer) =>
+  Number.parseInt(server.version || imageTag(server.image), 10) || 0;
+
+/**
+ * The release series of a server, as [major, minor]: PostgreSQL's minor releases
+ * share one format, while MariaDB's minor numbers are releases of their own.
+ */
+export function seriesOf(server: DbServer): [number, number] {
+  const [major, minor] = (server.version || imageTag(server.image))
+    .replace(/^pg/, "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10) || 0);
+  return [major ?? 0, server.engine === "mariadb" ? (minor ?? 0) : 0];
+}
+
+/**
+ * The shared servers a server's databases could move to: on its host, of its
+ * engine and not of an older series, as a dump does not restore into an older server.
+ */
+export function moveTargets(server: DbServer, servers: DbServer[]): DbServer[] {
+  if ((server.extensions ?? []).length > 0) {
+    return [];
+  }
+  const [major, minor] = seriesOf(server);
+  return servers.filter((other) => {
+    const [otherMajor, otherMinor] = seriesOf(other);
+    return (
+      other.id !== server.id &&
+      other.kind === "shared" &&
+      other.status === "ready" &&
+      other.host === server.host &&
+      other.engine === server.engine &&
+      major > 0 &&
+      (otherMajor > major || (otherMajor === major && otherMinor >= minor))
+    );
+  });
 }
 
 export const databaseNamePattern = /^[a-z][a-z0-9_]{0,62}$/;

@@ -30,7 +30,8 @@ import {
   engineLabel,
   engines,
   envSnippet,
-  imageTag,
+  majorOf,
+  moveTargets,
   serverLabel,
   serverNamePattern,
   type Database,
@@ -38,6 +39,7 @@ import {
   type DbDump,
   type DbEngine,
   type DbMove,
+  type DbNetwork,
   type DbServer,
   type DbUser,
 } from "../lib/databases";
@@ -77,33 +79,29 @@ function useCandidates(version: string) {
   return candidates;
 }
 
-const majorOf = (server: DbServer) =>
-  Number.parseInt(server.version || imageTag(server.image), 10) || 0;
-
-/**
- * The shared servers a server's databases could move to: on its host, of its
- * engine and not older, as a dump does not restore into an older server.
- */
-function moveTargets(server: DbServer, servers: DbServer[]): DbServer[] {
-  if ((server.extensions ?? []).length > 0) {
-    return [];
-  }
-  const own = majorOf(server);
-  return servers.filter(
-    (other) =>
-      other.id !== server.id &&
-      other.kind === "shared" &&
-      other.status === "ready" &&
-      other.host === server.host &&
-      other.engine === server.engine &&
-      own > 0 &&
-      majorOf(other) >= own,
-  );
-}
-
 /** Whether a dedicated server could move to a shared one on its host. */
 function moveTarget(server: DbServer, servers: DbServer[]): string {
   return server.kind === "dedicated" ? (moveTargets(server, servers)[0]?.name ?? "") : "";
+}
+
+/**
+ * The databases that move with one: all of its application's databases on the
+ * server when the application reaches them under the name of its old database
+ * service, as that name can lead to one server only.
+ */
+function movesTogether(
+  database: Database,
+  onServer: Database[],
+  link: DbNetwork | undefined,
+): { names: string[]; aliases: string[] } {
+  const aliases = link?.aliases ?? [];
+  if (aliases.length === 0 || !database.stack) {
+    return { names: [database.name], aliases };
+  }
+  return {
+    names: onServer.filter((item) => item.stack === database.stack).map((item) => item.name),
+    aliases,
+  };
 }
 
 /** The move of a server's databases that is under way, if any. */
@@ -142,6 +140,7 @@ export function DatabasesPage() {
   const databases = useLiveList<Database>("databases", { sort: "name", perPage: 500 });
   const users = useLiveList<DbUser>("db_users", { perPage: 500 });
   const moves = useLiveList<DbMove>("db_moves", { sort: "-created", perPage: 200 });
+  const links = useLiveList<DbNetwork>("db_networks", { perPage: 500 });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const stacks = useLiveList<Stack>("stacks", { sort: "name", perPage: 500 });
   const containers = useLiveList<Container>("containers", {
@@ -393,6 +392,13 @@ export function DatabasesPage() {
                     )
                   }
                   targets={moveTargets(current, servers.items)}
+                  together={movesTogether(
+                    database,
+                    serverDatabases,
+                    links.items.find(
+                      (link) => link.server === current.id && link.stack === database.stack,
+                    ),
+                  )}
                   moving={moves.items.some(
                     (move) =>
                       move.status === "moving" &&
@@ -739,6 +745,7 @@ function ConnectionCard({
   database,
   user,
   targets,
+  together,
   moving,
   stacks,
   canAct,
@@ -749,6 +756,8 @@ function ConnectionCard({
   user: DbUser | undefined;
   /** Shared servers this database could move to. */
   targets: DbServer[];
+  /** What moves with it, and the names its application reaches it under. */
+  together: { names: string[]; aliases: string[] };
   moving: boolean;
   stacks: Stack[];
   canAct: boolean;
@@ -938,10 +947,18 @@ function ConnectionCard({
                 onChange={setTarget}
               />
               <p className="muted">
-                {t("db.moveDatabaseText", {
-                  stack: stacks.find((item) => item.id === database.stack)?.name ?? "–",
-                  name: moveTo.name,
-                })}
+                {together.aliases.length > 0
+                  ? t("db.moveTogetherText", {
+                      stack: stacks.find((item) => item.id === database.stack)?.name ?? "–",
+                      name: moveTo.name,
+                      alias: together.aliases[0],
+                      databases: together.names.join(", "),
+                      count: together.names.length,
+                    })
+                  : t("db.moveDatabaseText", {
+                      stack: stacks.find((item) => item.id === database.stack)?.name ?? "–",
+                      name: moveTo.name,
+                    })}
               </p>
             </ConfirmDialog>
           )}

@@ -836,6 +836,8 @@
     "moveDatabase": "Move to another server",
     "moveDatabaseConfirm": "Move {{name}} to another server?",
     "moveDatabaseText": "For a newer version: {{stack}} stops while the database is dumped and restored on {{name}} with its user and password. Then its variables name {{name}} and it is deployed again.",
+    "moveTogetherText_one": "For a newer version: {{stack}} stops while {{databases}} is dumped and restored on {{name}} with its user and password. {{stack}} reaches it as {{alias}}, and {{name}} will answer to that name.",
+    "moveTogetherText_other": "For a newer version: {{stack}} reaches its databases here as {{alias}}, which can lead to one server only, so {{databases}} move to {{name}} together, with their users and passwords. {{stack}} stops meanwhile, and {{name}} will answer to that name.",
     "movingDatabase": "This database is moving to another server.",
     "keepText": "It needs {{extensions}}, which a shared server does not have, so it stays on its own.",
     "openStack": "Open its stack",
