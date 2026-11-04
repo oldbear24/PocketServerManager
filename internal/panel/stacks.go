@@ -493,6 +493,12 @@ func (r *deployRejection) Error() string {
 func (p *Panel) deployRevision(ctx context.Context, stack, revision *core.Record, pull bool, commandID, userID, label string) (*core.Record, error) {
 	compose, env := revision.GetString("compose_yaml"), revision.GetString("env")
 
+	// a deploy during a move would start what the move stopped, or recreate a
+	// server it works on
+	if move := p.moveHolding(stack); move != nil {
+		return nil, &deployRejection{Message: fmt.Sprintf("Databases of %s are moving to %s: deploy once that is done.", stack.GetString("name"), move.GetString("target_name"))}
+	}
+
 	result := stacks.Validate(ctx, stack.GetString("name"), compose, env, secretKeysOf(stack))
 	if !result.Valid {
 		return nil, &deployRejection{Message: "The Compose file has problems, so it was not deployed.", Result: &result}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
@@ -485,6 +486,9 @@ func (p *Panel) newDatabase(ctx context.Context, e *core.RequestEvent, server *c
 	if err := databases.ValidDatabaseName(engine, name); err != nil {
 		return nil, nil, err
 	}
+	if reason := p.claimedByMove(server, name, stackID); reason != "" {
+		return nil, nil, errors.New(reason)
+	}
 	if server.GetString("admin_password") == "" {
 		return nil, nil, errors.New("the panel does not know this server's credentials")
 	}
@@ -614,10 +618,18 @@ func (p *Panel) ownDatabaseFor(e *core.RequestEvent) (database, server *core.Rec
 	if err == nil && server.GetString("kind") == schema.DBServerDedicated {
 		return nil, nil, e.BadRequestError("This database belongs to its stack, which manages its users.", nil)
 	}
-	// a database that is moving changes in no other way meanwhile
+	// a database that is moving changes in no other way meanwhile, nor does one
+	// whose application is stopped for a move, as a change would deploy it
 	if err == nil {
-		if move := p.moveOfServer(server); move != nil && moveNames(move, database.GetString("name")) {
-			return nil, nil, e.Error(http.StatusConflict, "This database is moving to "+move.GetString("target_name")+".", nil)
+		for _, move := range p.movesOfServer(server) {
+			if moveNames(move, database.GetString("name")) {
+				return nil, nil, e.Error(http.StatusConflict, "This database is moving to "+move.GetString("target_name")+".", nil)
+			}
+		}
+		if stack, found := p.stackOf(database); found {
+			if move := p.moveHolding(stack); move != nil {
+				return nil, nil, e.Error(http.StatusConflict, "The databases of "+stack.GetString("name")+" are moving: change this one once that is done.", nil)
+			}
 		}
 	}
 	return database, server, err
@@ -642,6 +654,12 @@ func (p *Panel) handleConnectDatabase(e *core.RequestEvent) error {
 	}
 	if stack.GetString("source") == stackSourceDBServer {
 		return e.BadRequestError("A database server cannot be an application.", nil)
+	}
+	if move := p.moveHolding(stack); move != nil {
+		return e.Error(http.StatusConflict, "The databases of "+stack.GetString("name")+" are moving: connect this one once that is done.", nil)
+	}
+	if reason := p.aliasClash(stack.Id, server); reason != "" {
+		return e.BadRequestError(strings.ToUpper(reason[:1])+reason[1:]+".", nil)
 	}
 
 	ctx := e.Request.Context()
@@ -769,6 +787,15 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 		return err
 	}
 
+	// the user goes with its database, unless it owns others too, as an
+	// application's own user does when its databases moved in together
+	user := ""
+	if owner, err := p.ownerOf(server, database); err == nil {
+		if !slices.ContainsFunc(owner.GetStringSlice("databases"), func(id string) bool { return id != database.Id }) {
+			user = owner.GetString("name")
+		}
+	}
+
 	ctx := e.Request.Context()
 	database.Set("status", dbDropping)
 	if err := p.saveChanges(audit.WithActor(ctx, audit.ActorFromRequest(e)), database); err != nil {
@@ -784,7 +811,7 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 		Command: &agentv1.Command{Payload: &agentv1.Command_DbDatabaseDrop{DbDatabaseDrop: &agentv1.DbDatabaseDrop{
 			Connection: connectionOf(server),
 			Database:   database.GetString("name"),
-			User:       database.GetString("name"),
+			User:       user,
 		}}},
 	})
 	if err != nil {

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
+	"github.com/oldbear24/PocketServerManager/internal/stacks"
 )
 
 const (
@@ -109,27 +112,87 @@ func (p *Panel) openMoves(filter string, params dbx.Params) ([]*core.Record, err
 	return open, nil
 }
 
-// moveOfServer is a move under way into or out of a server, if any.
-func (p *Panel) moveOfServer(server *core.Record) *core.Record {
+// movesOfServer are the moves under way into or out of a server.
+func (p *Panel) movesOfServer(server *core.Record) []*core.Record {
 	moves, err := p.openMoves("target={:server} || (host={:host} && source_container={:container})",
 		dbx.Params{"server": server.Id, "host": server.GetString("host"), "container": server.GetString("container_ref")})
-	if err != nil || len(moves) == 0 {
-		return nil
-	}
-	return moves[0]
-}
-
-// moveOfStack is a move under way of a stack's databases, if any.
-func (p *Panel) moveOfStack(hostID, stackName string) *core.Record {
-	stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}", dbx.Params{"host": hostID, "name": stackName})
 	if err != nil {
 		return nil
 	}
-	moves, err := p.openMoves("stack={:stack}", dbx.Params{"stack": stack.Id})
-	if err != nil || len(moves) == 0 {
-		return nil
+	return moves
+}
+
+// moveOfServer is a move under way into or out of a server, if any.
+func (p *Panel) moveOfServer(server *core.Record) *core.Record {
+	if moves := p.movesOfServer(server); len(moves) > 0 {
+		return moves[0]
 	}
-	return moves[0]
+	return nil
+}
+
+// moveHolding is the move under way that a stack waits for, if any: one of its
+// own databases, or, for a shared server's own stack, one into or out of it.
+func (p *Panel) moveHolding(stack *core.Record) *core.Record {
+	if moves, err := p.openMoves("stack={:stack}", dbx.Params{"stack": stack.Id}); err == nil && len(moves) > 0 {
+		return moves[0]
+	}
+	if stack.GetString("source") == stackSourceDBServer {
+		if server, err := p.App.FindFirstRecordByFilter(schema.DBServers, "stack={:stack}", dbx.Params{"stack": stack.Id}); err == nil {
+			return p.moveOfServer(server)
+		}
+	}
+	return nil
+}
+
+// aliasClash says why a stack cannot reach a shared server, if it reaches another
+// one under the name every shared server answers to on the stack's network.
+func (p *Panel) aliasClash(stackID string, server *core.Record) string {
+	links, err := p.App.FindRecordsByFilter(schema.DBNetworks, "stack={:stack} && server!={:server}", "", 0, 0,
+		dbx.Params{"stack": stackID, "server": server.Id})
+	if err != nil {
+		return ""
+	}
+	for _, link := range links {
+		if slices.Contains(aliasesOf(link), databases.ServerService) {
+			return fmt.Sprintf("the stack reaches its database as %s, which %s would answer to on its network as well: rename the service in the stack first", databases.ServerService, server.GetString("name"))
+		}
+	}
+	return ""
+}
+
+// stackOf is the stack a database belongs to, if any.
+func (p *Panel) stackOf(database *core.Record) (*core.Record, bool) {
+	if database.GetString("stack") == "" {
+		return nil, false
+	}
+	stack, err := p.App.FindRecordById(schema.Stacks, database.GetString("stack"))
+	return stack, err == nil
+}
+
+// claimedByMove says why a new database cannot be made now, if a move is in the
+// way: one into the server under the same name or user, or one of the stack's.
+func (p *Panel) claimedByMove(server *core.Record, name, stackID string) string {
+	for _, move := range p.movesOfServer(server) {
+		if move.GetString("target") != server.Id {
+			continue
+		}
+		var items []movedItem
+		_ = move.UnmarshalJSONField("databases", &items)
+		for _, item := range items {
+			if item.Name == name || item.User == name {
+				return fmt.Sprintf("a database or user named %s is moving into %s", name, server.GetString("name"))
+			}
+		}
+	}
+	if stackID != "" {
+		if stack, err := p.App.FindRecordById(schema.Stacks, stackID); err == nil {
+			if move := p.moveHolding(stack); move != nil {
+				return fmt.Sprintf("the databases of %s are moving: add one once that is done", stack.GetString("name"))
+			}
+		}
+		return p.aliasClash(stackID, server)
+	}
+	return ""
 }
 
 // serverDeploying tells whether a shared server's own stack is being deployed,
@@ -149,31 +212,41 @@ func (p *Panel) serverDeploying(server *core.Record) bool {
 // of a stack whose databases are moving, and a stack's old database container,
 // which stays stopped until the panel removes it.
 func (p *Panel) guardMovedContainers(e *core.RecordRequestEvent) error {
-	switch e.Record.GetString("type") {
-	case "container.start", "container.restart":
-	default:
-		return e.Next()
-	}
+	commandType := e.Record.GetString("type")
+	host := e.Record.GetString("host")
 	var payload struct {
 		DockerID string `json:"docker_id"`
+		Name     string `json:"name"`
 	}
-	if err := e.Record.UnmarshalJSONField("payload", &payload); err != nil || payload.DockerID == "" {
-		return e.Next()
-	}
-	host := e.Record.GetString("host")
-	container, err := p.App.FindFirstRecordByFilter(schema.Containers, "host={:host} && docker_id={:id}", dbx.Params{"host": host, "id": payload.DockerID})
-	if err != nil {
+	if err := e.Record.UnmarshalJSONField("payload", &payload); err != nil {
 		return e.Next()
 	}
 
-	name := container.GetString("name")
-	if old, err := p.App.FindFirstRecordByFilter(schema.DBMoves, "host={:host} && source_container={:name} && status={:done} && source_kind={:dedicated} && removed_at=''",
-		dbx.Params{"host": host, "name": name, "done": schema.MoveDone, "dedicated": schema.DBServerDedicated}); err == nil {
-		return e.BadRequestError(fmt.Sprintf("The container %s held the data that moved to %s: it stays stopped until the panel removes it.", name, old.GetString("target_name")), nil)
+	// a stack whose databases move, or a server's own stack during a move
+	project := payload.Name
+	if strings.HasPrefix(commandType, "container.") && payload.DockerID != "" {
+		container, err := p.App.FindFirstRecordByFilter(schema.Containers, "host={:host} && docker_id={:id}", dbx.Params{"host": host, "id": payload.DockerID})
+		if err != nil {
+			return e.Next()
+		}
+		project = container.GetString("project")
+
+		name := container.GetString("name")
+		if commandType == "container.start" || commandType == "container.restart" {
+			if old, err := p.App.FindFirstRecordByFilter(schema.DBMoves, "host={:host} && source_container={:name} && status={:done} && source_kind={:dedicated} && removed_at=''",
+				dbx.Params{"host": host, "name": name, "done": schema.MoveDone, "dedicated": schema.DBServerDedicated}); err == nil {
+				return e.BadRequestError(fmt.Sprintf("The container %s held the data that moved to %s: it stays stopped until the panel removes it.", name, old.GetString("target_name")), nil)
+			}
+		}
+	} else if !strings.HasPrefix(commandType, "stack.") {
+		return e.Next()
 	}
-	if project := container.GetString("project"); project != "" {
-		if move := p.moveOfStack(host, project); move != nil {
-			return e.Error(http.StatusConflict, fmt.Sprintf("The databases of %s are moving to %s: its containers start again when that is done.", project, move.GetString("target_name")), nil)
+
+	if project != "" {
+		if stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}", dbx.Params{"host": host, "name": project}); err == nil {
+			if move := p.moveHolding(stack); move != nil {
+				return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: this waits until that is done.", project, move.GetString("target_name")), nil)
+			}
 		}
 	}
 	return e.Next()
@@ -310,7 +383,7 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 	}
 	for _, server := range []*core.Record{source, target} {
 		if p.serverDeploying(server) {
-			return nil, fmt.Errorf("%s is being deployed or updated: move once that is done", server.GetString("name"))
+			return nil, fmt.Errorf("the server %s is being deployed or updated: move once that is done", server.GetString("name"))
 		}
 	}
 
@@ -326,7 +399,7 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 	}
 	candidate.Version = versionOf(source)
 	if !databases.CanMoveTo(candidate, target.GetString("engine"), versionOf(target)) {
-		return nil, fmt.Errorf("%s cannot take these databases: it must run %s of the same or a newer version, without extensions the source needs", target.GetString("name"), engine.Label)
+		return nil, fmt.Errorf("the server %s cannot take these databases: it must run %s of the same or a newer version, without extensions the source needs", target.GetString("name"), engine.Label)
 	}
 
 	if moves, _ := p.openMoves("host={:host} && source_container={:container}", dbx.Params{"host": source.GetString("host"), "container": source.GetString("container_ref")}); len(moves) > 0 {
@@ -347,13 +420,27 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 		return nil, fmt.Errorf("a move of the databases of %s is already under way", plan.stack.GetString("name"))
 	}
 
-	// nothing of the same name may wait on the target
+	// nothing of the same name may wait on the target, or be on its way there
+	for _, move := range p.movesOfServer(target) {
+		if move.GetString("target") != target.Id {
+			continue
+		}
+		var claimed []movedItem
+		_ = move.UnmarshalJSONField("databases", &claimed)
+		for _, item := range plan.items {
+			if slices.ContainsFunc(claimed, func(other movedItem) bool {
+				return other.Name == item.GetDatabase() || other.User == item.GetUser() || other.Name == item.GetUser() || other.User == item.GetDatabase()
+			}) {
+				return nil, fmt.Errorf("a database or user named like %s is already moving into %s", item.GetDatabase(), target.GetString("name"))
+			}
+		}
+	}
 	for _, item := range plan.items {
 		if _, err := p.databaseOf(target, item.GetDatabase()); err == nil {
-			return nil, fmt.Errorf("%s already has a database named %s", target.GetString("name"), item.GetDatabase())
+			return nil, fmt.Errorf("the server %s already has a database named %s", target.GetString("name"), item.GetDatabase())
 		}
 		if _, err := p.userOf(target, item.GetUser()); err == nil {
-			return nil, fmt.Errorf("%s already has a user named %s", target.GetString("name"), item.GetUser())
+			return nil, fmt.Errorf("the server %s already has a user named %s", target.GetString("name"), item.GetUser())
 		}
 	}
 
@@ -379,7 +466,7 @@ func (p *Panel) planDedicatedMove(plan *movePlan) error {
 		return errors.New("the panel does not know which service of the stack the server is")
 	}
 	if err := databases.RetireProblem(compose, service); err != nil {
-		return fmt.Errorf("%s cannot stay stopped while the rest of the stack runs: %w", service, err)
+		return fmt.Errorf("the service %s cannot stay stopped while the rest of the stack runs: %w", service, err)
 	}
 
 	// other applications reach it on networks the move would take away
@@ -387,27 +474,78 @@ func (p *Panel) planDedicatedMove(plan *movePlan) error {
 		return errors.New("other applications use databases of this server: move or disconnect them first")
 	}
 
-	login := databases.ApplicationCredentials(compose, service, plan.engine)
-	switch login.User {
+	// the user and password as Compose gives them to the database service
+	environment, err := p.deployEnvironment(stack)
+	if err != nil {
+		return err
+	}
+	project, err := stacks.LoadResolved(context.Background(), stack.GetString("name"), compose, "", environment)
+	if err != nil {
+		return fmt.Errorf("the stack's Compose file cannot be read here: %w", err)
+	}
+	definition, found := project.Services[service]
+	if !found {
+		definition, found = project.DisabledServices[service]
+	}
+	if !found {
+		return fmt.Errorf("the stack has no service %s", service)
+	}
+	values := map[string]string{}
+	for key, value := range definition.Environment {
+		if value != nil {
+			values[key] = *value
+		} else {
+			// a variable without a value comes from the deploy's own variables
+			values[key] = environment[key]
+		}
+	}
+	user, password := databases.ApplicationLogin(plan.engine, values)
+	switch user {
 	case "":
 		return fmt.Errorf("the stack does not say which user its application signs in with on %s", service)
 	case plan.engine.AdminUser:
-		return fmt.Errorf("the application signs in as %s, the administrator, which a shared server keeps for itself: give the application a user of its own first", login.User)
+		return fmt.Errorf("the application signs in as %s, the administrator, which a shared server keeps for itself: give the application a user of its own first", user)
+	}
+	if err := databases.ValidDatabaseName(plan.engine, user); err != nil {
+		return fmt.Errorf("the application's user cannot move: %w", err)
+	}
+	if password == "" {
+		return fmt.Errorf("the password of %s cannot be found in the stack", user)
 	}
 
-	password := login.Password
-	if login.PasswordVar != "" {
-		secrets, err := p.openStackSecrets(stack)
+	// what Compose will make of the stack once the service is retired: the
+	// service off, and nothing else needing it
+	retired, err := p.retiredServices(stack)
+	if err != nil {
+		return err
+	}
+	override, err := databases.Override(compose, []databases.Join{{Network: databases.NetworkName(stack.GetString("name"))}}, "", append(retired, service))
+	if err != nil {
+		return err
+	}
+	after, err := stacks.LoadResolved(context.Background(), stack.GetString("name"), compose, override, environment)
+	if err != nil {
+		return fmt.Errorf("the service %s cannot stay stopped while the rest of the stack runs: %w", service, err)
+	}
+	if _, enabled := after.Services[service]; enabled {
+		return fmt.Errorf("the service %s would start again at every deploy: the stack turns on its profile (COMPOSE_PROFILES)", service)
+	}
+	for name, other := range after.Services {
+		if _, needs := other.DependsOn[service]; needs {
+			return fmt.Errorf("the service %s cannot stay stopped while the rest of the stack runs: %s needs it", service, name)
+		}
+	}
+
+	// the shared server will answer to the service's names on the stack's
+	// network, where every other shared server answers to its own service name
+	if service == databases.ServerService || source.GetString("container_ref") == databases.ServerService {
+		others, err := p.App.CountRecords(schema.DBNetworks, dbx.And(dbx.HashExp{"stack": stack.Id}, dbx.Not(dbx.In("server", source.Id, plan.target.Id))))
 		if err != nil {
 			return err
 		}
-		password = secrets[login.PasswordVar]
-		if password == "" {
-			password = envValue(stack.GetString("env"), login.PasswordVar)
+		if others > 0 {
+			return fmt.Errorf("the stack %s also uses other shared servers, which answer to the name %s on its network too: rename the service in the stack first", stack.GetString("name"), databases.ServerService)
 		}
-	}
-	if password == "" {
-		return fmt.Errorf("the password of %s cannot be found in the stack", login.User)
 	}
 
 	// the agent checks that these are all the server has
@@ -421,14 +559,14 @@ func (p *Panel) planDedicatedMove(plan *movePlan) error {
 	for _, database := range list {
 		// a database the panel created here keeps its own user; the rest belong
 		// to the application's
-		user, secret := login.User, password
+		owner, secret := user, password
 		if account, err := p.userOf(source, database.GetString("name")); err == nil {
 			if own, err := p.sealed(account, "password"); err == nil && own != "" {
-				user, secret = account.GetString("name"), own
+				owner, secret = account.GetString("name"), own
 			}
 		}
-		plan.passwords[user] = secret
-		plan.items = append(plan.items, &agentv1.DbMoveItem{Database: database.GetString("name"), User: user})
+		plan.passwords[owner] = secret
+		plan.items = append(plan.items, &agentv1.DbMoveItem{Database: database.GetString("name"), User: owner})
 	}
 	return nil
 }
@@ -446,7 +584,7 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 	}
 	stack, err := p.App.FindRecordById(schema.Stacks, database.GetString("stack"))
 	if err != nil {
-		return fmt.Errorf("%s belongs to no stack: only the database of an application moves", name)
+		return fmt.Errorf("the database %s belongs to no stack: only the database of an application moves", name)
 	}
 	plan.stack = stack
 
@@ -454,6 +592,15 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 	if link, err := p.App.FindFirstRecordByFilter(schema.DBNetworks, "server={:server} && stack={:stack}",
 		dbx.Params{"server": plan.source.Id, "stack": stack.Id}); err == nil {
 		aliases = aliasesOf(link)
+	}
+	if slices.Contains(aliases, databases.ServerService) {
+		others, err := p.App.CountRecords(schema.DBNetworks, dbx.And(dbx.HashExp{"stack": stack.Id}, dbx.Not(dbx.In("server", plan.source.Id, plan.target.Id))))
+		if err != nil {
+			return err
+		}
+		if others > 0 {
+			return fmt.Errorf("the stack %s reaches its databases here as %s, which other shared servers on its network answer to as well", stack.GetString("name"), databases.ServerService)
+		}
 	}
 
 	moving := []*core.Record{database}
@@ -465,13 +612,22 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		}
 	}
 
+	stacksOnHost, err := p.App.FindRecordsByFilter(schema.Stacks, "host={:host}", "", 0, 0, dbx.Params{"host": stack.GetString("host")})
+	if err != nil {
+		return err
+	}
+	env := stack.GetString("env")
 	for _, item := range moving {
+		name := item.GetString("name")
 		if item.GetString("status") != dbReady {
-			return fmt.Errorf("%s is not ready", item.GetString("name"))
+			return fmt.Errorf("the database %s is not ready", name)
 		}
 		account, err := p.ownerOf(plan.source, item)
 		if err != nil {
-			return fmt.Errorf("%s has no user the panel knows", item.GetString("name"))
+			return fmt.Errorf("the database %s has no user the panel knows", name)
+		}
+		if account.GetString("pending_password") != "" {
+			return fmt.Errorf("the password of %s is being rotated: move once that is done", account.GetString("name"))
 		}
 		password, err := p.sealed(account, "password")
 		if err != nil || password == "" {
@@ -479,16 +635,26 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		}
 		user := account.GetString("name")
 		plan.passwords[user] = password
-		plan.items = append(plan.items, &agentv1.DbMoveItem{Database: item.GetString("name"), User: user})
+		plan.items = append(plan.items, &agentv1.DbMoveItem{Database: name, User: user})
 
-		// without the old names the variables the panel wrote must all be there,
-		// or the application would go on looking for the old server
-		if len(aliases) == 0 {
-			before := databases.Connection{Engine: plan.engine, Server: plan.source.GetString("name"), Database: item.GetString("name"), User: user}
-			if !databases.HasEnv(stack.GetString("env"), before.EnvLines()) {
-				return fmt.Errorf("the variables of %s for %s are not all as the panel wrote them, so the panel cannot switch them to %s: put them back, or move the database by hand", stack.GetString("name"), item.GetString("name"), plan.target.GetString("name"))
+		// a database moves with one application: another that uses it would lose
+		// it without being stopped or switched
+		reference := "${secret:" + databases.SecretName(name) + "}"
+		for _, other := range stacksOnHost {
+			if other.Id != stack.Id && strings.Contains(other.GetString("env"), reference) {
+				return fmt.Errorf("the stack %s also uses %s: the panel moves a database with one application only", other.GetString("name"), name)
 			}
 		}
+
+		// the variables the panel wrote must all be there, or the application
+		// would go on looking for the old server; one that reaches its database
+		// under its old service's name may have none
+		before := databases.Connection{Engine: plan.engine, Server: plan.source.GetString("name"), Database: name, User: user}
+		if (len(aliases) == 0 || strings.Contains(env, reference)) && !databases.HasEnv(env, before.EnvLines()) {
+			return fmt.Errorf("the variables of %s for %s are not all as the panel wrote them, so the panel cannot switch them to %s: put them back, or move the database by hand", stack.GetString("name"), name, plan.target.GetString("name"))
+		}
+		after := databases.Connection{Engine: plan.engine, Server: plan.target.GetString("name"), Database: name, User: user}
+		env, _ = databases.ReplaceEnv(env, before.EnvLines(), after.EnvLines())
 	}
 
 	others, err := p.App.CountRecords(schema.Databases, dbx.And(
@@ -500,8 +666,36 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 	}
 	if others == 0 {
 		plan.leave = databases.NetworkName(stack.GetString("name"))
+
+		// once switched, nothing of the stack may still name the old server,
+		// which leaves the application's network
+		old := regexp.MustCompile(`(^|[^a-z0-9-])` + regexp.QuoteMeta(plan.source.GetString("name")) + `([^a-z0-9-]|$)`)
+		for _, line := range strings.Split(env, "\n") {
+			if old.MatchString(line) {
+				key, _, _ := strings.Cut(strings.TrimSpace(line), "=")
+				return fmt.Errorf("the variable %s of %s names %s in a way the panel does not switch: change it by hand first", key, stack.GetString("name"), plan.source.GetString("name"))
+			}
+		}
+		if old.MatchString(stack.GetString("compose_yaml")) {
+			return fmt.Errorf("the Compose file of %s names %s: change it by hand first", stack.GetString("name"), plan.source.GetString("name"))
+		}
 	}
 	return nil
+}
+
+// deployEnvironment is what Compose interpolates a stack's files with at a
+// deploy: its variables, with secret references resolved, and its secrets.
+func (p *Panel) deployEnvironment(stack *core.Record) (map[string]string, error) {
+	secrets, err := p.openStackSecrets(stack)
+	if err != nil {
+		return nil, err
+	}
+	plain, referenced, err := stacks.ResolveEnv(stack.GetString("env"), p.secretResolver(stack))
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(secrets, referenced)
+	return stacks.Environment(plain, secrets)
 }
 
 // ownerOf is the user of a database on a server: the one named after it, as the
@@ -746,6 +940,14 @@ func (p *Panel) completeMove(move *core.Record, wasRunning bool) (bool, error) {
 		link.Set("aliases", have)
 		if err := tx.SaveWithContext(ctx, link); err != nil {
 			return err
+		}
+		// a name leads to one server only: the old one gives up what moved
+		if !dedicated && oldLink != nil && len(aliases) > 0 {
+			left := slices.DeleteFunc(aliasesOf(oldLink), func(alias string) bool { return slices.Contains(aliases, alias) })
+			oldLink.Set("aliases", left)
+			if err := tx.SaveWithContext(ctx, oldLink); err != nil {
+				return err
+			}
 		}
 
 		if sourceErr == nil {

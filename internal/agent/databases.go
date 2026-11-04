@@ -30,6 +30,10 @@ const (
 // a move; database containers get Docker's default.
 const moveStopTimeout = 30
 
+// moveCommitTimeout bounds what a move does once its databases are copied: the
+// old server stops or drops them, and nothing may cut that short.
+const moveCommitTimeout = 5 * time.Minute
+
 const dumpDir = "tmp"
 
 func (a *Agent) registerDatabaseHandlers() {
@@ -233,7 +237,12 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 	if err != nil {
 		return nil, err
 	}
-	if err := validNames(engine, payload.GetDatabase(), payload.GetUser()); err != nil {
+	// without a user the database goes alone: its owner owns others too
+	users := []string{}
+	if payload.GetUser() != "" {
+		users = append(users, payload.GetUser())
+	}
+	if err := validNames(engine, append([]string{payload.GetDatabase()}, users...)...); err != nil {
 		return nil, err
 	}
 
@@ -250,7 +259,7 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 	}
 
 	reporter.Progress("drop", "Dropping "+payload.GetDatabase(), 80)
-	script := databases.Statements(engine, connection.GetAdminUser(), connection.GetAdminPassword(), databases.DropSQL(engine, payload.GetDatabase(), payload.GetUser()))
+	script := databases.Statements(engine, connection.GetAdminUser(), connection.GetAdminPassword(), databases.DropManySQL(engine, []string{payload.GetDatabase()}, users))
 	if err := a.runScript(ctx, connection.GetContainerId(), script, io.Discard, connection.GetAdminPassword()); err != nil {
 		return nil, err
 	}
@@ -491,6 +500,12 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		}
 	}
 
+	// the passwords the databases keep are the ones the old server knows: the
+	// application signs in with them today, and will on the new server
+	if err := a.checkSignIns(ctx, source, engine, payload.GetDatabases(), secrets); err != nil {
+		return nil, err
+	}
+
 	// the application stops: its containers as they are now, not as the panel
 	// saw them, since a deploy may have recreated them since
 	reporter.Progress("stop", "Stopping the application", 10)
@@ -522,10 +537,15 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 
 	moved := []movedDatabase{}
 	undo := func() {
-		for _, done := range moved {
-			drop := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.DropSQL(engine, done.name, done.user))
+		if len(moved) > 0 {
+			names, users := []string{}, []string{}
+			for _, done := range moved {
+				names = append(names, done.name)
+				users = append(users, done.user)
+			}
+			drop := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.DropManySQL(engine, names, users))
 			if err := a.runScript(context.Background(), target.GetContainerId(), drop, io.Discard, secrets...); err != nil {
-				a.Log.Warn("failed to remove a database the move had created", "database", done.name, "error", err)
+				a.Log.Warn("failed to remove the databases the move had created", "databases", names, "error", err)
 			}
 		}
 		startAgain()
@@ -544,6 +564,15 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		}
 		results = append(results, result)
 	}
+
+	// until here a cancel, the timeout or a shutdown undoes the move; from here on
+	// it finishes, as the old server is about to stop or lose what moved
+	if err := ctx.Err(); err != nil {
+		undo()
+		return nil, fmt.Errorf("the move was interrupted before it was complete, and is undone: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), moveCommitTimeout)
+	defer cancel()
 
 	stoppedSource := false
 	if payload.GetStopSource() {
@@ -619,6 +648,22 @@ func (a *Agent) checkWholeServer(ctx context.Context, source *agentv1.DbConnecti
 	return nil
 }
 
+// checkSignIns signs in as each user of the move with the password it keeps.
+func (a *Agent) checkSignIns(ctx context.Context, source *agentv1.DbConnection, engine databases.Engine, items []*agentv1.DbMoveItem, secrets []string) error {
+	checked := map[string]bool{}
+	for _, item := range items {
+		if checked[item.GetUser()] {
+			continue
+		}
+		checked[item.GetUser()] = true
+		check := databases.SignIn(engine, item.GetUser(), item.GetPassword(), item.GetDatabase())
+		if err := a.runScript(ctx, source.GetContainerId(), check, io.Discard, secrets...); err != nil {
+			return fmt.Errorf("%s cannot sign in to %s with the password the move would give it, so nothing was changed: %w", item.GetUser(), item.GetDatabase(), err)
+		}
+	}
+	return nil
+}
+
 // retire keeps a stack's old database container out of the way for good: it is
 // stopped, Docker no longer starts it by itself, and it leaves its networks, so
 // that nothing reaches the old data if someone starts it anyway.
@@ -680,6 +725,19 @@ func (a *Agent) moveDatabase(ctx context.Context, commandID string, index int, p
 	info, err := os.Stat(file.Name())
 	if err != nil {
 		return nil, err
+	}
+
+	// the target was checked at the start, but something else may have made
+	// the name since, and a create would quietly reuse it
+	var exists bytes.Buffer
+	check := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.ExistsSQL(engine, name, item.GetUser()))
+	if err := a.runScript(ctx, target.GetContainerId(), check, &exists, secrets...); err != nil {
+		return nil, err
+	}
+	databaseThere, userThere := databases.ParseExists(exists.String())
+	ownUser := slices.ContainsFunc(*moved, func(done movedDatabase) bool { return done.user == item.GetUser() })
+	if databaseThere || userThere && !ownUser {
+		return nil, fmt.Errorf("the target server has a database or user named like %s since the move began", name)
 	}
 
 	create := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.CreateSQL(engine, name, item.GetUser(), item.GetPassword()))
