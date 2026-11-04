@@ -314,7 +314,7 @@ func (p *Panel) targetOf(record *core.Record, container, name string) (server, d
 }
 
 func (p *Panel) saveAs(record *core.Record) {
-	if err := p.App.SaveWithContext(audit.WithActor(context.Background(), dbActor), record); err != nil {
+	if err := p.saveChanges(audit.WithActor(context.Background(), dbActor), record); err != nil {
 		p.Log.Error("failed to save a database record", "collection", record.Collection().Name, "id", record.Id, "error", err)
 	}
 }

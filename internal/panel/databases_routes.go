@@ -318,7 +318,7 @@ func (p *Panel) handleLinkServer(e *core.RequestEvent) error {
 	server.Set("extensions", found.Extensions)
 	server.Set("status", dbReady)
 
-	if err := p.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), server); err != nil {
+	if err := p.saveChanges(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), server); err != nil {
 		return e.BadRequestError("The server could not be linked: "+err.Error(), err)
 	}
 
@@ -579,7 +579,7 @@ func (p *Panel) handleConnectDatabase(e *core.RequestEvent) error {
 
 	database.Set("owner_kind", "stack")
 	database.Set("stack", stack.Id)
-	if err := p.App.SaveWithContext(audit.WithActor(ctx, actor), database); err != nil {
+	if err := p.saveChanges(audit.WithActor(ctx, actor), database); err != nil {
 		return e.BadRequestError(err.Error(), nil)
 	}
 
@@ -614,7 +614,7 @@ func (p *Panel) handleRotateDatabase(e *core.RequestEvent) error {
 
 	ctx := e.Request.Context()
 	account.Set("pending_password", databases.NewPassword())
-	if err := p.App.SaveWithContext(audit.WithActor(ctx, audit.ActorFromRequest(e)), account); err != nil {
+	if err := p.saveChanges(audit.WithActor(ctx, audit.ActorFromRequest(e)), account); err != nil {
 		return e.InternalServerError("", err)
 	}
 
@@ -698,7 +698,7 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 
 	ctx := e.Request.Context()
 	database.Set("status", dbDropping)
-	if err := p.App.SaveWithContext(audit.WithActor(ctx, audit.ActorFromRequest(e)), database); err != nil {
+	if err := p.saveChanges(audit.WithActor(ctx, audit.ActorFromRequest(e)), database); err != nil {
 		return e.InternalServerError("", err)
 	}
 

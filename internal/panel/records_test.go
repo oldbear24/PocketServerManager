@@ -77,3 +77,50 @@ func TestBookkeepingDoesNotUndoAnEdit(t *testing.T) {
 		t.Error("an unchanged record was saved")
 	}
 }
+
+// TestSaveChangesKeepsWhatOthersSaved: a callback that changed one field of what
+// it read saves that field only.
+func TestSaveChangesKeepsWhatOthersSaved(t *testing.T) {
+	p, app, _ := newTestPanel(t)
+
+	host := testutil.NewHost(t, app, "changes-host")
+	collection, err := app.FindCollectionByNameOrId(schema.Stacks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := core.NewRecord(collection)
+	stack.Set("host", host.Id)
+	stack.Set("name", "shop")
+	stack.Set("env", "A=1\n")
+	stack.Set("status", stackDeploying)
+	if err := p.saveChanges(context.Background(), stack); err != nil {
+		t.Fatal("a new record:", err)
+	}
+
+	callback, err := app.FindRecordById(schema.Stacks, stack.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	editor, err := app.FindRecordById(schema.Stacks, stack.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor.Set("env", "A=2\n")
+	if err := app.Save(editor); err != nil {
+		t.Fatal(err)
+	}
+
+	callback.Set("status", stackDeployed)
+	if err := p.saveChanges(context.Background(), callback); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := app.FindRecordById(schema.Stacks, stack.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.GetString("env") != "A=2\n" || stored.GetString("status") != stackDeployed {
+		t.Errorf("env %q, status %s", stored.GetString("env"), stored.GetString("status"))
+	}
+}

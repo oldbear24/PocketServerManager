@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	"github.com/pocketbase/pocketbase/core"
 )
@@ -52,4 +53,33 @@ func (p *Panel) setFields(record *core.Record, fields map[string]any) {
 	if err != nil {
 		p.Log.Error("failed to store fields of a record", "collection", record.Collection().Name, "record", record.Id, "error", err)
 	}
+}
+
+// saveChanges saves what changed on a record since it was read onto the record
+// as it is stored now (see update). Callbacks and routes read a record, change a
+// field or two and save it; the rest of what they read may be out of date by
+// then, and must not be written back. A new record is simply saved.
+func (p *Panel) saveChanges(ctx context.Context, record *core.Record) error {
+	if record.IsNew() {
+		return p.App.SaveWithContext(ctx, record)
+	}
+
+	original := record.Original()
+	changed := map[string]any{}
+	for _, field := range record.Collection().Fields {
+		name := field.GetName()
+		if value := record.Get(name); !reflect.DeepEqual(value, original.Get(name)) {
+			changed[name] = value
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+
+	return p.update(ctx, record, func(fresh *core.Record) error {
+		for name, value := range changed {
+			fresh.Set(name, value)
+		}
+		return nil
+	})
 }
