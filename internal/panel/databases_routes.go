@@ -69,7 +69,7 @@ func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 	if taken > 0 {
-		return e.BadRequestError(fmt.Sprintf("%s already has a stack named %s.", host.GetString("name"), body.Name), nil)
+		return e.BadRequestError(fmt.Sprintf("The server %s already has a stack named %s.", host.GetString("name"), body.Name), nil)
 	}
 
 	compose := databases.ServerCompose(databases.Server{
@@ -374,7 +374,12 @@ func (p *Panel) handleRemoveServer(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 	if count > 0 && server.GetString("kind") == schema.DBServerShared {
-		return e.BadRequestError(fmt.Sprintf("%s still holds %d databases: drop them first.", server.GetString("name"), count), nil)
+		// PocketBase capitalises a message, so it does not start with a name
+		held, them := fmt.Sprintf("%d databases", count), "them"
+		if count == 1 {
+			held, them = "a database", "it"
+		}
+		return e.BadRequestError(fmt.Sprintf("The database server %s still holds %s: drop %s first.", server.GetString("name"), held, them), nil)
 	}
 
 	removeVolume := e.Request.URL.Query().Get("remove_volume") == "true"
