@@ -954,7 +954,8 @@ func isCertFile(base, id string) bool {
 		return false
 	}
 	for _, r := range fingerprint {
-		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+		hex := r >= '0' && r <= '9' || r >= 'a' && r <= 'f'
+		if !hex {
 			return false
 		}
 	}

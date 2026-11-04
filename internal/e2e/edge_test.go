@@ -20,8 +20,8 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 
-	"github.com/oldbear24/PocketServerManager/internal/agent"
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/edge/fakecaddy"
