@@ -169,6 +169,16 @@ func DropManySQL(engine Engine, names, users []string) string {
 	return strings.Join(lines, "\n")
 }
 
+// RevokeSQL takes a user's privileges on a database away. MariaDB keeps them
+// when the database is dropped, so they would reach a later database of the same
+// name; PostgreSQL's go with the database.
+func RevokeSQL(engine Engine, database, user string) string {
+	if engine.Name != MariaDB.Name {
+		return ""
+	}
+	return "REVOKE ALL PRIVILEGES ON " + mariadbIdent(database) + ".* FROM " + mariadbString(user) + "@'%';"
+}
+
 // StatsSQL reads the size and the connections of every database, and the
 // server's limit and version, as rows of kind, name and value.
 func StatsSQL(engine Engine) string {

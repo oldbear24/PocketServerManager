@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -420,6 +419,13 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 		return nil, fmt.Errorf("a move of the databases of %s is already under way", plan.stack.GetString("name"))
 	}
 
+	// a rotation that finished during the move could not deploy the stack, and
+	// a failed move would start the application with the old password
+	if rotating, _ := p.App.FindRecordsByFilter(schema.DBUsers, "pending_password!='' && databases.stack?={:stack}", "", 1, 0,
+		dbx.Params{"stack": plan.stack.Id}); len(rotating) > 0 {
+		return nil, fmt.Errorf("the password of %s is being rotated: move once that is done", rotating[0].GetString("name"))
+	}
+
 	// nothing of the same name may wait on the target, or be on its way there
 	for _, move := range p.movesOfServer(target) {
 		if move.GetString("target") != target.Id {
@@ -537,7 +543,11 @@ func (p *Panel) planDedicatedMove(plan *movePlan) error {
 	}
 
 	// the shared server will answer to the service's names on the stack's
-	// network, where every other shared server answers to its own service name
+	// network, where every other shared server answers to its own service name;
+	// and the name db may already lead to another server there
+	if reason := p.aliasClash(stack.Id, plan.target); reason != "" {
+		return errors.New(reason)
+	}
 	if service == databases.ServerService || source.GetString("container_ref") == databases.ServerService {
 		others, err := p.App.CountRecords(schema.DBNetworks, dbx.And(dbx.HashExp{"stack": stack.Id}, dbx.Not(dbx.In("server", source.Id, plan.target.Id))))
 		if err != nil {
@@ -593,13 +603,19 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		dbx.Params{"server": plan.source.Id, "stack": stack.Id}); err == nil {
 		aliases = aliasesOf(link)
 	}
-	if slices.Contains(aliases, databases.ServerService) {
-		others, err := p.App.CountRecords(schema.DBNetworks, dbx.And(dbx.HashExp{"stack": stack.Id}, dbx.Not(dbx.In("server", plan.source.Id, plan.target.Id))))
-		if err != nil {
-			return err
-		}
-		if others > 0 {
-			return fmt.Errorf("the stack %s reaches its databases here as %s, which other shared servers on its network answer to as well", stack.GetString("name"), databases.ServerService)
+	// the name db leads to one server on the stack's network, and every shared
+	// server answers to it there besides the names it is given
+	others, err := p.App.FindRecordsByFilter(schema.DBNetworks, "stack={:stack} && server!={:source} && server!={:target}", "", 0, 0,
+		dbx.Params{"stack": stack.Id, "source": plan.source.Id, "target": plan.target.Id})
+	if err != nil {
+		return err
+	}
+	if slices.Contains(aliases, databases.ServerService) && len(others) > 0 {
+		return fmt.Errorf("the stack %s reaches its databases here as %s, which other shared servers on its network answer to as well", stack.GetString("name"), databases.ServerService)
+	}
+	for _, link := range others {
+		if slices.Contains(aliasesOf(link), databases.ServerService) {
+			return fmt.Errorf("the stack %s reaches another server as %s, which %s would answer to on its network as well", stack.GetString("name"), databases.ServerService, plan.target.GetString("name"))
 		}
 	}
 
@@ -617,6 +633,7 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		return err
 	}
 	env := stack.GetString("env")
+	switched := map[string]bool{}
 	for _, item := range moving {
 		name := item.GetString("name")
 		if item.GetString("status") != dbReady {
@@ -638,10 +655,13 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		plan.items = append(plan.items, &agentv1.DbMoveItem{Database: name, User: user})
 
 		// a database moves with one application: another that uses it would lose
-		// it without being stopped or switched
+		// it without being stopped or switched. Its secret is this database's
+		// only if its user carries it: one that came with a stack's own server
+		// has none, and the name may be another server's database.
 		reference := "${secret:" + databases.SecretName(name) + "}"
+		referenced := account.GetString("secret_name") == databases.SecretName(name)
 		for _, other := range stacksOnHost {
-			if other.Id != stack.Id && strings.Contains(other.GetString("env"), reference) {
+			if referenced && other.Id != stack.Id && strings.Contains(other.GetString("env"), reference) {
 				return fmt.Errorf("the stack %s also uses %s: the panel moves a database with one application only", other.GetString("name"), name)
 			}
 		}
@@ -650,34 +670,53 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		// would go on looking for the old server; one that reaches its database
 		// under its old service's name may have none
 		before := databases.Connection{Engine: plan.engine, Server: plan.source.GetString("name"), Database: name, User: user}
-		if (len(aliases) == 0 || strings.Contains(env, reference)) && !databases.HasEnv(env, before.EnvLines()) {
+		if (len(aliases) == 0 || referenced && strings.Contains(env, reference)) && !databases.HasEnv(env, before.EnvLines()) {
 			return fmt.Errorf("the variables of %s for %s are not all as the panel wrote them, so the panel cannot switch them to %s: put them back, or move the database by hand", stack.GetString("name"), name, plan.target.GetString("name"))
 		}
 		after := databases.Connection{Engine: plan.engine, Server: plan.target.GetString("name"), Database: name, User: user}
-		env, _ = databases.ReplaceEnv(env, before.EnvLines(), after.EnvLines())
+		if replaced, ok := databases.ReplaceEnv(env, before.EnvLines(), after.EnvLines()); ok {
+			env = replaced
+			for _, line := range after.EnvLines() {
+				switched[line] = true
+			}
+		}
 	}
 
-	others, err := p.App.CountRecords(schema.Databases, dbx.And(
+	remaining, err := p.App.CountRecords(schema.Databases, dbx.And(
 		dbx.HashExp{"server": plan.source.Id, "stack": stack.Id},
 		dbx.Not(dbx.In("id", recordIDs(moving)...)),
 	))
 	if err != nil {
 		return err
 	}
-	if others == 0 {
+	if remaining == 0 {
 		plan.leave = databases.NetworkName(stack.GetString("name"))
 
-		// once switched, nothing of the stack may still name the old server,
-		// which leaves the application's network
-		old := regexp.MustCompile(`(^|[^a-z0-9-])` + regexp.QuoteMeta(plan.source.GetString("name")) + `([^a-z0-9-]|$)`)
+		// once switched, nothing of the stack may still point at the old server,
+		// which leaves the application's network: neither a variable of its own,
+		// nor a setting of a service as Compose resolves it
+		source := plan.source.GetString("name")
 		for _, line := range strings.Split(env, "\n") {
-			if old.MatchString(line) {
-				key, _, _ := strings.Cut(strings.TrimSpace(line), "=")
-				return fmt.Errorf("the variable %s of %s names %s in a way the panel does not switch: change it by hand first", key, stack.GetString("name"), plan.source.GetString("name"))
+			trimmed := strings.TrimPrefix(strings.TrimSpace(line), "export ")
+			key, value, found := strings.Cut(trimmed, "=")
+			if found && !switched[trimmed] && databases.NamesHost(key, value, source) {
+				return fmt.Errorf("the variable %s of %s points at %s in a way the panel does not switch: change it by hand first", key, stack.GetString("name"), source)
 			}
 		}
-		if old.MatchString(stack.GetString("compose_yaml")) {
-			return fmt.Errorf("the Compose file of %s names %s: change it by hand first", stack.GetString("name"), plan.source.GetString("name"))
+		environment, err := p.deployEnvironmentWith(stack, env)
+		if err != nil {
+			return err
+		}
+		project, err := stacks.LoadResolved(context.Background(), stack.GetString("name"), stack.GetString("compose_yaml"), "", environment)
+		if err != nil {
+			return fmt.Errorf("the stack's Compose file cannot be read here: %w", err)
+		}
+		for name, service := range project.Services {
+			for key, value := range service.Environment {
+				if value != nil && databases.NamesHost(key, *value, source) && !switched[key+"="+*value] {
+					return fmt.Errorf("the setting %s of the service %s points at %s in a way the panel does not switch: change it by hand first", key, name, source)
+				}
+			}
 		}
 	}
 	return nil
@@ -686,11 +725,16 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 // deployEnvironment is what Compose interpolates a stack's files with at a
 // deploy: its variables, with secret references resolved, and its secrets.
 func (p *Panel) deployEnvironment(stack *core.Record) (map[string]string, error) {
+	return p.deployEnvironmentWith(stack, stack.GetString("env"))
+}
+
+// deployEnvironmentWith is deployEnvironment for an env file other than the one stored.
+func (p *Panel) deployEnvironmentWith(stack *core.Record, env string) (map[string]string, error) {
 	secrets, err := p.openStackSecrets(stack)
 	if err != nil {
 		return nil, err
 	}
-	plain, referenced, err := stacks.ResolveEnv(stack.GetString("env"), p.secretResolver(stack))
+	plain, referenced, err := stacks.ResolveEnv(env, p.secretResolver(stack))
 	if err != nil {
 		return nil, err
 	}

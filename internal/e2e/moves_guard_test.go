@@ -335,7 +335,143 @@ func TestDroppingAMovedDatabaseKeepsAUserThatOwnsMore(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("drop: %d %s", status, body)
 	}
-	if payload := d.command(recordID(t, body)).GetString("payload"); strings.Contains(payload, `"user":"shop"`) {
-		t.Errorf("the drop takes the user that owns shop_archive too: %s", payload)
+	drop := d.command(recordID(t, body))
+	if payload := drop.GetString("payload"); !strings.Contains(payload, `"user":"shop"`) || !strings.Contains(payload, `"keep_user":true`) {
+		t.Errorf("the drop does not keep the user that owns shop_archive too: %s", payload)
 	}
+	d.waitForStatus(drop.Id, schema.CommandSucceeded)
+	d.waitFor("shop to be gone", func() bool {
+		_, err := d.app.FindRecordById(schema.Databases, database.Id)
+		return err != nil
+	})
+	if _, err := d.app.FindFirstRecordByFilter(schema.DBUsers, "server={:server} && name='shop'", dbx.Params{"server": shared.Id}); err != nil {
+		t.Errorf("the user that owns shop_archive was removed: %v", err)
+	}
+}
+
+func TestAStackStaysAsItIsWhileItsDatabasesMove(t *testing.T) {
+	d := newDatabaseHarness(t)
+	shared := d.createServer("pg-main", "postgres")
+	stackID, dedicated := d.linkedAnalytics()
+	release := d.holdRestores()
+	defer release()
+	move, command := d.startMove(dedicated.Id, map[string]any{"target": shared.Id})
+	d.waitFor("the application to stop", func() bool { return d.docker.Find("analytics-web-1").Status == "exited" })
+
+	if status, body := d.post("/api/pc/stacks/"+stackID+"/save", d.operator, map[string]any{"env": "COMPOSE_PROFILES=*\n"}); status == http.StatusOK || !strings.Contains(body, "moving") {
+		t.Errorf("saving the stack during the move: %d %s", status, body)
+	}
+	status, body := testutil.Do(t, d.handler, testutil.Request{Method: http.MethodPatch, URL: "/api/collections/stacks/records/" + stackID, Token: d.operator, Body: `{"env":"X=1\n"}`})
+	if status != http.StatusConflict {
+		t.Errorf("changing the stack record during the move: %d %s", status, body)
+	}
+	status, body = testutil.Do(t, d.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/collections/stacks/records/" + stackID, Token: d.operator})
+	if status != http.StatusConflict {
+		t.Errorf("removing the stack during the move: %d %s", status, body)
+	}
+
+	release()
+	d.finishMove(move, command)
+	if status, body := d.post("/api/pc/stacks/"+stackID+"/save", d.operator, map[string]any{"env": "X=1\n"}); status != http.StatusOK {
+		t.Errorf("saving the stack after the move: %d %s", status, body)
+	}
+}
+
+func TestAServerNamedLikeItsEngineCanBeLeft(t *testing.T) {
+	d := newDatabaseHarness(t)
+	old := d.createServer("postgres", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	shop := d.deployedApp("shop")
+	d.createDatabase(old.Id, "shop", shop)
+	d.waitFor("shop to be connected", func() bool { return d.stack(shop).GetInt("current_revision") == 2 })
+
+	move, command := d.startMove(old.Id, map[string]any{"target": next.Id, "database": "shop"})
+	d.finishMove(move, command)
+	if env := d.stack(shop).GetString("env"); !strings.Contains(env, "DB_HOST=pg-next") || !strings.Contains(env, "postgres://shop:") {
+		t.Errorf("env: %q", env)
+	}
+}
+
+func TestAMoveWaitsForARotationOfTheStack(t *testing.T) {
+	d := newDatabaseHarness(t)
+	main := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	shop := d.deployedApp("shop")
+	d.createDatabase(main.Id, "shop", shop)
+	d.waitFor("shop to be connected", func() bool { return d.stack(shop).GetInt("current_revision") == 2 })
+	d.createDatabase(main.Id, "shop_logs", shop)
+
+	account := d.user(main.Id, "shop_logs")
+	account.Set("pending_password", "sealed-anything")
+	if err := d.app.Save(account); err != nil {
+		t.Fatal(err)
+	}
+	status, body := d.post("/api/pc/db-servers/"+main.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "shop"})
+	if status != http.StatusBadRequest || !strings.Contains(body, "shop_logs is being rotated") {
+		t.Errorf("a move during a rotation of another database of the stack: %d %s", status, body)
+	}
+}
+
+func TestAnotherServersDatabaseOfTheSameNameIsNoUser(t *testing.T) {
+	d := newDatabaseHarness(t)
+	main := d.createServer("pg-main", "postgres")
+	two := d.createServer("pg-two", "postgres")
+	three := d.createServer("pg-three", "postgres")
+
+	// store uses pg-main's shop through its secret
+	store := d.deployedApp("store")
+	d.createDatabase(main.Id, "shop", store)
+	d.waitFor("store to be connected", func() bool { return d.stack(store).GetInt("current_revision") == 2 })
+
+	// analytics' own shop moves into pg-two, then on to pg-three
+	_, dedicated := d.linkedAnalytics()
+	move, command := d.startMove(dedicated.Id, map[string]any{"target": two.Id})
+	d.finishMove(move, command)
+	status, body := d.post("/api/pc/db-servers/"+two.Id+"/move", d.operator, map[string]any{"target": three.Id, "database": "shop"})
+	if status != http.StatusOK {
+		t.Errorf("moving analytics' shop on: %d %s", status, body)
+	}
+}
+
+func TestTheNameDbLeadsToOneServerEitherWay(t *testing.T) {
+	compose := `services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: ${DB_PASS}
+  reports:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rep
+      POSTGRES_PASSWORD: ${DB_PASS}
+  web:
+    image: umami:2
+`
+	d := newDatabaseHarness(t)
+	main := d.createServer("pg-main", "postgres")
+	two := d.createServer("pg-two", "postgres")
+	stackID, first := d.analyticsWith(compose, "", map[string]string{"DB_PASS": "app-secret-7"})
+
+	status, body := d.post("/api/pc/db-servers/link", d.operator, map[string]any{
+		"host": d.host.Id, "docker_id": d.docker.Find("analytics-reports-1").ID, "admin_user": "postgres", "password": "admin-pass-2",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("link: %d %s", status, body)
+	}
+	reports := recordID(t, body)
+	d.waitFor("the reports server's database to be listed", func() bool {
+		_, err := d.app.FindFirstRecordByFilter(schema.Databases, "server={:server}", dbx.Params{"server": reports})
+		return err == nil
+	})
+
+	move, command := d.startMove(first.Id, map[string]any{"target": main.Id})
+	d.finishMove(move, command)
+
+	// pg-main answers to db for analytics now; pg-two would too
+	status, body = d.post("/api/pc/db-servers/"+reports+"/move", d.operator, map[string]any{"target": two.Id})
+	if status != http.StatusBadRequest || !strings.Contains(body, "would answer") {
+		t.Errorf("a second server for a stack that reaches one as db: %d %s", status, body)
+	}
+	_ = stackID
 }

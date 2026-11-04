@@ -7,6 +7,7 @@ package databases
 import (
 	"crypto/rand"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -213,6 +214,25 @@ func ReplaceEnv(env string, before, after []string) (string, bool) {
 	cleaned, _ := RemoveEnv(env, before)
 	replaced, _ := AddEnv(cleaned, after)
 	return replaced, true
+}
+
+// NamesHost tells whether a setting points at a host of a name: as the host of a
+// URL, after @ or host= in a connection string, or, for a setting whose name says
+// it holds a host, as its whole value, with or without a port. A URL scheme, an
+// image tag or a user that happens to have the name does not count.
+func NamesHost(key, value, host string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" && parsed.Hostname() == host {
+		return true
+	}
+	if regexp.MustCompile(`(@|host=)` + regexp.QuoteMeta(host) + `(:[0-9]+)?([/,;\s?]|$)`).MatchString(value) {
+		return true
+	}
+	upper := strings.ToUpper(key)
+	if strings.Contains(upper, "HOST") || strings.Contains(upper, "SERVER") || strings.Contains(upper, "ADDR") || strings.Contains(upper, "ENDPOINT") {
+		return regexp.MustCompile(`^` + regexp.QuoteMeta(host) + `(:[0-9]+)?$`).MatchString(value)
+	}
+	return false
 }
 
 // HasEnv tells whether an env file holds all the lines, as they are.

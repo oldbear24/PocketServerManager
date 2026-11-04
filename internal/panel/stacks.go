@@ -98,6 +98,9 @@ func (p *Panel) guardStackUpdate(e *core.RecordRequestEvent) error {
 	if e.Record.GetString("name") != stored.GetString("name") || e.Record.GetString("host") != stored.GetString("host") {
 		return e.BadRequestError("A stack keeps its name and its server. Create a new stack instead.", nil)
 	}
+	if move := p.moveHolding(stored); move != nil {
+		return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: change the stack once that is done.", stored.GetString("name"), move.GetString("target_name")), nil)
+	}
 
 	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source", "status"} {
 		e.Record.Set(field, stored.Get(field))
@@ -434,6 +437,10 @@ type stackEdit struct {
 func (p *Panel) saveStackEdit(ctx context.Context, e *core.RequestEvent, stack *core.Record, edit stackEdit, actor audit.Actor) error {
 	if edit.Note != "" && actor.Note == "" {
 		actor.Note = edit.Note
+	}
+	// what a move checked before it began must hold until it is done
+	if move := p.moveHolding(stack); move != nil {
+		return fmt.Errorf("databases of %s are moving to %s: change the stack once that is done", stack.GetString("name"), move.GetString("target_name"))
 	}
 
 	// the edit applies to the stack as it is stored at this moment, not as it was

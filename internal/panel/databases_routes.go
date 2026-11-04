@@ -789,11 +789,10 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 
 	// the user goes with its database, unless it owns others too, as an
 	// application's own user does when its databases moved in together
-	user := ""
+	user, keep := "", false
 	if owner, err := p.ownerOf(server, database); err == nil {
-		if !slices.ContainsFunc(owner.GetStringSlice("databases"), func(id string) bool { return id != database.Id }) {
-			user = owner.GetString("name")
-		}
+		user = owner.GetString("name")
+		keep = slices.ContainsFunc(owner.GetStringSlice("databases"), func(id string) bool { return id != database.Id })
 	}
 
 	ctx := e.Request.Context()
@@ -812,6 +811,7 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 			Connection: connectionOf(server),
 			Database:   database.GetString("name"),
 			User:       user,
+			KeepUser:   keep,
 		}}},
 	})
 	if err != nil {

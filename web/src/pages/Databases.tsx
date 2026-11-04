@@ -1134,9 +1134,10 @@ function ServerCard({
     (version) => Number.parseInt(version, 10) > majorOf(server),
   );
   const moveTo = targets.find((item) => item.id === target) ?? targets[0];
-  // the newest move into or out of this server says how it went
-  const latest = moves[0];
-  const moving = moves.some((item) => item.status === "moving");
+  // a move under way, and the newest that ended, into or out of this server
+  const running = moves.find((item) => item.status === "moving");
+  const latest = moves.find((item) => item.status !== "moving");
+  const moving = Boolean(running);
   const movedHere = moves.filter((item) => item.target === server.id && item.status === "moved");
   const stackName = stacks.find((item) => item.id === server.stack)?.name ?? "–";
 
@@ -1205,12 +1206,12 @@ function ServerCard({
       }
     >
       {server.last_error && <Banner tone="warn">{server.last_error}</Banner>}
-      {moving && latest && (
+      {running && (
         <Banner tone="info">
-          {t("db.moving", { source: latest.source_name, name: latest.target_name })}
+          {t("db.moving", { source: running.source_name, name: running.target_name })}
         </Banner>
       )}
-      {!moving && latest?.status === "failed" && (
+      {latest?.status === "failed" && (
         <Banner tone="warn">
           {t("db.moveFailed", {
             source: latest.source_name,
@@ -1219,9 +1220,7 @@ function ServerCard({
           })}
         </Banner>
       )}
-      {!moving && latest?.status === "moved" && latest.error && (
-        <Banner tone="warn">{latest.error}</Banner>
-      )}
+      {latest?.status === "moved" && latest.error && <Banner tone="warn">{latest.error}</Banner>}
       <p className="muted">{text}</p>
       {server.kind === "dedicated" && move && !moving && (
         <>

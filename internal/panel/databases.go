@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -69,6 +70,10 @@ func (p *Panel) registerDatabases() {
 	p.App.OnRecordDeleteRequest(schema.Stacks).BindFunc(func(e *core.RecordRequestEvent) error {
 		if e.Record.GetString("source") == stackSourceDBServer {
 			return e.BadRequestError("This stack is a database server: remove it on the Databases page.", nil)
+		}
+		// the record of a move goes with its stack, and the move's holds with it
+		if move := p.moveHolding(e.Record); move != nil {
+			return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: remove the stack once that is done.", e.Record.GetString("name"), move.GetString("target_name")), nil)
 		}
 		return e.Next()
 	})
@@ -455,6 +460,7 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 		Connection commandConnection `json:"connection"`
 		Database   string            `json:"database"`
 		User       string            `json:"user"`
+		KeepUser   bool              `json:"keep_user"`
 	}
 	if payloadInto(record, &payload) != nil {
 		return
@@ -475,7 +481,7 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 	ctx := audit.WithActor(context.Background(), dbActor)
 	stackID := database.GetString("stack")
 
-	if account, err := p.userOf(server, payload.User); err == nil {
+	if account, err := p.userOf(server, payload.User); err == nil && !payload.KeepUser {
 		if err := p.App.DeleteWithContext(ctx, account); err != nil {
 			p.Log.Error("failed to remove a database user", "user", account.Id, "error", err)
 		}

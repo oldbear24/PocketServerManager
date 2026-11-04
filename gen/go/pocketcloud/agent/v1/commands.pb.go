@@ -2925,7 +2925,10 @@ type DbDatabaseDrop struct {
 	// database is the database name.
 	Database string `protobuf:"bytes,2,opt,name=database,proto3" json:"database,omitempty"`
 	// user is the database user.
-	User          string `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
+	User string `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
+	// keep_user keeps the user, which owns other databases too: it only loses its
+	// privileges on this one, so that they do not reach a later database of the name.
+	KeepUser      bool `protobuf:"varint,4,opt,name=keep_user,json=keepUser,proto3" json:"keep_user,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2979,6 +2982,13 @@ func (x *DbDatabaseDrop) GetUser() string {
 		return x.User
 	}
 	return ""
+}
+
+func (x *DbDatabaseDrop) GetKeepUser() bool {
+	if x != nil {
+		return x.KeepUser
+	}
+	return false
 }
 
 // DbDatabaseRotate changes the password of a database user.
@@ -5052,13 +5062,14 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"connection\x12\x1a\n" +
 	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x12\n" +
 	"\x04user\x18\x03 \x01(\tR\x04user\x12 \n" +
-	"\bpassword\x18\x04 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"\x84\x01\n" +
+	"\bpassword\x18\x04 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"\xa1\x01\n" +
 	"\x0eDbDatabaseDrop\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +
 	"connection\x12\x1a\n" +
 	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x12\n" +
-	"\x04user\x18\x03 \x01(\tR\x04user\"\x8c\x01\n" +
+	"\x04user\x18\x03 \x01(\tR\x04user\x12\x1b\n" +
+	"\tkeep_user\x18\x04 \x01(\bR\bkeepUser\"\x8c\x01\n" +
 	"\x10DbDatabaseRotate\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +

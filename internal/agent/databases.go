@@ -237,13 +237,18 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 	if err != nil {
 		return nil, err
 	}
-	// without a user the database goes alone: its owner owns others too
+	// a user that owns other databases too stays, without its privileges here
 	users := []string{}
-	if payload.GetUser() != "" {
+	if payload.GetUser() != "" && !payload.GetKeepUser() {
 		users = append(users, payload.GetUser())
 	}
-	if err := validNames(engine, append([]string{payload.GetDatabase()}, users...)...); err != nil {
+	if err := validNames(engine, payload.GetDatabase()); err != nil {
 		return nil, err
+	}
+	if payload.GetUser() != "" {
+		if err := validNames(engine, payload.GetUser()); err != nil {
+			return nil, err
+		}
 	}
 
 	reporter.Progress("dump", "Keeping a final dump of "+payload.GetDatabase(), 20)
@@ -259,6 +264,13 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 	}
 
 	reporter.Progress("drop", "Dropping "+payload.GetDatabase(), 80)
+	if revoke := databases.RevokeSQL(engine, payload.GetDatabase(), payload.GetUser()); payload.GetKeepUser() && revoke != "" {
+		script := databases.Statements(engine, connection.GetAdminUser(), connection.GetAdminPassword(), revoke)
+		var output bytes.Buffer
+		if err := a.runScript(ctx, connection.GetContainerId(), script, &output, connection.GetAdminPassword()); err != nil && !strings.Contains(err.Error(), "no such grant") {
+			return nil, fmt.Errorf("the privileges of %s on %s could not be taken away, so nothing was dropped: %w", payload.GetUser(), payload.GetDatabase(), err)
+		}
+	}
 	script := databases.Statements(engine, connection.GetAdminUser(), connection.GetAdminPassword(), databases.DropManySQL(engine, []string{payload.GetDatabase()}, users))
 	if err := a.runScript(ctx, connection.GetContainerId(), script, io.Discard, connection.GetAdminPassword()); err != nil {
 		return nil, err
@@ -570,6 +582,12 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 	if err := ctx.Err(); err != nil {
 		undo()
 		return nil, fmt.Errorf("the move was interrupted before it was complete, and is undone: %w", err)
+	}
+	// the panel counts the move as failed at its deadline: what is left must
+	// fit before that
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < moveCommitTimeout+time.Minute {
+		undo()
+		return nil, errors.New("too little time was left to finish the move before its deadline, so it is undone: move again")
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), moveCommitTimeout)
 	defer cancel()

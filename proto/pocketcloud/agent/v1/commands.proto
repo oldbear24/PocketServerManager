@@ -463,6 +463,9 @@ message DbDatabaseDrop {
   string database = 2;
   // user is the database user.
   string user = 3;
+  // keep_user keeps the user, which owns other databases too: it only loses its
+  // privileges on this one, so that they do not reach a later database of the name.
+  bool keep_user = 4;
 }
 
 // DbDatabaseRotate changes the password of a database user.

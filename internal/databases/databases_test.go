@@ -763,3 +763,37 @@ func TestTheApplicationLoginIsWhatComposeGivesTheDatabase(t *testing.T) {
 		t.Errorf("postgres: %v", *value)
 	}
 }
+
+func TestNamesHost(t *testing.T) {
+	for _, tc := range []struct {
+		key, value, host string
+		want             bool
+	}{
+		{"DB_HOST", "pg-main", "pg-main", true},
+		{"REPORTS_HOST", `"pg-main"`, "pg-main", true},
+		{"DB_SERVER", "pg-main:5432", "pg-main", true},
+		{"DATABASE_URL", "postgres://shop:${secret:db/shop}@pg-main:5432/shop", "pg-main", true},
+		{"DSN", "mysql://u:p@db-main/shop?tls=false", "db-main", true},
+		{"PG_DSN", "host=pg-main port=5432 dbname=shop", "pg-main", true},
+		// a scheme, an image tag, a user or a longer name is no host of the name
+		{"DATABASE_URL", "postgres://shop:${secret:db/shop}@pg-next:5432/shop", "postgres", false},
+		{"POSTGRES_USER", "postgres", "postgres", false},
+		{"DB_IMAGE", "postgres:17", "postgres", false},
+		{"DB_HOST", "pg-main-2", "pg-main", false},
+		{"DB_HOST", "my-pg-main", "pg-main", false},
+		{"NOTE", "moved off pg-main last week", "pg-main", false},
+	} {
+		if got := NamesHost(tc.key, tc.value, tc.host); got != tc.want {
+			t.Errorf("NamesHost(%q, %q, %q) = %v", tc.key, tc.value, tc.host, got)
+		}
+	}
+}
+
+func TestRevokeSQL(t *testing.T) {
+	if got := RevokeSQL(MariaDB, "extra", "app"); got != "REVOKE ALL PRIVILEGES ON `extra`.* FROM 'app'@'%';" {
+		t.Errorf("mariadb: %s", got)
+	}
+	if got := RevokeSQL(Postgres, "extra", "app"); got != "" {
+		t.Errorf("postgres: %s", got)
+	}
+}
