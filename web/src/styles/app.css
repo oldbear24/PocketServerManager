@@ -1701,6 +1701,16 @@ code,
   font-weight: 600;
 }
 
+/* the connection card needs the width the design gives it, and its short labels
+   leave the values the rest */
+.db-columns .column-side {
+  flex-basis: 380px;
+}
+
+.db-columns .facts {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
 .db-servers {
   display: grid;
   gap: 12px;

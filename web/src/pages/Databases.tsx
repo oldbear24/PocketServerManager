@@ -337,7 +337,7 @@ export function DatabasesPage() {
         />
       ) : (
         current && (
-          <div className="columns">
+          <div className="columns db-columns">
             <div className="column-wide">
               <DatabasesCard
                 server={current}
