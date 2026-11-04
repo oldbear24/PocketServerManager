@@ -101,9 +101,10 @@ export type DbCandidate = {
   password_key: string;
 };
 
-export const engines: { value: DbEngine; label: string; port: number }[] = [
-  { value: "mariadb", label: "MariaDB", port: 3306 },
-  { value: "postgres", label: "PostgreSQL", port: 5432 },
+/** The series a new shared server can run, the recommended one first, as the panel offers them. */
+export const engines: { value: DbEngine; label: string; port: number; versions: string[] }[] = [
+  { value: "mariadb", label: "MariaDB", port: 3306, versions: ["11.8", "11.4"] },
+  { value: "postgres", label: "PostgreSQL", port: 5432, versions: ["17", "18", "16"] },
 ];
 
 export function engineLabel(engine: string): string {
@@ -161,7 +162,7 @@ export function connectionShare(server: DbServer): number {
 }
 
 export const dbApi = {
-  createServer: (body: { host: string; name: string; engine: DbEngine }) =>
+  createServer: (body: { host: string; name: string; engine: DbEngine; version: string }) =>
     pb.send<{ server: DbServer; command: Command }>("/api/pc/db-servers", {
       method: "POST",
       body,
@@ -185,6 +186,10 @@ export const dbApi = {
       method: "POST",
       body,
     }),
+
+  /** Pulls the newest image of a shared server's series and recreates its container. */
+  updateServer: (id: string) =>
+    pb.send<Command>(`/api/pc/db-servers/${id}/update`, { method: "POST" }),
 
   removeServer: (id: string, removeVolume: boolean) =>
     pb.send(`/api/pc/db-servers/${id}?remove_volume=${removeVolume}`, { method: "DELETE" }),

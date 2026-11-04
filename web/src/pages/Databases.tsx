@@ -430,16 +430,24 @@ function NewServerCard({ hosts, onDone }: { hosts: Host[]; onDone: (id: string) 
   const [host, setHost] = useState(hosts[0]?.id ?? "");
   const [name, setName] = useState("");
   const [engine, setEngine] = useState<DbEngine>("mariadb");
+  const [version, setVersion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  const versions = engines.find((item) => item.value === engine)?.versions ?? [];
+  const chosen = versions.includes(version) ? version : versions[0];
   const nameError = name && !serverNamePattern.test(name) ? t("db.serverNameInvalid") : "";
 
   const create = async () => {
     setBusy(true);
     setError("");
     try {
-      const answer = await dbApi.createServer({ host: host || hosts[0]?.id, name, engine });
+      const answer = await dbApi.createServer({
+        host: host || hosts[0]?.id,
+        name,
+        engine,
+        version: chosen,
+      });
       toast.success(t("db.serverQueued", { name }));
       onDone(answer.server.id);
     } catch (err) {
@@ -477,16 +485,28 @@ function NewServerCard({ hosts, onDone }: { hosts: Host[]; onDone: (id: string) 
           </select>
         </Field>
       </div>
-      <div style={{ marginTop: 12 }}>
+      <div className="form-grid" style={{ marginTop: 12, alignItems: "end" }}>
         <SegmentedControl
           label={t("db.engine")}
           value={engine}
           onChange={setEngine}
-          options={engines.map((item) => ({
-            value: item.value,
-            label: t(`db.engineChoice.${item.value}`),
-          }))}
+          options={engines.map((item) => ({ value: item.value, label: item.label }))}
         />
+        <Field label={t("db.version")} htmlFor="db-server-version">
+          <select
+            id="db-server-version"
+            className="select"
+            style={{ width: "100%" }}
+            value={chosen}
+            onChange={(event) => setVersion(event.target.value)}
+          >
+            {versions.map((item, index) => (
+              <option key={item} value={item}>
+                {index === 0 ? t("db.versionRecommended", { version: item }) : item}
+              </option>
+            ))}
+          </select>
+        </Field>
       </div>
       {error && (
         <p className="field-error" style={{ marginTop: 8 }}>
@@ -1087,12 +1107,27 @@ function ServerCard({
   const [removeVolume, setRemoveVolume] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [target, setTarget] = useState("");
+  const [updating, setUpdating] = useState(false);
 
   const move = targets.length > 0 ? targets[0].name : "";
+  // a newer major version of the engine is a new server to move to
+  const newer = (engines.find((item) => item.value === server.engine)?.versions ?? []).filter(
+    (version) => Number.parseInt(version, 10) > majorOf(server),
+  );
   const moveTo = targets.find((item) => item.id === target) ?? targets[0];
   const latest = server.kind === "dedicated" ? moves[0] : undefined;
   const moving = latest?.status === "moving";
   const stackName = stacks.find((item) => item.id === server.stack)?.name ?? "–";
+
+  const update = async () => {
+    setUpdating(false);
+    try {
+      await dbApi.updateServer(server.id);
+      toast.success(t("db.updateQueued", { name: server.name }));
+    } catch (err) {
+      toast.error(err);
+    }
+  };
 
   const startMove = async () => {
     setMoveOpen(false);
@@ -1220,11 +1255,38 @@ function ServerCard({
           <Link to={`/stacks/${server.stack}`}>{t("db.openStack")}</Link>
         </p>
       )}
-      {canAct && server.kind === "shared" && databases === 0 && (
-        <div style={{ marginTop: 14 }}>
-          <Button size="small" variant="danger" onClick={() => setRemoving(true)}>
-            {t("db.removeServer")}
+      {server.kind === "shared" && server.engine === "postgres" && newer.length > 0 && (
+        <p className="faint small" style={{ marginTop: 10 }}>
+          {t("db.majorNote", { version: newer[newer.length - 1] })}
+        </p>
+      )}
+      {canAct && server.kind === "shared" && (
+        <div className="button-row">
+          <Button
+            size="small"
+            disabled={server.status === "creating"}
+            onClick={() => setUpdating(true)}
+          >
+            {t("db.update")}
           </Button>
+          {databases === 0 && (
+            <Button size="small" variant="danger" onClick={() => setRemoving(true)}>
+              {t("db.removeServer")}
+            </Button>
+          )}
+          <ConfirmDialog
+            open={updating}
+            title={t("db.updateConfirm", { name: server.name })}
+            confirmLabel={t("db.update")}
+            onCancel={() => setUpdating(false)}
+            onConfirm={() => void update()}
+          >
+            <p className="muted">
+              {t(server.engine === "mariadb" ? "db.updateTextMariadb" : "db.updateText", {
+                image: server.image,
+              })}
+            </p>
+          </ConfirmDialog>
           <ConfirmDialog
             open={removing}
             danger
