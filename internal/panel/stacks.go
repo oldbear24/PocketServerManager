@@ -309,21 +309,13 @@ func (p *Panel) stackDeployFinished(record *core.Record) {
 	}
 
 	if record.GetString("status") != schema.CommandSucceeded {
-		stack.Set("status", stackFailed)
-		if err := p.App.Save(stack); err != nil {
-			p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
-		}
+		p.setFields(stack, map[string]any{"status": stackFailed})
 		return
 	}
 
 	now := types.NowDateTime()
 
-	stack.Set("status", stackDeployed)
-	stack.Set("deployed_revision", payload.Revision)
-	stack.Set("deployed_at", now)
-	if err := p.App.Save(stack); err != nil {
-		p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
-	}
+	p.setFields(stack, map[string]any{"status": stackDeployed, "deployed_revision": payload.Revision, "deployed_at": now})
 
 	revision, err := p.App.FindFirstRecordByFilter(schema.StackRevisions, "stack={:stack} && number={:number}",
 		dbx.Params{"stack": stack.Id, "number": payload.Revision})
@@ -339,14 +331,8 @@ func (p *Panel) stackDeployFinished(record *core.Record) {
 // stackStateAfter stores what a successful stop or down leaves behind.
 func (p *Panel) stackStateAfter(state string) func(*core.Record) {
 	return func(record *core.Record) {
-		stack := p.succeededStack(record)
-		if stack == nil {
-			return
-		}
-
-		stack.Set("status", state)
-		if err := p.App.Save(stack); err != nil {
-			p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
+		if stack := p.succeededStack(record); stack != nil {
+			p.setFields(stack, map[string]any{"status": state})
 		}
 	}
 }
@@ -356,17 +342,22 @@ func (p *Panel) stackStateAfter(state string) func(*core.Record) {
 // start, and other states do not change.
 func (p *Panel) stackRestartFinished(record *core.Record) {
 	stack := p.succeededStack(record)
-	if stack == nil || stack.GetString("status") != stackStopped {
+	if stack == nil {
 		return
 	}
 
-	state := stackImported
-	if stack.GetInt("deployed_revision") > 0 {
-		state = stackDeployed
-	}
-
-	stack.Set("status", state)
-	if err := p.App.Save(stack); err != nil {
+	err := p.update(context.Background(), stack, func(fresh *core.Record) error {
+		if fresh.GetString("status") != stackStopped {
+			return errUnchanged
+		}
+		state := stackImported
+		if fresh.GetInt("deployed_revision") > 0 {
+			state = stackDeployed
+		}
+		fresh.Set("status", state)
+		return nil
+	})
+	if err != nil {
 		p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
 	}
 }
@@ -441,27 +432,31 @@ type stackEdit struct {
 
 // saveStackEdit applies an edit. If the files change, the hook adds a revision.
 func (p *Panel) saveStackEdit(ctx context.Context, e *core.RequestEvent, stack *core.Record, edit stackEdit, actor audit.Actor) error {
-	if edit.Compose != nil {
-		stack.Set("compose_yaml", *edit.Compose)
-	}
-	if edit.Env != nil {
-		stack.Set("env", *edit.Env)
-	}
-	if err := p.applySecretChange(stack, edit.Secrets); err != nil {
-		return err
+	if edit.Note != "" && actor.Note == "" {
+		actor.Note = edit.Note
 	}
 
-	if edit.Note != "" {
-		stack.Set(recordNote, edit.Note)
-		if actor.Note == "" {
-			actor.Note = edit.Note
+	// the edit applies to the stack as it is stored at this moment, not as it was
+	// read when the request came in
+	return p.update(audit.WithActor(ctx, actor), stack, func(fresh *core.Record) error {
+		if edit.Compose != nil {
+			fresh.Set("compose_yaml", *edit.Compose)
 		}
-	}
-	if !e.HasSuperuserAuth() {
-		stack.Set(recordAuthor, e.Auth.Id)
-	}
+		if edit.Env != nil {
+			fresh.Set("env", *edit.Env)
+		}
+		if err := p.applySecretChange(fresh, edit.Secrets); err != nil {
+			return err
+		}
 
-	return p.App.SaveWithContext(audit.WithActor(ctx, actor), stack)
+		if edit.Note != "" {
+			fresh.Set(recordNote, edit.Note)
+		}
+		if !e.HasSuperuserAuth() {
+			fresh.Set(recordAuthor, e.Auth.Id)
+		}
+		return nil
+	})
 }
 
 func (p *Panel) handleStackSave(e *core.RequestEvent) error {
@@ -525,8 +520,11 @@ func (p *Panel) deployRevision(ctx context.Context, stack, revision *core.Record
 		return nil, err
 	}
 
-	stack.Set("status", stackDeploying)
-	if err := p.App.Save(stack); err != nil {
+	err = p.update(ctx, stack, func(fresh *core.Record) error {
+		fresh.Set("status", stackDeploying)
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 

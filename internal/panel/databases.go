@@ -663,15 +663,20 @@ func (p *Panel) connectStack(ctx context.Context, actor audit.Actor, userID stri
 	}
 
 	connection := databases.Connection{Engine: engine, Server: server.GetString("name"), Database: database.GetString("name"), User: account.GetString("name")}
-	if env, changed := databases.AddEnv(stack.GetString("env"), connection.EnvLines()); changed {
-		stack.Set("env", env)
-		stack.Set(recordNote, "Connected to the database "+database.GetString("name"))
+	err = p.update(audit.WithActor(ctx, actor), stack, func(fresh *core.Record) error {
+		env, changed := databases.AddEnv(fresh.GetString("env"), connection.EnvLines())
+		if !changed {
+			return errUnchanged
+		}
+		fresh.Set("env", env)
+		fresh.Set(recordNote, "Connected to the database "+database.GetString("name"))
 		if userID != "" {
-			stack.Set(recordAuthor, userID)
+			fresh.Set(recordAuthor, userID)
 		}
-		if err := p.App.SaveWithContext(audit.WithActor(ctx, actor), stack); err != nil {
-			return err
-		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	// running containers join at once; the next deploy keeps them there
