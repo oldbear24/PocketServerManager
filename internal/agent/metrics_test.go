@@ -43,3 +43,32 @@ func TestTheFirstContainerSampleIsOnlyABase(t *testing.T) {
 		t.Error("a container seen again after it was gone sent a sample without a base")
 	}
 }
+
+// TestContainerCPUIsOnTheScaleOfDockerStats: 100 % is one core, as in docker stats
+// and top, so one busy core of four reads 100 % and not 25 %.
+func TestContainerCPUIsOnTheScaleOfDockerStats(t *testing.T) {
+	m := newMetricsCollector(nil)
+
+	first := statsOf(1000, 10000, 0)
+	first.CPUStats.OnlineCPUs = 4
+	m.containerSample("web", first)
+
+	// the host's counter covers all four cores, the container used a quarter of it
+	second := statsOf(1250, 11000, 0)
+	second.CPUStats.OnlineCPUs = 4
+	sample, ok := m.containerSample("web", second)
+	if !ok {
+		t.Fatal("no sample")
+	}
+	if sample.GetCpuPercent() != 100 {
+		t.Errorf("one busy core of four reads %v %%, want 100 %%", sample.GetCpuPercent())
+	}
+
+	// an engine that reports no online CPUs counts the per-CPU values, as docker stats does
+	third := statsOf(1500, 12000, 0)
+	third.CPUStats.CPUUsage.PercpuUsage = []uint64{1, 2}
+	sample, _ = m.containerSample("web", third)
+	if sample.GetCpuPercent() != 50 {
+		t.Errorf("with two per-CPU values a quarter of the host reads %v %%, want 50 %%", sample.GetCpuPercent())
+	}
+}

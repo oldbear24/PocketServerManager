@@ -136,7 +136,7 @@ The streams are custom routes registered in `OnServe` that check the PocketBase 
 
 ## Metrics
 
-Every 10 seconds the agent samples the host (CPU, memory, load, network, usage of each mount) from `/host/proc` and `/host/sys`, and its running containers from the Docker API, and sends the batch with `PushMetrics`. The panel writes it to `pb_data/metrics.db`, outside PocketBase, and rolls it up to 1 minute and 1 hour ([ADR 0003](adr/0003-metrics-storage.md)). `/api/pc/metrics/hosts/{id}` and `…/containers/{docker id}` return a window of 1 hour, 24 hours or 7 days; the latest values stay on the `hosts` record from the heartbeat.
+Every 10 seconds the agent samples the host (CPU, memory, load, network, usage of each mount) from `/host/proc` and `/host/sys`, and its running containers from the Docker API, and sends the batch with `PushMetrics`. The panel writes it to `pb_data/metrics.db`, outside PocketBase, and rolls it up to 1 minute and 1 hour ([ADR 0003](adr/0003-metrics-storage.md)). `/api/pc/metrics/hosts/{id}` and `…/containers/{docker id}` return a window of 1 hour, 24 hours or 7 days; the latest values stay on the `hosts` record from the heartbeat. A host's CPU is a share of all its cores; a container's is on the scale of `docker stats` and `top`, where 100 % is one core, so a busy container on a four-core host can show up to 400 %.
 
 ## Static sites, domains and TLS
 

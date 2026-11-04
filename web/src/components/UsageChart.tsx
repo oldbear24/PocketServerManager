@@ -7,8 +7,11 @@ import { ChartTable, LineChart, type ChartSeries } from "./charts";
 import { Card, SegmentedControl } from "./ui";
 
 /**
- * CPU and memory over time, on one axis in percent: of the whole host for the CPU,
- * and of the memory available to whatever the chart is about.
+ * CPU and memory over time, on one axis in percent. A host's CPU is a share of
+ * all its cores; a container's is on the scale of `docker stats`, where 100 % is
+ * one core, so the axis grows past 100 % in steps of a whole core when a
+ * container uses more. Memory is a share of what is available to whatever the
+ * chart is about.
  */
 export function UsageChart({
   title,
@@ -56,6 +59,8 @@ export function UsageChart({
 
   const formatTime = (time: number) => formatChartTime(time, range);
 
+  const maxValue = cpuAxisMax([...(points?.cpu ?? []), currentCpu]);
+
   return (
     <Card
       title={title}
@@ -88,8 +93,8 @@ export function UsageChart({
           to={points?.to ?? 1}
           resolution={points?.resolution_s ?? 10}
           series={series}
-          maxValue={100}
-          ticks={[0, 50, 100]}
+          maxValue={maxValue}
+          ticks={[0, maxValue / 2, maxValue]}
           formatTick={(tick) => `${tick} %`}
           formatTime={formatTime}
           empty={stale ? undefined : t("chart.noData")}
@@ -99,4 +104,10 @@ export function UsageChart({
       <ChartTable caption={title} times={times} series={series} formatTime={formatTime} />
     </Card>
   );
+}
+
+/** cpuAxisMax is 100 %, or the next whole number of cores above the highest value. */
+export function cpuAxisMax(values: number[]): number {
+  const highest = Math.max(0, ...values.filter((value) => Number.isFinite(value)));
+  return Math.max(100, Math.ceil(highest / 100) * 100);
 }

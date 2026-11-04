@@ -214,7 +214,8 @@ func (e *Engine) Names() []string {
 	return names
 }
 
-// SetLoad sets what the statistics of a container report.
+// SetLoad sets what the statistics of a container report: cpuPercent is its
+// share of the whole host, which has four CPUs.
 func (e *Engine) SetLoad(name string, cpuPercent float64, memBytes uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
