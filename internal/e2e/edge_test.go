@@ -110,8 +110,21 @@ func shortStateDir(t *testing.T) string {
 	return dir
 }
 
-// edgeAgent starts an agent with the edge role whose edge is a fake Caddy.
+// edgeAgent starts an agent with the edge role whose edge is a fake Caddy, for
+// tests that drive the edge with their own commands: the panel does not.
 func (h *harness) edgeAgent(name string) (*runningAgent, *core.Record, *fakeEdge) {
+	h.t.Helper()
+	h.panel.ManualEdges.Store(true)
+	return h.startEdgeAgent(name)
+}
+
+// managedEdge starts an edge agent whose edge the panel manages.
+func (h *harness) managedEdge(name string) (*runningAgent, *core.Record, *fakeEdge) {
+	h.t.Helper()
+	return h.startEdgeAgent(name)
+}
+
+func (h *harness) startEdgeAgent(name string) (*runningAgent, *core.Record, *fakeEdge) {
 	h.t.Helper()
 
 	config := h.agentConfig(name, h.token(name, schema.HostRoleDocker, schema.HostRoleEdge))
@@ -500,15 +513,18 @@ func TestCertificatesAndChallengesAreFiles(t *testing.T) {
 	running, host, _ := h.edgeAgent("edge-9")
 	dir := filepath.Join(running.config.StateDir, "edge")
 
+	// the panel fills in the chain and the key from the record when it delivers
 	chain, key := selfSigned(t, "app.example.com")
-	record := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertInstall{CertInstall: &agentv1.CertInstall{
-		CertificateId: "cert1", Names: []string{"app.example.com"}, ChainPem: chain, KeyPem: key,
-	}}})
-	done := h.waitForStatus(record.Id, schema.CommandSucceeded, schema.CommandFailed)
+	cert := h.storeCertificate(chain, key)
+	install := func(id string) *core.Record {
+		record := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertInstall{CertInstall: &agentv1.CertInstall{CertificateId: id}}})
+		return h.waitForStatus(record.Id, schema.CommandSucceeded, schema.CommandFailed)
+	}
+	done := install(cert.Id)
 	if done.GetString("status") != schema.CommandSucceeded {
 		t.Fatalf("cert.install: %s", done.GetString("error"))
 	}
-	file, err := edge.CertFileID("cert1", chain)
+	file, err := edge.CertFileID(cert.Id, chain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,10 +541,10 @@ func TestCertificatesAndChallengesAreFiles(t *testing.T) {
 		Certificates: []edge.Certificate{{ID: file}},
 		Routes:       []edge.Route{{Hostname: "app.example.com", Kind: edge.KindProxy, Upstream: "web:80", Certificate: file, HTTPSRedirect: true}},
 	}
-	record = h.create(host.Id, edgeApply(t, version.EdgeRef(), 1, config))
+	record := h.create(host.Id, edgeApply(t, version.EdgeRef(), 1, config))
 	h.waitForStatus(record.Id, schema.CommandSucceeded)
 
-	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: "cert1"}}})
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: cert.Id}}})
 	done = h.waitForStatus(record.Id, schema.CommandSucceeded, schema.CommandFailed)
 	if done.GetString("status") != schema.CommandFailed || !strings.Contains(done.GetString("error"), "still uses") {
 		t.Errorf("removing a certificate in use: %s %s", done.GetString("status"), done.GetString("error"))
@@ -538,26 +554,28 @@ func TestCertificatesAndChallengesAreFiles(t *testing.T) {
 	record = h.create(host.Id, edgeApply(t, version.EdgeRef(), 2, oneRoute))
 	h.waitForStatus(record.Id, schema.CommandSucceeded)
 	renewed, renewedKey := selfSigned(t, "app.example.com")
-	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertInstall{CertInstall: &agentv1.CertInstall{
-		CertificateId: "cert1", ChainPem: renewed, KeyPem: renewedKey,
-	}}})
-	h.waitForStatus(record.Id, schema.CommandSucceeded)
+	cert.Set("chain_pem", string(renewed))
+	cert.Set("key_pem", string(renewedKey))
+	if err := h.app.Save(cert); err != nil {
+		t.Fatal(err)
+	}
+	if done := install(cert.Id); done.GetString("status") != schema.CommandSucceeded {
+		t.Fatalf("installing the renewed certificate: %s", done.GetString("error"))
+	}
 	if _, err := os.Stat(filepath.Join(dir, "certs", file+".crt")); !os.IsNotExist(err) {
 		t.Error("the old files of a renewed certificate are left behind")
 	}
 
-	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: "cert1"}}})
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertRemove{CertRemove: &agentv1.CertRemove{CertificateId: cert.Id}}})
 	h.waitForStatus(record.Id, schema.CommandSucceeded)
 	if entries, _ := os.ReadDir(filepath.Join(dir, "certs")); len(entries) != 0 {
 		t.Errorf("files left after cert.remove: %v", entries)
 	}
 
-	// a key that does not belong to the certificate is refused
+	// a key that does not belong to the certificate is refused by the agent too
 	_, otherKey := selfSigned(t, "other.example.com")
-	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_CertInstall{CertInstall: &agentv1.CertInstall{
-		CertificateId: "cert2", ChainPem: chain, KeyPem: otherKey,
-	}}})
-	if done := h.waitForStatus(record.Id, schema.CommandSucceeded, schema.CommandFailed); done.GetString("status") != schema.CommandFailed {
+	mismatched := h.storeCertificate(chain, otherKey)
+	if done := install(mismatched.Id); done.GetString("status") != schema.CommandFailed {
 		t.Error("a key of another certificate was accepted")
 	}
 
@@ -607,6 +625,26 @@ func TestRemovingTheEdge(t *testing.T) {
 		ok, skipped, _ := selfCheck(t, h.host(host.Id), "edge")
 		return ok && skipped
 	})
+}
+
+// storeCertificate saves a certificate record as it is, without the upload's
+// checks; the key is sealed on save.
+func (h *harness) storeCertificate(chain, key []byte) *core.Record {
+	h.t.Helper()
+	collection, err := h.app.FindCollectionByNameOrId(schema.Certificates)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	record := core.NewRecord(collection)
+	record.Set("names", []string{"app.example.com"})
+	record.Set("issuer", schema.IssuerManual)
+	record.Set("status", schema.CertActive)
+	record.Set("chain_pem", string(chain))
+	record.Set("key_pem", string(key))
+	if err := h.app.Save(record); err != nil {
+		h.t.Fatal(err)
+	}
+	return record
 }
 
 // selfSigned returns a certificate and its key for a name, valid for a day.

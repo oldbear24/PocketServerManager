@@ -72,3 +72,20 @@ func TestContainerCPUIsOnTheScaleOfDockerStats(t *testing.T) {
 		t.Errorf("with two per-CPU values a quarter of the host reads %v %%, want 50 %%", sample.GetCpuPercent())
 	}
 }
+
+// TestRequestsCountOncePerRequest: Caddy counts a request once per handler it
+// passes, so only the handlers that answer it count.
+func TestRequestsCountOncePerRequest(t *testing.T) {
+	metrics := []byte(`# HELP caddy_http_requests_total Counter of HTTP(S) requests made.
+# TYPE caddy_http_requests_total counter
+caddy_http_requests_total{handler="headers",server="https"} 7
+caddy_http_requests_total{handler="encode",server="https"} 7
+caddy_http_requests_total{handler="reverse_proxy",server="https"} 7
+caddy_http_requests_total{handler="static_response",server="http"} 3
+caddy_http_requests_total{handler="file_server",server="http"} 2
+caddy_http_request_duration_seconds_count{code="200",handler="reverse_proxy",method="GET",server="https"} 7
+`)
+	if got := countRequests(metrics); got != 12 {
+		t.Errorf("counted %v requests, want 12", got)
+	}
+}

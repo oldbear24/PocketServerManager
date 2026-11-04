@@ -38,6 +38,8 @@ type Server struct {
 	Reject func(config map[string]any) error
 	// Delay holds every /load for a while, like a reload of a large config.
 	Delay time.Duration
+
+	requests float64
 }
 
 // Start listens on a Unix socket. With an autosave path the fake resumes from it
@@ -64,6 +66,7 @@ func Start(socket, autosave string) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /load", s.load)
 	mux.HandleFunc("GET /config/", s.getConfig)
+	mux.HandleFunc("GET /metrics", s.metrics)
 
 	s.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = s.server.Serve(listener) }()
@@ -220,4 +223,22 @@ func checkHandlers(value any) error {
 		}
 	}
 	return nil
+}
+
+// Serve counts requests the edge served, as Caddy's metrics would show them.
+func (s *Server) Serve(count float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests += count
+}
+
+func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	requests := s.requests
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	_, _ = fmt.Fprintf(w, "# TYPE caddy_http_requests_total counter\n")
+	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"reverse_proxy\",server=\"http\"} %g\n", requests)
+	// a request passes the headers handler too, and must not count twice
+	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",server=\"http\"} %g\n", requests)
 }

@@ -216,6 +216,8 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 			})
 		}
 
+		applyEdgeStatus(host, req.GetEdge())
+
 		failed, recovered = s.applySelfChecks(host, req.GetSelfChecks())
 
 		host.Set("status", hostStatus(host, req.GetSelfChecks()))
@@ -232,6 +234,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	if s.OnHeartbeat != nil {
 		s.OnHeartbeat(hostID, req.GetLastRttMs(), req.GetClockSkewMs())
 	}
+	if s.OnEdgeStatus != nil {
+		s.OnEdgeStatus(hostID)
+	}
 	for _, check := range failed {
 		events.Log(s.App, hostID, "agent.self_check_failed", schema.SeverityWarning,
 			fmt.Sprintf("Self-check %s failed: %s", check.name, check.detail),
@@ -247,6 +252,19 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 		ServerTime:       timestamppb.New(now),
 		RenewCertificate: renew,
 	}, nil
+}
+
+// applyEdgeStatus stores what the agent says of its edge proxy; a heartbeat
+// without one comes from a server that runs none.
+func applyEdgeStatus(host *core.Record, status *agentv1.EdgeStatus) {
+	host.Set("edge_applied_digest", status.GetDigest())
+	host.Set("edge_applied_revision", status.GetRevision())
+	host.Set("edge_running", status.GetRunning())
+	host.Set("edge_error", status.GetError())
+	host.Set("edge_requests_per_s", status.GetRequestsPerS())
+	if version := status.GetCaddyVersion(); version != "" || status == nil {
+		host.Set("edge_caddy_version", version)
+	}
 }
 
 // hostStatus is online when everything works, degraded when the agent is alive

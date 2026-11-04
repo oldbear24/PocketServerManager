@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pocketbase/pocketbase/apis"
@@ -60,6 +61,11 @@ type Panel struct {
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
+
+	edgeLocks edgeLocks
+	// ManualEdges stops the panel from sending edges their configs by itself,
+	// for tests that send edge.apply themselves.
+	ManualEdges atomic.Bool
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -125,6 +131,7 @@ func (p *Panel) Register() {
 	p.registerStacks()
 	p.registerDatabases()
 	p.registerMoves()
+	p.registerEdge()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -158,6 +165,7 @@ func (p *Panel) Register() {
 		p.bindStackRoutes(group)
 		p.bindTerminalRoutes(group)
 		p.bindDatabaseRoutes(group)
+		p.bindEdgeRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -217,6 +225,7 @@ func (p *Panel) startGateway() error {
 		Artifacts: p.artifactHandlers(),
 	}
 	p.Gateway.BindHostRemoval()
+	p.Gateway.OnEdgeStatus = p.onEdgeStatus
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)

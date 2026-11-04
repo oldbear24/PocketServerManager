@@ -66,6 +66,8 @@ type Server struct {
 
 	// OnHeartbeat is told the round trip and clock skew an agent measured.
 	OnHeartbeat func(hostID string, rttMS, skewMS float64)
+	// OnEdgeStatus is told that a heartbeat stored the state of a host's edge.
+	OnEdgeStatus func(hostID string)
 	// OnStopping is called when the gateway begins to shut down.
 	OnStopping func()
 

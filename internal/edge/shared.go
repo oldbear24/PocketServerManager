@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"strings"
 )
 
 // Digest identifies what an edge serves: its image and its config, as the
@@ -30,4 +31,22 @@ func CertFileID(id string, chainPEM []byte) (string, error) {
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return id + "-" + hex.EncodeToString(sum[:])[:16], nil
+}
+
+// Covers reports whether a certificate with these names serves a hostname: the
+// same name, or a wildcard one level above it, as TLS clients match them.
+func Covers(names []string, hostname string) bool {
+	hostname = strings.ToLower(hostname)
+	for _, name := range names {
+		name = strings.ToLower(name)
+		if name == hostname {
+			return true
+		}
+		if suffix, ok := strings.CutPrefix(name, "*."); ok && !strings.HasPrefix(hostname, "*.") {
+			if _, rest, found := strings.Cut(hostname, "."); found && rest == suffix {
+				return true
+			}
+		}
+	}
+	return false
 }

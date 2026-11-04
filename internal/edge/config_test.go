@@ -220,3 +220,25 @@ func TestValidHostname(t *testing.T) {
 		}
 	}
 }
+
+func TestCovers(t *testing.T) {
+	cases := []struct {
+		names    []string
+		hostname string
+		want     bool
+	}{
+		{[]string{"app.example.com"}, "app.example.com", true},
+		{[]string{"App.Example.com"}, "app.example.com", true},
+		{[]string{"*.example.com"}, "app.example.com", true},
+		{[]string{"*.example.com"}, "example.com", false},
+		{[]string{"*.example.com"}, "a.b.example.com", false},
+		{[]string{"*.example.com"}, "*.example.com", true},
+		{[]string{"example.com"}, "*.example.com", false},
+		{[]string{"other.example.com"}, "app.example.com", false},
+	}
+	for _, c := range cases {
+		if got := Covers(c.names, c.hostname); got != c.want {
+			t.Errorf("Covers(%v, %q) = %v", c.names, c.hostname, got)
+		}
+	}
+}

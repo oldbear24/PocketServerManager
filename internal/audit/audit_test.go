@@ -323,8 +323,9 @@ func TestNoSecretInAuditLog(t *testing.T) {
 
 	// what a collection needs besides a host and a name
 	required := map[string]map[string]any{
-		schema.DBServers: {"engine": schema.EngineMariaDB, "kind": schema.DBServerShared},
-		schema.DBUsers:   {"server": dbServer.Id, "name": "with_secrets"},
+		schema.DBServers:    {"engine": schema.EngineMariaDB, "kind": schema.DBServerShared},
+		schema.DBUsers:      {"server": dbServer.Id, "name": "with_secrets"},
+		schema.Certificates: {"names": []string{"secret.example.com"}},
 	}
 
 	covered := 0
