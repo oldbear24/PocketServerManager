@@ -35,7 +35,7 @@ const (
 var ErrNotCancellable = errors.New("the command has already finished")
 
 // ErrUninterruptible is returned when a running command that must finish by itself is cancelled.
-var ErrUninterruptible = fmt.Errorf("%w: it is under way and cannot be interrupted", ErrNotCancellable)
+var ErrUninterruptible = errors.New("the command is under way and cannot be interrupted")
 
 // Options describes a new command.
 type Options struct {
@@ -913,7 +913,7 @@ func (m *Manager) BindRoutes(r *router.RouterGroup[*core.RequestEvent]) {
 		reason := "Cancelled by " + e.Auth.Email()
 
 		err := m.Cancel(e.Request.PathValue("id"), reason)
-		if errors.Is(err, ErrNotCancellable) {
+		if errors.Is(err, ErrNotCancellable) || errors.Is(err, ErrUninterruptible) {
 			return e.BadRequestError(err.Error(), nil)
 		}
 		if err != nil {
