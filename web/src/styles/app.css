@@ -941,6 +941,12 @@ code,
   border-color: transparent;
 }
 
+.banner.info {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: transparent;
+}
+
 /* Toasts */
 .toasts {
   position: fixed;
@@ -1763,6 +1769,22 @@ code,
   flex-wrap: wrap;
   gap: 4px 12px;
   font-size: 13px;
+}
+
+/* what moved into a shared server */
+.db-moves-title {
+  margin: 16px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.db-moves {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .button-row {

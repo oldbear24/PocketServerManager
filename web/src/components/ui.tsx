@@ -322,7 +322,7 @@ export function EmptyState({
   );
 }
 
-export function Banner({ tone, children }: { tone: "err" | "warn"; children: ReactNode }) {
+export function Banner({ tone, children }: { tone: "err" | "warn" | "info"; children: ReactNode }) {
   return (
     <div className={`banner ${tone}`} role={tone === "err" ? "alert" : "status"}>
       {children}

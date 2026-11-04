@@ -45,16 +45,39 @@ export type DbUser = RecordModel & {
   databases: string[];
   secret_name: string;
   rotated_at: string;
+  /** The application keeps this password in its own settings: the panel does not change it. */
+  app_password: boolean;
 };
 
 export type DbDump = RecordModel & {
   server: string;
   database_name: string;
-  kind: "export" | "final";
+  kind: "export" | "final" | "move";
   command: string;
   file: string;
   size_bytes: number;
   expires_at: string;
+};
+
+/** A move of databases from one server into a shared one. */
+export type DbMove = RecordModel & {
+  host: string;
+  stack: string;
+  target: string;
+  target_name: string;
+  source_name: string;
+  source_kind: "shared" | "dedicated";
+  source_container: string;
+  source_service: string;
+  source_volume: string;
+  source_version: string;
+  databases: { name: string; user: string }[] | null;
+  status: "moving" | "moved" | "failed";
+  command: string;
+  error: string;
+  moved_at: string;
+  remove_after: string;
+  removed_at: string;
 };
 
 /** A database container found inside a stack, not linked yet. */
@@ -155,6 +178,13 @@ export const dbApi = {
   }) => pb.send<DbServer>("/api/pc/db-servers/link", { method: "POST", body }),
 
   stats: (id: string) => pb.send<Command>(`/api/pc/db-servers/${id}/stats`, { method: "POST" }),
+
+  /** Moves a stack's own server into a shared one, or one database of a shared server. */
+  move: (id: string, body: { target: string; database?: string }) =>
+    pb.send<{ move: DbMove; command: Command }>(`/api/pc/db-servers/${id}/move`, {
+      method: "POST",
+      body,
+    }),
 
   removeServer: (id: string, removeVolume: boolean) =>
     pb.send(`/api/pc/db-servers/${id}?remove_volume=${removeVolume}`, { method: "DELETE" }),

@@ -36,10 +36,11 @@ import {
   type DbCandidate,
   type DbDump,
   type DbEngine,
+  type DbMove,
   type DbServer,
   type DbUser,
 } from "../lib/databases";
-import { formatBytes, formatNumber, formatRelative } from "../lib/format";
+import { formatBytes, formatDate, formatNumber, formatRelative } from "../lib/format";
 import { pb } from "../lib/pb";
 import { useLiveList, useNow } from "../lib/realtime";
 import type { Container, Host, Stack } from "../lib/types";
@@ -75,22 +76,43 @@ function useCandidates(version: string) {
   return candidates;
 }
 
-/** Whether a dedicated server could move to a shared one on its host. */
-function moveTarget(server: DbServer, servers: DbServer[]): string {
-  if (server.kind !== "dedicated" || (server.extensions ?? []).length > 0) {
-    return "";
+const majorOf = (server: DbServer) =>
+  Number.parseInt(server.version || imageTag(server.image), 10) || 0;
+
+/**
+ * The shared servers a server's databases could move to: on its host, of its
+ * engine and not older, as a dump does not restore into an older server.
+ */
+function moveTargets(server: DbServer, servers: DbServer[]): DbServer[] {
+  if ((server.extensions ?? []).length > 0) {
+    return [];
   }
-  const major = (version: string) => Number.parseInt(version, 10) || 0;
-  const own = major(server.version || imageTag(server.image));
-  const target = servers.find(
+  const own = majorOf(server);
+  return servers.filter(
     (other) =>
+      other.id !== server.id &&
       other.kind === "shared" &&
+      other.status === "ready" &&
       other.host === server.host &&
       other.engine === server.engine &&
       own > 0 &&
-      major(other.version || imageTag(other.image)) >= own,
+      majorOf(other) >= own,
   );
-  return target?.name ?? "";
+}
+
+/** Whether a dedicated server could move to a shared one on its host. */
+function moveTarget(server: DbServer, servers: DbServer[]): string {
+  return server.kind === "dedicated" ? (moveTargets(server, servers)[0]?.name ?? "") : "";
+}
+
+/** The move of a server's databases that is under way, if any. */
+function runningMove(server: DbServer, moves: DbMove[]): DbMove | undefined {
+  return moves.find(
+    (move) =>
+      move.status === "moving" &&
+      move.host === server.host &&
+      move.source_container === server.container_ref,
+  );
 }
 
 function serverTone(server: DbServer, container: Container | undefined): Tone {
@@ -118,6 +140,7 @@ export function DatabasesPage() {
   const servers = useLiveList<DbServer>("db_servers", { sort: "name", perPage: 200 });
   const databases = useLiveList<Database>("databases", { sort: "name", perPage: 500 });
   const users = useLiveList<DbUser>("db_users", { perPage: 500 });
+  const moves = useLiveList<DbMove>("db_moves", { sort: "-created", perPage: 200 });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const stacks = useLiveList<Stack>("stacks", { sort: "name", perPage: 500 });
   const containers = useLiveList<Container>("containers", {
@@ -254,6 +277,7 @@ export function DatabasesPage() {
             const count = databases.items.filter((item) => item.server === server.id).length;
             const container = containerOf(server);
             const move = moveTarget(server, servers.items);
+            const moving = runningMove(server, moves.items);
             const pressed = current?.id === server.id && !candidate;
             return (
               <button
@@ -291,12 +315,16 @@ export function DatabasesPage() {
                   warnAt={80}
                   errAt={95}
                 />
-                <span className={`db-server-hint small${move ? " warn-text" : " muted"}`}>
-                  {move
-                    ? t("db.canMove", { name: move })
-                    : (server.extensions ?? []).length > 0
-                      ? t("db.keepDedicated")
-                      : t(`db.serverState.${serverTone(server, container)}`)}
+                <span
+                  className={`db-server-hint small${move && !moving ? " warn-text" : " muted"}`}
+                >
+                  {moving
+                    ? t("db.movingHint", { name: moving.target_name })
+                    : move
+                      ? t("db.canMove", { name: move })
+                      : (server.extensions ?? []).length > 0
+                        ? t("db.keepDedicated")
+                        : t(`db.serverState.${serverTone(server, container)}`)}
                 </span>
               </button>
             );
@@ -354,8 +382,21 @@ export function DatabasesPage() {
                 <ConnectionCard
                   server={current}
                   database={database}
-                  user={users.items.find(
-                    (item) => item.server === current.id && item.name === database.name,
+                  user={
+                    users.items.find(
+                      (item) =>
+                        item.server === current.id && (item.databases ?? []).includes(database.id),
+                    ) ??
+                    users.items.find(
+                      (item) => item.server === current.id && item.name === database.name,
+                    )
+                  }
+                  targets={moveTargets(current, servers.items)}
+                  moving={moves.items.some(
+                    (move) =>
+                      move.status === "moving" &&
+                      (move.databases ?? []).some((item) => item.name === database.name) &&
+                      move.source_name === current.name,
                   )}
                   stacks={stacks.items}
                   canAct={canAct}
@@ -366,7 +407,13 @@ export function DatabasesPage() {
                 server={current}
                 hostName={hostName(current.host)}
                 databases={serverDatabases.length}
-                move={moveTarget(current, servers.items)}
+                targets={current.kind === "dedicated" ? moveTargets(current, servers.items) : []}
+                moves={moves.items.filter((move) =>
+                  current.kind === "shared"
+                    ? move.target === current.id && move.status === "moved"
+                    : move.host === current.host && move.source_container === current.container_ref,
+                )}
+                stacks={stacks.items}
                 canAct={canAct}
               />
             </div>
@@ -670,6 +717,8 @@ function ConnectionCard({
   server,
   database,
   user,
+  targets,
+  moving,
   stacks,
   canAct,
   isAdmin,
@@ -677,6 +726,9 @@ function ConnectionCard({
   server: DbServer;
   database: Database;
   user: DbUser | undefined;
+  /** Shared servers this database could move to. */
+  targets: DbServer[];
+  moving: boolean;
   stacks: Stack[];
   canAct: boolean;
   isAdmin: boolean;
@@ -689,8 +741,13 @@ function ConnectionCard({
   const [cloneName, setCloneName] = useState("");
   const [stack, setStack] = useState("");
   const [busy, setBusy] = useState("");
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [target, setTarget] = useState("");
 
   const userName = user?.name ?? database.name;
+  // the application keeps this password in its own settings
+  const appPassword = Boolean(user?.app_password);
+  const moveTo = targets.find((item) => item.id === target) ?? targets[0];
   const options = stacks.filter((item) => item.host === server.host && item.source !== "db_server");
   const ready = database.status === "ready";
   // a dedicated server's databases belong to their stack, with its own users
@@ -765,7 +822,8 @@ function ConnectionCard({
             <dd className="mono">{userName}</dd>
             <dt>{t("db.password")}</dt>
             <dd>
-              <span className="mono">••••••••</span> · {t("db.appSecret")}
+              <span className="mono">••••••••</span> ·{" "}
+              {appPassword ? t("db.appPassword") : t("db.appSecret")}
             </dd>
             <dt>{t("db.grants")}</dt>
             <dd>{t("db.grantsText", { name: database.name })}</dd>
@@ -777,27 +835,39 @@ function ConnectionCard({
             )}
           </dl>
 
-          <div style={{ marginTop: 14 }}>
-            <CodeBlock
-              code={envSnippet(server, database.name, userName)}
-              label={t("db.envSnippet")}
-            />
-          </div>
-          <p className="muted small" style={{ marginTop: 10 }}>
-            {t("db.rotateNote")}
-          </p>
+          {appPassword ? (
+            <p className="muted small" style={{ marginTop: 10 }}>
+              {t("db.appPasswordNote")}
+            </p>
+          ) : (
+            <>
+              <div style={{ marginTop: 14 }}>
+                <CodeBlock
+                  code={envSnippet(server, database.name, userName)}
+                  label={t("db.envSnippet")}
+                />
+              </div>
+              <p className="muted small" style={{ marginTop: 10 }}>
+                {t("db.rotateNote")}
+              </p>
+            </>
+          )}
 
-          {canAct && ready && (
+          {moving && <Banner tone="info">{t("db.movingDatabase")}</Banner>}
+
+          {canAct && ready && !moving && (
             <div className="button-row">
-              <Button
-                size="small"
-                disabled={Boolean(busy)}
-                onClick={() =>
-                  void run("rotate", () => dbApi.rotate(database.id), t("db.rotateQueued"))
-                }
-              >
-                {t("db.rotate")}
-              </Button>
+              {!appPassword && (
+                <Button
+                  size="small"
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    void run("rotate", () => dbApi.rotate(database.id), t("db.rotateQueued"))
+                  }
+                >
+                  {t("db.rotate")}
+                </Button>
+              )}
               {isAdmin && (
                 <Button size="small" disabled={Boolean(busy)} onClick={() => void openAdminer()}>
                   {t("db.adminer")}
@@ -817,7 +887,42 @@ function ConnectionCard({
               <Button size="small" disabled={Boolean(busy)} onClick={() => setCloning(!cloning)}>
                 {t("db.clone")}
               </Button>
+              {database.stack && targets.length > 0 && (
+                <Button size="small" disabled={Boolean(busy)} onClick={() => setMoveOpen(true)}>
+                  {t("db.moveDatabase")}
+                </Button>
+              )}
             </div>
+          )}
+
+          {moveTo && (
+            <ConfirmDialog
+              open={moveOpen}
+              title={t("db.moveDatabaseConfirm", { name: database.name })}
+              confirmLabel={t("db.moveDatabase")}
+              onCancel={() => setMoveOpen(false)}
+              onConfirm={() => {
+                setMoveOpen(false);
+                void run(
+                  "move",
+                  () => dbApi.move(server.id, { target: moveTo.id, database: database.name }),
+                  t("db.moveQueued", { name: moveTo.name }),
+                );
+              }}
+            >
+              <MoveTargetField
+                id="db-move-database-target"
+                targets={targets}
+                value={moveTo.id}
+                onChange={setTarget}
+              />
+              <p className="muted">
+                {t("db.moveDatabaseText", {
+                  stack: stacks.find((item) => item.id === database.stack)?.name ?? "–",
+                  name: moveTo.name,
+                })}
+              </p>
+            </ConfirmDialog>
           )}
 
           {canAct && ready && cloning && (
@@ -922,23 +1027,85 @@ function ConnectionCard({
   );
 }
 
+/** The shared servers to choose from, when there is more than one. */
+function MoveTargetField({
+  id,
+  targets,
+  value,
+  onChange,
+}: {
+  id: string;
+  targets: DbServer[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (targets.length < 2) {
+    return null;
+  }
+  return (
+    <Field label={t("db.moveTarget")} htmlFor={id}>
+      <select
+        id={id}
+        className="select"
+        style={{ width: "100%" }}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {targets.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.name} · {serverLabel(item)}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 function ServerCard({
   server,
   hostName,
   databases,
-  move,
+  targets,
+  moves,
+  stacks,
   canAct,
 }: {
   server: DbServer;
   hostName: string;
   databases: number;
-  move: string;
+  /** Shared servers a dedicated server's databases could move to. */
+  targets: DbServer[];
+  /** Moves out of a dedicated server, or into a shared one. */
+  moves: DbMove[];
+  stacks: Stack[];
   canAct: boolean;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [removing, setRemoving] = useState(false);
   const [removeVolume, setRemoveVolume] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [target, setTarget] = useState("");
+
+  const move = targets.length > 0 ? targets[0].name : "";
+  const moveTo = targets.find((item) => item.id === target) ?? targets[0];
+  const latest = server.kind === "dedicated" ? moves[0] : undefined;
+  const moving = latest?.status === "moving";
+  const stackName = stacks.find((item) => item.id === server.stack)?.name ?? "–";
+
+  const startMove = async () => {
+    setMoveOpen(false);
+    if (!moveTo) {
+      return;
+    }
+    try {
+      await dbApi.move(server.id, { target: moveTo.id });
+      toast.success(t("db.moveQueued", { name: moveTo.name }));
+    } catch (err) {
+      toast.error(err);
+    }
+  };
 
   const refresh = async () => {
     try {
@@ -982,8 +1149,72 @@ function ServerCard({
       }
     >
       {server.last_error && <Banner tone="warn">{server.last_error}</Banner>}
+      {moving && <Banner tone="info">{t("db.moving", { name: latest.target_name })}</Banner>}
+      {latest?.status === "failed" && (
+        <Banner tone="warn">
+          {t("db.moveFailed", { name: latest.target_name, error: latest.error })}
+        </Banner>
+      )}
       <p className="muted">{text}</p>
-      {server.kind === "dedicated" && move && <p className="faint small">{t("db.moveLater")}</p>}
+      {server.kind === "dedicated" && move && !moving && (
+        <>
+          <p className="faint small">{t("db.moveKeep")}</p>
+          {canAct && (
+            <div style={{ marginTop: 14 }}>
+              <Button size="small" variant="primary" onClick={() => setMoveOpen(true)}>
+                {t("db.moveStart")}
+              </Button>
+            </div>
+          )}
+          {moveTo && (
+            <ConfirmDialog
+              open={moveOpen}
+              title={t("db.moveConfirm", { name: server.name })}
+              confirmLabel={t("db.moveStart")}
+              onCancel={() => setMoveOpen(false)}
+              onConfirm={() => void startMove()}
+            >
+              <MoveTargetField
+                id="db-move-target"
+                targets={targets}
+                value={moveTo.id}
+                onChange={setTarget}
+              />
+              <p className="muted">
+                {t("db.moveConfirmText", {
+                  stack: stackName,
+                  name: moveTo.name,
+                  service: server.service || server.container_ref,
+                })}
+              </p>
+            </ConfirmDialog>
+          )}
+        </>
+      )}
+      {server.kind === "shared" && moves.length > 0 && (
+        <>
+          <h3 className="db-moves-title">{t("db.movedHere")}</h3>
+          <ul className="db-moves small">
+            {moves.map((item) => (
+              <li key={item.id}>
+                <span className="mono">{item.source_name}</span>
+                {item.source_version && ` · ${item.source_version}`} ·{" "}
+                {(item.databases ?? []).map((entry) => entry.name).join(", ")}
+                <div className="cell-sub">
+                  {item.source_kind !== "dedicated"
+                    ? formatDate(item.moved_at)
+                    : item.removed_at
+                      ? t("db.oldRemoved", { date: formatDate(item.moved_at) })
+                      : t("db.oldKept", {
+                          date: formatDate(item.remove_after),
+                          volume: item.source_volume || "–",
+                        })}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       {server.stack && (
         <p className="small" style={{ marginTop: 10 }}>
           <Link to={`/stacks/${server.stack}`}>{t("db.openStack")}</Link>
