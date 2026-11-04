@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 
 import { PageHead } from "../components/Layout";
+import { PhpVersionsCard } from "../components/PhpVersions";
 import { useToast } from "../components/toast";
 import { Button, Card, Field, SegmentedControl } from "../components/ui";
 import { languages } from "../i18n";
@@ -28,6 +29,7 @@ export function SettingsPage() {
       <div className="columns">
         <div className="column-wide">
           {hasRole(user, "admin") && <PanelSettingsCard />}
+          <PhpVersionsCard />
           <AboutCard />
         </div>
         <div className="column-side">

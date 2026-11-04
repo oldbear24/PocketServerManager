@@ -1005,5 +1005,25 @@
     "removeCertificateNote": "Edge budou jeho domény obsluhovat jen přes HTTP, dokud je nepokryje jiný certifikát.",
     "certificateRemoved": "Certifikát byl odebrán.",
     "loading": "Načítají se trasy…"
+  },
+  "php": {
+    "title": "Běhová prostředí PHP",
+    "note": "Obrazy pro PHP weby",
+    "version": "Verze",
+    "support": "Podpora",
+    "activeUntil": "Opravy chyb do",
+    "securityUntil": "Bezpečnostní opravy do",
+    "image": "Obraz",
+    "state": {
+      "supported": "Podporováno",
+      "security": "Jen bezpečnostní opravy",
+      "ending": "Brzy končí",
+      "ended": "Skončilo"
+    },
+    "endingWarning_one": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} den, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_few": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dny, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_many": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dne, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_other": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dní, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endedWarning": "PHP {{version}} od {{date}} nedostává bezpečnostní opravy. Převeďte jeho weby na novější verzi."
   }
 }

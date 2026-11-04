@@ -961,5 +961,23 @@
     "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
     "certificateRemoved": "The certificate was removed.",
     "loading": "Loading the routes…"
+  },
+  "php": {
+    "title": "PHP runtimes",
+    "note": "Images of PHP sites",
+    "version": "Version",
+    "support": "Support",
+    "activeUntil": "Bug fixes until",
+    "securityUntil": "Security fixes until",
+    "image": "Image",
+    "state": {
+      "supported": "Supported",
+      "security": "Security fixes only",
+      "ending": "Ending soon",
+      "ended": "Ended"
+    },
+    "endingWarning_one": "PHP {{version}} gets security fixes for {{count}} more day, until {{date}}. Move its sites to a newer version before then.",
+    "endingWarning_other": "PHP {{version}} gets security fixes for {{count}} more days, until {{date}}. Move its sites to a newer version before then.",
+    "endedWarning": "PHP {{version}} has had no security fixes since {{date}}. Move its sites to a newer version."
   }
 }

@@ -808,6 +808,21 @@ func TestInfoRoute(t *testing.T) {
 	}
 }
 
+func TestPHPVersionsRoute(t *testing.T) {
+	h := newHarness(t)
+
+	_, viewerToken := testutil.NewUser(t, h.app, "viewer@example.com", schema.RoleViewer)
+
+	if status, _ := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: "/api/pc/php/versions"}); status != http.StatusUnauthorized {
+		t.Errorf("anonymous: %d", status)
+	}
+
+	status, body := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: "/api/pc/php/versions", Token: viewerToken})
+	if status != http.StatusOK || !strings.Contains(body, `"version":"8.2"`) || !strings.Contains(body, `"security_support_until":"2026-12-31"`) || !strings.Contains(body, `"warn_days":90`) {
+		t.Errorf("%d %s", status, body)
+	}
+}
+
 func TestInventorySync(t *testing.T) {
 	h := newHarness(t)
 
