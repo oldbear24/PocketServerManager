@@ -12,6 +12,7 @@ import {
   parseDate,
   percentOf,
 } from "./format";
+import { connectionShare, envSnippet, serverLabel, type DbServer } from "./databases";
 import { composeSnippet, dockerRunCommand, scriptCommand, type InstallParams } from "./install";
 import {
   compileFilter,
@@ -384,5 +385,55 @@ describe("stacks", () => {
     expect(rejectionOf({ response: { validation } })).toEqual(validation);
     expect(rejectionOf(new Error("x"))).toBeNull();
     expect(rejectionOf(null)).toBeNull();
+  });
+});
+
+describe("databases", () => {
+  const server = (fields: Partial<DbServer>): DbServer =>
+    ({
+      name: "db-main",
+      engine: "mariadb",
+      port: 3306,
+      version: "",
+      image: "mariadb:11.8",
+      extensions: null,
+      connections: 0,
+      max_connections: 0,
+      ...fields,
+    }) as DbServer;
+
+  it("gives an application the variables the panel adds, with the password as a reference", () => {
+    expect(envSnippet(server({}), "shop", "shop")).toBe(
+      "DB_HOST=db-main\nDB_PORT=3306\nDB_NAME=shop\nDB_USER=shop\nDB_PASSWORD=${secret:db/shop}",
+    );
+    const postgres = envSnippet(
+      server({ name: "pg-main", engine: "postgres", port: 5432 }),
+      "notes",
+      "notes",
+    );
+    expect(postgres).toContain(
+      "DATABASE_URL=postgres://notes:${secret:db/notes}@pg-main:5432/notes",
+    );
+  });
+
+  it("names a server by what it said, or by its image", () => {
+    expect(serverLabel(server({}))).toBe("MariaDB 11.8");
+    expect(serverLabel(server({ version: "11.8.2-MariaDB-ubu2404" }))).toBe("MariaDB 11.8.2");
+    expect(
+      serverLabel(
+        server({
+          engine: "postgres",
+          image: "ghcr.io/immich-app/postgres:16-vectorchord",
+          extensions: ["VectorChord"],
+        }),
+      ),
+    ).toBe("PostgreSQL 16 + VectorChord");
+    expect(serverLabel(server({ image: "registry.lan:5000/mariadb:10.11" }))).toBe("MariaDB 10.11");
+  });
+
+  it("measures the connections in use", () => {
+    expect(connectionShare(server({ connections: 23, max_connections: 200 }))).toBe(12);
+    expect(connectionShare(server({ connections: 5 }))).toBe(0);
+    expect(connectionShare(server({ connections: 500, max_connections: 100 }))).toBe(100);
   });
 });
