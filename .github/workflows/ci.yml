@@ -54,6 +54,10 @@ jobs:
       # the end-to-end tests take about 11 minutes under the race detector, more
       # than go test's default limit of 10
       - run: go test -race -timeout 25m ./...
+      # the golden edge configs, loaded into the pinned Caddy image itself
+      - run: go test -count=1 -run TestGoldenConfigsLoadInCaddy ./internal/edge
+        env:
+          POCKETCLOUD_CADDY_TEST: "1"
       - name: Cross-compile for the supported platforms
         run: |
           for arch in amd64 arm64; do

@@ -1,0 +1,222 @@
+package edge
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+var update = flag.Bool("update", false, "rewrite the golden configs in testdata")
+
+// golden are the configs checked byte for byte, and loaded into a real Caddy by
+// TestGoldenConfigsLoadInCaddy.
+var golden = map[string]Config{
+	"empty": {},
+	"full": {
+		Certificates: []Certificate{{ID: "certwild"}, {ID: "certapp"}},
+		Routes: []Route{
+			{Hostname: "app.example.com", Kind: KindProxy, Upstream: "web-app-1:8080", Certificate: "certapp", HTTPSRedirect: true, HSTS: true, Compress: true},
+			{Hostname: "*.example.com", Kind: KindProxy, Upstream: "catchall:80", Certificate: "certwild", HTTPSRedirect: true},
+			{Hostname: "plain.example.org", Kind: KindProxy, Upstream: "plain:3000", Compress: true},
+			{Hostname: "example.com", Kind: KindRedirect, RedirectTo: "https://www.example.com", RedirectPermanent: true, Certificate: "certapp"},
+			{Hostname: "old.example.org", Kind: KindRedirect, RedirectTo: "https://new.example.org/landing"},
+		},
+	},
+}
+
+func TestGoldenConfigs(t *testing.T) {
+	for name, config := range golden {
+		t.Run(name, func(t *testing.T) {
+			got, err := Build(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			path := filepath.Join("testdata", name+".json")
+			if *update {
+				if err := os.WriteFile(path, append(got, '\n'), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%v (run go test ./internal/edge -update to create it)", err)
+			}
+			if !bytes.Equal(append(got, '\n'), want) {
+				t.Errorf("%s differs from %s; run go test ./internal/edge -update and review the diff", name, path)
+			}
+		})
+	}
+}
+
+func TestBuildIsDeterministic(t *testing.T) {
+	config := golden["full"]
+	first, err := Build(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reversed := Config{}
+	for i := len(config.Routes) - 1; i >= 0; i-- {
+		reversed.Routes = append(reversed.Routes, config.Routes[i])
+	}
+	for i := len(config.Certificates) - 1; i >= 0; i-- {
+		reversed.Certificates = append(reversed.Certificates, config.Certificates[i])
+	}
+
+	second, err := Build(reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Error("the order of routes and certificates changes the generated config")
+	}
+}
+
+// decoded is the part of a generated config the tests look at.
+type decoded struct {
+	Admin struct {
+		Listen string `json:"listen"`
+	} `json:"admin"`
+	Apps struct {
+		HTTP struct {
+			Servers map[string]struct {
+				Listen []string `json:"listen"`
+				Routes []struct {
+					Match []struct {
+						Host []string `json:"host"`
+						Path []string `json:"path"`
+					} `json:"match"`
+					Handle []map[string]any `json:"handle"`
+				} `json:"routes"`
+			} `json:"servers"`
+		} `json:"http"`
+		TLS *struct{} `json:"tls"`
+	} `json:"apps"`
+}
+
+func decode(t *testing.T, config Config) decoded {
+	t.Helper()
+	raw, err := Build(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out decoded
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestRoutesWithoutCertificatesServePlainHTTPOnly(t *testing.T) {
+	out := decode(t, Config{Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80"}}})
+
+	if _, ok := out.Apps.HTTP.Servers["https"]; ok {
+		t.Error("an edge without certificates listens on 443")
+	}
+	if out.Apps.TLS != nil {
+		t.Error("an edge without certificates has a tls app")
+	}
+
+	routes := out.Apps.HTTP.Servers["http"].Routes
+	if len(routes) != 3 {
+		t.Fatalf("got %d routes on port 80, want the challenge, the host and the fallback", len(routes))
+	}
+	if routes[0].Match[0].Path[0] != "/.well-known/acme-challenge/*" {
+		t.Error("the ACME challenge route is not first")
+	}
+	if routes[1].Handle[0]["handler"] != "reverse_proxy" {
+		t.Errorf("the host is not proxied on port 80: %v", routes[1].Handle)
+	}
+	if out.Admin.Listen != "unix/"+AdminSocket {
+		t.Errorf("the admin API listens on %q", out.Admin.Listen)
+	}
+}
+
+func TestHTTPSRedirectComesAfterTheChallenge(t *testing.T) {
+	out := decode(t, Config{
+		Certificates: []Certificate{{ID: "c1"}},
+		Routes:       []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", HTTPSRedirect: true}},
+	})
+
+	plain := out.Apps.HTTP.Servers["http"].Routes
+	if len(plain[0].Match[0].Path) == 0 {
+		t.Fatal("the first route on port 80 is not the ACME challenge")
+	}
+	if plain[1].Handle[0]["status_code"] != float64(308) {
+		t.Errorf("port 80 does not redirect to HTTPS: %v", plain[1].Handle)
+	}
+
+	secure := out.Apps.HTTP.Servers["https"]
+	if secure.Listen[0] != ":443" || secure.Routes[0].Handle[0]["handler"] != "reverse_proxy" {
+		t.Errorf("port 443 does not serve the route: %+v", secure)
+	}
+}
+
+func TestExactNamesComeBeforeWildcards(t *testing.T) {
+	out := decode(t, Config{Routes: []Route{
+		{Hostname: "*.example.com", Kind: KindProxy, Upstream: "wild:80"},
+		{Hostname: "zzz.example.com", Kind: KindProxy, Upstream: "exact:80"},
+	}})
+
+	routes := out.Apps.HTTP.Servers["http"].Routes
+	if routes[1].Match[0].Host[0] != "zzz.example.com" || routes[2].Match[0].Host[0] != "*.example.com" {
+		t.Errorf("a wildcard comes before a name it covers: %v, %v", routes[1].Match, routes[2].Match)
+	}
+}
+
+func TestRedirectKeepsThePath(t *testing.T) {
+	cases := map[string]string{
+		"https://www.example.com":       "https://www.example.com{http.request.uri}",
+		"https://www.example.com/":      "https://www.example.com{http.request.uri}",
+		"https://www.example.com/start": "https://www.example.com/start",
+		"https://www.example.com/?a=b":  "https://www.example.com/?a=b",
+	}
+	for target, want := range cases {
+		if got := redirectLocation(target); got != want {
+			t.Errorf("redirectLocation(%q) = %q, want %q", target, got, want)
+		}
+	}
+}
+
+func TestValidateRefusesMistakes(t *testing.T) {
+	cases := map[string]Config{
+		"a duplicate name":              {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80"}, {Hostname: "A.example.com", Kind: KindProxy, Upstream: "b:80"}}},
+		"an IP address":                 {Routes: []Route{{Hostname: "192.0.2.1", Kind: KindProxy, Upstream: "a:80"}}},
+		"a single label":                {Routes: []Route{{Hostname: "localhost", Kind: KindProxy, Upstream: "a:80"}}},
+		"a bad character":               {Routes: []Route{{Hostname: "a_b.example.com", Kind: KindProxy, Upstream: "a:80"}}},
+		"a deep wildcard":               {Routes: []Route{{Hostname: "*.*.example.com", Kind: KindProxy, Upstream: "a:80"}}},
+		"an upstream without port":      {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a"}}},
+		"an upstream port of 0":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:0"}}},
+		"an upstream with a URL":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "http://a:80"}}},
+		"a redirect to a path":          {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "/elsewhere"}}},
+		"a redirect to ftp":             {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "ftp://example.com"}}},
+		"an unknown kind":               {Routes: []Route{{Hostname: "a.example.com", Kind: "static"}}},
+		"a missing certificate":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "nope"}}},
+		"HTTPS without a certificate":   {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", HTTPSRedirect: true}}},
+		"a certificate id with a slash": {Certificates: []Certificate{{ID: "../x"}}},
+	}
+	for name, config := range cases {
+		if _, err := Build(config); err == nil {
+			t.Errorf("%s is accepted", name)
+		}
+	}
+}
+
+func TestValidHostname(t *testing.T) {
+	for _, good := range []string{"example.com", "a-b.example.com", "*.example.com", "xn--bcher-kva.example"} {
+		if err := ValidHostname(good); err != nil {
+			t.Errorf("%s: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "Example.com", "-a.example.com", "a..example.com", "example.com.", strings.Repeat("a", 64) + ".com", "*", "*.com.*"} {
+		if err := ValidHostname(bad); err == nil {
+			t.Errorf("%q is accepted", bad)
+		}
+	}
+}

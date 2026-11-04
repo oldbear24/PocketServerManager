@@ -1,0 +1,304 @@
+{
+  "admin": {
+    "config": {
+      "persist": true
+    },
+    "listen": "unix//pocketcloud/run/admin.sock"
+  },
+  "apps": {
+    "http": {
+      "grace_period": "30s",
+      "servers": {
+        "http": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "file_server",
+                  "root": "/pocketcloud/acme"
+                }
+              ],
+              "match": [
+                {
+                  "path": [
+                    "/.well-known/acme-challenge/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "app.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://www.example.com{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://new.example.org/landing"
+                    ]
+                  },
+                  "status_code": 307
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "old.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "encodings": {
+                    "gzip": {},
+                    "zstd": {}
+                  },
+                  "handler": "encode",
+                  "prefer": [
+                    "zstd",
+                    "gzip"
+                  ]
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "plain:3000"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "plain.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "*.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "body": "No site is configured for this address.\n",
+                  "handler": "static_response",
+                  "headers": {
+                    "Content-Type": [
+                      "text/plain; charset=utf-8"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        },
+        "https": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":443"
+          ],
+          "protocols": [
+            "h1",
+            "h2",
+            "h3"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "encodings": {
+                    "gzip": {},
+                    "zstd": {}
+                  },
+                  "handler": "encode",
+                  "prefer": [
+                    "zstd",
+                    "gzip"
+                  ]
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "web-app-1:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "app.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://www.example.com{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "catchall:80"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "*.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "body": "No site is configured for this address.\n",
+                  "handler": "static_response",
+                  "headers": {
+                    "Content-Type": [
+                      "text/plain; charset=utf-8"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [
+            {}
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/pocketcloud/certs/certapp.crt",
+            "key": "/pocketcloud/certs/certapp.key",
+            "tags": [
+              "certapp"
+            ]
+          },
+          {
+            "certificate": "/pocketcloud/certs/certwild.crt",
+            "key": "/pocketcloud/certs/certwild.key",
+            "tags": [
+              "certwild"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
