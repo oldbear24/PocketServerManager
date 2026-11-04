@@ -17,7 +17,9 @@ const (
 )
 
 // metricsCollector samples the host and its containers. CPU usage and network
-// traffic are deltas, so it remembers the previous sample of each container.
+// traffic are deltas, so it remembers the previous sample of each container. The
+// first sample of a container is only that base: sent, it would be a zero that
+// never happened, for every container after each restart of the agent.
 type metricsCollector struct {
 	agent *Agent
 
@@ -110,7 +112,10 @@ func (m *metricsCollector) collect(ctx context.Context) []*agentv1.MetricSample 
 				return
 			}
 
-			sample := m.containerSample(id, stats)
+			sample, ok := m.containerSample(id, stats)
+			if !ok {
+				return
+			}
 			sample.Ts = now
 
 			mu.Lock()
@@ -125,7 +130,9 @@ func (m *metricsCollector) collect(ctx context.Context) []*agentv1.MetricSample 
 	return samples
 }
 
-func (m *metricsCollector) containerSample(id string, stats *dockerapi.Stats) *agentv1.MetricSample {
+// containerSample computes a container's sample from its statistics and the
+// previous ones; without previous ones there is none yet.
+func (m *metricsCollector) containerSample(id string, stats *dockerapi.Stats) (*agentv1.MetricSample, bool) {
 	current := containerSample{
 		cpuTotal:  stats.CPUStats.CPUUsage.TotalUsage,
 		systemCPU: stats.CPUStats.SystemCPUUsage,
@@ -140,23 +147,24 @@ func (m *metricsCollector) containerSample(id string, stats *dockerapi.Stats) *a
 	m.previous[id] = current
 	m.mu.Unlock()
 
+	if !known {
+		return nil, false
+	}
+
 	sample := &agentv1.MetricSample{
 		ContainerId:   id,
 		MemBytes:      containerMemory(stats),
 		MemTotalBytes: stats.MemoryStats.Limit,
+		CpuPercent:    containerCPUPercent(previous, current),
+	}
+	if current.netIn >= previous.netIn {
+		sample.NetInBytes = current.netIn - previous.netIn
+	}
+	if current.netOut >= previous.netOut {
+		sample.NetOutBytes = current.netOut - previous.netOut
 	}
 
-	if known {
-		sample.CpuPercent = containerCPUPercent(previous, current)
-		if current.netIn >= previous.netIn {
-			sample.NetInBytes = current.netIn - previous.netIn
-		}
-		if current.netOut >= previous.netOut {
-			sample.NetOutBytes = current.netOut - previous.netOut
-		}
-	}
-
-	return sample
+	return sample, true
 }
 
 // containerCPUPercent is relative to the whole host, like the host's own value.
