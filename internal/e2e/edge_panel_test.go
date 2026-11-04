@@ -14,6 +14,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
+	"github.com/oldbear24/PocketServerManager/internal/version"
 )
 
 // edgeState is what the server page reads about an edge.
@@ -458,4 +459,34 @@ func TestAnInstallUnderWayIsUndoneWithItsCertificate(t *testing.T) {
 		return err == nil && len(removals) == 1 && strings.Contains(fmt.Sprint(removals[0].Get("payload")), cert.Id)
 	})
 	_ = install
+}
+
+// TestANewlyPinnedCaddyReachesTheEdges: a panel release that pins another Caddy
+// sends every edge the new image when it starts, though nothing else changed.
+func TestANewlyPinnedCaddyReachesTheEdges(t *testing.T) {
+	h := newHarness(t)
+	_, host, _ := h.managedEdge("pinned-edge")
+	h.waitInSync(host.Id)
+	// nothing more is under way
+	applies := h.edgeApplies(host.Id)
+	time.Sleep(500 * time.Millisecond)
+	if again := h.edgeApplies(host.Id); again != applies {
+		t.Fatalf("the edge is still getting configs: %d more", again-applies)
+	}
+	before := h.host(host.Id).GetString("edge_applied_digest")
+
+	pinned := version.EdgeImage + ":2.12.0@sha256:" + strings.Repeat("d", 64)
+	h.panel.SetEdgeImage(pinned)
+
+	// what the panel does when it starts
+	h.panel.RefreshEdges()
+
+	h.waitFor("the edge to run the newly pinned image", func() bool {
+		container := h.docker.Find("pocketcloud-edge")
+		return container != nil && container.Image == pinned
+	})
+	h.waitInSync(host.Id)
+	if h.host(host.Id).GetString("edge_applied_digest") == before {
+		t.Error("the edge still reports the config of the old image")
+	}
 }

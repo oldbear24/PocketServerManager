@@ -327,6 +327,21 @@ func (p *Panel) applyEdgeLogged(hostID string, force bool) {
 	}
 }
 
+// RefreshEdges regenerates the config of every edge, which the panel does when
+// it starts: a release may pin another Caddy or generate configs differently,
+// and the digest stored with each host still names the old ones. An edge whose
+// config comes out the same gets nothing.
+func (p *Panel) RefreshEdges() {
+	hosts, err := p.App.FindRecordsByFilter(schema.Hosts, "edge_digest!='' || edge_applied_digest!=''", "", 0, 0)
+	if err != nil {
+		p.Log.Error("failed to look for edges", "error", err)
+		return
+	}
+	for _, host := range hosts {
+		p.applyEdgeLogged(host.Id, false)
+	}
+}
+
 // edgeCommands are the edge.apply commands of a host in a state.
 func (p *Panel) edgeCommands(app core.App, hostID string, statuses ...string) ([]*core.Record, error) {
 	filter := []string{}
@@ -390,7 +405,7 @@ func (p *Panel) applyEdge(hostID string, force bool, requester string) (*core.Re
 			return nil, fmt.Errorf("the edge config of %s: %w", host.GetString("name"), err)
 		}
 		payload.CaddyJson = string(raw)
-		payload.CaddyImage = version.EdgeRef()
+		payload.CaddyImage = p.EdgeImage()
 		payload.AttachContainers = built.attach
 		digest = edge.Digest(payload.CaddyImage, payload.CaddyJson)
 	} else if host.GetString("edge_applied_digest") == "" && host.GetString("edge_digest") == "" && !force {

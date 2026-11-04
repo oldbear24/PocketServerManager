@@ -26,6 +26,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/streams"
+	"github.com/oldbear24/PocketServerManager/internal/version"
 	"github.com/oldbear24/PocketServerManager/plugins/diagnostics"
 )
 
@@ -37,6 +38,10 @@ type Panel struct {
 	Config *Config
 	UI     fs.FS
 	Log    *slog.Logger
+
+	// edgeImage is the edge proxy image the panel gives its edges: the one
+	// pinned in this release, another in tests (SetEdgeImage).
+	edgeImage atomic.Pointer[string]
 
 	Box       *secrets.Box
 	Audit     *audit.Writer
@@ -85,11 +90,19 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Audit:    audit.New(app, schema.Audited),
 		Commands: commands.NewManager(app),
 	}
+	p.SetEdgeImage(version.EdgeRef())
 	p.Updates = newUpdateBatches(p)
 	p.Streams = streams.New(p.Commands)
 	p.Audit.SealKey = p.AuditKey
 	return p
 }
+
+// SetEdgeImage changes the edge proxy image, as a release that pins another
+// Caddy does. Edges get it with their next config (see RefreshEdges).
+func (p *Panel) SetEdgeImage(ref string) { p.edgeImage.Store(&ref) }
+
+// EdgeImage is the edge proxy image the panel gives its edges.
+func (p *Panel) EdgeImage() string { return *p.edgeImage.Load() }
 
 // AuditKey returns the key that seals the head of the audit chain, derived from
 // the master key. Commands that do not start the panel, such as migrations, load
@@ -152,6 +165,8 @@ func (p *Panel) Register() {
 		if err := p.startGateway(); err != nil {
 			return err
 		}
+		// a new release may give the edges another config
+		p.later.after(edgeSettle, p.RefreshEdges)
 
 		if err := p.prepareFirstRun(); err != nil {
 			return err
