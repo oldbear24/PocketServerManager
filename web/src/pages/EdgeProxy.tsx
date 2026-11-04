@@ -313,7 +313,7 @@ function EdgeStatusCard({
       }
     >
       {!edge.agent_has_edge && <Banner tone="warn">{t("edge.agentTooOld")}</Banner>}
-      <dl className="stat-row">
+      <dl className="stat-row bare">
         <div>
           <dt>{t("edge.state")}</dt>
           <dd>

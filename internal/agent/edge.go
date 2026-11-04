@@ -753,6 +753,7 @@ func (a *Agent) restoreEdge(ctx context.Context) {
 		swap.undo()
 		a.Log.Error("failed to bring back the edge", "error", err)
 		a.recordEdgeError(fmt.Errorf("the edge could not be brought back: %w", err))
+		a.checks.runEdge(ctx)
 		return
 	}
 	swap.commit()
@@ -764,6 +765,9 @@ func (a *Agent) restoreEdge(ctx context.Context) {
 		}
 	}
 	a.attachUpstreams(ctx, state.Attach, io.Discard)
+
+	// the first self-check ran while the edge was still being brought back
+	a.checks.runEdge(ctx)
 }
 
 // reattachUpstream puts a container the routes forward to back on the edge's

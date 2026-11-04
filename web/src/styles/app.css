@@ -1864,6 +1864,7 @@ tr[aria-selected="true"] > td {
 }
 
 .route-tls {
+  order: 1;
   flex: 1 1 100%;
   font-size: 12px;
   color: var(--text-2);
@@ -1926,4 +1927,10 @@ tr[aria-selected="true"] > td {
 textarea.input {
   resize: vertical;
   min-height: 72px;
+}
+
+.stat-row.bare {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
 }
