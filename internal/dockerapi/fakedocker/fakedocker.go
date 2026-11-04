@@ -462,6 +462,7 @@ func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
 	id := newID()
 
 	host, _ := body["HostConfig"].(map[string]any)
+	omitEmptyMountFields(host)
 	if name == "" {
 		name = "generated-" + id[:6]
 	}
@@ -768,4 +769,22 @@ func (e *Engine) Fail(key, message string) {
 		return
 	}
 	e.FailOn[key] = message
+}
+
+// omitEmptyMountFields drops what the Engine leaves out of an inspect when it
+// is empty, as ReadOnly: false, so tests see mounts the way a real engine
+// reports them.
+func omitEmptyMountFields(host map[string]any) {
+	mounts, _ := host["Mounts"].([]any)
+	for _, item := range mounts {
+		mount, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, value := range mount {
+			if value == false || value == "" || value == nil {
+				delete(mount, key)
+			}
+		}
+	}
 }

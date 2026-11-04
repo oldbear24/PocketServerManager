@@ -327,7 +327,8 @@ func checkEdgeMounts(info *dockerapi.ContainerInspect, wanted []map[string]any) 
 			if got["Target"] != want["Target"] {
 				continue
 			}
-			found = got["Type"] == want["Type"] && got["Source"] == want["Source"] && got["ReadOnly"] == want["ReadOnly"]
+			// the engine leaves out what is empty, such as ReadOnly: false
+			found = got["Type"] == want["Type"] && got["Source"] == want["Source"] && isTrue(got["ReadOnly"]) == isTrue(want["ReadOnly"])
 			if options, ok := want["VolumeOptions"].(map[string]any); ok {
 				gotOptions, _ := got["VolumeOptions"].(map[string]any)
 				found = found && gotOptions != nil && gotOptions["Subpath"] == options["Subpath"]
@@ -338,6 +339,11 @@ func checkEdgeMounts(info *dockerapi.ContainerInspect, wanted []map[string]any) 
 		}
 	}
 	return nil
+}
+
+func isTrue(value any) bool {
+	flag, _ := value.(bool)
+	return flag
 }
 
 func edgeContainerConfig(image string, mounts []map[string]any) (map[string]any, error) {
