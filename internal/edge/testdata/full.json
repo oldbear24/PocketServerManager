@@ -7,7 +7,7 @@
   },
   "apps": {
     "http": {
-      "grace_period": "30s",
+      "metrics": {},
       "servers": {
         "http": {
           "automatic_https": {
@@ -111,6 +111,7 @@
                 },
                 {
                   "handler": "reverse_proxy",
+                  "stream_close_delay": "24h",
                   "upstreams": [
                     {
                       "dial": "plain:3000"
@@ -202,6 +203,7 @@
                 },
                 {
                   "handler": "reverse_proxy",
+                  "stream_close_delay": "24h",
                   "upstreams": [
                     {
                       "dial": "web-app-1:8080"
@@ -243,6 +245,7 @@
               "handle": [
                 {
                   "handler": "reverse_proxy",
+                  "stream_close_delay": "24h",
                   "upstreams": [
                     {
                       "dial": "catchall:80"

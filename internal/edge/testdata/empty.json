@@ -7,7 +7,7 @@
   },
   "apps": {
     "http": {
-      "grace_period": "30s",
+      "metrics": {},
       "servers": {
         "http": {
           "automatic_https": {

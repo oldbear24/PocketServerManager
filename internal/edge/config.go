@@ -36,6 +36,13 @@ const (
 	KindRedirect = "redirect"
 )
 
+// StreamCloseDelay is how long a WebSocket through a route survives a reload.
+const StreamCloseDelay = "24h"
+
+// AnsweringHandlers are the handlers that answer a request; the others only
+// pass it on, and Caddy counts a request once per handler it passes.
+var AnsweringHandlers = []string{"reverse_proxy", "static_response", "file_server"}
+
 // HSTSValue is the Strict-Transport-Security header of routes that ask for it:
 // a year, without includeSubDomains or preload, which are hard to take back.
 const HSTSValue = "max-age=31536000"
@@ -280,9 +287,10 @@ func Build(c Config) ([]byte, error) {
 	}
 
 	apps["http"] = object{
-		// a reload waits this long for requests under way before it closes them
-		"grace_period": "30s",
-		"servers":      servers,
+		// request counts per handler, read by the agent from the admin API; no
+		// grace period, so a reload lets every request under way finish
+		"metrics": object{},
+		"servers": servers,
 	}
 
 	config := object{
@@ -355,6 +363,9 @@ func hostRoute(route Route, secure bool) object {
 		handlers = append(handlers, object{
 			"handler":   "reverse_proxy",
 			"upstreams": []any{object{"dial": route.Upstream}},
+			// a reload would otherwise cut WebSockets and other upgraded
+			// connections at once; the old config is kept until they end
+			"stream_close_delay": StreamCloseDelay,
 		})
 	case KindRedirect:
 		status := 307
