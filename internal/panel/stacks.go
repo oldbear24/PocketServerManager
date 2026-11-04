@@ -69,6 +69,7 @@ func (p *Panel) registerStacks() {
 	p.Commands.OnFinish("stack.deploy", p.stackDeployFinished)
 	p.Commands.OnFinish("stack.stop", p.stackStateAfter(stackStopped))
 	p.Commands.OnFinish("stack.down", p.stackStateAfter(stackDown))
+	p.Commands.OnFinish("stack.restart", p.stackRestartFinished)
 }
 
 // guardNewStack keeps what only the panel may set out of a new stack made through
@@ -338,25 +339,8 @@ func (p *Panel) stackDeployFinished(record *core.Record) {
 // stackStateAfter stores what a successful stop or down leaves behind.
 func (p *Panel) stackStateAfter(state string) func(*core.Record) {
 	return func(record *core.Record) {
-		if record.GetString("status") != schema.CommandSucceeded {
-			return
-		}
-
-		raw, err := json.Marshal(record.Get("payload"))
-		if err != nil {
-			return
-		}
-
-		var payload struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			return
-		}
-
-		stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}",
-			dbx.Params{"host": record.GetString("host"), "name": payload.Name})
-		if err != nil {
+		stack := p.succeededStack(record)
+		if stack == nil {
 			return
 		}
 
@@ -365,6 +349,54 @@ func (p *Panel) stackStateAfter(state string) func(*core.Record) {
 			p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
 		}
 	}
+}
+
+// stackRestartFinished: a restart starts stopped containers again, so a stopped
+// stack is back to what it was before the stop. A down left no containers to
+// start, and other states do not change.
+func (p *Panel) stackRestartFinished(record *core.Record) {
+	stack := p.succeededStack(record)
+	if stack == nil || stack.GetString("status") != stackStopped {
+		return
+	}
+
+	state := stackImported
+	if stack.GetInt("deployed_revision") > 0 {
+		state = stackDeployed
+	}
+
+	stack.Set("status", state)
+	if err := p.App.Save(stack); err != nil {
+		p.Log.Error("failed to store the state of a stack", "stack", stack.Id, "error", err)
+	}
+}
+
+// succeededStack returns the stack a succeeded stack command was about, if it
+// still exists.
+func (p *Panel) succeededStack(record *core.Record) *core.Record {
+	if record.GetString("status") != schema.CommandSucceeded {
+		return nil
+	}
+
+	raw, err := json.Marshal(record.Get("payload"))
+	if err != nil {
+		return nil
+	}
+
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+
+	stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}",
+		dbx.Params{"host": record.GetString("host"), "name": payload.Name})
+	if err != nil {
+		return nil
+	}
+
+	return stack
 }
 
 func (p *Panel) bindStackRoutes(group *router.RouterGroup[*core.RequestEvent]) {

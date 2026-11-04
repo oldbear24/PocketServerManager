@@ -975,6 +975,15 @@ func TestStackActionsWorkFromTheirNames(t *testing.T) {
 	}
 	c.waitFor("the stack to be stopped", func() bool { return c.stack(stackID).GetString("status") == "stopped" })
 
+	// a restart starts it again, and the stack says so
+	if done := action("stack.restart", map[string]any{"name": "shop"}); done.GetString("status") != schema.CommandSucceeded {
+		t.Errorf("restart: %s", done.GetString("error"))
+	}
+	if state := c.docker.Find("shop-web-1").Status; state != "running" {
+		t.Errorf("after a restart: %s", state)
+	}
+	c.waitFor("the stack to be deployed again", func() bool { return c.stack(stackID).GetString("status") == "deployed" })
+
 	if done := action("stack.down", map[string]any{"name": "shop"}); done.GetString("status") != schema.CommandSucceeded {
 		t.Errorf("down: %s", done.GetString("error"))
 	}
