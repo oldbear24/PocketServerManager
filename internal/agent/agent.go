@@ -486,8 +486,8 @@ func (a *Agent) runtimeStats(ctx context.Context) *agentv1.AgentRuntime {
 		stats.DockerApiLatencyMs = float64(time.Since(start).Microseconds()) / 1000
 	}
 
-	if _, free, err := diskUsage(a.Config.StateDir); err == nil {
-		stats.VolumeFreeBytes = free
+	if _, _, available, err := diskUsage(a.Config.StateDir); err == nil {
+		stats.VolumeFreeBytes = available
 	}
 
 	return stats

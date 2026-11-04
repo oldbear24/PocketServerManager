@@ -82,9 +82,9 @@ func (h *hostInfo) vitals() *agentv1.HostVitals {
 		vitals.MemTotalBytes, vitals.MemUsedBytes = parseMeminfo(string(raw))
 	}
 
-	if total, free, err := diskUsage(h.root); err == nil {
+	if total, used, _, err := diskUsage(h.root); err == nil {
 		vitals.DiskTotalBytes = total
-		vitals.DiskUsedBytes = total - free
+		vitals.DiskUsedBytes = used
 	}
 
 	return vitals
@@ -272,7 +272,7 @@ func (h *hostInfo) mounts() []*agentv1.DiskUsage {
 		}
 		seen[mount.device] = true
 
-		total, free, err := diskUsage(filepath.Join(h.root, mount.path))
+		total, used, _, err := diskUsage(filepath.Join(h.root, mount.path))
 		if err != nil || total == 0 {
 			continue
 		}
@@ -281,7 +281,7 @@ func (h *hostInfo) mounts() []*agentv1.DiskUsage {
 			Mount:      mount.path,
 			Device:     mount.device,
 			FsType:     mount.fsType,
-			UsedBytes:  total - free,
+			UsedBytes:  used,
 			TotalBytes: total,
 		})
 	}
