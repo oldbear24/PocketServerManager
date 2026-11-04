@@ -184,6 +184,9 @@ func (p *Panel) Register() {
 		return e.Next()
 	})
 
+	// bundles are kept for a week (see the gateway's bundleTTL)
+	p.App.Cron().MustAdd("pocketcloud_diagnostic_bundles_retention", "55 3 * * *", p.PruneBundles)
+
 	p.App.Cron().MustAdd("pocketcloud_events_retention", "50 3 * * *", func() {
 		if err := events.Prune(p.App, eventRetention); err != nil {
 			p.Log.Error("event retention failed", "error", err)

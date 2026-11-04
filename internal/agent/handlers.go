@@ -159,15 +159,30 @@ func (a *Agent) handleRotateCertificate(ctx context.Context, _ *agentv1.Command,
 	return map[string]any{"expires_at": a.Identity.Certificate().NotAfter.Format(time.RFC3339)}, nil
 }
 
+// Debug logging always falls back by itself: a command without a limit gets the
+// default one, and none lasts longer than a day.
+const (
+	defaultLogLevelDuration = 15 * time.Minute
+	maxLogLevelDuration     = 24 * time.Hour
+)
+
+// logLevelDuration is how long a log level set by a command lasts.
+func logLevelDuration(seconds int64) time.Duration {
+	if seconds <= 0 {
+		return defaultLogLevelDuration
+	}
+	return min(time.Duration(seconds)*time.Second, maxLogLevelDuration)
+}
+
 func (a *Agent) handleSetLogLevel(_ context.Context, command *agentv1.Command, _ *Reporter) (map[string]any, error) {
 	payload := command.GetAgentSetLogLevel()
-	duration := time.Duration(payload.GetDurationS()) * time.Second
+	duration := logLevelDuration(int64(payload.GetDurationS()))
 
 	if err := a.setLogLevel(payload.GetLevel(), duration); err != nil {
 		return nil, err
 	}
 
-	return map[string]any{"level": payload.GetLevel(), "duration_s": payload.GetDurationS()}, nil
+	return map[string]any{"level": payload.GetLevel(), "duration_s": int64(duration.Seconds())}, nil
 }
 
 // handleUpdate starts the temporary updater container. From there on the updater
