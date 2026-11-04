@@ -168,6 +168,12 @@ func TestADedicatedServerMovesIntoASharedOne(t *testing.T) {
 		t.Error("the application is not on the database network")
 	}
 
+	// the old container is no candidate to link any more
+	status, body = testutil.Do(t, d.handler, testutil.Request{Method: http.MethodGet, URL: "/api/pc/db-servers/candidates", Token: d.viewer})
+	if status != http.StatusOK || strings.Contains(body, "analytics-db-1") {
+		t.Errorf("candidates after the move: %d %s", status, body)
+	}
+
 	// the stack's own restart leaves the old database stopped
 	restart := d.create(d.host.Id, &agentv1.Command{Payload: &agentv1.Command_StackRestart{StackRestart: &agentv1.StackRestart{Name: "analytics"}}})
 	d.waitForStatus(restart.Id, schema.CommandSucceeded)

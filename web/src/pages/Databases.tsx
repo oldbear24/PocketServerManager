@@ -27,6 +27,7 @@ import {
   connectionShare,
   databaseNamePattern,
   dbApi,
+  engineLabel,
   engines,
   envSnippet,
   imageTag,
@@ -1230,23 +1231,24 @@ function ServerCard({
         <>
           <h3 className="db-moves-title">{t("db.movedHere")}</h3>
           <ul className="db-moves small">
-            {moves.map((item) => (
-              <li key={item.id}>
-                <span className="mono">{item.source_name}</span>
-                {item.source_version && ` · ${item.source_version}`} ·{" "}
-                {(item.databases ?? []).map((entry) => entry.name).join(", ")}
-                <div className="cell-sub">
-                  {item.source_kind !== "dedicated"
-                    ? formatDate(item.moved_at)
-                    : item.removed_at
-                      ? t("db.oldRemoved", { date: formatDate(item.moved_at) })
-                      : t("db.oldKept", {
-                          date: formatDate(item.remove_after),
-                          volume: item.source_volume || "–",
-                        })}
-                </div>
-              </li>
-            ))}
+            {moves.map((item) => {
+              // servers add their build to the number: "16.15 (Debian 16.15-1…)"
+              const version = item.source_version.match(/^\d+(\.\d+)*/)?.[0];
+              const names = (item.databases ?? []).map((entry) => entry.name).join(", ");
+              return (
+                <li key={item.id}>
+                  <span className="mono">{item.source_name}</span>
+                  {version && ` · ${engineLabel(server.engine)} ${version}`} · {names}
+                  <div className="cell-sub">
+                    {item.source_kind !== "dedicated"
+                      ? formatDate(item.moved_at)
+                      : item.removed_at
+                        ? t("db.oldRemoved", { date: formatDate(item.moved_at) })
+                        : t("db.oldKept", { date: formatDate(item.remove_after) })}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </>
       )}

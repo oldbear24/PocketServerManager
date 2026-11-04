@@ -814,7 +814,7 @@
     "movingHint": "Moving to {{name}}…",
     "moveFailed": "The move to {{name}} failed: {{error}} The application runs on its own server again.",
     "movedHere": "Moved here",
-    "oldKept": "The old container stays stopped until {{date}}; its volume {{volume}} stays.",
+    "oldKept": "The old container stays stopped until {{date}}; its data volume stays.",
     "oldRemoved": "Moved on {{date}}; the old container is removed, its volume stays.",
     "appPassword": "in the application's own settings",
     "appPasswordNote": "This database came from the application's own server: its password stays in the stack's settings, so the panel does not rotate it.",

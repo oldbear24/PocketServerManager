@@ -846,7 +846,7 @@
     "movingHint": "Přesouvá se na {{name}}…",
     "moveFailed": "Přesun na {{name}} selhal: {{error}} Aplikace znovu běží na svém serveru.",
     "movedHere": "Přesunuto sem",
-    "oldKept": "Starý kontejner zůstane zastavený do {{date}}; jeho svazek {{volume}} zůstane.",
+    "oldKept": "Starý kontejner zůstane zastavený do {{date}}; jeho datový svazek zůstane.",
     "oldRemoved": "Přesunuto {{date}}; starý kontejner je odstraněný, jeho svazek zůstal.",
     "appPassword": "v nastavení samotné aplikace",
     "appPasswordNote": "Tato databáze přišla z vlastního serveru aplikace: její heslo zůstává v nastavení stacku, proto ho panel nemění.",

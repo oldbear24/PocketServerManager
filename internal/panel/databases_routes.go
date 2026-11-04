@@ -225,6 +225,16 @@ func (p *Panel) handleServerCandidates(e *core.RequestEvent) error {
 	for _, server := range servers {
 		known[server.GetString("host")+"/"+server.GetString("container_ref")] = true
 	}
+	// a stack's old database container whose data moved stays stopped until the
+	// panel removes it: it is no server to link any more
+	moved, err := p.App.FindRecordsByFilter(schema.DBMoves, "status={:done} && source_container!='' && removed_at=''", "", 0, 0,
+		dbx.Params{"done": schema.MoveDone})
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	for _, move := range moved {
+		known[move.GetString("host")+"/"+move.GetString("source_container")] = true
+	}
 
 	hostNames := map[string]string{}
 	list := []candidate{}
