@@ -51,6 +51,8 @@ type report struct {
 	FPM        json.RawMessage `json:"fpm"`
 	OPcache    json.RawMessage `json:"opcache"`
 	Errors     []string        `json:"errors,omitempty"`
+	// Warnings say what is missing from a part that was read; they do not fail the command.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func main() {
@@ -196,16 +198,17 @@ func parseSettings(content []byte) settings {
 	return s
 }
 
-// dialTarget turns an FPM listen value into a network and an address: a path
-// is a Unix socket, a bare port is on the loopback address.
+// dialTarget turns an FPM listen value into a network and an address as FPM
+// itself reads it: with a colon it is a host and port, all digits are a port
+// on the loopback address, and anything else is the path of a Unix socket.
 func dialTarget(listen string) (network, address string) {
 	switch {
-	case strings.HasPrefix(listen, "/"):
-		return "unix", listen
-	case !strings.Contains(listen, ":"):
+	case strings.Contains(listen, ":"):
+		return "tcp", listen
+	case listen != "" && strings.Trim(listen, "0123456789") == "":
 		return "tcp", "127.0.0.1:" + listen
 	default:
-		return "tcp", listen
+		return "unix", listen
 	}
 }
 
@@ -214,10 +217,13 @@ func dialTarget(listen string) (network, address string) {
 func collect(ctx context.Context, s settings, script string) report {
 	r := report{FPM: json.RawMessage("null"), OPcache: json.RawMessage("null")}
 
-	if pool, err := fpmStatus(ctx, s); err != nil {
+	if pool, warning, err := fpmStatus(ctx, s); err != nil {
 		r.Errors = append(r.Errors, "fpm: "+err.Error())
 	} else {
 		r.FPM = pool
+		if warning != "" {
+			r.Warnings = append(r.Warnings, "fpm: "+warning)
+		}
 	}
 
 	if version, opcache, err := opcacheStatus(ctx, s, script); err != nil {
@@ -230,26 +236,46 @@ func collect(ctx context.Context, s settings, script string) report {
 	return r
 }
 
-// fpmStatus fetches the full status of the pool as JSON.
-func fpmStatus(ctx context.Context, s settings) (json.RawMessage, error) {
+// fpmStatus fetches the status of the pool as JSON, with its processes. FPM
+// writes a process's user and script into that JSON without escaping them, so
+// a request can make it invalid; then the pool's summary alone is returned,
+// with a warning that says so.
+func fpmStatus(ctx context.Context, s settings) (pool json.RawMessage, warning string, err error) {
 	if s.StatusPath == "" {
-		return nil, errors.New("the settings do not say the path of the status page (pm.status_path)")
+		return nil, "", errors.New("the settings do not say the path of the status page (pm.status_path)")
 	}
 
-	response, err := request(ctx, s, requestParams(s.StatusPath, s.StatusPath, "json&full"))
+	full, err := statusPage(ctx, s, "json&full")
+	if err != nil {
+		return nil, "", err
+	}
+	if isJSONObject(full) {
+		return full, "", nil
+	}
+
+	summary, err := statusPage(ctx, s, "json")
+	if err != nil {
+		return nil, "", err
+	}
+	if !isJSONObject(summary) {
+		return nil, "", errors.New("the status page did not answer with a JSON object")
+	}
+	return summary, "the status of its processes is not valid JSON, so only the pool's is given", nil
+}
+
+func statusPage(ctx context.Context, s settings, query string) ([]byte, error) {
+	response, err := request(ctx, s, requestParams(s.StatusPath, s.StatusPath, query))
 	if err != nil {
 		return nil, err
 	}
 	if response.Status != 200 {
 		return nil, fmt.Errorf("the status page answered with status %d%s", response.Status, stderrNote(response))
 	}
+	return bytes.TrimSpace(response.Body), nil
+}
 
-	body := bytes.TrimSpace(response.Body)
-	if !json.Valid(body) || !bytes.HasPrefix(body, []byte("{")) {
-		return nil, errors.New("the status page did not answer with a JSON object")
-	}
-
-	return body, nil
+func isJSONObject(body []byte) bool {
+	return bytes.HasPrefix(body, []byte("{")) && json.Valid(body)
 }
 
 // opcacheStatus runs the script that reports OPcache's statistics. The status

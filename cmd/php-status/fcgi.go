@@ -119,13 +119,26 @@ func writeRequest(w io.Writer, params map[string]string) error {
 		return err
 	}
 
-	pairs := encodeParams(params)
-	for len(pairs) > 0 {
-		n := min(len(pairs), fcgiMaxContent)
-		if err := writeRecord(buffered, fcgiParams, pairs[:n]); err != nil {
+	// FPM reads every record of parameters on its own, so a pair never spans two
+	records := [][]byte{nil}
+	for _, pair := range encodeParams(params) {
+		if len(pair) > fcgiMaxContent {
+			return fmt.Errorf("a parameter of %d bytes does not fit in a record", len(pair))
+		}
+		last := len(records) - 1
+		if len(records[last])+len(pair) > fcgiMaxContent {
+			records = append(records, nil)
+			last++
+		}
+		records[last] = append(records[last], pair...)
+	}
+	for _, record := range records {
+		if len(record) == 0 {
+			continue
+		}
+		if err := writeRecord(buffered, fcgiParams, record); err != nil {
 			return err
 		}
-		pairs = pairs[n:]
 	}
 
 	// an empty record ends a stream
@@ -144,7 +157,12 @@ func writeRecord(w io.Writer, kind byte, content []byte) error {
 		return fmt.Errorf("a record cannot hold %d bytes", len(content))
 	}
 
+	// padding is optional, and FPM refuses a record whose content and padding
+	// add up to more than the largest content
 	padding := (8 - len(content)%8) % 8
+	if len(content)+padding > fcgiMaxContent {
+		padding = 0
+	}
 	header := []byte{fcgiVersion, kind}
 	header = binary.BigEndian.AppendUint16(header, fcgiRequestID)
 	header = binary.BigEndian.AppendUint16(header, uint16(len(content))) //nolint:gosec // checked above
@@ -160,18 +178,20 @@ func writeRecord(w io.Writer, kind byte, content []byte) error {
 	return err
 }
 
-// encodeParams encodes name-value pairs, in the order of their names so that a
-// request is always the same bytes.
-func encodeParams(params map[string]string) []byte {
-	var encoded []byte
+// encodeParams encodes name-value pairs, one slice each, in the order of their
+// names so that a request is always the same bytes.
+func encodeParams(params map[string]string) [][]byte {
+	var pairs [][]byte
 	for _, name := range slices.Sorted(maps.Keys(params)) {
 		value := params[name]
-		encoded = appendLength(encoded, len(name))
-		encoded = appendLength(encoded, len(value))
-		encoded = append(encoded, name...)
-		encoded = append(encoded, value...)
+		var pair []byte
+		pair = appendLength(pair, len(name))
+		pair = appendLength(pair, len(value))
+		pair = append(pair, name...)
+		pair = append(pair, value...)
+		pairs = append(pairs, pair)
 	}
-	return encoded
+	return pairs
 }
 
 // appendLength writes a length in one byte below 128, otherwise in four with

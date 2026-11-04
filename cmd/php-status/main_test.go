@@ -39,6 +39,13 @@ func fakeFPM(t *testing.T, broken ...string) http.Handler {
 		case r.URL.Path == testStatusPath && is("status-html"):
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = fmt.Fprint(w, "<html>pool www</html>")
+		case r.URL.Path == testStatusPath && is("full-invalid") && r.URL.RawQuery == "json&full":
+			// FPM does not escape a process's user or script
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"pool":"www","processes":[{"pid":7,"user":"a"b","script":"/srv/x.php"}]}`)
+		case r.URL.Path == testStatusPath && is("full-invalid") && r.URL.RawQuery == "json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"pool":"www","process manager":"ondemand","accepted conn":12}`)
 		case r.URL.Path == testStatusPath:
 			if r.URL.RawQuery != "json&full" {
 				http.Error(w, "the status must be asked for as json&full, not "+r.URL.RawQuery, http.StatusBadRequest)
@@ -165,6 +172,23 @@ func TestKeepsThePartThatWorked(t *testing.T) {
 	}
 }
 
+func TestFallsBackToThePoolWhenItsProcessesAreNotJSON(t *testing.T) {
+	config := startFakeFPM(t, "full-invalid")
+
+	code, stdout, stderr := runCommand(t, "-config", config, "-script", testScript)
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, stdout, stderr)
+	}
+
+	var r report
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(r.FPM), `"accepted conn":12`) || len(r.Warnings) != 1 || len(r.Errors) != 0 {
+		t.Fatalf("%s", stdout)
+	}
+}
+
 func TestPing(t *testing.T) {
 	config := startFakeFPM(t)
 	if code, stdout, stderr := runCommand(t, "-config", config, "-ping"); code != 0 || !strings.Contains(stdout, "answers") {
@@ -232,6 +256,10 @@ func TestDialTarget(t *testing.T) {
 		"127.0.0.1:9001":                   "tcp 127.0.0.1:9001",
 		"[::1]:9001":                       "tcp [::1]:9001",
 		"pc-php-site:9000":                 "tcp pc-php-site:9000",
+		// as FPM reads it: anything but a port or host:port is a socket path
+		"status.sock":                "unix status.sock",
+		"run/pocketcloud-php/x.sock": "unix run/pocketcloud-php/x.sock",
+		"9001a":                      "unix 9001a",
 	} {
 		network, address := dialTarget(listen)
 		if got := network + " " + address; got != want {

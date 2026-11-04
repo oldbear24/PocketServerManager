@@ -95,9 +95,11 @@ func TestRequestReachesGoFastCGIServer(t *testing.T) {
 func TestParametersLargerThanOneRecord(t *testing.T) {
 	address := serveFCGI(t, "tcp", http.HandlerFunc(echo))
 
-	huge := strings.Repeat("0123456789", 10_000) // 100 kB: two records of parameters
+	// 120 kB in three parameters: more than one record holds
 	params := requestParams("/x", "/x", "")
-	params["HUGE"] = huge
+	for _, name := range []string{"HUGE_A", "HUGE_B", "HUGE_C"} {
+		params[name] = strings.Repeat(name, 10_000/len(name)*4)
+	}
 
 	response, err := fcgiGet(context.Background(), "tcp", address, params)
 	if err != nil {
@@ -110,8 +112,81 @@ func TestParametersLargerThanOneRecord(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &seen); err != nil {
 		t.Fatal(err)
 	}
-	if seen.Env["HUGE"] != huge {
-		t.Fatalf("the parameter arrived with %d bytes instead of %d", len(seen.Env["HUGE"]), len(huge))
+	for _, name := range []string{"HUGE_A", "HUGE_B", "HUGE_C"} {
+		if seen.Env[name] != params[name] {
+			t.Fatalf("%s arrived with %d bytes instead of %d", name, len(seen.Env[name]), len(params[name]))
+		}
+	}
+}
+
+// FPM parses every record of parameters on its own, and refuses one whose
+// content and padding exceed 65535 bytes, which Go's FastCGI server accepts.
+func TestParameterRecordsAreWholeForFPM(t *testing.T) {
+	params := map[string]string{"A": strings.Repeat("a", 40_000), "B": strings.Repeat("b", 40_000), "C": strings.Repeat("c", 65_529)}
+
+	var buffer bytes.Buffer
+	if err := writeRequest(&buffer, params); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := buffer.Bytes()
+	records := 0
+	got := map[string]string{}
+	for len(stream) > 0 {
+		kind := stream[1]
+		length := int(stream[4])<<8 | int(stream[5])
+		padding := int(stream[6])
+		if length+padding > 65535 {
+			t.Fatalf("a record of %d bytes with %d of padding", length, padding)
+		}
+		content := stream[8 : 8+length]
+		stream = stream[8+length+padding:]
+		if kind != fcgiParams || length == 0 {
+			continue
+		}
+		records++
+
+		// every record holds whole pairs
+		for len(content) > 0 {
+			nameLength, n := readLength(t, content)
+			valueLength, m := readLength(t, content[n:])
+			start := n + m
+			if start+nameLength+valueLength > len(content) {
+				t.Fatalf("a pair runs past the end of record %d", records)
+			}
+			got[string(content[start:start+nameLength])] = string(content[start+nameLength : start+nameLength+valueLength])
+			content = content[start+nameLength+valueLength:]
+		}
+	}
+
+	if records != 3 {
+		t.Errorf("%d records of parameters, want 3", records)
+	}
+	for name, value := range params {
+		if got[name] != value {
+			t.Errorf("%s: %d bytes, want %d", name, len(got[name]), len(value))
+		}
+	}
+}
+
+func readLength(t *testing.T, b []byte) (int, int) {
+	t.Helper()
+	if len(b) == 0 {
+		t.Fatal("a pair is cut off")
+	}
+	if b[0] < 128 {
+		return int(b[0]), 1
+	}
+	if len(b) < 4 {
+		t.Fatal("a length is cut off")
+	}
+	return int(b[0]&0x7f)<<24 | int(b[1])<<16 | int(b[2])<<8 | int(b[3]), 4
+}
+
+func TestParameterLargerThanARecordIsRefused(t *testing.T) {
+	err := writeRequest(io.Discard, map[string]string{"HUGE": strings.Repeat("x", 70_000)})
+	if err == nil || !strings.Contains(err.Error(), "does not fit in a record") {
+		t.Fatalf("%v", err)
 	}
 }
 
@@ -294,9 +369,9 @@ func TestParseCGIResponse(t *testing.T) {
 func TestEncodeParamsIsStable(t *testing.T) {
 	params := map[string]string{"B": "2", "A": "1", strings.Repeat("L", 130): ""}
 
-	first := encodeParams(params)
+	first := bytes.Join(encodeParams(params), nil)
 	for range 20 {
-		if !bytes.Equal(encodeParams(params), first) {
+		if !bytes.Equal(bytes.Join(encodeParams(params), nil), first) {
 			t.Fatal("the same parameters encoded differently")
 		}
 	}
