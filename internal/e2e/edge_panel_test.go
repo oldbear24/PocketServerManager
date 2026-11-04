@@ -324,3 +324,75 @@ func TestTheEdgeReportsItsRequestRate(t *testing.T) {
 		return h.host(host.Id).GetFloat("edge_requests_per_s") > 0
 	})
 }
+
+// TestAnApplyThatNeverArrivedIsSentAgain: an edge.apply that expired while the
+// server was away did not fail on the edge; when the agent is back, the edge
+// gets its config. A refused one is tried again once the agent reconnects.
+func TestAnApplyThatNeverArrivedIsSentAgain(t *testing.T) {
+	h := newHarness(t)
+	h.docker.AddContainer("web", "nginx:1", nil)
+	running, host, fake := h.managedEdge("away")
+	h.waitInSync(host.Id)
+
+	if err := running.stop(); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor("the stream to close", func() bool { return !h.host(host.Id).GetBool("stream_open") })
+
+	_, operator := testutil.NewUser(t, h.app, "operator@example.com", schema.RoleOperator)
+	if status, response := addDomain(t, h, operator, fmt.Sprintf(`{"hostname":"app.example.com","host":%q,"target_kind":"container","container":"web","port":80}`, host.Id)); status != http.StatusOK {
+		t.Fatalf("%d %s", status, response)
+	}
+	var queued string
+	h.waitFor("the apply to be queued", func() bool {
+		commands, err := h.app.FindRecordsByFilter(schema.Commands, "host={:h} && type='edge.apply' && status='queued'", "", 0, 0, dbx.Params{"h": host.Id})
+		if err == nil && len(commands) == 1 {
+			queued = commands[0].Id
+		}
+		return queued != ""
+	})
+	// it expires before the server comes back, as after a long outage
+	expired := h.command(queued)
+	expired.Set("expires_at", time.Now().UTC().Add(-time.Minute))
+	if err := h.app.Save(expired); err != nil {
+		t.Fatal(err)
+	}
+	h.panel.Commands.Reap()
+	if status := h.command(queued).GetString("status"); status != schema.CommandTimedOut && status != schema.CommandFailed {
+		t.Fatalf("the apply did not expire: %s", status)
+	}
+
+	again := h.start(running.config)
+	h.waitFor("the route to reach the edge after the outage", func() bool {
+		server := fake.server()
+		if server == nil {
+			return false
+		}
+		var config map[string]any
+		return json.Unmarshal(server.Config(), &config) == nil && slices.Contains(hostRoutes(config), "app.example.com")
+	})
+
+	// a refused config is tried again when the agent reconnects, once
+	fake.rejectAll("loading http app module: unknown module")
+	if status, response := addDomain(t, h, operator, fmt.Sprintf(`{"hostname":"b.example.com","host":%q,"target_kind":"container","container":"web","port":80}`, host.Id)); status != http.StatusOK {
+		t.Fatalf("%d %s", status, response)
+	}
+	h.waitFor("the refusal", func() bool {
+		state := h.edgeState(host.Id, operator)
+		return state.Edge.LastApply != nil && state.Edge.LastApply.Status == schema.CommandFailed
+	})
+	refused := h.edgeApplies(host.Id)
+	if err := again.stop(); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.reject = nil
+	fake.mu.Unlock()
+	if server := fake.server(); server != nil {
+		server.Reject = nil
+	}
+	h.start(running.config)
+	h.waitFor("the config to be tried again after the reconnect", func() bool {
+		return h.edgeApplies(host.Id) > refused && h.host(host.Id).GetString("edge_applied_digest") == h.host(host.Id).GetString("edge_digest")
+	})
+}

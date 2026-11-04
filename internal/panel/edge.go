@@ -414,8 +414,10 @@ func (p *Panel) applyEdge(hostID string, force bool, requester string) (*core.Re
 		if err != nil {
 			return nil, err
 		}
-		// a config the edge refused is not sent again by itself
-		if len(finished) > 0 && commandDigest(finished[0]) == digest && finished[0].GetString("status") != schema.CommandSucceeded {
+		// a config the edge refused is not sent again by itself, until the agent
+		// reconnects; one that never reached the agent is
+		if len(finished) > 0 && commandDigest(finished[0]) == digest && finished[0].GetString("status") != schema.CommandSucceeded &&
+			failedOnTheEdge(finished[0], host) {
 			return nil, nil
 		}
 	}
@@ -447,6 +449,17 @@ func (p *Panel) applyEdge(hostID string, force bool, requester string) (*core.Re
 	p.setFields(host, map[string]any{"edge_revision": revision})
 
 	return command, nil
+}
+
+// failedOnTheEdge tells whether a failed apply reached the agent and failed
+// there during its current connection. One that expired before it was
+// delivered, or failed before the agent reconnected (after an update or a
+// restart, say), is worth sending again.
+func failedOnTheEdge(command, host *core.Record) bool {
+	if command.GetDateTime("dispatched_at").IsZero() {
+		return false
+	}
+	return !command.GetDateTime("finished_at").Time().Before(host.GetDateTime("connected_since").Time())
 }
 
 // ensureCertificateOn queues the installation of a certificate on a host, unless
