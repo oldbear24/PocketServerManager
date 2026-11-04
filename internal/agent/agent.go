@@ -527,7 +527,22 @@ func (a *Agent) ownImageDigest(ctx context.Context) string {
 		return image[at+1:]
 	}
 
-	return strings.TrimPrefix(info.Image, "sha256:")
+	// started by a tag: the digest the registry gave for the image, so that the
+	// value means the same as for an agent started by digest
+	repository := image
+	if colon := strings.LastIndex(image, ":"); colon > strings.LastIndex(image, "/") {
+		repository = image[:colon]
+	}
+	if found, err := a.Docker.InspectImage(ctx, info.Image); err == nil {
+		for _, digest := range found.RepoDigests {
+			if name, value, ok := strings.Cut(digest, "@"); ok && name == repository {
+				return value
+			}
+		}
+	}
+
+	// an image that never came from a registry has only its local id
+	return info.Image
 }
 
 // reportOutcomes reports what the updater left in the volume, if anything.
