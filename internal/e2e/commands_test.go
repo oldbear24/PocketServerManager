@@ -696,6 +696,13 @@ func TestDebugLoggingFallsBackByItself(t *testing.T) {
 	if !strings.Contains(done.GetString("result"), `"duration_s":900`) {
 		t.Errorf("debug logging without a limit: %s", done.GetString("result"))
 	}
+
+	// info has no limit of its own
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_AgentSetLogLevel{AgentSetLogLevel: &agentv1.AgentSetLogLevel{Level: "info"}}})
+	done = h.waitForStatus(record.Id, schema.CommandSucceeded)
+	if !strings.Contains(done.GetString("result"), `"duration_s":0`) {
+		t.Errorf("back to info: %s", done.GetString("result"))
+	}
 }
 
 func TestUpdatedRoutesNeedAdmin(t *testing.T) {

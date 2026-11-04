@@ -351,6 +351,11 @@
     "unsealed_many": "Posledních {{count}} záznamů ještě není zapečetěno",
     "unsealed_other": "Posledních {{count}} záznamů ještě není zapečetěno",
     "unsealedNote": "Zapsal je příkaz spuštěný bez hlavního klíče. Panel je zapečetí, až se spustí s klíčem.",
+    "keyless_one": "{{count}} záznam byl zapsán bez hlavního klíče",
+    "keyless_few": "{{count}} záznamy byly zapsány bez hlavního klíče",
+    "keyless_many": "{{count}} záznamů bylo zapsáno bez hlavního klíče",
+    "keyless_other": "{{count}} záznamů bylo zapsáno bez hlavního klíče",
+    "keylessNote": "Ručí za ně jen jejich hashe, ne pečeť: záznamy {{ranges}}. Takové záznamy píšou příkazy spuštěné bez hlavního klíče, a stejně tak by je napsal někdo, kdo upravil databázi.",
     "verify": "Ověřit integritu",
     "export": "Export JSONL",
     "tab": {

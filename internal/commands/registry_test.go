@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -167,6 +169,29 @@ func TestTransitions(t *testing.T) {
 	} {
 		if got := transitionAllowed(tc.from, tc.to); got != tc.allowed {
 			t.Errorf("%s → %s: got %v", tc.from, tc.to, got)
+		}
+	}
+}
+
+// TestADroppedStreamSendsNothingMore: commands already buffered for a host that
+// was removed must not reach its agent; Go's select would otherwise pick the
+// buffered message as often as the closed stream.
+func TestADroppedStreamSendsNothingMore(t *testing.T) {
+	reason := errors.New("the server was removed")
+
+	for range 200 {
+		m := &Manager{streams: map[string]*Stream{}}
+		stream := &Stream{hostID: "h", out: make(chan *agentv1.SubscribeCommandsResponse, 3), closed: make(chan struct{})}
+		m.streams["h"] = stream
+		for range 3 {
+			stream.out <- &agentv1.SubscribeCommandsResponse{}
+		}
+
+		m.Drop("h", reason)
+
+		message, err := stream.Next(context.Background(), nil)
+		if message != nil || !errors.Is(err, reason) {
+			t.Fatalf("a dropped stream gave %v, %v", message, err)
 		}
 	}
 }

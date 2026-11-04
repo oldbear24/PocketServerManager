@@ -79,6 +79,9 @@ type VerifyResult struct {
 	// Unsealed counts the newest entries that were written without the master
 	// key and are not sealed yet; the panel seals them when it starts.
 	Unsealed int `json:"unsealed,omitempty"`
+	// Keyless lists the sealed entries, as [from, to], that were written without
+	// the master key: only their hashes vouch for them.
+	Keyless [][2]int `json:"keyless,omitempty"`
 }
 
 const verifyBatch = 500
@@ -87,39 +90,55 @@ const verifyBatch = 500
 // then checks the head of the chain (see HeadTable): without it, removing the
 // newest entries would go unnoticed. With the seal key it also proves the head,
 // which nobody can rewrite without the master key; without the key it checks
-// only that the head matches the newest entry.
+// only that the head matches the newest entry. It reads one snapshot of the
+// database, so entries written meanwhile are not mistaken for a break.
 func Verify(app core.App, key []byte) (VerifyResult, error) {
 	collection, err := app.FindCachedCollectionByNameOrId(schema.AuditLog)
 	if err != nil {
 		return VerifyResult{}, err
 	}
 
-	fromSeq, prevHash, checkpointSeq, err := chainStart(app)
+	db, ok := app.ConcurrentDB().(*dbx.DB)
+	if !ok {
+		return VerifyResult{}, errors.New("the database does not support read transactions")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	// it only reads
+	defer func() { _ = tx.Rollback() }()
+
+	return verifyIn(tx, collection, key)
+}
+
+func verifyIn(tx *dbx.Tx, collection *core.Collection, key []byte) (VerifyResult, error) {
+	fromSeq, prevHash, checkpointSeq, err := chainStart(tx)
 	if err != nil {
 		return VerifyResult{}, err
 	}
 
 	result := VerifyResult{OK: true}
 
-	if checkpointSeq > 0 {
-		// the checkpoint is an entry of the chain it starts, so it is checked too;
-		// one that pointed past itself would let the check skip any edit
-		if checkpointSeq < fromSeq {
-			return result.fail(checkpointSeq, "the retention checkpoint points past itself"), nil
-		}
-		// retention removes everything before the checkpoint's position
-		older := struct {
-			Seq int `db:"seq"`
-		}{}
-		err := app.DB().Select("seq").From(schema.AuditLog).
-			Where(dbx.NewExp("[[seq]] < {:from}", dbx.Params{"from": fromSeq})).
-			OrderBy("seq ASC").Limit(1).One(&older)
-		if err == nil {
-			return result.fail(older.Seq, fmt.Sprintf("entry %d is older than the retention checkpoint (entry %d) and would not be checked", older.Seq, checkpointSeq)), nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return result, err
-		}
+	// the checkpoint is an entry of the chain it starts, so it is checked too;
+	// one that pointed past itself would let the check skip any edit
+	if checkpointSeq > 0 && checkpointSeq < fromSeq {
+		return result.fail(checkpointSeq, "the retention checkpoint points past itself"), nil
+	}
+
+	// nothing may come before the start: the first entry, or the position where
+	// retention removed everything before
+	older := struct {
+		Seq int `db:"seq"`
+	}{}
+	err = tx.Select("seq").From(schema.AuditLog).
+		Where(dbx.NewExp("[[seq]] < {:from}", dbx.Params{"from": fromSeq})).
+		OrderBy("seq ASC").Limit(1).One(&older)
+	if err == nil {
+		return result.fail(older.Seq, fmt.Sprintf("entry %d comes before the start of the chain and would not be checked", older.Seq)), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return result, err
 	}
 
 	expectedSeq := fromSeq
@@ -127,8 +146,8 @@ func Verify(app core.App, key []byte) (VerifyResult, error) {
 
 	for {
 		rows := []dbx.NullStringMap{}
-		err := app.RecordQuery(collection).
-			AndWhere(dbx.NewExp("[[seq]] > {:cursor}", dbx.Params{"cursor": cursor})).
+		err := tx.Select("*").From(schema.AuditLog).
+			Where(dbx.NewExp("[[seq]] > {:cursor}", dbx.Params{"cursor": cursor})).
 			OrderBy("[[seq]] ASC").
 			Limit(verifyBatch).
 			All(&rows)
@@ -136,7 +155,7 @@ func Verify(app core.App, key []byte) (VerifyResult, error) {
 			return result, err
 		}
 		if len(rows) == 0 {
-			return checkHead(app, key, result, prevHash)
+			return checkHead(tx, key, result, fromSeq, prevHash)
 		}
 
 		for _, row := range rows {
@@ -191,8 +210,8 @@ func rowValues(collection *core.Collection, row dbx.NullStringMap) map[string]an
 
 // checkHead compares the head of the chain with the newest entry the walk
 // reached, whose hash is lastHash, and proves it with the seal key.
-func checkHead(app core.App, key []byte, result VerifyResult, lastHash string) (VerifyResult, error) {
-	h, found, err := readHead(app.DB())
+func checkHead(db dbx.Builder, key []byte, result VerifyResult, fromSeq int, lastHash string) (VerifyResult, error) {
+	h, found, err := readHead(db)
 	if err != nil {
 		return result, err
 	}
@@ -213,29 +232,43 @@ func checkHead(app core.App, key []byte, result VerifyResult, lastHash string) (
 		return result, nil
 	}
 
-	if h.MAC != "" {
-		if !sealed(key, h.Seq, h.Hash, h.MAC) {
-			return result.fail(h.Seq, "the seal of the chain does not match: entries were rewritten"), nil
-		}
-		result.Sealed = true
-		return result, nil
+	keyless, err := keylessRanges(h.Keyless)
+	if err != nil {
+		// a finding of the check, not an error of it
+		return result.fail(h.Seq, "the seal of the chain is damaged"), nil //nolint:nilerr
 	}
 
-	// entries written without the master key since the last sealed point
-	if h.SealedSeq > 0 {
-		if !sealed(key, h.SealedSeq, h.SealedHash, h.SealedMAC) {
+	switch {
+	case h.MAC != "":
+		if !sealed(key, h.Seq, h.Hash, h.Keyless, h.MAC) {
+			return result.fail(h.Seq, "the seal of the chain does not match: entries were rewritten"), nil
+		}
+	case h.SealedSeq == 0:
+		// only the process that created a head trusts it before its first seal,
+		// and it seals it right away; a seal that is gone was removed
+		return result.fail(h.Seq, "the chain has no seal: it was removed, or the log was only ever written without the master key"), nil
+	default:
+		// entries written without the master key since the last sealed point
+		if !sealed(key, h.SealedSeq, h.SealedHash, h.Keyless, h.SealedMAC) {
 			return result.fail(h.SealedSeq, "the seal of the chain does not match: entries were rewritten"), nil
 		}
-		stored, ok, err := hashAt(app.DB(), h.SealedSeq)
+		stored, ok, err := hashAt(db, h.SealedSeq)
 		if err != nil {
 			return result, err
 		}
 		if !ok || stored != h.SealedHash {
 			return result.fail(h.SealedSeq, fmt.Sprintf("entry %d was rewritten after it was sealed", h.SealedSeq)), nil
 		}
-		result.Sealed = true
+		result.Unsealed = result.LastSeq - h.SealedSeq
 	}
-	result.Unsealed = result.LastSeq - h.SealedSeq
+
+	result.Sealed = true
+	for _, r := range keyless {
+		// retention may have removed some of them
+		if r[1] >= fromSeq {
+			result.Keyless = append(result.Keyless, [2]int{max(r[0], fromSeq), r[1]})
+		}
+	}
 
 	return result, nil
 }
@@ -243,13 +276,13 @@ func checkHead(app core.App, key []byte, result VerifyResult, lastHash string) (
 // chainStart returns where the chain begins: the first entry if nothing has been
 // pruned, or the position stored by the newest retention checkpoint, together
 // with the seq of that checkpoint (zero without one).
-func chainStart(app core.App) (int, string, int, error) {
+func chainStart(db dbx.Builder) (int, string, int, error) {
 	row := struct {
 		Seq      int    `db:"seq"`
 		Snapshot string `db:"snapshot"`
 	}{}
 
-	err := app.DB().
+	err := db.
 		Select("seq", "snapshot").
 		From(schema.AuditLog).
 		Where(dbx.HashExp{"action": ActionCheckpoint}).

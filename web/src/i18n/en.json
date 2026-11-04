@@ -327,6 +327,9 @@
     "unsealed_one": "The newest entry is not sealed yet",
     "unsealed_other": "The newest {{count}} entries are not sealed yet",
     "unsealedNote": "Written by a command that ran without the master key. The panel seals them when it starts with the key.",
+    "keyless_one": "{{count}} entry was written without the master key",
+    "keyless_other": "{{count}} entries were written without the master key",
+    "keylessNote": "Only their hashes vouch for them, not the seal: entries {{ranges}}. Commands run without the master key write such entries, and so would someone who edited the database.",
     "verify": "Verify integrity",
     "export": "Export JSONL",
     "tab": {

@@ -159,6 +159,24 @@ export function AuditPage() {
                   </StatusPill>
                 </span>
               )}
+              {verify?.ok && (verify.keyless?.length ?? 0) > 0 && (
+                <span
+                  title={t("audit.keylessNote", {
+                    ranges: (verify.keyless ?? [])
+                      .map(([from, to]) => (from === to ? `${from}` : `${from}–${to}`))
+                      .join(", "),
+                  })}
+                >
+                  <StatusPill tone="warn" dot={false}>
+                    {t("audit.keyless", {
+                      count: (verify.keyless ?? []).reduce(
+                        (sum, [from, to]) => sum + to - from + 1,
+                        0,
+                      ),
+                    })}
+                  </StatusPill>
+                </span>
+              )}
               <Button disabled={verifying} onClick={() => void runVerify()}>
                 {t("audit.verify")}
               </Button>

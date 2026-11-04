@@ -1039,3 +1039,161 @@ func TestEntriesWrittenWithoutTheKeyAreSealedLater(t *testing.T) {
 		}
 	})
 }
+
+// TestAFreshInstallWritesItsMigrationsToTheLog: the panel binds the audit before
+// the migrations run, as `panel serve` does, so the first migrations write
+// entries before the table of the head exists.
+func TestAFreshInstallWritesItsMigrationsToTheLog(t *testing.T) {
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir(), EncryptionEnv: "pb_test_env"})
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = app.ClearBootstrap() }()
+
+	p := panel.New(app, &panel.Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, nil)
+	p.Register()
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatalf("the migrations of a fresh install fail: %v", err)
+	}
+	if err := p.Audit.SealHead(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := audit.Verify(app, p.AuditKey())
+	if err != nil || !result.OK || !result.Sealed || result.Checked == 0 || result.Unsealed != 0 {
+		t.Fatalf("fresh install: %+v, %v", result, err)
+	}
+}
+
+// TestARemovedSealIsReported: whoever blanks the seal makes the head look like
+// one that was never sealed. Only the process that created a head trusts that.
+func TestARemovedSealIsReported(t *testing.T) {
+	strip := `UPDATE ` + audit.HeadTable + ` SET mac = '', sealed_seq = 0, sealed_hash = '', sealed_mac = ''`
+
+	cases := map[string]func(t *testing.T, env *env){
+		"rewritten entry": func(t *testing.T, env *env) {
+			exec(t, env, `UPDATE audit_log SET record_label = 'evil' WHERE seq = 2`)
+			if err := audit.Rehash(env.app, 2); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"removed newest entries": func(t *testing.T, env *env) {
+			exec(t, env, `DELETE FROM audit_log WHERE seq >= 3`)
+			if err := audit.Rehash(env.app, 3); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"nothing else": func(*testing.T, *env) {},
+	}
+
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			env := newEnv(t)
+			for i := range 4 {
+				testutil.NewHost(t, env.app, fmt.Sprintf("host-%d", i))
+			}
+			key := env.panel.AuditKey()
+
+			change(t, env)
+			exec(t, env, strip)
+
+			result, err := audit.Verify(env.app, key)
+			if err != nil || result.OK || !strings.Contains(result.Reason, "no seal") {
+				t.Fatalf("a stripped seal passes: %+v, %v", result, err)
+			}
+
+			// a start of the panel does not seal over it
+			if err := env.panel.Audit.SealHead(); err != nil {
+				t.Fatal(err)
+			}
+			testutil.NewHost(t, env.app, "later")
+			if result, _ := audit.Verify(env.app, key); result.OK {
+				t.Fatalf("a later seal covered up a stripped seal: %+v", result)
+			}
+		})
+	}
+}
+
+// TestEntriesBeforeTheStartAreReported: without a checkpoint the chain starts at
+// entry 1, and rows with a lower seq would never be checked.
+func TestEntriesBeforeTheStartAreReported(t *testing.T) {
+	env := newEnv(t)
+	testutil.NewHost(t, env.app, "host")
+
+	exec(t, env, `INSERT INTO audit_log (id, seq, at, category, action, actor_label, prev_hash, hash)
+		VALUES ('forged0000000a', 0, '2026-01-01 00:00:00.000Z', 'change', 'delete', 'alice', '', 'x')`)
+
+	result, err := audit.Verify(env.app, env.panel.AuditKey())
+	if err != nil || result.OK || result.BadSeq != 0 {
+		t.Fatalf("an entry before the start passes: %+v, %v", result, err)
+	}
+}
+
+// TestVerifyIsNotFooledByWritesUnderWay: a save that commits while the check
+// runs must not look like a missing entry.
+func TestVerifyIsNotFooledByWritesUnderWay(t *testing.T) {
+	env := newEnv(t)
+	host := testutil.NewHost(t, env.app, "busy")
+	key := env.panel.AuditKey()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 300 {
+			host.Set("labels", map[string]any{"i": i})
+			if err := env.app.Save(host); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+
+	for running := true; running; {
+		select {
+		case <-done:
+			running = false
+		default:
+		}
+		result, err := audit.Verify(env.app, key)
+		if err != nil || !result.OK {
+			t.Fatalf("a check during writes: %+v, %v", result, err)
+		}
+	}
+}
+
+// TestEntriesWithoutTheKeyStayListed: entries passed off as written without the
+// key are sealed over later, but the seal lists them, and so does the check.
+func TestEntriesWithoutTheKeyStayListed(t *testing.T) {
+	env := newEnv(t)
+	for i := range 3 {
+		testutil.NewHost(t, env.app, fmt.Sprintf("host-%d", i))
+	}
+	key := env.panel.AuditKey()
+
+	seal := env.panel.Audit.SealKey
+	env.panel.Audit.SealKey = func() []byte { return nil }
+	testutil.NewHost(t, env.app, "keyless-1")
+	testutil.NewHost(t, env.app, "keyless-2")
+	env.panel.Audit.SealKey = seal
+	testutil.NewHost(t, env.app, "keyed")
+
+	result, err := audit.Verify(env.app, key)
+	if err != nil || !result.OK || len(result.Keyless) != 1 || result.Keyless[0] != [2]int{4, 5} {
+		t.Fatalf("keyless entries: %+v, %v", result, err)
+	}
+
+	if _, err := env.panel.Audit.Prune(time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	env.panel.Audit.SealKey = func() []byte { return nil }
+	if _, err := env.panel.Audit.Prune(time.Hour); err == nil {
+		t.Error("the log was pruned without the master key")
+	}
+}
+
+func exec(t *testing.T, env *env, query string) {
+	t.Helper()
+	if _, err := env.app.DB().NewQuery(query).Execute(); err != nil {
+		t.Fatal(err)
+	}
+}

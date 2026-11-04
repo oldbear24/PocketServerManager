@@ -182,6 +182,11 @@ func (a *Agent) handleSetLogLevel(_ context.Context, command *agentv1.Command, _
 		return nil, err
 	}
 
+	// info is where every other level falls back to; it has no limit itself
+	if strings.EqualFold(payload.GetLevel(), "info") {
+		duration = 0
+	}
+
 	return map[string]any{"level": payload.GetLevel(), "duration_s": int64(duration.Seconds())}, nil
 }
 

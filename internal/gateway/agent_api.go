@@ -111,20 +111,17 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	}
 
 	for {
-		select {
-		case message := <-delivery.Out():
-			if err := stream.Send(message); err != nil {
-				return err
-			}
-		case <-delivery.Closed():
-			if err := delivery.Dropped(); err != nil {
-				return err
-			}
-			return status.Error(codes.Aborted, "replaced by a newer connection of this agent")
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-s.stopping:
-			return status.Error(codes.Unavailable, "the panel is shutting down")
+		message, err := delivery.Next(ctx, s.stopping)
+		switch {
+		case errors.Is(err, commands.ErrReplaced):
+			return status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, commands.ErrStopping):
+			return status.Error(codes.Unavailable, err.Error())
+		case err != nil:
+			return err
+		}
+		if err := stream.Send(message); err != nil {
+			return err
 		}
 	}
 }

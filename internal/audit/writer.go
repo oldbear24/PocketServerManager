@@ -350,16 +350,31 @@ func (w *Writer) append(tx core.App, e entry) error {
 		return err
 	}
 
-	// the head moves in the same transaction as the entry
+	// the head moves in the same transaction as the entry; the migrations before
+	// the one that creates its table write entries too
+	if !tx.HasTable(HeadTable) {
+		return nil
+	}
 	current, found, err := readHead(tx.DB())
 	if err != nil {
 		return err
 	}
-	following, err := current.next(tx.DB(), w.sealKey(), found, last.Seq, last.Hash, last.Seq+1, hash)
+	trusted := headTrusted(tx) || !found && last.Seq == 0
+	following, err := current.next(tx.DB(), w.sealKey(), trusted, found, last.Seq, last.Hash, last.Seq+1, hash)
 	if err != nil {
 		return err
 	}
-	return writeHead(tx.DB(), following)
+	if err := writeHead(tx.DB(), following); err != nil {
+		return err
+	}
+	if following.MAC != "" {
+		untrustHead(tx)
+	} else if !found {
+		// the first entry of a new log, written without the key: the head
+		// stays trusted for the rest of this process
+		trustHead(tx)
+	}
+	return nil
 }
 
 // Security records a security event outside of any record change.
@@ -559,6 +574,12 @@ func truncate(value string, limit int) string {
 // checkpoint entry holding the position the chain continues from, so the rest of
 // the chain stays verifiable.
 func (w *Writer) Prune(retention time.Duration) (int64, error) {
+	// without the key the checkpoint could not be sealed, and removing the
+	// sealed point would break the seal for good
+	if w.sealKey() == nil {
+		return 0, errors.New("the audit log is pruned only with the master key")
+	}
+
 	cutoff, err := types.ParseDateTime(time.Now().UTC().Add(-retention))
 	if err != nil {
 		return 0, err

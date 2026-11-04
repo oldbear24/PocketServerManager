@@ -222,6 +222,7 @@ export type VerifyResult = {
   reason?: string;
   sealed: boolean;
   unsealed?: number;
+  keyless?: [number, number][];
 };
 
 export type DiagAgent = {
