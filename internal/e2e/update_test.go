@@ -280,12 +280,27 @@ func TestBatchUpdatesGoOneHostAtATime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A heartbeat that was under way when an agent stopped can still store the
+	// version the agent runs. So the gateway has to see each stream close first,
+	// and the old version is set again until it holds.
 	for _, id := range []string{firstID, secondID, thirdID} {
-		host := h.host(id)
-		host.Set("agent_version", "1.0.0")
-		if err := h.app.Save(host); err != nil {
-			t.Fatal(err)
-		}
+		h.waitFor("the stream to close", func() bool { return !h.host(id).GetBool("stream_open") })
+	}
+	for _, id := range []string{firstID, secondID, thirdID} {
+		held := 0
+		h.waitFor("the old version to hold", func() bool {
+			host := h.host(id)
+			if host.GetString("agent_version") == "1.0.0" {
+				held++
+				return held >= 20
+			}
+			held = 0
+			host.Set("agent_version", "1.0.0")
+			if err := h.app.Save(host); err != nil {
+				t.Fatal(err)
+			}
+			return false
+		})
 	}
 
 	status, body := testutil.Do(t, h.handler, testutil.Request{Method: "POST", URL: "/api/pc/hosts/update-all", Token: adminToken})

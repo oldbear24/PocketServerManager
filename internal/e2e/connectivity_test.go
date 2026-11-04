@@ -283,10 +283,11 @@ func TestRevokedCertificateIsRejected(t *testing.T) {
 		return err == nil && len(events) > 0
 	})
 
-	rejected, err := h.app.FindRecordsByFilter(schema.AuditLog, "action={:a}", "", 0, 0, dbx.Params{"a": audit.ActionCertRejected})
-	if err != nil || len(rejected) == 0 {
-		t.Fatalf("the rejection must be a security event: %v", err)
-	}
+	// the security event is written right after the event, in a transaction of its own
+	h.waitFor("the rejection to be a security event", func() bool {
+		rejected, err := h.app.FindRecordsByFilter(schema.AuditLog, "action={:a}", "", 0, 0, dbx.Params{"a": audit.ActionCertRejected})
+		return err == nil && len(rejected) > 0
+	})
 
 	identity, err := agent.LoadIdentity(running.config.StateDir)
 	if err != nil {
