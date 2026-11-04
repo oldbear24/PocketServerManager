@@ -284,6 +284,23 @@ func ExistsSQL(engine Engine, database, user string) string {
 		"SELECT 'user', count(*) FROM pg_roles WHERE rolname = " + postgresString(user) + ";"
 }
 
+// SignIn signs in as a user over the container's own address, where the server
+// checks the password, unlike on its local socket, and runs nothing. It tells
+// whether the password is the one the server knows.
+func SignIn(engine Engine, user, password, database string) Script {
+	address := `"$(hostname -i | cut -d' ' -f1)"`
+	var script string
+	if engine.Name == MariaDB.Name {
+		script = selectClient + `"$client" --host=` + address + ` --user="$PC_ADMIN_USER" --batch --skip-column-names -e "SELECT 1" "$PC_DATABASE" >/dev/null`
+	} else {
+		script = `psql -X -q -A -t --host=` + address + ` --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE" -c "SELECT 1" >/dev/null`
+	}
+	return Script{
+		Cmd: []string{"sh", "-c", script},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database),
+	}
+}
+
 // DatabasesSQL lists a server's databases, one name per line, without those the
 // engine keeps for itself.
 func DatabasesSQL(engine Engine) string {

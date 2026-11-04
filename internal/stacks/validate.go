@@ -58,6 +58,58 @@ var (
 
 // Validate checks a Compose file and its environment. The keys of secrets count as
 // set, with a placeholder: their values are nobody's business here.
+// LoadWith loads a stack's Compose file with a second file over it, as a deploy
+// does, with the stack's variables and placeholders for its secrets.
+func LoadWith(ctx context.Context, name, compose, override, env string, secretKeys []string) (*types.Project, error) {
+	environment, problems := parseEnv(env)
+	if len(problems) > 0 {
+		return nil, errors.New(problems[0].Message)
+	}
+	for _, key := range secretKeys {
+		environment[key] = "secret"
+	}
+	return LoadResolved(ctx, name, compose, override, environment)
+}
+
+// Environment is what Compose interpolates with at a deploy: the stack's env file,
+// with its secret references resolved, and its secrets.
+func Environment(plainEnv string, secrets map[string]string) (map[string]string, error) {
+	environment, problems := parseEnv(plainEnv)
+	if len(problems) > 0 {
+		return nil, errors.New(problems[0].Message)
+	}
+	maps.Copy(environment, secrets)
+	return environment, nil
+}
+
+// LoadResolved loads a stack's Compose file, and a second file over it if there is
+// one, with the variables a deploy has, and the profiles its COMPOSE_PROFILES
+// variable turns on. extends within the file is followed; what lies outside the
+// file is not.
+func LoadResolved(ctx context.Context, name, compose, override string, environment map[string]string) (*types.Project, error) {
+	profiles := []string{}
+	for _, profile := range strings.Split(environment["COMPOSE_PROFILES"], ",") {
+		if profile = strings.TrimSpace(profile); profile != "" {
+			profiles = append(profiles, profile)
+		}
+	}
+
+	files := []types.ConfigFile{{Filename: FileCompose, Content: []byte(compose)}}
+	if override != "" {
+		files = append(files, types.ConfigFile{Filename: "compose.pocketcloud.yaml", Content: []byte(override)})
+	}
+	return loader.LoadWithContext(ctx, types.ConfigDetails{
+		WorkingDir:  "/",
+		ConfigFiles: files,
+		Environment: environment,
+	}, func(options *loader.Options) {
+		options.SetProjectName(name, true)
+		options.ResolvePaths = false
+		options.SkipInclude = true
+		options.Profiles = profiles
+	})
+}
+
 func Validate(ctx context.Context, name, compose, env string, secretKeys []string) Result {
 	result := Result{Errors: []Problem{}, Warnings: []Problem{}, Services: []string{}}
 

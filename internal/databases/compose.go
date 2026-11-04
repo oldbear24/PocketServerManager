@@ -133,7 +133,10 @@ func Override(compose string, joins []Join, service string, retired []string) (s
 	for _, name := range names {
 		definition := services[name]
 		if slices.Contains(retired, name) {
-			out[name] = mapping("profiles", sequence(RetiredProfile))
+			// in place of any profiles of its own, which the stack may turn on
+			profiles := sequence(RetiredProfile)
+			profiles.Tag = "!override"
+			out[name] = mapping("profiles", profiles)
 			continue
 		}
 
@@ -154,7 +157,7 @@ func Override(compose string, joins []Join, service string, retired []string) (s
 			entry.Content = append(entry.Content, scalar("networks"), joined)
 		}
 
-		if dependencies := withoutRetired(serviceValue(definition, "depends_on"), retired); dependencies != nil {
+		if dependencies := withoutRetired(dependsOnOf(services, name, map[string]bool{}), retired); dependencies != nil {
 			entry.Content = append(entry.Content, scalar("depends_on"), dependencies)
 		}
 
@@ -195,34 +198,20 @@ func Override(compose string, joins []Join, service string, retired []string) (s
 // withoutRetired returns what replaces a service's depends_on when some of its
 // dependencies are retired, or nil when nothing changes. The other dependencies
 // keep their conditions.
-func withoutRetired(dependsOn *yaml.Node, retired []string) *yaml.Node {
-	if dependsOn == nil || len(retired) == 0 {
+func withoutRetired(dependsOn []dependency, retired []string) *yaml.Node {
+	if len(dependsOn) == 0 || len(retired) == 0 {
 		return nil
 	}
 
 	kept := &yaml.Node{Kind: yaml.MappingNode, Tag: "!override"}
 	changed := false
-
-	switch dependsOn.Kind {
-	case yaml.SequenceNode:
-		for _, item := range dependsOn.Content {
-			name := resolve(item).Value
-			if slices.Contains(retired, name) {
-				changed = true
-				continue
-			}
-			kept.Content = append(kept.Content, scalar(name), mapping("condition", scalar("service_started")))
+	for _, item := range dependsOn {
+		if slices.Contains(retired, item.name) {
+			changed = true
+			continue
 		}
-	case yaml.MappingNode:
-		for i := 0; i+1 < len(dependsOn.Content); i += 2 {
-			name := resolve(dependsOn.Content[i]).Value
-			if slices.Contains(retired, name) {
-				changed = true
-				continue
-			}
-			// the override is a document of its own: no anchors or aliases into the stack's file
-			kept.Content = append(kept.Content, scalar(name), plain(dependsOn.Content[i+1]))
-		}
+		// the override is a document of its own: no anchors or aliases into the stack's file
+		kept.Content = append(kept.Content, scalar(item.name), plain(item.value))
 	}
 
 	if !changed {
@@ -232,6 +221,88 @@ func withoutRetired(dependsOn *yaml.Node, retired []string) *yaml.Node {
 		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!reset", Style: yaml.FlowStyle}
 	}
 	return kept
+}
+
+// dependency is an entry of depends_on in its long form.
+type dependency struct {
+	name  string
+	value *yaml.Node
+}
+
+// dependsOnOf is a service's depends_on as Compose sees it: that of the service
+// it extends in the same file first, then its own, from mappings merged into it
+// too, an entry of its own taking the place of one of the same name.
+func dependsOnOf(services map[string]*yaml.Node, name string, seen map[string]bool) []dependency {
+	if seen[name] || services[name] == nil {
+		return nil
+	}
+	seen[name] = true
+	service := services[name]
+
+	var list []dependency
+	if extends := serviceValue(service, "extends"); extends != nil {
+		base := ""
+		switch extends.Kind {
+		case yaml.ScalarNode:
+			base = extends.Value
+		case yaml.MappingNode:
+			if mappingValue(extends, "file") == nil {
+				if target := resolve(mappingValue(extends, "service")); target != nil {
+					base = target.Value
+				}
+			}
+		}
+		if base != "" {
+			list = dependsOnOf(services, base, seen)
+		}
+	}
+	for _, item := range dependencies(serviceValue(service, "depends_on")) {
+		list = slices.DeleteFunc(list, func(have dependency) bool { return have.name == item.name })
+		list = append(list, item)
+	}
+	return list
+}
+
+// dependencies reads depends_on in either form, with mappings merged into it.
+func dependencies(node *yaml.Node) []dependency {
+	node = resolve(node)
+	if node == nil {
+		return nil
+	}
+	list := []dependency{}
+	add := func(item dependency) {
+		list = slices.DeleteFunc(list, func(have dependency) bool { return have.name == item.name })
+		list = append(list, item)
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			add(dependency{name: resolve(item).Value, value: mapping("condition", scalar("service_started"))})
+		}
+	case yaml.MappingNode:
+		// merged entries first, as an entry of the mapping's own wins
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if resolve(node.Content[i]).Value != "<<" {
+				continue
+			}
+			merged := resolve(node.Content[i+1])
+			sources := []*yaml.Node{merged}
+			if merged != nil && merged.Kind == yaml.SequenceNode {
+				sources = merged.Content
+			}
+			for _, source := range sources {
+				for _, item := range dependencies(source) {
+					add(item)
+				}
+			}
+		}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if key := resolve(node.Content[i]).Value; key != "<<" {
+				add(dependency{name: key, value: node.Content[i+1]})
+			}
+		}
+	}
+	return list
 }
 
 // RetireProblem tells why a service cannot be kept stopped while the rest of its
@@ -250,8 +321,10 @@ func RetireProblem(compose, service string) error {
 		if name == service {
 			continue
 		}
-		if mode := serviceValue(definition, "network_mode"); mode != nil && (mode.Value == "service:"+service || mode.Value == "container:"+service) {
-			return fmt.Errorf("%s uses the network of %s", name, service)
+		for _, key := range []string{"network_mode", "pid", "ipc", "uts", "cgroup"} {
+			if mode := serviceValue(definition, key); mode != nil && (mode.Value == "service:"+service || mode.Value == "container:"+service) {
+				return fmt.Errorf("%s shares the %s of %s", name, strings.TrimSuffix(key, "_mode"), service)
+			}
 		}
 		for _, key := range []string{"links", "volumes_from"} {
 			list := serviceValue(definition, key)

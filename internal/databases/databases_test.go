@@ -666,3 +666,100 @@ func TestOverrideFollowsMergedAndAliasedServices(t *testing.T) {
 		t.Error("a merged network_mode of the database service is no problem")
 	}
 }
+
+func TestRetirementHoldsAgainstProfilesExtendsAndMergedDependencies(t *testing.T) {
+	compose := `x-deps: &deps
+  db:
+    condition: service_healthy
+services:
+  db:
+    image: postgres:16
+    profiles: [postgresql]
+  cache:
+    image: redis:7
+  base:
+    image: alpine:3.22
+    depends_on: [db]
+  app:
+    extends:
+      service: base
+    depends_on:
+      cache:
+        condition: service_started
+  web:
+    image: alpine:3.22
+    depends_on:
+      <<: *deps
+      cache:
+        condition: service_started
+`
+	override, err := Override(compose, nil, "", []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// the stack turns the database's own profile on, which used to keep it running
+	project, err := stacks.LoadWith(context.Background(), "test", compose, override, "COMPOSE_PROFILES=postgresql\n", nil)
+	if err != nil {
+		t.Fatalf("the stack does not load after the move: %v\n%s", err, override)
+	}
+	if _, enabled := project.Services["db"]; enabled {
+		t.Error("the retired database is enabled by its own profile")
+	}
+	for _, name := range []string{"app", "web", "base"} {
+		if _, needs := project.Services[name].DependsOn["db"]; needs {
+			t.Errorf("%s still depends on the retired database", name)
+		}
+	}
+	if app := project.Services["app"]; app.DependsOn["cache"].Condition != "service_started" {
+		t.Errorf("app lost its own dependency: %+v", app.DependsOn)
+	}
+
+	// every profile on: no override keeps it off, which the move has to find out
+	project, err = stacks.LoadWith(context.Background(), "test", compose, override, "COMPOSE_PROFILES=*\n", nil)
+	if err == nil {
+		if _, enabled := project.Services["db"]; !enabled {
+			t.Error("COMPOSE_PROFILES=* left the retired database off, which Compose does not")
+		}
+	}
+
+	// a service sharing the database's process namespace cannot run without it
+	shared := strings.Replace(compose, "  cache:\n    image: redis:7\n", "  cache:\n    image: redis:7\n    pid: service:db\n", 1)
+	if err := RetireProblem(shared, "db"); err == nil || !strings.Contains(err.Error(), "pid") {
+		t.Errorf("a shared pid namespace: %v", err)
+	}
+}
+
+func TestTheApplicationLoginIsWhatComposeGivesTheDatabase(t *testing.T) {
+	compose := `services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_USER: ${DB_USER:-shop}
+      MARIADB_PASSWORD: "pa$$word"
+  other:
+    image: postgres:16
+    environment:
+      - POSTGRES_PASSWORD
+`
+	project, err := stacks.LoadResolved(context.Background(), "test", compose, "", map[string]string{"POSTGRES_PASSWORD": "from-the-env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := func(service string) map[string]string {
+		out := map[string]string{}
+		for key, value := range project.Services[service].Environment {
+			if value != nil {
+				out[key] = *value
+			}
+		}
+		return out
+	}
+	if user, password := ApplicationLogin(MariaDB, values("db")); user != "shop" || password != "pa$word" {
+		t.Errorf("mariadb: %q %q", user, password)
+	}
+	// a variable without a value has none in the project: the panel fills it in from the deploy's variables
+	if value, ok := project.Services["other"].Environment["POSTGRES_PASSWORD"]; ok && value != nil && *value != "from-the-env" {
+		t.Errorf("postgres: %v", *value)
+	}
+}

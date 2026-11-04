@@ -177,6 +177,21 @@ func SuggestCredentials(compose, service string, engine Engine) Credentials {
 // keeps when it moves to a shared server. PostgreSQL images make POSTGRES_USER
 // the administrator and the application's user at once; MariaDB and MySQL images
 // have an application user of their own. An empty user means none is named.
+// ApplicationLogin is the user and password an application signs in with, from the
+// environment of its database service as Compose resolved it. A PostgreSQL
+// service without a user of its own signs in as the administrator.
+func ApplicationLogin(engine Engine, environment map[string]string) (user, password string) {
+	first := firstOf(environment)
+	if engine.Name == Postgres.Name {
+		user = first("POSTGRES_USER", "POSTGRESQL_USERNAME")
+		if user == "" {
+			user = engine.AdminUser
+		}
+		return user, first("POSTGRES_PASSWORD", "POSTGRESQL_PASSWORD")
+	}
+	return first("MARIADB_USER", "MYSQL_USER"), first("MARIADB_PASSWORD", "MYSQL_PASSWORD")
+}
+
 func ApplicationCredentials(compose, service string, engine Engine) Credentials {
 	env, ok := serviceEnvironment(compose, service)
 	if !ok {
