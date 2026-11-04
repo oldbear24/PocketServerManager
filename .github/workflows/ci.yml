@@ -51,7 +51,9 @@ jobs:
           name: web-dist
           path: web/dist
       - run: go build ./...
-      - run: go test -race ./...
+      # the end-to-end tests take about 11 minutes under the race detector, more
+      # than go test's default limit of 10
+      - run: go test -race -timeout 25m ./...
       - name: Cross-compile for the supported platforms
         run: |
           for arch in amd64 arm64; do
