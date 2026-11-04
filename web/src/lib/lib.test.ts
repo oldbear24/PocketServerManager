@@ -420,6 +420,9 @@ describe("databases", () => {
     expect(serverLabel(server({}))).toBe("MariaDB 11.8");
     expect(serverLabel(server({ version: "11.8.2-MariaDB-ubu2404" }))).toBe("MariaDB 11.8.2");
     expect(
+      serverLabel(server({ engine: "postgres", version: "17.11 (Debian 17.11-1.pgdg13+2)" })),
+    ).toBe("PostgreSQL 17.11");
+    expect(
       serverLabel(
         server({
           engine: "postgres",
