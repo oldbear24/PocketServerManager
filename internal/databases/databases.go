@@ -199,3 +199,27 @@ func AddEnv(env string, lines []string) (string, bool) {
 	}
 	return env + strings.Join(added, "\n") + "\n", true
 }
+
+// RemoveEnv takes the variables of a connection out of an env file again, when
+// its database is gone: a reference to its secret would make every later deploy
+// fail. Only lines exactly as AddEnv wrote them go; a line someone changed stays.
+func RemoveEnv(env string, lines []string) (string, bool) {
+	ours := map[string]bool{}
+	for _, line := range lines {
+		ours[line] = true
+	}
+
+	kept := []string{}
+	removed := false
+	for _, line := range strings.Split(env, "\n") {
+		if ours[strings.TrimPrefix(strings.TrimSpace(line), "export ")] {
+			removed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return env, false
+	}
+	return strings.Join(kept, "\n"), true
+}

@@ -611,6 +611,13 @@ func TestDropKeepsAFinalDumpAndExportsCanBeDownloaded(t *testing.T) {
 	if drop := statements[len(statements)-1].env["PC_SQL"]; drop != "DROP DATABASE IF EXISTS `shop`;\nDROP USER IF EXISTS 'shop'@'%';" {
 		t.Errorf("drop SQL: %q", drop)
 	}
+
+	// the stack loses the variables the panel added: a reference to the secret
+	// that is gone would make its next deploy fail
+	d.waitFor("the variables to go", func() bool {
+		return !strings.Contains(d.stack(stackID).GetString("env"), "${secret:db/shop}")
+	})
+	d.waitForStatus(d.deploy(stackID, map[string]any{}).Id, schema.CommandSucceeded)
 }
 
 func TestDedicatedServersAreFoundAndLinked(t *testing.T) {

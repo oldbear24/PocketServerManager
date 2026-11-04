@@ -797,7 +797,7 @@
     "connectQueued": "The stack gets its variables and its network to the server.",
     "drop": "Drop the database",
     "dropConfirm": "Drop the database {{name}}?",
-    "dropNote": "Its user goes too. A final dump stays in the panel for 30 days; nothing is dropped if it cannot be kept.",
+    "dropNote": "Its user goes too, and so do the variables PocketCloud added to its stack, as a new revision. A final dump stays in the panel for 30 days; nothing is dropped if it cannot be kept.",
     "dropQueued": "Dropping {{name}} after a final dump.",
     "statsQueued": "The server is asked for its numbers.",
     "refreshStats": "Read the numbers again",

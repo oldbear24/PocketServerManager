@@ -367,3 +367,33 @@ func TestSuggestCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveEnvTakesOutOnlyWhatWasAdded(t *testing.T) {
+	maria := Connection{Engine: MariaDB, Server: "db-main", Database: "shop", User: "shop"}
+
+	env, _ := AddEnv("TZ=Europe/Prague\nDB_HOST=keep-me\n", maria.EnvLines())
+	// someone changed one of the lines since
+	env = strings.Replace(env, "DB_NAME=shop", "DB_NAME=shop_v2", 1)
+
+	cleaned, changed := RemoveEnv(env, maria.EnvLines())
+	if !changed {
+		t.Fatal("nothing was removed")
+	}
+	for _, gone := range []string{"DB_PORT=3306", "DB_USER=shop", "${secret:db/shop}"} {
+		if strings.Contains(cleaned, gone) {
+			t.Errorf("%s stayed: %q", gone, cleaned)
+		}
+	}
+	for _, kept := range []string{"TZ=Europe/Prague", "DB_HOST=keep-me", "DB_NAME=shop_v2"} {
+		if !strings.Contains(cleaned, kept) {
+			t.Errorf("%s went: %q", kept, cleaned)
+		}
+	}
+
+	if _, changed := RemoveEnv(cleaned, maria.EnvLines()); changed {
+		t.Error("removing again changed the file")
+	}
+	if again, _ := RemoveEnv("A=1\nexport DB_PORT=3306\n", maria.EnvLines()); again != "A=1\n" {
+		t.Errorf("an exported line: %q", again)
+	}
+}

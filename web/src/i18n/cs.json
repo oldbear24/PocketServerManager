@@ -829,7 +829,7 @@
     "connectQueued": "Stack dostane proměnné a vlastní síť k serveru.",
     "drop": "Smazat databázi",
     "dropConfirm": "Smazat databázi {{name}}?",
-    "dropNote": "Zmizí i její uživatel. Závěrečný dump zůstane v panelu 30 dní; když ho nejde uložit, nic se nesmaže.",
+    "dropNote": "Zmizí i její uživatel a proměnné, které PocketCloud přidal jejímu stacku, jako nová revize. Závěrečný dump zůstane v panelu 30 dní; když ho nejde uložit, nic se nesmaže.",
     "dropQueued": "Mažu {{name}} po závěrečném dumpu.",
     "statsQueued": "Server se ptá na svá čísla.",
     "refreshStats": "Načíst čísla znovu",

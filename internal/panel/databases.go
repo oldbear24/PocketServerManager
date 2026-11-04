@@ -462,6 +462,11 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 		p.Log.Error("failed to remove a database", "database", database.Id, "error", err)
 	}
 
+	// the variables the panel added for this database go too: their secret is gone
+	if stackID != "" {
+		p.removeConnection(ctx, server, payload.Database, payload.User, stackID)
+	}
+
 	// the application keeps its network while it has another database on the server
 	if stackID != "" {
 		others, err := p.App.CountRecords(schema.Databases, dbx.HashExp{"server": server.Id, "stack": stackID})
@@ -473,6 +478,34 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 				}
 			}
 		}
+	}
+}
+
+// removeConnection takes a dropped database's variables out of its stack's env
+// file, as a new revision. The stack is not deployed for that: its containers
+// keep running as they are until its next deploy.
+func (p *Panel) removeConnection(ctx context.Context, server *core.Record, database, user, stackID string) {
+	engine, err := engineOfServer(server)
+	if err != nil {
+		return
+	}
+	stack, err := p.App.FindRecordById(schema.Stacks, stackID)
+	if err != nil {
+		return
+	}
+
+	connection := databases.Connection{Engine: engine, Server: server.GetString("name"), Database: database, User: user}
+	err = p.update(ctx, stack, func(fresh *core.Record) error {
+		env, changed := databases.RemoveEnv(fresh.GetString("env"), connection.EnvLines())
+		if !changed {
+			return errUnchanged
+		}
+		fresh.Set("env", env)
+		fresh.Set(recordNote, "The database "+database+" was dropped")
+		return nil
+	})
+	if err != nil {
+		p.Log.Error("failed to remove the variables of a dropped database", "stack", stackID, "error", err)
 	}
 }
 
