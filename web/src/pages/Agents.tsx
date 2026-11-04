@@ -238,7 +238,10 @@ export function AgentsPage() {
               <dt>Edge</dt>
               <dd>{t("connect.reqEdge")}</dd>
               <dt>{t("connect.reqRoot")}</dt>
-              <dd>{t("connect.reqRootValue")}</dd>
+              <dd>
+                {t("connect.reqRootValue")}{" "}
+                <code style={{ whiteSpace: "nowrap" }}>mount --make-rshared /</code>
+              </dd>
             </dl>
           </Card>
 
