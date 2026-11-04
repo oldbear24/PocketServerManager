@@ -911,7 +911,8 @@
       "synced": "Serving revision {{revision}}",
       "applying": "Applying the config",
       "failed": "The last config failed",
-      "waiting": "Waiting for the agent"
+      "waiting": "Waiting for the agent",
+      "stopped": "The edge does not answer"
     },
     "caddyVersion": "Caddy {{version}} · run by the agent",
     "caddyPinned": "Caddy {{version}} · not running yet",
@@ -955,6 +956,7 @@
     "removeCertificate": "Remove certificate",
     "removeCertificateConfirm": "Remove the certificate for {{names}}?",
     "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
-    "certificateRemoved": "The certificate was removed."
+    "certificateRemoved": "The certificate was removed.",
+    "loading": "Loading the routes…"
   }
 }

@@ -170,3 +170,11 @@ describe("the edge proxy tab", () => {
     expect(screen.getByText("The last config failed")).toBeInTheDocument();
   });
 });
+
+describe("the edge's state", () => {
+  it("shows an edge that stopped answering as stopped, not serving", async () => {
+    renderTab("viewer", { ...state, edge: { ...state.edge, running: false } });
+    expect(await screen.findByText("The edge does not answer")).toBeInTheDocument();
+    expect(screen.queryByText("Serving revision 3")).not.toBeInTheDocument();
+  });
+});

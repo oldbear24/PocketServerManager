@@ -139,7 +139,7 @@ export function EdgeRoutesCard({ host }: { host: Host }) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const isEdge = host.roles.includes("edge");
-  const { state } = useEdgeState(host);
+  const { state, error } = useEdgeState(host);
 
   return (
     <Card
@@ -154,6 +154,10 @@ export function EdgeRoutesCard({ host }: { host: Host }) {
     >
       {!isEdge ? (
         <p className="muted">{t("edge.noRole")}</p>
+      ) : error && !state ? (
+        <p className="field-error">{error}</p>
+      ) : !state ? (
+        <p className="muted">{t("edge.loading")}</p>
       ) : state && state.routes.length === 0 ? (
         <p className="muted">{t("edge.noRoutes")}</p>
       ) : (
@@ -292,7 +296,13 @@ function EdgeStatusCard({
   const { t } = useTranslation();
   const { edge } = state;
   const condition = edgeCondition(edge);
-  const tone = { synced: "ok", applying: "info", failed: "err", waiting: "warn" } as const;
+  const tone = {
+    synced: "ok",
+    applying: "info",
+    failed: "err",
+    stopped: "err",
+    waiting: "warn",
+  } as const;
   const failure = edge.error || (condition === "failed" ? (edge.last_apply?.error ?? "") : "");
 
   return (

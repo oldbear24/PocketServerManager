@@ -955,7 +955,8 @@
       "synced": "Obsluhuje revizi {{revision}}",
       "applying": "Načítá se konfigurace",
       "failed": "Poslední konfigurace selhala",
-      "waiting": "Čeká se na agenta"
+      "waiting": "Čeká se na agenta",
+      "stopped": "Edge neodpovídá"
     },
     "caddyVersion": "Caddy {{version}} · řízený agentem",
     "caddyPinned": "Caddy {{version}} · zatím neběží",
@@ -999,6 +1000,7 @@
     "removeCertificate": "Odebrat certifikát",
     "removeCertificateConfirm": "Odebrat certifikát pro {{names}}?",
     "removeCertificateNote": "Edge budou jeho domény obsluhovat jen přes HTTP, dokud je nepokryje jiný certifikát.",
-    "certificateRemoved": "Certifikát byl odebrán."
+    "certificateRemoved": "Certifikát byl odebrán.",
+    "loading": "Načítají se trasy…"
   }
 }

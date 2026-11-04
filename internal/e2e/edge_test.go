@@ -43,6 +43,8 @@ type fakeEdge struct {
 	reject func(map[string]any) error
 	delay  time.Duration
 	starts int
+	// stoppedWith is the config each stopped edge had last
+	stoppedWith []json.RawMessage
 }
 
 func (f *fakeEdge) start() {
@@ -66,6 +68,7 @@ func (f *fakeEdge) stop() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.caddy != nil {
+		f.stoppedWith = append(f.stoppedWith, f.caddy.Config())
 		_ = f.caddy.Close()
 		f.caddy = nil
 	}
@@ -442,6 +445,13 @@ func TestANewEdgeImageReplacesTheContainer(t *testing.T) {
 	}
 	if h.docker.Find("pocketcloud-edge-old") != nil {
 		t.Error("the old edge container was left behind")
+	}
+	// it stopped with a short grace period, not waiting for every open stream
+	fake.mu.Lock()
+	last := fake.stoppedWith[len(fake.stoppedWith)-1]
+	fake.mu.Unlock()
+	if !strings.Contains(string(last), `"grace_period":"2s"`) {
+		t.Errorf("the old edge stopped without a short grace period: %.300s", last)
 	}
 
 	// the newest Caddy refuses the config: the one before comes back

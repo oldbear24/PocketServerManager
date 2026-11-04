@@ -49,7 +49,9 @@ const (
 	// edgeMetricsLimit is short: the heartbeat waits for it
 	edgeMetricsLimit = time.Second
 	edgeSwapLimit    = time.Minute
-	edgeStopLimit    = 10
+	// edgeStopGrace is what open requests get when an edge is replaced
+	edgeStopGrace = "2s"
+	edgeStopLimit = 10
 
 	// minSubpathAPI is the first Engine API with volume subpaths (Engine 26).
 	minSubpathAPI = "1.45"
@@ -467,6 +469,7 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 			return noSwap(), err
 		}
 	}
+	a.shortenGrace(ctx)
 	if err := a.Docker.Stop(ctx, current.ID, edgeStopLimit); err != nil {
 		return noSwap(), err
 	}
@@ -513,6 +516,37 @@ func (a *Agent) ensureEdge(ctx context.Context, image string, output io.Writer) 
 		},
 		undo: func() { restore(newID) },
 	}, nil
+}
+
+// shortenGrace gives the running edge a short grace period before it stops. The
+// configs have none, so a reload lets every request under way finish; but a
+// stop would then wait for the longest open stream, and Docker would kill
+// Caddy only after its whole stop timeout, the edge down all that time.
+func (a *Agent) shortenGrace(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, edgeProbeLimit*2)
+	defer cancel()
+
+	live, status, err := a.edgeRequest(ctx, http.MethodGet, "/config/", nil, edgeProbeLimit)
+	if err != nil || status != http.StatusOK {
+		return
+	}
+	var config map[string]any
+	if err := json.Unmarshal(live, &config); err != nil || config == nil {
+		return
+	}
+	apps, _ := config["apps"].(map[string]any)
+	httpApp, _ := apps["http"].(map[string]any)
+	if httpApp == nil {
+		return
+	}
+	httpApp["grace_period"] = edgeStopGrace
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return
+	}
+	if err := a.loadEdgeConfig(ctx, raw); err != nil {
+		a.Log.Debug("the old edge keeps its grace period", "error", err)
+	}
 }
 
 // startEdge creates and starts an edge container and checks its mounts. A

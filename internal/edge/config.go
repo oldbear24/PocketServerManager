@@ -163,11 +163,24 @@ func ValidRedirect(target string) error {
 	if strings.ContainsAny(target, "{}") {
 		return errors.New("a redirect target cannot contain { or }: write them as %7B and %7D")
 	}
+	// a backslash would escape what follows for Caddy, and spaces and quotes
+	// have no place in a URL
+	if strings.ContainsAny(target, "\\\"' \t\r\n") {
+		return errors.New("a redirect target cannot contain backslashes, quotes or spaces")
+	}
 	parsed, err := url.Parse(target)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
 		return errors.New("the redirect target must be an http or https URL")
 	}
 	return nil
+}
+
+// RedirectsToItself tells whether a redirect of hostname to target would loop:
+// a redirect domain answers every request with the redirect, so any target on
+// the same name, whatever its path, sends the browser round in circles.
+func RedirectsToItself(hostname, target string) bool {
+	parsed, err := url.Parse(target)
+	return err == nil && parsed.Port() == "" && strings.EqualFold(parsed.Hostname(), hostname)
 }
 
 func validUpstream(upstream string) error {
@@ -179,12 +192,36 @@ func validUpstream(upstream string) error {
 	if err != nil || number < 1 || number > 65535 {
 		return fmt.Errorf("%s is not a valid port", port)
 	}
-	for _, r := range host {
+	return ValidContainerName(host)
+}
+
+// ValidContainerName checks an upstream: a container name as Docker allows it.
+// Addresses are refused, and so is the edge itself: localhost or the edge's
+// own name would make it proxy to itself, every request multiplying, and an IP
+// would publish whatever answers there.
+func ValidContainerName(name string) error {
+	if name == "" || !letterOrDigit(rune(name[0])) {
+		return fmt.Errorf("%q is not a valid container name", name)
+	}
+	for _, r := range name {
 		if !letterOrDigit(r) && !strings.ContainsRune("-_.", r) {
-			return fmt.Errorf("%q is not a valid container name", host)
+			return fmt.Errorf("%q is not a valid container name", name)
 		}
 	}
+	lower := strings.ToLower(name)
+	if lower == "localhost" || strings.HasPrefix(lower, "localhost.") || lower == "pocketcloud-edge" || net.ParseIP(name) != nil || allDigitsAndDots(name) {
+		return fmt.Errorf("%s is not a container of this server", name)
+	}
 	return nil
+}
+
+func allDigitsAndDots(name string) bool {
+	for _, r := range name {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // validID allows the record ids of PocketBase and similar plain names, which
@@ -251,6 +288,10 @@ func Build(c Config) ([]byte, error) {
 	for _, route := range routes {
 		if route.Certificate != "" {
 			secure = append(secure, hostRoute(route, true))
+		} else {
+			// a wildcard certificate may still complete the handshake for this
+			// name; without this the wildcard's route would answer it on 443
+			secure = append(secure, httpOnly(route.Hostname))
 		}
 		if route.HTTPSRedirect {
 			plain = append(plain, httpsRedirect(route.Hostname))
@@ -343,6 +384,19 @@ func httpsRedirect(hostname string) object {
 	}
 }
 
+// httpOnly sends HTTPS requests for a name served over HTTP only back to HTTP.
+func httpOnly(hostname string) object {
+	return object{
+		"match": hostMatch(hostname),
+		"handle": []any{object{
+			"handler":     "static_response",
+			"status_code": 308,
+			"headers":     object{"Location": []string{"http://{http.request.host}{http.request.uri}"}},
+		}},
+		"terminal": true,
+	}
+}
+
 func notFound() object {
 	return object{
 		"handle": []any{object{
@@ -404,8 +458,12 @@ func hostRoute(route Route, secure bool) object {
 // path of its own: example.com → www.example.com sends /a?b to /a?b.
 func redirectLocation(target string) string {
 	parsed, err := url.Parse(target)
-	if err != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" {
+	if err != nil {
 		return target
 	}
-	return strings.TrimSuffix(target, "/") + "{http.request.uri}"
+	canonical := parsed.String()
+	if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return canonical
+	}
+	return strings.TrimSuffix(canonical, "/") + "{http.request.uri}"
 }

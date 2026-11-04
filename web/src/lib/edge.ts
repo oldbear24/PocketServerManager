@@ -90,9 +90,13 @@ export function tlsTone(tls: RouteTLS): "ok" | "warn" | "err" | "info" | "off" {
 /** Whether the edge is serving what the panel wants, is on its way there, or failed. */
 export function edgeCondition(
   edge: EdgeState["edge"],
-): "synced" | "applying" | "failed" | "waiting" {
+): "synced" | "applying" | "failed" | "stopped" | "waiting" {
   if (edge.applying) {
     return "applying";
+  }
+  // an edge that served a config but whose admin API does not answer
+  if (edge.revision > 0 && !edge.running) {
+    return "stopped";
   }
   if (edge.in_sync && !edge.error) {
     return "synced";

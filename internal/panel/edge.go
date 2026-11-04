@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -145,10 +144,9 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		}
 		record.Set("redirect_to", "")
 	case schema.TargetRedirect:
-		target, err := url.Parse(record.GetString("redirect_to"))
 		if problem := edge.ValidRedirect(record.GetString("redirect_to")); problem != nil {
 			errs["redirect_to"] = validation.NewError("validation_invalid_redirect", capitalize(problem.Error())+".")
-		} else if err == nil && strings.EqualFold(target.Hostname(), hostname) && target.Path == "" {
+		} else if edge.RedirectsToItself(hostname, record.GetString("redirect_to")) {
 			errs["redirect_to"] = validation.NewError("validation_redirect_loop", "A domain cannot redirect to itself.")
 		}
 		record.Set("container", "")
@@ -759,18 +757,19 @@ func (p *Panel) handleEdgeState(e *core.RequestEvent) error {
 	return e.JSON(http.StatusOK, map[string]any{
 		"routes": routes,
 		"edge": map[string]any{
-			"role":             hasEdgeRole(host),
-			"in_sync":          wanted != "" && wanted == applied,
-			"applying":         len(open) > 0,
-			"running":          host.GetBool("edge_running"),
-			"error":            host.GetString("edge_error"),
-			"revision":         host.GetInt("edge_applied_revision"),
-			"caddy_version":    host.GetString("edge_caddy_version"),
-			"requests_per_s":   host.GetFloat("edge_requests_per_s"),
-			"image_version":    version.EdgeVersion,
-			"last_apply":       last,
-			"routes_with_tls":  countTLS(routes),
-			"agent_has_edge":   slices.Contains(host.GetStringSlice("capabilities"), "edge.apply"),
+			"role":            hasEdgeRole(host),
+			"in_sync":         wanted != "" && wanted == applied,
+			"applying":        len(open) > 0,
+			"running":         host.GetBool("edge_running"),
+			"error":           host.GetString("edge_error"),
+			"revision":        host.GetInt("edge_applied_revision"),
+			"caddy_version":   host.GetString("edge_caddy_version"),
+			"requests_per_s":  host.GetFloat("edge_requests_per_s"),
+			"image_version":   version.EdgeVersion,
+			"last_apply":      last,
+			"routes_with_tls": countTLS(routes),
+			// unknown until the agent first connects
+			"agent_has_edge":   len(host.GetStringSlice("capabilities")) == 0 || slices.Contains(host.GetStringSlice("capabilities"), "edge.apply"),
 			"applied_revision": host.GetInt("edge_applied_revision"),
 		},
 	})

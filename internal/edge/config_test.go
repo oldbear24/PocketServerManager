@@ -245,3 +245,60 @@ func TestCovers(t *testing.T) {
 		}
 	}
 }
+
+// TestHTTPOnlyNamesAreNotServedByAWildcardOnHTTPS: a wildcard certificate
+// completes the handshake for every name under it; a name served over HTTP
+// only must not get the wildcard route's site there.
+func TestHTTPOnlyNamesAreNotServedByAWildcardOnHTTPS(t *testing.T) {
+	out := decode(t, Config{
+		Certificates: []Certificate{{ID: "wild"}},
+		Routes: []Route{
+			{Hostname: "*.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "wild"},
+			{Hostname: "legacy.example.com", Kind: KindProxy, Upstream: "b:80"},
+		},
+	})
+	secure := out.Apps.HTTP.Servers["https"].Routes
+	if len(secure) < 2 || secure[0].Match[0].Host[0] != "legacy.example.com" || secure[0].Handle[0]["status_code"] != float64(308) {
+		t.Fatalf("the HTTP-only name on 443: %+v", secure)
+	}
+}
+
+func TestUpstreamsAreContainers(t *testing.T) {
+	for _, upstream := range []string{"localhost:80", "LOCALHOST:443", "127.0.0.1:80", "169.254.169.254:80", "10.0.0.1:80", "pocketcloud-edge:443", "-a:80", "..:80", "1.2:80"} {
+		if err := validUpstream(upstream); err == nil {
+			t.Errorf("%s is accepted", upstream)
+		}
+	}
+	for _, upstream := range []string{"web:80", "stack-web-1:8080", "app.internal:3000", "a_b:1"} {
+		if err := validUpstream(upstream); err != nil {
+			t.Errorf("%s: %v", upstream, err)
+		}
+	}
+}
+
+func TestRedirectTargets(t *testing.T) {
+	for _, bad := range []string{"https://:80", "https://x.example.com/a b", "https://x.example.com/\"", `https://x.example.com/a\`, "https://x.example.com/'"} {
+		if err := ValidRedirect(bad); err == nil {
+			t.Errorf("%q is accepted", bad)
+		}
+	}
+	for target, want := range map[string]string{
+		"https://x.example.com#frag": "https://x.example.com#frag",
+		"https://x.example.com?":     "https://x.example.com?",
+	} {
+		if got := redirectLocation(target); got != want {
+			t.Errorf("redirectLocation(%q) = %q, want %q", target, got, want)
+		}
+	}
+	for target, loops := range map[string]bool{
+		"https://loop.example.com/":      true,
+		"https://LOOP.example.com/start": true,
+		"http://loop.example.com":        true,
+		"https://loop.example.com:8443/": false,
+		"https://www.loop.example.com/":  false,
+	} {
+		if got := RedirectsToItself("loop.example.com", target); got != loops {
+			t.Errorf("RedirectsToItself(%q) = %v", target, got)
+		}
+	}
+}
