@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +15,9 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 )
 
+// minCPUWindow is the shortest interval a CPU measurement is made over.
+const minCPUWindow = time.Second
+
 // hostInfo reads the host's state from the read-only host mount: the container's
 // own /proc shows the container's view of a few of these values, not the host's.
 type hostInfo struct {
@@ -23,6 +25,8 @@ type hostInfo struct {
 
 	mu      sync.Mutex
 	prevCPU cpuTimes
+	prevAt  time.Time
+	lastCPU float64
 	prevNet netCounters
 }
 
@@ -48,6 +52,18 @@ func (h *hostInfo) proc(name string) string {
 	return filepath.Join(h.root, "proc", name)
 }
 
+// procOfInit reads a file of the host's first process, falling back to the plain
+// name. /proc/net and /proc/mounts are links through /proc/self: read from inside a
+// container they describe the container's own network and mounts, even through the
+// host's /proc. Process 1 is the host's.
+func (h *hostInfo) procOfInit(name string) ([]byte, error) {
+	raw, err := os.ReadFile(h.proc(filepath.Join("1", name)))
+	if err == nil {
+		return raw, nil
+	}
+	return os.ReadFile(h.proc(name))
+}
+
 // vitals returns the compact summary for a heartbeat.
 func (h *hostInfo) vitals() *agentv1.HostVitals {
 	vitals := &agentv1.HostVitals{}
@@ -66,15 +82,17 @@ func (h *hostInfo) vitals() *agentv1.HostVitals {
 		vitals.MemTotalBytes, vitals.MemUsedBytes = parseMeminfo(string(raw))
 	}
 
-	if total, free, err := diskUsage(h.root); err == nil {
+	if total, used, _, err := diskUsage(h.root); err == nil {
 		vitals.DiskTotalBytes = total
-		vitals.DiskUsedBytes = total - free
+		vitals.DiskUsedBytes = used
 	}
 
 	return vitals
 }
 
-// cpuPercent is the usage since the previous call; the first call has no base.
+// cpuPercent is the usage since the previous measurement; the first has no base.
+// Heartbeats and metric samples both ask for it, often at nearly the same moment,
+// and a few ticks say nothing: a short interval keeps the previous value.
 func (h *hostInfo) cpuPercent() float64 {
 	raw, err := os.ReadFile(h.proc("stat"))
 	if err != nil {
@@ -82,14 +100,20 @@ func (h *hostInfo) cpuPercent() float64 {
 	}
 
 	current := parseCPUTimes(string(raw))
+	now := time.Now()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	previous := h.prevCPU
-	h.prevCPU = current
+	if !h.prevAt.IsZero() && now.Sub(h.prevAt) < minCPUWindow {
+		return h.lastCPU
+	}
 
-	return cpuPercentBetween(previous, current)
+	h.lastCPU = cpuPercentBetween(h.prevCPU, current)
+	h.prevCPU = current
+	h.prevAt = now
+
+	return h.lastCPU
 }
 
 func cpuPercentBetween(previous, current cpuTimes) float64 {
@@ -181,7 +205,7 @@ func parseMeminfo(content string) (total, used uint64) {
 // netDelta returns the bytes received and sent since the previous call, for all
 // interfaces except loopback and the virtual ones Docker creates.
 func (h *hostInfo) netDelta() (rx, tx uint64) {
-	raw, err := os.ReadFile(h.proc("net/dev"))
+	raw, err := h.procOfInit("net/dev")
 	if err != nil {
 		return 0, 0
 	}
@@ -234,7 +258,7 @@ func parseNetDev(content string) netCounters {
 
 // mounts returns the usage of the host's real file systems.
 func (h *hostInfo) mounts() []*agentv1.DiskUsage {
-	raw, err := os.ReadFile(h.proc("mounts"))
+	raw, err := h.procOfInit("mounts")
 	if err != nil {
 		return nil
 	}
@@ -248,7 +272,7 @@ func (h *hostInfo) mounts() []*agentv1.DiskUsage {
 		}
 		seen[mount.device] = true
 
-		total, free, err := diskUsage(filepath.Join(h.root, mount.path))
+		total, used, _, err := diskUsage(filepath.Join(h.root, mount.path))
 		if err != nil || total == 0 {
 			continue
 		}
@@ -257,7 +281,7 @@ func (h *hostInfo) mounts() []*agentv1.DiskUsage {
 			Mount:      mount.path,
 			Device:     mount.device,
 			FsType:     mount.fsType,
-			UsedBytes:  total - free,
+			UsedBytes:  used,
 			TotalBytes: total,
 		})
 	}
@@ -274,6 +298,9 @@ var realFilesystems = map[string]bool{
 	"f2fs": true, "vfat": true, "ntfs": true, "ntfs3": true, "exfat": true, "nfs": true, "nfs4": true, "cifs": true,
 }
 
+// mountEscapes undoes how the kernel writes special characters in mount points.
+var mountEscapes = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+
 func parseMounts(content string) []mountEntry {
 	entries := []mountEntry{}
 
@@ -283,7 +310,7 @@ func parseMounts(content string) []mountEntry {
 		if len(fields) < 3 || !realFilesystems[fields[2]] {
 			continue
 		}
-		entries = append(entries, mountEntry{device: fields[0], path: fields[1], fsType: fields[2]})
+		entries = append(entries, mountEntry{device: fields[0], path: mountEscapes.Replace(fields[1]), fsType: fields[2]})
 	}
 
 	return entries
@@ -300,16 +327,28 @@ func (h *hostInfo) facts() *agentv1.HostFacts {
 	if raw, err := os.ReadFile(h.proc("sys/kernel/osrelease")); err == nil {
 		facts.Kernel = strings.TrimSpace(string(raw))
 	}
-	if raw, err := os.ReadFile(h.proc("sys/kernel/hostname")); err == nil {
-		facts.Hostname = strings.TrimSpace(string(raw))
-	}
+	facts.Hostname = h.hostname()
 	if raw, err := os.ReadFile(h.proc("meminfo")); err == nil {
 		facts.MemBytes, _ = parseMeminfo(string(raw))
 	}
 
-	facts.Ip4, facts.Ip6 = primaryAddresses()
+	facts.Ip4, facts.Ip6 = h.addresses()
 
 	return facts
+}
+
+// hostname comes from the host's file system: /proc/sys/kernel/hostname belongs to
+// the namespace of whoever reads it, which makes it the container's id.
+func (h *hostInfo) hostname() string {
+	if raw, err := os.ReadFile(filepath.Join(h.root, "etc", "hostname")); err == nil {
+		if name := strings.TrimSpace(string(raw)); name != "" {
+			return name
+		}
+	}
+	if raw, err := os.ReadFile(h.proc("sys/kernel/hostname")); err == nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return ""
 }
 
 func (h *hostInfo) osRelease() string {
@@ -329,22 +368,4 @@ func parseOSRelease(content string) string {
 		}
 	}
 	return "Linux"
-}
-
-// primaryAddresses returns the addresses used for outgoing traffic. No packet is
-// sent: connecting a UDP socket only makes the kernel pick a source address.
-func primaryAddresses() (ip4, ip6 string) {
-	if conn, err := net.Dial("udp4", "192.0.2.1:9"); err == nil {
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			ip4 = addr.IP.String()
-		}
-		conn.Close()
-	}
-	if conn, err := net.Dial("udp6", "[2001:db8::1]:9"); err == nil {
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			ip6 = addr.IP.String()
-		}
-		conn.Close()
-	}
-	return ip4, ip6
 }

@@ -155,6 +155,13 @@ func TestBrokenImageIsRolledBack(t *testing.T) {
 			message: "exited",
 		},
 		{
+			// with a restart policy, as the agent has, a crash never stays exited
+			name:    "restart loop",
+			onStart: startOnlyOld(func() (string, string) { return "restarting", "" }),
+			step:    "health",
+			message: "keeps exiting",
+		},
+		{
 			name:    "never connects to the panel",
 			onStart: startOnlyOld(func() (string, string) { return "running", "starting" }),
 			step:    "health",

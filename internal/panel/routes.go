@@ -36,6 +36,14 @@ func (p *Panel) bindRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 	p.bindSetupRoutes(se)
 
+	// a WebSocket cannot carry the auth header: its ticket comes from a signed-in route
+	se.Router.GET("/api/pc/terminal/socket", p.handleTerminalSocket)
+
+	// a browser tab of Adminer cannot either: a ticket becomes a cookie of that browser.
+	// Adminer only uses GET and POST; a route for any method would clash with the UI's.
+	se.Router.GET(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
+	se.Router.POST(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
+
 	se.Router.GET("/api/pc/ca.pem", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "application/x-pem-file")
 		e.Response.Header().Set("Content-Disposition", `attachment; filename="pocketcloud-root-ca.pem"`)
@@ -167,6 +175,14 @@ fi
 
 if ! docker info >/dev/null 2>&1; then
 	echo "Docker does not answer. Is the daemon running, and may this user use it?" >&2
+	exit 1
+fi
+
+# The agent's read-only view of the host follows its mounts (rslave), which needs
+# / to be a shared mount. systemd sets that up; other init systems may not.
+if [ -r /proc/self/mountinfo ] && ! awk '$5 == "/" && / (shared|master):/ { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+	echo "The root file system is not a shared mount, which the agent's view of the host needs." >&2
+	echo "Run 'mount --make-rshared /' as root, add it to this system's start-up, and run this again." >&2
 	exit 1
 fi
 

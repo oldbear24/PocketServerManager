@@ -238,6 +238,10 @@ export function AgentsPage() {
               <dt>Edge</dt>
               <dd>{t("connect.reqEdge")}</dd>
             </dl>
+            <p className="muted small" style={{ marginTop: 12 }}>
+              {t("connect.reqRootValue")}{" "}
+              <code style={{ whiteSpace: "nowrap" }}>mount --make-rshared /</code>
+            </p>
           </Card>
 
           <AgentVersions info={info} />

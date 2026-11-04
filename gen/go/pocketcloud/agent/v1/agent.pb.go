@@ -807,8 +807,10 @@ type HostFacts struct {
 	AgentImageDigest string `protobuf:"bytes,11,opt,name=agent_image_digest,json=agentImageDigest,proto3" json:"agent_image_digest,omitempty"`
 	// agent_container_id is the id of the agent's own container.
 	AgentContainerId string `protobuf:"bytes,12,opt,name=agent_container_id,json=agentContainerId,proto3" json:"agent_container_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// compose_version is the version of the Compose plugin.
+	ComposeVersion string `protobuf:"bytes,13,opt,name=compose_version,json=composeVersion,proto3" json:"compose_version,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *HostFacts) Reset() {
@@ -921,6 +923,13 @@ func (x *HostFacts) GetAgentImageDigest() string {
 func (x *HostFacts) GetAgentContainerId() string {
 	if x != nil {
 		return x.AgentContainerId
+	}
+	return ""
+}
+
+func (x *HostFacts) GetComposeVersion() string {
+	if x != nil {
+		return x.ComposeVersion
 	}
 	return ""
 }
@@ -3048,14 +3057,21 @@ func (x *UploadArtifactResponse) GetSizeBytes() uint64 {
 }
 
 // RelayRequest is a chunk of bytes from the tool container to the browser session.
+// One relay carries many connections, told apart by conn_id: a tool such as
+// Adminer serves every request on a connection of its own.
 type RelayRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// session_id comes from the command that opened the relay; only the first message needs it.
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// data is the chunk.
 	Data []byte `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
-	// closed is set when the tool container closed the connection.
-	Closed        bool `protobuf:"varint,3,opt,name=closed,proto3" json:"closed,omitempty"`
+	// closed is set when the tool container closed the connection, or the agent
+	// could not open it.
+	Closed bool `protobuf:"varint,3,opt,name=closed,proto3" json:"closed,omitempty"`
+	// conn_id is the connection the message belongs to, as the panel numbered it.
+	ConnId uint32 `protobuf:"varint,4,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
+	// error says why a connection could not be opened or broke.
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3111,13 +3127,32 @@ func (x *RelayRequest) GetClosed() bool {
 	return false
 }
 
+func (x *RelayRequest) GetConnId() uint32 {
+	if x != nil {
+		return x.ConnId
+	}
+	return 0
+}
+
+func (x *RelayRequest) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 // RelayResponse is a chunk of bytes from the browser session to the tool container.
 type RelayResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// data is the chunk.
 	Data []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
-	// close asks the agent to close the connection to the tool container.
-	Close         bool `protobuf:"varint,2,opt,name=close,proto3" json:"close,omitempty"`
+	// close asks the agent to close the connection to the tool container; with
+	// conn_id 0 it ends the whole relay.
+	Close bool `protobuf:"varint,2,opt,name=close,proto3" json:"close,omitempty"`
+	// conn_id is the connection the message belongs to. Ids start at 1.
+	ConnId uint32 `protobuf:"varint,3,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
+	// open asks the agent to open the connection conn_id to the tool container.
+	Open          bool `protobuf:"varint,4,opt,name=open,proto3" json:"open,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3162,6 +3197,20 @@ func (x *RelayResponse) GetData() []byte {
 func (x *RelayResponse) GetClose() bool {
 	if x != nil {
 		return x.Close
+	}
+	return false
+}
+
+func (x *RelayResponse) GetConnId() uint32 {
+	if x != nil {
+		return x.ConnId
+	}
+	return 0
+}
+
+func (x *RelayResponse) GetOpen() bool {
+	if x != nil {
+		return x.Open
 	}
 	return false
 }
@@ -3322,7 +3371,7 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x18\n" +
 	"\apercent\x18\x03 \x01(\x05R\apercent\"5\n" +
 	"\x1bReportCommandUpdateResponse\x12\x16\n" +
-	"\x06cancel\x18\x01 \x01(\bR\x06cancel\"\xe9\x02\n" +
+	"\x06cancel\x18\x01 \x01(\bR\x06cancel\"\x92\x03\n" +
 	"\tHostFacts\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x0e\n" +
 	"\x02os\x18\x02 \x01(\tR\x02os\x12\x16\n" +
@@ -3336,7 +3385,8 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\ragent_version\x18\n" +
 	" \x01(\tR\fagentVersion\x12,\n" +
 	"\x12agent_image_digest\x18\v \x01(\tR\x10agentImageDigest\x12,\n" +
-	"\x12agent_container_id\x18\f \x01(\tR\x10agentContainerId\"\xc4\x02\n" +
+	"\x12agent_container_id\x18\f \x01(\tR\x10agentContainerId\x12'\n" +
+	"\x0fcompose_version\x18\r \x01(\tR\x0ecomposeVersion\"\xc4\x02\n" +
 	"\n" +
 	"HostVitals\x121\n" +
 	"\x06uptime\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x06uptime\x12\x14\n" +
@@ -3515,15 +3565,19 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\"_\n" +
+	"size_bytes\x18\x02 \x01(\x04R\tsizeBytes\"\x8e\x01\n" +
 	"\fRelayRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
 	"\x04data\x18\x02 \x01(\fB\x04\xc0\xf3\x18\x01R\x04data\x12\x16\n" +
-	"\x06closed\x18\x03 \x01(\bR\x06closed\"?\n" +
+	"\x06closed\x18\x03 \x01(\bR\x06closed\x12\x17\n" +
+	"\aconn_id\x18\x04 \x01(\rR\x06connId\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"l\n" +
 	"\rRelayResponse\x12\x18\n" +
 	"\x04data\x18\x01 \x01(\fB\x04\xc0\xf3\x18\x01R\x04data\x12\x14\n" +
-	"\x05close\x18\x02 \x01(\bR\x05close\"2\n" +
+	"\x05close\x18\x02 \x01(\bR\x05close\x12\x17\n" +
+	"\aconn_id\x18\x03 \x01(\rR\x06connId\x12\x12\n" +
+	"\x04open\x18\x04 \x01(\bR\x04open\"2\n" +
 	"\x17RenewCertificateRequest\x12\x17\n" +
 	"\acsr_pem\x18\x01 \x01(\fR\x06csrPem\"~\n" +
 	"\x18RenewCertificateResponse\x12'\n" +

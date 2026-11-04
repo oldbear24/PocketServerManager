@@ -43,6 +43,9 @@ export type Host = RecordModel & {
   stream_open: boolean;
   uptime_s: number;
   load1: number;
+  load5: number;
+  load15: number;
+  compose_version: string;
   cpu_percent: number;
   mem_used_bytes: number;
   disk_used_bytes: number;
@@ -113,6 +116,31 @@ export type Container = RecordModel & {
   ports: { private: number; public: number; protocol: string; ip: string }[] | null;
   labels: Record<string, string> | null;
   started_at: string;
+};
+
+export type Stack = RecordModel & {
+  host: string;
+  name: string;
+  compose_yaml: string;
+  env: string;
+  secret_keys: string[] | null;
+  current_revision: number;
+  deployed_revision: number;
+  deployed_at: string;
+  status: string;
+  source: string;
+};
+
+export type StackRevision = RecordModel & {
+  stack: string;
+  number: number;
+  compose_yaml: string;
+  env: string;
+  env_keys: string[] | null;
+  author: string;
+  deployed_at: string;
+  note: string;
+  expand?: { author?: { email?: string } };
 };
 
 export type Volume = RecordModel & {

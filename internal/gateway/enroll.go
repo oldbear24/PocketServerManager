@@ -266,6 +266,7 @@ func applyFacts(host *core.Record, facts *agentv1.HostFacts) {
 	set("ip4", facts.GetIp4())
 	set("ip6", facts.GetIp6())
 	set("docker_version", facts.GetDockerVersion())
+	set("compose_version", facts.GetComposeVersion())
 	set("agent_version", strings.TrimPrefix(facts.GetAgentVersion(), "v"))
 	set("agent_image_digest", facts.GetAgentImageDigest())
 	set("agent_container_id", facts.GetAgentContainerId())

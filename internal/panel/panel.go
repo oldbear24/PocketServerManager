@@ -20,8 +20,10 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/inventory"
+	"github.com/oldbear24/PocketServerManager/internal/metrics"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
+	"github.com/oldbear24/PocketServerManager/internal/streams"
 	"github.com/oldbear24/PocketServerManager/plugins/diagnostics"
 )
 
@@ -40,9 +42,19 @@ type Panel struct {
 	Commands  *commands.Manager
 	Gateway   *gateway.Server
 	Updates   *updateBatches
+	Metrics   *metrics.Store
+	Streams   *streams.Broker
 
 	// Diagnostics is the diagnostics plugin, if it was enabled.
 	Diagnostics *diagnostics.Plugin
+
+	// TerminalIdle closes a terminal without input or output; zero is the default.
+	TerminalIdle time.Duration
+	// AdminerTTL is how long an Adminer session lasts; zero is AdminerLifetime.
+	AdminerTTL time.Duration
+
+	terminalTickets terminalTickets
+	adminers        adminerSessions
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -63,6 +75,7 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Commands: commands.NewManager(app),
 	}
 	p.Updates = newUpdateBatches(p)
+	p.Streams = streams.New(p.Commands)
 	return p
 }
 
@@ -74,6 +87,10 @@ func (p *Panel) Register() {
 	p.bindAuditRoutes()
 	p.Commands.Register()
 	p.Updates.register()
+	p.registerMetrics()
+	p.Streams.Register()
+	p.registerStacks()
+	p.registerDatabases()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -97,6 +114,11 @@ func (p *Panel) Register() {
 		group := e.Router.Group("/api/pc")
 		group.Bind(apis.RequireAuth())
 		p.bindRoutes(group)
+		p.bindMetricsRoutes(group)
+		p.bindStreamRoutes(group)
+		p.bindStackRoutes(group)
+		p.bindTerminalRoutes(group)
+		p.bindDatabaseRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -108,8 +130,14 @@ func (p *Panel) Register() {
 	})
 
 	p.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		p.Streams.Close()
 		if p.Gateway != nil {
 			p.Gateway.Stop()
+		}
+		if p.Metrics != nil {
+			if err := p.Metrics.Close(); err != nil {
+				p.Log.Error("failed to close the metrics database", "error", err)
+			}
 		}
 		return e.Next()
 	})
@@ -129,12 +157,19 @@ func (p *Panel) startGateway() error {
 	}
 	p.Authority = authority
 
+	if err := p.openMetrics(); err != nil {
+		return err
+	}
+
 	p.Gateway = &gateway.Server{
 		App:       p.App,
 		Authority: authority,
 		Commands:  p.Commands,
 		Audit:     p.Audit,
 		Inventory: &inventory.Store{App: p.App},
+		Metrics:   p.Metrics,
+		Streams:   p.Streams,
+		Artifacts: p.artifactHandlers(),
 	}
 	p.Gateway.BindHostRemoval()
 

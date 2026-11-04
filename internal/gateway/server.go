@@ -50,6 +50,8 @@ type Server struct {
 	Metrics MetricsSink
 	// Streams relays logs and terminal sessions to the browsers. Nil refuses them.
 	Streams StreamBroker
+	// Artifacts takes uploads by their kind; diagnostics bundles are built in.
+	Artifacts map[string]ArtifactHandler
 
 	// ExtraOptions adds server options, such as the diagnostics plugin's stats
 	// handler. UnaryInterceptors and StreamInterceptors run before authentication.
@@ -85,19 +87,28 @@ type Server struct {
 	rejectLast map[string]time.Time
 }
 
+// ArtifactHandler stores a file an agent uploaded for a command. It receives the
+// path of the file, which is removed afterwards, and returns the id of what it made.
+type ArtifactHandler func(command *core.Record, fileName, path string, size uint64) (string, error)
+
 // MetricsSink stores metric batches.
 type MetricsSink interface {
 	Write(hostID string, samples []*agentv1.MetricSample) error
 }
 
-// StreamBroker connects agent streams to browser sessions.
+// StreamBroker connects agent streams to browser sessions. Sessions belong to a
+// host: an agent cannot reach the session of another one.
 type StreamBroker interface {
-	// Logs receives the lines of an active log session.
-	Logs(sessionID string, lines []*agentv1.LogLine)
+	// Logs receives the lines of an active log session. False means that nobody is
+	// watching that session, so the agent should stop sending.
+	Logs(hostID, sessionID string, lines []*agentv1.LogLine) bool
 	// LogsClosed tells that the agent's log stream of a session ended.
-	LogsClosed(sessionID string)
+	LogsClosed(hostID, sessionID string)
 	// Terminal attaches the agent's Exec stream to a session and blocks until it ends.
-	Terminal(ctx context.Context, sessionID string, stream agentv1.AgentService_ExecServer) error
+	Terminal(ctx context.Context, hostID, sessionID string, stream agentv1.AgentService_ExecServer) error
+	// Relay attaches the agent's stream to a tool container to its session and
+	// blocks until it ends.
+	Relay(ctx context.Context, hostID, sessionID string, stream agentv1.AgentService_RelayServer) error
 }
 
 // Start listens on addr and serves in the background.

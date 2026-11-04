@@ -139,7 +139,7 @@ func TestEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := "PLAIN=1\nA_FIRST='pa$$ w'\\''rd #1'\nZ_LAST='simple'\n"
+	want := "PLAIN=1\nA_FIRST=\"pa\\$\\$ w'rd #1\"\nZ_LAST=\"simple\"\n"
 	if string(raw) != want {
 		t.Errorf("got %q, want %q", raw, want)
 	}

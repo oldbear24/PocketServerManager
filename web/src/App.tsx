@@ -11,12 +11,17 @@ import { AgentsPage } from "./pages/Agents";
 import { AuditPage } from "./pages/Audit";
 import { ComingLater } from "./pages/ComingLater";
 import { ComponentDemoPage } from "./pages/ComponentDemo";
+import { ContainerDetailPage } from "./pages/ContainerDetail";
+import { DatabasesPage } from "./pages/Databases";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { LoginPage, SetupPage } from "./pages/Login";
 import { OverviewPage } from "./pages/Overview";
 import { ServerDetailPage } from "./pages/ServerDetail";
 import { ServersPage } from "./pages/Servers";
 import { SettingsPage } from "./pages/Settings";
+import { StackDetailPage } from "./pages/StackDetail";
+import { StacksPage } from "./pages/Stacks";
+import { TerminalPage } from "./pages/Terminal";
 
 /** Sends anyone without a valid session to the sign-in page, and back afterwards. */
 export function RequireAuth({ children }: { children: ReactNode }) {
@@ -58,8 +63,18 @@ export function AppRoutes() {
         <Route path="servers" element={<ServersPage />} />
         <Route path="servers/:id" element={<ServerDetailPage />} />
         <Route path="servers/:id/:tab" element={<ServerDetailPage />} />
-        <Route path="stacks" element={<ComingLater feature="stacks" milestone="M2" />} />
-        <Route path="databases" element={<ComingLater feature="databases" milestone="M2" />} />
+        <Route path="servers/:id/containers/:docker" element={<ContainerDetailPage />} />
+        <Route
+          path="servers/:id/terminal"
+          element={
+            <RequireRole role="admin">
+              <TerminalPage />
+            </RequireRole>
+          }
+        />
+        <Route path="stacks" element={<StacksPage />} />
+        <Route path="stacks/:id" element={<StackDetailPage />} />
+        <Route path="databases" element={<DatabasesPage />} />
         <Route path="backups" element={<ComingLater feature="backups" milestone="M4" />} />
         <Route path="sites" element={<ComingLater feature="sites" milestone="M3" />} />
         <Route path="domains" element={<ComingLater feature="domains" milestone="M3" />} />

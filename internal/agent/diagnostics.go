@@ -253,45 +253,115 @@ func (a *Agent) handleDiagnostics(ctx context.Context, command *agentv1.Command,
 		return nil, fmt.Errorf("failed to build the bundle: %w", err)
 	}
 
-	client := a.client.Load()
-	if client == nil {
-		return nil, errors.New("not connected")
-	}
-
 	reporter.Progress("upload", "Uploading the bundle", 60)
-
-	stream, err := (*client).UploadArtifact(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	host := "agent"
 	if a.Identity != nil {
 		host = a.Identity.Name
 	}
 
-	err = stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Header{Header: &agentv1.UploadArtifactHeader{
-		CommandId: command.GetId(),
-		Kind:      "diagnostics",
-		FileName:  "pocketcloud-" + host + "-" + time.Now().UTC().Format("20060102-150405") + ".zip",
-		SizeBytes: uint64(len(bundle)),
-	}}})
+	name := "pocketcloud-" + host + "-" + time.Now().UTC().Format("20060102-150405") + ".zip"
+
+	id, err := a.uploadArtifact(ctx, command.GetId(), "diagnostics", name, bundle)
 	if err != nil {
 		return nil, err
 	}
 
-	for offset := 0; offset < len(bundle); offset += uploadChunkSize {
-		end := min(offset+uploadChunkSize, len(bundle))
-		err := stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Chunk{Chunk: bundle[offset:end]}})
-		if err != nil {
-			return nil, err
+	return map[string]any{"bundle": id, "size_bytes": float64(len(bundle))}, nil
+}
+
+// uploadArtifactFile streams a file from disk to the panel, for what is too large
+// to hold in memory, such as a database dump.
+func (a *Agent) uploadArtifactFile(ctx context.Context, commandID, kind, name, path string) (string, uint64, error) {
+	client := a.client.Load()
+	if client == nil {
+		return "", 0, errors.New("not connected")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", 0, err
+	}
+
+	stream, err := (*client).UploadArtifact(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+
+	err = stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Header{Header: &agentv1.UploadArtifactHeader{
+		CommandId: commandID,
+		Kind:      kind,
+		FileName:  name,
+		SizeBytes: uint64(info.Size()), //nolint:gosec // a file size
+	}}})
+	if err != nil {
+		return "", 0, err
+	}
+
+	chunk := make([]byte, uploadChunkSize)
+	for {
+		count, readErr := file.Read(chunk)
+		if count > 0 {
+			if err := stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Chunk{Chunk: chunk[:count]}}); err != nil {
+				return "", 0, err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", 0, readErr
 		}
 	}
 
 	response, err := stream.CloseAndRecv()
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
 
-	return map[string]any{"bundle": response.GetArtifactId(), "size_bytes": float64(response.GetSizeBytes())}, nil
+	return response.GetArtifactId(), response.GetSizeBytes(), nil
+}
+
+// uploadArtifact sends a file that belongs to a command to the panel.
+func (a *Agent) uploadArtifact(ctx context.Context, commandID, kind, name string, content []byte) (string, error) {
+	client := a.client.Load()
+	if client == nil {
+		return "", errors.New("not connected")
+	}
+
+	stream, err := (*client).UploadArtifact(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	err = stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Header{Header: &agentv1.UploadArtifactHeader{
+		CommandId: commandID,
+		Kind:      kind,
+		FileName:  name,
+		SizeBytes: uint64(len(content)),
+	}}})
+	if err != nil {
+		return "", err
+	}
+
+	for offset := 0; offset < len(content); offset += uploadChunkSize {
+		end := min(offset+uploadChunkSize, len(content))
+		err := stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Chunk{Chunk: content[offset:end]}})
+		if err != nil {
+			return "", err
+		}
+	}
+
+	response, err := stream.CloseAndRecv()
+	if err != nil {
+		return "", err
+	}
+
+	return response.GetArtifactId(), nil
 }

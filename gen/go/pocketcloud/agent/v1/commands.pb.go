@@ -58,6 +58,7 @@ type Command struct {
 	//	*Command_StackPull
 	//	*Command_StackValidate
 	//	*Command_StackRestart
+	//	*Command_StackImport
 	//	*Command_LogsFollow
 	//	*Command_LogsStop
 	//	*Command_ExecStart
@@ -275,6 +276,15 @@ func (x *Command) GetStackRestart() *StackRestart {
 	if x != nil {
 		if x, ok := x.Payload.(*Command_StackRestart); ok {
 			return x.StackRestart
+		}
+	}
+	return nil
+}
+
+func (x *Command) GetStackImport() *StackImport {
+	if x != nil {
+		if x, ok := x.Payload.(*Command_StackImport); ok {
+			return x.StackImport
 		}
 	}
 	return nil
@@ -690,6 +700,11 @@ type Command_StackRestart struct {
 	StackRestart *StackRestart `protobuf:"bytes,125,opt,name=stack_restart,json=stackRestart,proto3,oneof"`
 }
 
+type Command_StackImport struct {
+	// stack_import reads a Compose project found on the host and uploads its files.
+	StackImport *StackImport `protobuf:"bytes,126,opt,name=stack_import,json=stackImport,proto3,oneof"`
+}
+
 type Command_LogsFollow struct {
 	// logs_follow starts streaming logs with StreamLogs.
 	LogsFollow *LogsFollow `protobuf:"bytes,130,opt,name=logs_follow,json=logsFollow,proto3,oneof"`
@@ -906,6 +921,8 @@ func (*Command_StackPull) isCommand_Payload() {}
 func (*Command_StackValidate) isCommand_Payload() {}
 
 func (*Command_StackRestart) isCommand_Payload() {}
+
+func (*Command_StackImport) isCommand_Payload() {}
 
 func (*Command_LogsFollow) isCommand_Payload() {}
 
@@ -1341,7 +1358,14 @@ type StackDeploy struct {
 	// pull pulls the images first.
 	Pull bool `protobuf:"varint,6,opt,name=pull,proto3" json:"pull,omitempty"`
 	// registries holds credentials for private registries used by the stack.
-	Registries    []*RegistryAuth `protobuf:"bytes,7,rep,name=registries,proto3" json:"registries,omitempty"`
+	Registries []*RegistryAuth `protobuf:"bytes,7,rep,name=registries,proto3" json:"registries,omitempty"`
+	// override_yaml is a second Compose file the panel generates, for what it manages
+	// itself: the database networks of the stack. Empty when there is nothing to add.
+	OverrideYaml string `protobuf:"bytes,8,opt,name=override_yaml,json=overrideYaml,proto3" json:"override_yaml,omitempty"`
+	// db_networks are the database networks override_yaml refers to. The agent
+	// creates them and attaches their database servers before Compose runs, so that
+	// the external networks exist.
+	DbNetworks    []*DbNetworkAttach `protobuf:"bytes,9,rep,name=db_networks,json=dbNetworks,proto3" json:"db_networks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1421,6 +1445,20 @@ func (x *StackDeploy) GetPull() bool {
 func (x *StackDeploy) GetRegistries() []*RegistryAuth {
 	if x != nil {
 		return x.Registries
+	}
+	return nil
+}
+
+func (x *StackDeploy) GetOverrideYaml() string {
+	if x != nil {
+		return x.OverrideYaml
+	}
+	return ""
+}
+
+func (x *StackDeploy) GetDbNetworks() []*DbNetworkAttach {
+	if x != nil {
+		return x.DbNetworks
 	}
 	return nil
 }
@@ -1530,7 +1568,11 @@ func (x *StackDown) GetRemoveVolumes() bool {
 type StackPull struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// name is the Compose project name.
-	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// secrets fill in the variables of the Compose file; they stay in this process.
+	Secrets map[string]string `protobuf:"bytes,2,rep,name=secrets,proto3" json:"secrets,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// registries holds credentials for private registries used by the stack.
+	Registries    []*RegistryAuth `protobuf:"bytes,3,rep,name=registries,proto3" json:"registries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1570,6 +1612,20 @@ func (x *StackPull) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *StackPull) GetSecrets() map[string]string {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+func (x *StackPull) GetRegistries() []*RegistryAuth {
+	if x != nil {
+		return x.Registries
+	}
+	return nil
 }
 
 // StackValidate runs `docker compose config` on the given files.
@@ -1682,6 +1738,72 @@ func (x *StackRestart) GetName() string {
 	return ""
 }
 
+// StackImport reads the files of a Compose project found on the host, through the
+// host mount, and uploads them with UploadArtifact: they may hold secrets, so they
+// stay out of the command's result.
+type StackImport struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// project is the Compose project name.
+	Project string `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
+	// config_files are the paths of its Compose files on the host.
+	ConfigFiles []string `protobuf:"bytes,2,rep,name=config_files,json=configFiles,proto3" json:"config_files,omitempty"`
+	// working_dir is the directory it was started in, which holds its .env file.
+	WorkingDir    string `protobuf:"bytes,3,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StackImport) Reset() {
+	*x = StackImport{}
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StackImport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StackImport) ProtoMessage() {}
+
+func (x *StackImport) ProtoReflect() protoreflect.Message {
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StackImport.ProtoReflect.Descriptor instead.
+func (*StackImport) Descriptor() ([]byte, []int) {
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *StackImport) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
+}
+
+func (x *StackImport) GetConfigFiles() []string {
+	if x != nil {
+		return x.ConfigFiles
+	}
+	return nil
+}
+
+func (x *StackImport) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
+}
+
 // LogsFollow starts a log stream. The agent opens StreamLogs with the session id.
 type LogsFollow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1697,7 +1819,7 @@ type LogsFollow struct {
 
 func (x *LogsFollow) Reset() {
 	*x = LogsFollow{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[13]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1709,7 +1831,7 @@ func (x *LogsFollow) String() string {
 func (*LogsFollow) ProtoMessage() {}
 
 func (x *LogsFollow) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[13]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1722,7 +1844,7 @@ func (x *LogsFollow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogsFollow.ProtoReflect.Descriptor instead.
 func (*LogsFollow) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{13}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *LogsFollow) GetSessionId() string {
@@ -1757,7 +1879,7 @@ type LogsStop struct {
 
 func (x *LogsStop) Reset() {
 	*x = LogsStop{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[14]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1769,7 +1891,7 @@ func (x *LogsStop) String() string {
 func (*LogsStop) ProtoMessage() {}
 
 func (x *LogsStop) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[14]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1782,7 +1904,7 @@ func (x *LogsStop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogsStop.ProtoReflect.Descriptor instead.
 func (*LogsStop) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{14}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *LogsStop) GetSessionId() string {
@@ -1813,7 +1935,7 @@ type ExecStart struct {
 
 func (x *ExecStart) Reset() {
 	*x = ExecStart{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[15]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1825,7 +1947,7 @@ func (x *ExecStart) String() string {
 func (*ExecStart) ProtoMessage() {}
 
 func (x *ExecStart) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[15]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1838,7 +1960,7 @@ func (x *ExecStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecStart.ProtoReflect.Descriptor instead.
 func (*ExecStart) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{15}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ExecStart) GetSessionId() string {
@@ -1896,7 +2018,7 @@ type TerminalSizeHint struct {
 
 func (x *TerminalSizeHint) Reset() {
 	*x = TerminalSizeHint{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[16]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1908,7 +2030,7 @@ func (x *TerminalSizeHint) String() string {
 func (*TerminalSizeHint) ProtoMessage() {}
 
 func (x *TerminalSizeHint) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[16]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1921,7 +2043,7 @@ func (x *TerminalSizeHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalSizeHint.ProtoReflect.Descriptor instead.
 func (*TerminalSizeHint) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{16}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TerminalSizeHint) GetCols() uint32 {
@@ -1949,7 +2071,7 @@ type ExecStop struct {
 
 func (x *ExecStop) Reset() {
 	*x = ExecStop{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[17]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1961,7 +2083,7 @@ func (x *ExecStop) String() string {
 func (*ExecStop) ProtoMessage() {}
 
 func (x *ExecStop) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[17]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1974,7 +2096,7 @@ func (x *ExecStop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecStop.ProtoReflect.Descriptor instead.
 func (*ExecStop) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{17}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ExecStop) GetSessionId() string {
@@ -2018,7 +2140,7 @@ type SiteDeploy struct {
 
 func (x *SiteDeploy) Reset() {
 	*x = SiteDeploy{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[18]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2030,7 +2152,7 @@ func (x *SiteDeploy) String() string {
 func (*SiteDeploy) ProtoMessage() {}
 
 func (x *SiteDeploy) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[18]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2043,7 +2165,7 @@ func (x *SiteDeploy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SiteDeploy.ProtoReflect.Descriptor instead.
 func (*SiteDeploy) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{18}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SiteDeploy) GetSite() string {
@@ -2143,7 +2265,7 @@ type SiteRollback struct {
 
 func (x *SiteRollback) Reset() {
 	*x = SiteRollback{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[19]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2155,7 +2277,7 @@ func (x *SiteRollback) String() string {
 func (*SiteRollback) ProtoMessage() {}
 
 func (x *SiteRollback) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[19]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2168,7 +2290,7 @@ func (x *SiteRollback) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SiteRollback.ProtoReflect.Descriptor instead.
 func (*SiteRollback) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{19}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SiteRollback) GetSite() string {
@@ -2196,7 +2318,7 @@ type SiteRemove struct {
 
 func (x *SiteRemove) Reset() {
 	*x = SiteRemove{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[20]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2208,7 +2330,7 @@ func (x *SiteRemove) String() string {
 func (*SiteRemove) ProtoMessage() {}
 
 func (x *SiteRemove) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[20]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2221,7 +2343,7 @@ func (x *SiteRemove) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SiteRemove.ProtoReflect.Descriptor instead.
 func (*SiteRemove) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{20}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SiteRemove) GetSite() string {
@@ -2256,7 +2378,7 @@ type SitePhpApply struct {
 
 func (x *SitePhpApply) Reset() {
 	*x = SitePhpApply{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[21]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2268,7 +2390,7 @@ func (x *SitePhpApply) String() string {
 func (*SitePhpApply) ProtoMessage() {}
 
 func (x *SitePhpApply) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[21]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2281,7 +2403,7 @@ func (x *SitePhpApply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SitePhpApply.ProtoReflect.Descriptor instead.
 func (*SitePhpApply) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{21}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SitePhpApply) GetSite() string {
@@ -2359,7 +2481,7 @@ type TaskRun struct {
 
 func (x *TaskRun) Reset() {
 	*x = TaskRun{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[22]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2371,7 +2493,7 @@ func (x *TaskRun) String() string {
 func (*TaskRun) ProtoMessage() {}
 
 func (x *TaskRun) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[22]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2384,7 +2506,7 @@ func (x *TaskRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskRun.ProtoReflect.Descriptor instead.
 func (*TaskRun) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{22}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *TaskRun) GetTaskId() string {
@@ -2445,7 +2567,7 @@ type DbServerCreate struct {
 
 func (x *DbServerCreate) Reset() {
 	*x = DbServerCreate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[23]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2457,7 +2579,7 @@ func (x *DbServerCreate) String() string {
 func (*DbServerCreate) ProtoMessage() {}
 
 func (x *DbServerCreate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[23]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2470,7 +2592,7 @@ func (x *DbServerCreate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbServerCreate.ProtoReflect.Descriptor instead.
 func (*DbServerCreate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{23}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DbServerCreate) GetName() string {
@@ -2535,7 +2657,7 @@ type DbServerUpgrade struct {
 
 func (x *DbServerUpgrade) Reset() {
 	*x = DbServerUpgrade{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[24]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2547,7 +2669,7 @@ func (x *DbServerUpgrade) String() string {
 func (*DbServerUpgrade) ProtoMessage() {}
 
 func (x *DbServerUpgrade) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[24]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2560,7 +2682,7 @@ func (x *DbServerUpgrade) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbServerUpgrade.ProtoReflect.Descriptor instead.
 func (*DbServerUpgrade) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{24}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DbServerUpgrade) GetName() string {
@@ -2590,7 +2712,7 @@ type DbServerRemove struct {
 
 func (x *DbServerRemove) Reset() {
 	*x = DbServerRemove{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[25]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2602,7 +2724,7 @@ func (x *DbServerRemove) String() string {
 func (*DbServerRemove) ProtoMessage() {}
 
 func (x *DbServerRemove) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[25]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2615,7 +2737,7 @@ func (x *DbServerRemove) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbServerRemove.ProtoReflect.Descriptor instead.
 func (*DbServerRemove) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{25}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DbServerRemove) GetName() string {
@@ -2649,7 +2771,7 @@ type DbConnection struct {
 
 func (x *DbConnection) Reset() {
 	*x = DbConnection{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[26]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2661,7 +2783,7 @@ func (x *DbConnection) String() string {
 func (*DbConnection) ProtoMessage() {}
 
 func (x *DbConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[26]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2674,7 +2796,7 @@ func (x *DbConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbConnection.ProtoReflect.Descriptor instead.
 func (*DbConnection) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{26}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DbConnection) GetContainerId() string {
@@ -2722,7 +2844,7 @@ type DbDatabaseCreate struct {
 
 func (x *DbDatabaseCreate) Reset() {
 	*x = DbDatabaseCreate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[27]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2734,7 +2856,7 @@ func (x *DbDatabaseCreate) String() string {
 func (*DbDatabaseCreate) ProtoMessage() {}
 
 func (x *DbDatabaseCreate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[27]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2747,7 +2869,7 @@ func (x *DbDatabaseCreate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbDatabaseCreate.ProtoReflect.Descriptor instead.
 func (*DbDatabaseCreate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{27}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DbDatabaseCreate) GetConnection() *DbConnection {
@@ -2793,7 +2915,7 @@ type DbDatabaseDrop struct {
 
 func (x *DbDatabaseDrop) Reset() {
 	*x = DbDatabaseDrop{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[28]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2805,7 +2927,7 @@ func (x *DbDatabaseDrop) String() string {
 func (*DbDatabaseDrop) ProtoMessage() {}
 
 func (x *DbDatabaseDrop) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[28]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2818,7 +2940,7 @@ func (x *DbDatabaseDrop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbDatabaseDrop.ProtoReflect.Descriptor instead.
 func (*DbDatabaseDrop) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{28}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DbDatabaseDrop) GetConnection() *DbConnection {
@@ -2857,7 +2979,7 @@ type DbDatabaseRotate struct {
 
 func (x *DbDatabaseRotate) Reset() {
 	*x = DbDatabaseRotate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[29]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2869,7 +2991,7 @@ func (x *DbDatabaseRotate) String() string {
 func (*DbDatabaseRotate) ProtoMessage() {}
 
 func (x *DbDatabaseRotate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[29]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2882,7 +3004,7 @@ func (x *DbDatabaseRotate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbDatabaseRotate.ProtoReflect.Descriptor instead.
 func (*DbDatabaseRotate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{29}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *DbDatabaseRotate) GetConnection() *DbConnection {
@@ -2925,7 +3047,7 @@ type DbDatabaseClone struct {
 
 func (x *DbDatabaseClone) Reset() {
 	*x = DbDatabaseClone{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[30]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2937,7 +3059,7 @@ func (x *DbDatabaseClone) String() string {
 func (*DbDatabaseClone) ProtoMessage() {}
 
 func (x *DbDatabaseClone) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[30]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2950,7 +3072,7 @@ func (x *DbDatabaseClone) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbDatabaseClone.ProtoReflect.Descriptor instead.
 func (*DbDatabaseClone) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{30}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DbDatabaseClone) GetConnection() *DbConnection {
@@ -3001,7 +3123,7 @@ type DbDatabaseExport struct {
 
 func (x *DbDatabaseExport) Reset() {
 	*x = DbDatabaseExport{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[31]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3013,7 +3135,7 @@ func (x *DbDatabaseExport) String() string {
 func (*DbDatabaseExport) ProtoMessage() {}
 
 func (x *DbDatabaseExport) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[31]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3026,7 +3148,7 @@ func (x *DbDatabaseExport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbDatabaseExport.ProtoReflect.Descriptor instead.
 func (*DbDatabaseExport) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{31}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *DbDatabaseExport) GetConnection() *DbConnection {
@@ -3060,7 +3182,7 @@ type DbNetworkAttach struct {
 
 func (x *DbNetworkAttach) Reset() {
 	*x = DbNetworkAttach{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[32]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3072,7 +3194,7 @@ func (x *DbNetworkAttach) String() string {
 func (*DbNetworkAttach) ProtoMessage() {}
 
 func (x *DbNetworkAttach) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[32]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3085,7 +3207,7 @@ func (x *DbNetworkAttach) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbNetworkAttach.ProtoReflect.Descriptor instead.
 func (*DbNetworkAttach) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{32}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DbNetworkAttach) GetNetwork() string {
@@ -3127,7 +3249,7 @@ type DbStats struct {
 
 func (x *DbStats) Reset() {
 	*x = DbStats{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[33]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3139,7 +3261,7 @@ func (x *DbStats) String() string {
 func (*DbStats) ProtoMessage() {}
 
 func (x *DbStats) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[33]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3152,7 +3274,7 @@ func (x *DbStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbStats.ProtoReflect.Descriptor instead.
 func (*DbStats) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{33}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DbStats) GetConnection() *DbConnection {
@@ -3172,14 +3294,25 @@ type DbAdminerStart struct {
 	// image is the Adminer image.
 	Image string `protobuf:"bytes,3,opt,name=image,proto3" json:"image,omitempty"`
 	// ttl_s is when the container gets removed.
-	TtlS          int32 `protobuf:"varint,4,opt,name=ttl_s,json=ttlS,proto3" json:"ttl_s,omitempty"`
+	TtlS int32 `protobuf:"varint,4,opt,name=ttl_s,json=ttlS,proto3" json:"ttl_s,omitempty"`
+	// connection is the database server Adminer signs in to. Its credentials go
+	// only into the environment of the Adminer container.
+	Connection *DbConnection `protobuf:"bytes,5,opt,name=connection,proto3" json:"connection,omitempty"`
+	// server_alias is the server's name on the network.
+	ServerAlias string `protobuf:"bytes,6,opt,name=server_alias,json=serverAlias,proto3" json:"server_alias,omitempty"`
+	// database is the database Adminer opens.
+	Database string `protobuf:"bytes,7,opt,name=database,proto3" json:"database,omitempty"`
+	// user is the user Adminer signs in as; empty uses the administrator.
+	User string `protobuf:"bytes,8,opt,name=user,proto3" json:"user,omitempty"`
+	// password is that user's password.
+	Password      string `protobuf:"bytes,9,opt,name=password,proto3" json:"password,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DbAdminerStart) Reset() {
 	*x = DbAdminerStart{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[34]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3191,7 +3324,7 @@ func (x *DbAdminerStart) String() string {
 func (*DbAdminerStart) ProtoMessage() {}
 
 func (x *DbAdminerStart) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[34]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3204,7 +3337,7 @@ func (x *DbAdminerStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbAdminerStart.ProtoReflect.Descriptor instead.
 func (*DbAdminerStart) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{34}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *DbAdminerStart) GetSessionId() string {
@@ -3235,6 +3368,41 @@ func (x *DbAdminerStart) GetTtlS() int32 {
 	return 0
 }
 
+func (x *DbAdminerStart) GetConnection() *DbConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *DbAdminerStart) GetServerAlias() string {
+	if x != nil {
+		return x.ServerAlias
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
+}
+
+func (x *DbAdminerStart) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
 // DbAdminerStop removes an Adminer container.
 type DbAdminerStop struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3246,7 +3414,7 @@ type DbAdminerStop struct {
 
 func (x *DbAdminerStop) Reset() {
 	*x = DbAdminerStop{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[35]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3258,7 +3426,7 @@ func (x *DbAdminerStop) String() string {
 func (*DbAdminerStop) ProtoMessage() {}
 
 func (x *DbAdminerStop) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[35]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3271,7 +3439,7 @@ func (x *DbAdminerStop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbAdminerStop.ProtoReflect.Descriptor instead.
 func (*DbAdminerStop) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{35}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *DbAdminerStop) GetSessionId() string {
@@ -3296,7 +3464,7 @@ type EdgeApply struct {
 
 func (x *EdgeApply) Reset() {
 	*x = EdgeApply{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[36]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3308,7 +3476,7 @@ func (x *EdgeApply) String() string {
 func (*EdgeApply) ProtoMessage() {}
 
 func (x *EdgeApply) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[36]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3321,7 +3489,7 @@ func (x *EdgeApply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgeApply.ProtoReflect.Descriptor instead.
 func (*EdgeApply) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{36}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *EdgeApply) GetCaddyJson() string {
@@ -3362,7 +3530,7 @@ type CertInstall struct {
 
 func (x *CertInstall) Reset() {
 	*x = CertInstall{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[37]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3374,7 +3542,7 @@ func (x *CertInstall) String() string {
 func (*CertInstall) ProtoMessage() {}
 
 func (x *CertInstall) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[37]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3387,7 +3555,7 @@ func (x *CertInstall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertInstall.ProtoReflect.Descriptor instead.
 func (*CertInstall) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{37}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CertInstall) GetCertificateId() string {
@@ -3429,7 +3597,7 @@ type CertRemove struct {
 
 func (x *CertRemove) Reset() {
 	*x = CertRemove{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[38]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3441,7 +3609,7 @@ func (x *CertRemove) String() string {
 func (*CertRemove) ProtoMessage() {}
 
 func (x *CertRemove) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[38]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3454,7 +3622,7 @@ func (x *CertRemove) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertRemove.ProtoReflect.Descriptor instead.
 func (*CertRemove) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{38}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *CertRemove) GetCertificateId() string {
@@ -3477,7 +3645,7 @@ type AcmeChallengePresent struct {
 
 func (x *AcmeChallengePresent) Reset() {
 	*x = AcmeChallengePresent{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[39]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3489,7 +3657,7 @@ func (x *AcmeChallengePresent) String() string {
 func (*AcmeChallengePresent) ProtoMessage() {}
 
 func (x *AcmeChallengePresent) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[39]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3502,7 +3670,7 @@ func (x *AcmeChallengePresent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcmeChallengePresent.ProtoReflect.Descriptor instead.
 func (*AcmeChallengePresent) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{39}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *AcmeChallengePresent) GetToken() string {
@@ -3530,7 +3698,7 @@ type AcmeChallengeCleanup struct {
 
 func (x *AcmeChallengeCleanup) Reset() {
 	*x = AcmeChallengeCleanup{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[40]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3542,7 +3710,7 @@ func (x *AcmeChallengeCleanup) String() string {
 func (*AcmeChallengeCleanup) ProtoMessage() {}
 
 func (x *AcmeChallengeCleanup) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[40]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3555,7 +3723,7 @@ func (x *AcmeChallengeCleanup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcmeChallengeCleanup.ProtoReflect.Descriptor instead.
 func (*AcmeChallengeCleanup) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{40}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *AcmeChallengeCleanup) GetToken() string {
@@ -3580,7 +3748,7 @@ type BackupRepository struct {
 
 func (x *BackupRepository) Reset() {
 	*x = BackupRepository{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[41]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3592,7 +3760,7 @@ func (x *BackupRepository) String() string {
 func (*BackupRepository) ProtoMessage() {}
 
 func (x *BackupRepository) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[41]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3605,7 +3773,7 @@ func (x *BackupRepository) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRepository.ProtoReflect.Descriptor instead.
 func (*BackupRepository) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{41}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *BackupRepository) GetUrl() string {
@@ -3640,7 +3808,7 @@ type BackupInit struct {
 
 func (x *BackupInit) Reset() {
 	*x = BackupInit{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[42]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3652,7 +3820,7 @@ func (x *BackupInit) String() string {
 func (*BackupInit) ProtoMessage() {}
 
 func (x *BackupInit) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[42]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3665,7 +3833,7 @@ func (x *BackupInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupInit.ProtoReflect.Descriptor instead.
 func (*BackupInit) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{42}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *BackupInit) GetRepository() *BackupRepository {
@@ -3700,7 +3868,7 @@ type BackupRun struct {
 
 func (x *BackupRun) Reset() {
 	*x = BackupRun{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[43]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3712,7 +3880,7 @@ func (x *BackupRun) String() string {
 func (*BackupRun) ProtoMessage() {}
 
 func (x *BackupRun) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[43]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3725,7 +3893,7 @@ func (x *BackupRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRun.ProtoReflect.Descriptor instead.
 func (*BackupRun) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{43}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *BackupRun) GetRunId() string {
@@ -3805,7 +3973,7 @@ type BackupRestore struct {
 
 func (x *BackupRestore) Reset() {
 	*x = BackupRestore{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[44]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3817,7 +3985,7 @@ func (x *BackupRestore) String() string {
 func (*BackupRestore) ProtoMessage() {}
 
 func (x *BackupRestore) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[44]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3830,7 +3998,7 @@ func (x *BackupRestore) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRestore.ProtoReflect.Descriptor instead.
 func (*BackupRestore) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{44}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *BackupRestore) GetRepository() *BackupRepository {
@@ -3888,7 +4056,7 @@ type BackupSnapshots struct {
 
 func (x *BackupSnapshots) Reset() {
 	*x = BackupSnapshots{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[45]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3900,7 +4068,7 @@ func (x *BackupSnapshots) String() string {
 func (*BackupSnapshots) ProtoMessage() {}
 
 func (x *BackupSnapshots) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[45]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3913,7 +4081,7 @@ func (x *BackupSnapshots) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupSnapshots.ProtoReflect.Descriptor instead.
 func (*BackupSnapshots) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{45}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *BackupSnapshots) GetRepository() *BackupRepository {
@@ -3945,7 +4113,7 @@ type BackupBrowse struct {
 
 func (x *BackupBrowse) Reset() {
 	*x = BackupBrowse{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[46]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3957,7 +4125,7 @@ func (x *BackupBrowse) String() string {
 func (*BackupBrowse) ProtoMessage() {}
 
 func (x *BackupBrowse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[46]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3970,7 +4138,7 @@ func (x *BackupBrowse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupBrowse.ProtoReflect.Descriptor instead.
 func (*BackupBrowse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{46}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *BackupBrowse) GetRepository() *BackupRepository {
@@ -4007,7 +4175,7 @@ type BackupCheck struct {
 
 func (x *BackupCheck) Reset() {
 	*x = BackupCheck{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[47]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4019,7 +4187,7 @@ func (x *BackupCheck) String() string {
 func (*BackupCheck) ProtoMessage() {}
 
 func (x *BackupCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[47]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4032,7 +4200,7 @@ func (x *BackupCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupCheck.ProtoReflect.Descriptor instead.
 func (*BackupCheck) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{47}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *BackupCheck) GetRepository() *BackupRepository {
@@ -4060,7 +4228,7 @@ type BackupUnlock struct {
 
 func (x *BackupUnlock) Reset() {
 	*x = BackupUnlock{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[48]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4072,7 +4240,7 @@ func (x *BackupUnlock) String() string {
 func (*BackupUnlock) ProtoMessage() {}
 
 func (x *BackupUnlock) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[48]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4085,7 +4253,7 @@ func (x *BackupUnlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupUnlock.ProtoReflect.Descriptor instead.
 func (*BackupUnlock) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{48}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *BackupUnlock) GetRepository() *BackupRepository {
@@ -4118,7 +4286,7 @@ type BackupForget struct {
 
 func (x *BackupForget) Reset() {
 	*x = BackupForget{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[49]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4130,7 +4298,7 @@ func (x *BackupForget) String() string {
 func (*BackupForget) ProtoMessage() {}
 
 func (x *BackupForget) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[49]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4143,7 +4311,7 @@ func (x *BackupForget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupForget.ProtoReflect.Descriptor instead.
 func (*BackupForget) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{49}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *BackupForget) GetRepository() *BackupRepository {
@@ -4213,7 +4381,7 @@ type AgentUpdate struct {
 
 func (x *AgentUpdate) Reset() {
 	*x = AgentUpdate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[50]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4225,7 +4393,7 @@ func (x *AgentUpdate) String() string {
 func (*AgentUpdate) ProtoMessage() {}
 
 func (x *AgentUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[50]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4238,7 +4406,7 @@ func (x *AgentUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentUpdate.ProtoReflect.Descriptor instead.
 func (*AgentUpdate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{50}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *AgentUpdate) GetAgentImage() string {
@@ -4278,7 +4446,7 @@ type AgentRestart struct {
 
 func (x *AgentRestart) Reset() {
 	*x = AgentRestart{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[51]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4290,7 +4458,7 @@ func (x *AgentRestart) String() string {
 func (*AgentRestart) ProtoMessage() {}
 
 func (x *AgentRestart) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[51]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4303,7 +4471,7 @@ func (x *AgentRestart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRestart.ProtoReflect.Descriptor instead.
 func (*AgentRestart) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{51}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{52}
 }
 
 // AgentRotateCertificate rotates the agent's certificate now.
@@ -4315,7 +4483,7 @@ type AgentRotateCertificate struct {
 
 func (x *AgentRotateCertificate) Reset() {
 	*x = AgentRotateCertificate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[52]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4327,7 +4495,7 @@ func (x *AgentRotateCertificate) String() string {
 func (*AgentRotateCertificate) ProtoMessage() {}
 
 func (x *AgentRotateCertificate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[52]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4340,7 +4508,7 @@ func (x *AgentRotateCertificate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRotateCertificate.ProtoReflect.Descriptor instead.
 func (*AgentRotateCertificate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{52}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{53}
 }
 
 // AgentDiagnostics builds a debug bundle and uploads it with UploadArtifact.
@@ -4354,7 +4522,7 @@ type AgentDiagnostics struct {
 
 func (x *AgentDiagnostics) Reset() {
 	*x = AgentDiagnostics{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4366,7 +4534,7 @@ func (x *AgentDiagnostics) String() string {
 func (*AgentDiagnostics) ProtoMessage() {}
 
 func (x *AgentDiagnostics) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4379,7 +4547,7 @@ func (x *AgentDiagnostics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentDiagnostics.ProtoReflect.Descriptor instead.
 func (*AgentDiagnostics) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{53}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *AgentDiagnostics) GetLogLines() int32 {
@@ -4402,7 +4570,7 @@ type AgentSetLogLevel struct {
 
 func (x *AgentSetLogLevel) Reset() {
 	*x = AgentSetLogLevel{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4414,7 +4582,7 @@ func (x *AgentSetLogLevel) String() string {
 func (*AgentSetLogLevel) ProtoMessage() {}
 
 func (x *AgentSetLogLevel) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4427,7 +4595,7 @@ func (x *AgentSetLogLevel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentSetLogLevel.ProtoReflect.Descriptor instead.
 func (*AgentSetLogLevel) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{54}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *AgentSetLogLevel) GetLevel() string {
@@ -4448,7 +4616,7 @@ var File_pocketcloud_agent_v1_commands_proto protoreflect.FileDescriptor
 
 const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\n" +
-	"#pocketcloud/agent/v1/commands.proto\x12\x14pocketcloud.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$pocketcloud/options/v1/options.proto\"\xfa\x1f\n" +
+	"#pocketcloud/agent/v1/commands.proto\x12\x14pocketcloud.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$pocketcloud/options/v1/options.proto\"\xc2 \n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1b\n" +
@@ -4470,7 +4638,8 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\n" +
 	"stack_pull\x18{ \x01(\v2\x1f.pocketcloud.agent.v1.StackPullH\x00R\tstackPull\x12L\n" +
 	"\x0estack_validate\x18| \x01(\v2#.pocketcloud.agent.v1.StackValidateH\x00R\rstackValidate\x12I\n" +
-	"\rstack_restart\x18} \x01(\v2\".pocketcloud.agent.v1.StackRestartH\x00R\fstackRestart\x12D\n" +
+	"\rstack_restart\x18} \x01(\v2\".pocketcloud.agent.v1.StackRestartH\x00R\fstackRestart\x12F\n" +
+	"\fstack_import\x18~ \x01(\v2!.pocketcloud.agent.v1.StackImportH\x00R\vstackImport\x12D\n" +
 	"\vlogs_follow\x18\x82\x01 \x01(\v2 .pocketcloud.agent.v1.LogsFollowH\x00R\n" +
 	"logsFollow\x12>\n" +
 	"\tlogs_stop\x18\x83\x01 \x01(\v2\x1e.pocketcloud.agent.v1.LogsStopH\x00R\blogsStop\x12A\n" +
@@ -4537,7 +4706,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"Y\n" +
 	"\tImagePull\x12\x14\n" +
 	"\x05image\x18\x01 \x01(\tR\x05image\x126\n" +
-	"\x04auth\x18\x02 \x01(\v2\".pocketcloud.agent.v1.RegistryAuthR\x04auth\"\xd6\x02\n" +
+	"\x04auth\x18\x02 \x01(\v2\".pocketcloud.agent.v1.RegistryAuthR\x04auth\"\xc3\x03\n" +
 	"\vStackDeploy\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fcompose_yaml\x18\x02 \x01(\tR\vcomposeYaml\x12\x10\n" +
@@ -4547,7 +4716,10 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x04pull\x18\x06 \x01(\bR\x04pull\x12B\n" +
 	"\n" +
 	"registries\x18\a \x03(\v2\".pocketcloud.agent.v1.RegistryAuthR\n" +
-	"registries\x1a:\n" +
+	"registries\x12#\n" +
+	"\roverride_yaml\x18\b \x01(\tR\foverrideYaml\x12F\n" +
+	"\vdb_networks\x18\t \x03(\v2%.pocketcloud.agent.v1.DbNetworkAttachR\n" +
+	"dbNetworks\x1a:\n" +
 	"\fSecretsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1f\n" +
@@ -4555,15 +4727,27 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"F\n" +
 	"\tStackDown\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12%\n" +
-	"\x0eremove_volumes\x18\x02 \x01(\bR\rremoveVolumes\"\x1f\n" +
+	"\x0eremove_volumes\x18\x02 \x01(\bR\rremoveVolumes\"\xed\x01\n" +
 	"\tStackPull\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"X\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12L\n" +
+	"\asecrets\x18\x02 \x03(\v2,.pocketcloud.agent.v1.StackPull.SecretsEntryB\x04\xc0\xf3\x18\x01R\asecrets\x12B\n" +
+	"\n" +
+	"registries\x18\x03 \x03(\v2\".pocketcloud.agent.v1.RegistryAuthR\n" +
+	"registries\x1a:\n" +
+	"\fSecretsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"X\n" +
 	"\rStackValidate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fcompose_yaml\x18\x02 \x01(\tR\vcomposeYaml\x12\x10\n" +
 	"\x03env\x18\x03 \x01(\tR\x03env\"\"\n" +
 	"\fStackRestart\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"d\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"k\n" +
+	"\vStackImport\x12\x18\n" +
+	"\aproject\x18\x01 \x01(\tR\aproject\x12!\n" +
+	"\fconfig_files\x18\x02 \x03(\tR\vconfigFiles\x12\x1f\n" +
+	"\vworking_dir\x18\x03 \x01(\tR\n" +
+	"workingDir\"d\n" +
 	"\n" +
 	"LogsFollow\x12\x1d\n" +
 	"\n" +
@@ -4701,13 +4885,20 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\aDbStats\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +
-	"connection\"t\n" +
+	"connection\"\xad\x02\n" +
 	"\x0eDbAdminerStart\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
 	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x14\n" +
 	"\x05image\x18\x03 \x01(\tR\x05image\x12\x13\n" +
-	"\x05ttl_s\x18\x04 \x01(\x05R\x04ttlS\".\n" +
+	"\x05ttl_s\x18\x04 \x01(\x05R\x04ttlS\x12B\n" +
+	"\n" +
+	"connection\x18\x05 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\n" +
+	"connection\x12!\n" +
+	"\fserver_alias\x18\x06 \x01(\tR\vserverAlias\x12\x1a\n" +
+	"\bdatabase\x18\a \x01(\tR\bdatabase\x12\x12\n" +
+	"\x04user\x18\b \x01(\tR\x04user\x12 \n" +
+	"\bpassword\x18\t \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\".\n" +
 	"\rDbAdminerStop\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"g\n" +
@@ -4829,7 +5020,7 @@ func file_pocketcloud_agent_v1_commands_proto_rawDescGZIP() []byte {
 	return file_pocketcloud_agent_v1_commands_proto_rawDescData
 }
 
-var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
+var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(*Command)(nil),                // 0: pocketcloud.agent.v1.Command
 	(*ContainerStart)(nil),         // 1: pocketcloud.agent.v1.ContainerStart
@@ -4844,58 +5035,60 @@ var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(*StackPull)(nil),              // 10: pocketcloud.agent.v1.StackPull
 	(*StackValidate)(nil),          // 11: pocketcloud.agent.v1.StackValidate
 	(*StackRestart)(nil),           // 12: pocketcloud.agent.v1.StackRestart
-	(*LogsFollow)(nil),             // 13: pocketcloud.agent.v1.LogsFollow
-	(*LogsStop)(nil),               // 14: pocketcloud.agent.v1.LogsStop
-	(*ExecStart)(nil),              // 15: pocketcloud.agent.v1.ExecStart
-	(*TerminalSizeHint)(nil),       // 16: pocketcloud.agent.v1.TerminalSizeHint
-	(*ExecStop)(nil),               // 17: pocketcloud.agent.v1.ExecStop
-	(*SiteDeploy)(nil),             // 18: pocketcloud.agent.v1.SiteDeploy
-	(*SiteRollback)(nil),           // 19: pocketcloud.agent.v1.SiteRollback
-	(*SiteRemove)(nil),             // 20: pocketcloud.agent.v1.SiteRemove
-	(*SitePhpApply)(nil),           // 21: pocketcloud.agent.v1.SitePhpApply
-	(*TaskRun)(nil),                // 22: pocketcloud.agent.v1.TaskRun
-	(*DbServerCreate)(nil),         // 23: pocketcloud.agent.v1.DbServerCreate
-	(*DbServerUpgrade)(nil),        // 24: pocketcloud.agent.v1.DbServerUpgrade
-	(*DbServerRemove)(nil),         // 25: pocketcloud.agent.v1.DbServerRemove
-	(*DbConnection)(nil),           // 26: pocketcloud.agent.v1.DbConnection
-	(*DbDatabaseCreate)(nil),       // 27: pocketcloud.agent.v1.DbDatabaseCreate
-	(*DbDatabaseDrop)(nil),         // 28: pocketcloud.agent.v1.DbDatabaseDrop
-	(*DbDatabaseRotate)(nil),       // 29: pocketcloud.agent.v1.DbDatabaseRotate
-	(*DbDatabaseClone)(nil),        // 30: pocketcloud.agent.v1.DbDatabaseClone
-	(*DbDatabaseExport)(nil),       // 31: pocketcloud.agent.v1.DbDatabaseExport
-	(*DbNetworkAttach)(nil),        // 32: pocketcloud.agent.v1.DbNetworkAttach
-	(*DbStats)(nil),                // 33: pocketcloud.agent.v1.DbStats
-	(*DbAdminerStart)(nil),         // 34: pocketcloud.agent.v1.DbAdminerStart
-	(*DbAdminerStop)(nil),          // 35: pocketcloud.agent.v1.DbAdminerStop
-	(*EdgeApply)(nil),              // 36: pocketcloud.agent.v1.EdgeApply
-	(*CertInstall)(nil),            // 37: pocketcloud.agent.v1.CertInstall
-	(*CertRemove)(nil),             // 38: pocketcloud.agent.v1.CertRemove
-	(*AcmeChallengePresent)(nil),   // 39: pocketcloud.agent.v1.AcmeChallengePresent
-	(*AcmeChallengeCleanup)(nil),   // 40: pocketcloud.agent.v1.AcmeChallengeCleanup
-	(*BackupRepository)(nil),       // 41: pocketcloud.agent.v1.BackupRepository
-	(*BackupInit)(nil),             // 42: pocketcloud.agent.v1.BackupInit
-	(*BackupRun)(nil),              // 43: pocketcloud.agent.v1.BackupRun
-	(*BackupRestore)(nil),          // 44: pocketcloud.agent.v1.BackupRestore
-	(*BackupSnapshots)(nil),        // 45: pocketcloud.agent.v1.BackupSnapshots
-	(*BackupBrowse)(nil),           // 46: pocketcloud.agent.v1.BackupBrowse
-	(*BackupCheck)(nil),            // 47: pocketcloud.agent.v1.BackupCheck
-	(*BackupUnlock)(nil),           // 48: pocketcloud.agent.v1.BackupUnlock
-	(*BackupForget)(nil),           // 49: pocketcloud.agent.v1.BackupForget
-	(*AgentUpdate)(nil),            // 50: pocketcloud.agent.v1.AgentUpdate
-	(*AgentRestart)(nil),           // 51: pocketcloud.agent.v1.AgentRestart
-	(*AgentRotateCertificate)(nil), // 52: pocketcloud.agent.v1.AgentRotateCertificate
-	(*AgentDiagnostics)(nil),       // 53: pocketcloud.agent.v1.AgentDiagnostics
-	(*AgentSetLogLevel)(nil),       // 54: pocketcloud.agent.v1.AgentSetLogLevel
-	nil,                            // 55: pocketcloud.agent.v1.StackDeploy.SecretsEntry
-	nil,                            // 56: pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	nil,                            // 57: pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	nil,                            // 58: pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	nil,                            // 59: pocketcloud.agent.v1.BackupRepository.EnvEntry
-	nil,                            // 60: pocketcloud.agent.v1.BackupRun.EnvEntry
-	(*timestamppb.Timestamp)(nil),  // 61: google.protobuf.Timestamp
+	(*StackImport)(nil),            // 13: pocketcloud.agent.v1.StackImport
+	(*LogsFollow)(nil),             // 14: pocketcloud.agent.v1.LogsFollow
+	(*LogsStop)(nil),               // 15: pocketcloud.agent.v1.LogsStop
+	(*ExecStart)(nil),              // 16: pocketcloud.agent.v1.ExecStart
+	(*TerminalSizeHint)(nil),       // 17: pocketcloud.agent.v1.TerminalSizeHint
+	(*ExecStop)(nil),               // 18: pocketcloud.agent.v1.ExecStop
+	(*SiteDeploy)(nil),             // 19: pocketcloud.agent.v1.SiteDeploy
+	(*SiteRollback)(nil),           // 20: pocketcloud.agent.v1.SiteRollback
+	(*SiteRemove)(nil),             // 21: pocketcloud.agent.v1.SiteRemove
+	(*SitePhpApply)(nil),           // 22: pocketcloud.agent.v1.SitePhpApply
+	(*TaskRun)(nil),                // 23: pocketcloud.agent.v1.TaskRun
+	(*DbServerCreate)(nil),         // 24: pocketcloud.agent.v1.DbServerCreate
+	(*DbServerUpgrade)(nil),        // 25: pocketcloud.agent.v1.DbServerUpgrade
+	(*DbServerRemove)(nil),         // 26: pocketcloud.agent.v1.DbServerRemove
+	(*DbConnection)(nil),           // 27: pocketcloud.agent.v1.DbConnection
+	(*DbDatabaseCreate)(nil),       // 28: pocketcloud.agent.v1.DbDatabaseCreate
+	(*DbDatabaseDrop)(nil),         // 29: pocketcloud.agent.v1.DbDatabaseDrop
+	(*DbDatabaseRotate)(nil),       // 30: pocketcloud.agent.v1.DbDatabaseRotate
+	(*DbDatabaseClone)(nil),        // 31: pocketcloud.agent.v1.DbDatabaseClone
+	(*DbDatabaseExport)(nil),       // 32: pocketcloud.agent.v1.DbDatabaseExport
+	(*DbNetworkAttach)(nil),        // 33: pocketcloud.agent.v1.DbNetworkAttach
+	(*DbStats)(nil),                // 34: pocketcloud.agent.v1.DbStats
+	(*DbAdminerStart)(nil),         // 35: pocketcloud.agent.v1.DbAdminerStart
+	(*DbAdminerStop)(nil),          // 36: pocketcloud.agent.v1.DbAdminerStop
+	(*EdgeApply)(nil),              // 37: pocketcloud.agent.v1.EdgeApply
+	(*CertInstall)(nil),            // 38: pocketcloud.agent.v1.CertInstall
+	(*CertRemove)(nil),             // 39: pocketcloud.agent.v1.CertRemove
+	(*AcmeChallengePresent)(nil),   // 40: pocketcloud.agent.v1.AcmeChallengePresent
+	(*AcmeChallengeCleanup)(nil),   // 41: pocketcloud.agent.v1.AcmeChallengeCleanup
+	(*BackupRepository)(nil),       // 42: pocketcloud.agent.v1.BackupRepository
+	(*BackupInit)(nil),             // 43: pocketcloud.agent.v1.BackupInit
+	(*BackupRun)(nil),              // 44: pocketcloud.agent.v1.BackupRun
+	(*BackupRestore)(nil),          // 45: pocketcloud.agent.v1.BackupRestore
+	(*BackupSnapshots)(nil),        // 46: pocketcloud.agent.v1.BackupSnapshots
+	(*BackupBrowse)(nil),           // 47: pocketcloud.agent.v1.BackupBrowse
+	(*BackupCheck)(nil),            // 48: pocketcloud.agent.v1.BackupCheck
+	(*BackupUnlock)(nil),           // 49: pocketcloud.agent.v1.BackupUnlock
+	(*BackupForget)(nil),           // 50: pocketcloud.agent.v1.BackupForget
+	(*AgentUpdate)(nil),            // 51: pocketcloud.agent.v1.AgentUpdate
+	(*AgentRestart)(nil),           // 52: pocketcloud.agent.v1.AgentRestart
+	(*AgentRotateCertificate)(nil), // 53: pocketcloud.agent.v1.AgentRotateCertificate
+	(*AgentDiagnostics)(nil),       // 54: pocketcloud.agent.v1.AgentDiagnostics
+	(*AgentSetLogLevel)(nil),       // 55: pocketcloud.agent.v1.AgentSetLogLevel
+	nil,                            // 56: pocketcloud.agent.v1.StackDeploy.SecretsEntry
+	nil,                            // 57: pocketcloud.agent.v1.StackPull.SecretsEntry
+	nil,                            // 58: pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	nil,                            // 59: pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	nil,                            // 60: pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	nil,                            // 61: pocketcloud.agent.v1.BackupRepository.EnvEntry
+	nil,                            // 62: pocketcloud.agent.v1.BackupRun.EnvEntry
+	(*timestamppb.Timestamp)(nil),  // 63: google.protobuf.Timestamp
 }
 var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
-	61, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
+	63, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
 	1,  // 1: pocketcloud.agent.v1.Command.container_start:type_name -> pocketcloud.agent.v1.ContainerStart
 	2,  // 2: pocketcloud.agent.v1.Command.container_stop:type_name -> pocketcloud.agent.v1.ContainerStop
 	3,  // 3: pocketcloud.agent.v1.Command.container_restart:type_name -> pocketcloud.agent.v1.ContainerRestart
@@ -4907,73 +5100,78 @@ var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
 	10, // 9: pocketcloud.agent.v1.Command.stack_pull:type_name -> pocketcloud.agent.v1.StackPull
 	11, // 10: pocketcloud.agent.v1.Command.stack_validate:type_name -> pocketcloud.agent.v1.StackValidate
 	12, // 11: pocketcloud.agent.v1.Command.stack_restart:type_name -> pocketcloud.agent.v1.StackRestart
-	13, // 12: pocketcloud.agent.v1.Command.logs_follow:type_name -> pocketcloud.agent.v1.LogsFollow
-	14, // 13: pocketcloud.agent.v1.Command.logs_stop:type_name -> pocketcloud.agent.v1.LogsStop
-	15, // 14: pocketcloud.agent.v1.Command.exec_start:type_name -> pocketcloud.agent.v1.ExecStart
-	17, // 15: pocketcloud.agent.v1.Command.exec_stop:type_name -> pocketcloud.agent.v1.ExecStop
-	18, // 16: pocketcloud.agent.v1.Command.site_deploy:type_name -> pocketcloud.agent.v1.SiteDeploy
-	19, // 17: pocketcloud.agent.v1.Command.site_rollback:type_name -> pocketcloud.agent.v1.SiteRollback
-	20, // 18: pocketcloud.agent.v1.Command.site_remove:type_name -> pocketcloud.agent.v1.SiteRemove
-	21, // 19: pocketcloud.agent.v1.Command.site_php_apply:type_name -> pocketcloud.agent.v1.SitePhpApply
-	22, // 20: pocketcloud.agent.v1.Command.task_run:type_name -> pocketcloud.agent.v1.TaskRun
-	23, // 21: pocketcloud.agent.v1.Command.db_server_create:type_name -> pocketcloud.agent.v1.DbServerCreate
-	24, // 22: pocketcloud.agent.v1.Command.db_server_upgrade:type_name -> pocketcloud.agent.v1.DbServerUpgrade
-	25, // 23: pocketcloud.agent.v1.Command.db_server_remove:type_name -> pocketcloud.agent.v1.DbServerRemove
-	27, // 24: pocketcloud.agent.v1.Command.db_database_create:type_name -> pocketcloud.agent.v1.DbDatabaseCreate
-	28, // 25: pocketcloud.agent.v1.Command.db_database_drop:type_name -> pocketcloud.agent.v1.DbDatabaseDrop
-	29, // 26: pocketcloud.agent.v1.Command.db_database_rotate:type_name -> pocketcloud.agent.v1.DbDatabaseRotate
-	30, // 27: pocketcloud.agent.v1.Command.db_database_clone:type_name -> pocketcloud.agent.v1.DbDatabaseClone
-	31, // 28: pocketcloud.agent.v1.Command.db_database_export:type_name -> pocketcloud.agent.v1.DbDatabaseExport
-	32, // 29: pocketcloud.agent.v1.Command.db_network_attach:type_name -> pocketcloud.agent.v1.DbNetworkAttach
-	33, // 30: pocketcloud.agent.v1.Command.db_stats:type_name -> pocketcloud.agent.v1.DbStats
-	34, // 31: pocketcloud.agent.v1.Command.db_adminer_start:type_name -> pocketcloud.agent.v1.DbAdminerStart
-	35, // 32: pocketcloud.agent.v1.Command.db_adminer_stop:type_name -> pocketcloud.agent.v1.DbAdminerStop
-	36, // 33: pocketcloud.agent.v1.Command.edge_apply:type_name -> pocketcloud.agent.v1.EdgeApply
-	37, // 34: pocketcloud.agent.v1.Command.cert_install:type_name -> pocketcloud.agent.v1.CertInstall
-	38, // 35: pocketcloud.agent.v1.Command.cert_remove:type_name -> pocketcloud.agent.v1.CertRemove
-	39, // 36: pocketcloud.agent.v1.Command.acme_challenge_present:type_name -> pocketcloud.agent.v1.AcmeChallengePresent
-	40, // 37: pocketcloud.agent.v1.Command.acme_challenge_cleanup:type_name -> pocketcloud.agent.v1.AcmeChallengeCleanup
-	42, // 38: pocketcloud.agent.v1.Command.backup_init:type_name -> pocketcloud.agent.v1.BackupInit
-	43, // 39: pocketcloud.agent.v1.Command.backup_run:type_name -> pocketcloud.agent.v1.BackupRun
-	44, // 40: pocketcloud.agent.v1.Command.backup_restore:type_name -> pocketcloud.agent.v1.BackupRestore
-	45, // 41: pocketcloud.agent.v1.Command.backup_snapshots:type_name -> pocketcloud.agent.v1.BackupSnapshots
-	46, // 42: pocketcloud.agent.v1.Command.backup_browse:type_name -> pocketcloud.agent.v1.BackupBrowse
-	47, // 43: pocketcloud.agent.v1.Command.backup_check:type_name -> pocketcloud.agent.v1.BackupCheck
-	48, // 44: pocketcloud.agent.v1.Command.backup_unlock:type_name -> pocketcloud.agent.v1.BackupUnlock
-	49, // 45: pocketcloud.agent.v1.Command.backup_forget:type_name -> pocketcloud.agent.v1.BackupForget
-	50, // 46: pocketcloud.agent.v1.Command.agent_update:type_name -> pocketcloud.agent.v1.AgentUpdate
-	51, // 47: pocketcloud.agent.v1.Command.agent_restart:type_name -> pocketcloud.agent.v1.AgentRestart
-	52, // 48: pocketcloud.agent.v1.Command.agent_rotate_certificate:type_name -> pocketcloud.agent.v1.AgentRotateCertificate
-	53, // 49: pocketcloud.agent.v1.Command.agent_diagnostics:type_name -> pocketcloud.agent.v1.AgentDiagnostics
-	54, // 50: pocketcloud.agent.v1.Command.agent_set_log_level:type_name -> pocketcloud.agent.v1.AgentSetLogLevel
-	5,  // 51: pocketcloud.agent.v1.ImagePull.auth:type_name -> pocketcloud.agent.v1.RegistryAuth
-	55, // 52: pocketcloud.agent.v1.StackDeploy.secrets:type_name -> pocketcloud.agent.v1.StackDeploy.SecretsEntry
-	5,  // 53: pocketcloud.agent.v1.StackDeploy.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
-	16, // 54: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
-	56, // 55: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	57, // 56: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	58, // 57: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	26, // 58: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	26, // 59: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	26, // 60: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	26, // 61: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	26, // 62: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	26, // 63: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	59, // 64: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	41, // 65: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 66: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	60, // 67: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	41, // 68: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 69: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 70: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 71: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 72: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	41, // 73: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	74, // [74:74] is the sub-list for method output_type
-	74, // [74:74] is the sub-list for method input_type
-	74, // [74:74] is the sub-list for extension type_name
-	74, // [74:74] is the sub-list for extension extendee
-	0,  // [0:74] is the sub-list for field type_name
+	13, // 12: pocketcloud.agent.v1.Command.stack_import:type_name -> pocketcloud.agent.v1.StackImport
+	14, // 13: pocketcloud.agent.v1.Command.logs_follow:type_name -> pocketcloud.agent.v1.LogsFollow
+	15, // 14: pocketcloud.agent.v1.Command.logs_stop:type_name -> pocketcloud.agent.v1.LogsStop
+	16, // 15: pocketcloud.agent.v1.Command.exec_start:type_name -> pocketcloud.agent.v1.ExecStart
+	18, // 16: pocketcloud.agent.v1.Command.exec_stop:type_name -> pocketcloud.agent.v1.ExecStop
+	19, // 17: pocketcloud.agent.v1.Command.site_deploy:type_name -> pocketcloud.agent.v1.SiteDeploy
+	20, // 18: pocketcloud.agent.v1.Command.site_rollback:type_name -> pocketcloud.agent.v1.SiteRollback
+	21, // 19: pocketcloud.agent.v1.Command.site_remove:type_name -> pocketcloud.agent.v1.SiteRemove
+	22, // 20: pocketcloud.agent.v1.Command.site_php_apply:type_name -> pocketcloud.agent.v1.SitePhpApply
+	23, // 21: pocketcloud.agent.v1.Command.task_run:type_name -> pocketcloud.agent.v1.TaskRun
+	24, // 22: pocketcloud.agent.v1.Command.db_server_create:type_name -> pocketcloud.agent.v1.DbServerCreate
+	25, // 23: pocketcloud.agent.v1.Command.db_server_upgrade:type_name -> pocketcloud.agent.v1.DbServerUpgrade
+	26, // 24: pocketcloud.agent.v1.Command.db_server_remove:type_name -> pocketcloud.agent.v1.DbServerRemove
+	28, // 25: pocketcloud.agent.v1.Command.db_database_create:type_name -> pocketcloud.agent.v1.DbDatabaseCreate
+	29, // 26: pocketcloud.agent.v1.Command.db_database_drop:type_name -> pocketcloud.agent.v1.DbDatabaseDrop
+	30, // 27: pocketcloud.agent.v1.Command.db_database_rotate:type_name -> pocketcloud.agent.v1.DbDatabaseRotate
+	31, // 28: pocketcloud.agent.v1.Command.db_database_clone:type_name -> pocketcloud.agent.v1.DbDatabaseClone
+	32, // 29: pocketcloud.agent.v1.Command.db_database_export:type_name -> pocketcloud.agent.v1.DbDatabaseExport
+	33, // 30: pocketcloud.agent.v1.Command.db_network_attach:type_name -> pocketcloud.agent.v1.DbNetworkAttach
+	34, // 31: pocketcloud.agent.v1.Command.db_stats:type_name -> pocketcloud.agent.v1.DbStats
+	35, // 32: pocketcloud.agent.v1.Command.db_adminer_start:type_name -> pocketcloud.agent.v1.DbAdminerStart
+	36, // 33: pocketcloud.agent.v1.Command.db_adminer_stop:type_name -> pocketcloud.agent.v1.DbAdminerStop
+	37, // 34: pocketcloud.agent.v1.Command.edge_apply:type_name -> pocketcloud.agent.v1.EdgeApply
+	38, // 35: pocketcloud.agent.v1.Command.cert_install:type_name -> pocketcloud.agent.v1.CertInstall
+	39, // 36: pocketcloud.agent.v1.Command.cert_remove:type_name -> pocketcloud.agent.v1.CertRemove
+	40, // 37: pocketcloud.agent.v1.Command.acme_challenge_present:type_name -> pocketcloud.agent.v1.AcmeChallengePresent
+	41, // 38: pocketcloud.agent.v1.Command.acme_challenge_cleanup:type_name -> pocketcloud.agent.v1.AcmeChallengeCleanup
+	43, // 39: pocketcloud.agent.v1.Command.backup_init:type_name -> pocketcloud.agent.v1.BackupInit
+	44, // 40: pocketcloud.agent.v1.Command.backup_run:type_name -> pocketcloud.agent.v1.BackupRun
+	45, // 41: pocketcloud.agent.v1.Command.backup_restore:type_name -> pocketcloud.agent.v1.BackupRestore
+	46, // 42: pocketcloud.agent.v1.Command.backup_snapshots:type_name -> pocketcloud.agent.v1.BackupSnapshots
+	47, // 43: pocketcloud.agent.v1.Command.backup_browse:type_name -> pocketcloud.agent.v1.BackupBrowse
+	48, // 44: pocketcloud.agent.v1.Command.backup_check:type_name -> pocketcloud.agent.v1.BackupCheck
+	49, // 45: pocketcloud.agent.v1.Command.backup_unlock:type_name -> pocketcloud.agent.v1.BackupUnlock
+	50, // 46: pocketcloud.agent.v1.Command.backup_forget:type_name -> pocketcloud.agent.v1.BackupForget
+	51, // 47: pocketcloud.agent.v1.Command.agent_update:type_name -> pocketcloud.agent.v1.AgentUpdate
+	52, // 48: pocketcloud.agent.v1.Command.agent_restart:type_name -> pocketcloud.agent.v1.AgentRestart
+	53, // 49: pocketcloud.agent.v1.Command.agent_rotate_certificate:type_name -> pocketcloud.agent.v1.AgentRotateCertificate
+	54, // 50: pocketcloud.agent.v1.Command.agent_diagnostics:type_name -> pocketcloud.agent.v1.AgentDiagnostics
+	55, // 51: pocketcloud.agent.v1.Command.agent_set_log_level:type_name -> pocketcloud.agent.v1.AgentSetLogLevel
+	5,  // 52: pocketcloud.agent.v1.ImagePull.auth:type_name -> pocketcloud.agent.v1.RegistryAuth
+	56, // 53: pocketcloud.agent.v1.StackDeploy.secrets:type_name -> pocketcloud.agent.v1.StackDeploy.SecretsEntry
+	5,  // 54: pocketcloud.agent.v1.StackDeploy.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
+	33, // 55: pocketcloud.agent.v1.StackDeploy.db_networks:type_name -> pocketcloud.agent.v1.DbNetworkAttach
+	57, // 56: pocketcloud.agent.v1.StackPull.secrets:type_name -> pocketcloud.agent.v1.StackPull.SecretsEntry
+	5,  // 57: pocketcloud.agent.v1.StackPull.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
+	17, // 58: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
+	58, // 59: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	59, // 60: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	60, // 61: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	27, // 62: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 63: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 64: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 65: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 66: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 67: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	27, // 68: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	61, // 69: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
+	42, // 70: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 71: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	62, // 72: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	42, // 73: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 74: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 75: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 76: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 77: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	42, // 78: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	79, // [79:79] is the sub-list for method output_type
+	79, // [79:79] is the sub-list for method input_type
+	79, // [79:79] is the sub-list for extension type_name
+	79, // [79:79] is the sub-list for extension extendee
+	0,  // [0:79] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }
@@ -4993,6 +5191,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 		(*Command_StackPull)(nil),
 		(*Command_StackValidate)(nil),
 		(*Command_StackRestart)(nil),
+		(*Command_StackImport)(nil),
 		(*Command_LogsFollow)(nil),
 		(*Command_LogsStop)(nil),
 		(*Command_ExecStart)(nil),
@@ -5039,7 +5238,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_commands_proto_rawDesc), len(file_pocketcloud_agent_v1_commands_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   61,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

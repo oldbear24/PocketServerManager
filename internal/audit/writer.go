@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -182,6 +183,10 @@ func (w *Writer) onRecordSave(e *core.RecordEvent, action string) error {
 			return nil
 		}
 
+		if audited.Revision != "" {
+			actor.Revision = revisionStep(e.Record, before, audited.Revision)
+		}
+
 		return w.append(tx, entry{
 			Category:    CategoryChange,
 			Action:      action,
@@ -193,6 +198,24 @@ func (w *Writer) onRecordSave(e *core.RecordEvent, action string) error {
 			Changes:     changes,
 		})
 	})
+}
+
+// revisionStep describes the move a save made between revisions, such as "r7 → r8".
+func revisionStep(record, before *core.Record, field string) string {
+	to := record.GetInt(field)
+	if before == nil {
+		if to == 0 {
+			return ""
+		}
+		return fmt.Sprintf("r%d", to)
+	}
+
+	from := before.GetInt(field)
+	if from == to {
+		return ""
+	}
+
+	return fmt.Sprintf("r%d → r%d", from, to)
 }
 
 // storedRecord returns the record as it is in the database. Record.Original() is

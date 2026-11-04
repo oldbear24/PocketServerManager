@@ -42,6 +42,20 @@ func stack(c *agentv1.Command) string {
 		return "stack:" + p.StackPull.GetName()
 	case *agentv1.Command_StackRestart:
 		return "stack:" + p.StackRestart.GetName()
+	case *agentv1.Command_StackImport:
+		return "stack:" + p.StackImport.GetProject()
+	}
+	return ""
+}
+
+// databaseNetwork orders an application's attach to its database network with
+// its stack's own commands. The network is named after the stack
+// (databases.NetworkName), and the panel queues a deploy right after the attach:
+// run side by side, both would put the server on the network at the same moment,
+// and the engine refuses the second.
+func databaseNetwork(c *agentv1.Command) string {
+	if name, ok := strings.CutPrefix(c.GetDbNetworkAttach().GetNetwork(), "pcdb-"); ok && name != "" {
+		return "stack:" + name
 	}
 	return ""
 }
@@ -120,6 +134,7 @@ var Specs = map[string]Spec{
 	"stack.pull":     {Timeout: 15 * time.Minute, Role: schema.RoleOperator, Resource: stack},
 	"stack.restart":  {Timeout: 5 * time.Minute, Role: schema.RoleOperator, Resource: stack},
 	"stack.validate": {Timeout: time.Minute},
+	"stack.import":   {Timeout: 2 * time.Minute, Resource: stack},
 
 	"logs.follow": {Timeout: time.Minute},
 	"logs.stop":   {Timeout: time.Minute},
@@ -142,7 +157,7 @@ var Specs = map[string]Spec{
 	"db.database.rotate": {Timeout: 2 * time.Minute},
 	"db.database.clone":  {Timeout: 6 * time.Hour},
 	"db.database.export": {Timeout: 6 * time.Hour},
-	"db.network.attach":  {Timeout: 2 * time.Minute},
+	"db.network.attach":  {Timeout: 2 * time.Minute, Resource: databaseNetwork},
 	"db.stats":           {Timeout: 2 * time.Minute},
 	"db.adminer.start":   {Timeout: 5 * time.Minute},
 	"db.adminer.stop":    {Timeout: 2 * time.Minute},

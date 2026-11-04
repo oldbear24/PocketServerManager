@@ -23,6 +23,11 @@ const (
 	Settings          = "settings"
 	AuditLog          = "audit_log"
 	DiagnosticBundles = "diagnostic_bundles"
+	DBServers         = "db_servers"
+	Databases         = "databases"
+	DBUsers           = "db_users"
+	DBNetworks        = "db_networks"
+	DBDumps           = "db_dumps"
 )
 
 // Reserved names of collections that land with later features. They are listed
@@ -31,7 +36,6 @@ var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
 	"sites", "site_php", "deployments", "scheduled_tasks", "domains",
 	"dns_providers", "dns_zones", "dns_records", "acme_accounts", "certificates",
-	"db_servers", "databases", "db_users", "db_networks",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -74,6 +78,23 @@ const (
 	CommandCancelled  = "cancelled"
 )
 
+// Database engines and kinds of database servers.
+const (
+	EngineMariaDB  = "mariadb"
+	EnginePostgres = "postgres"
+
+	// DBServerShared is a server PocketCloud runs for the applications of a host.
+	DBServerShared = "shared"
+	// DBServerDedicated is a database container found inside an application's stack.
+	DBServerDedicated = "dedicated"
+)
+
+// Kinds of database dumps kept by the panel.
+const (
+	DumpExport = "export"
+	DumpFinal  = "final"
+)
+
 // Severity of events and alerts.
 const (
 	SeverityInfo     = "info"
@@ -101,8 +122,8 @@ var Encrypted = map[string][]string{
 	"dns_providers":         {"credentials"},
 	"acme_accounts":         {"key", "eab_hmac"},
 	"certificates":          {"key_pem"},
-	"db_servers":            {"admin_password"},
-	"db_users":              {"password"},
+	DBServers:               {"admin_password"},
+	DBUsers:                 {"password", "pending_password"},
 	"backup_targets":        {"credentials", "repo_password"},
 }
 
@@ -117,6 +138,9 @@ type AuditedCollection struct {
 	// Ignore lists fields that are not configuration, such as live status.
 	// A save that changes nothing else produces no audit entry.
 	Ignore []string
+	// Revision is the number field that counts the revisions of a record, if any.
+	// An entry of a save that moves it says from which revision to which.
+	Revision string
 }
 
 // Audited lists the configuration collections covered by the change audit.
@@ -128,11 +152,11 @@ var Audited = []AuditedCollection{
 		"status", "os", "kernel", "arch", "cpu_cores", "mem_bytes", "ip4", "ip6",
 		"agent_version", "agent_image_digest", "agent_container_id", "docker_version",
 		"last_seen", "rtt_ms", "clock_skew_ms", "connected_since", "stream_open",
-		"uptime_s", "load1", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
-		"runtime", "self_checks", "inventory_at", "capabilities",
+		"uptime_s", "load1", "load5", "load15", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
+		"runtime", "self_checks", "inventory_at", "capabilities", "compose_version",
 		"cert_serial", "cert_prev_serial", "cert_expires_at", "hostname",
 	}},
-	{Name: Stacks, Label: "name", Host: "host", Ignore: []string{"status"}},
+	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at"}},
 	{Name: Settings, Label: "public_url"},
 	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
 	{Name: "alert_rules", Label: "kind"},
@@ -143,8 +167,12 @@ var Audited = []AuditedCollection{
 	{Name: "domains", Label: "hostname", Ignore: []string{"dns_status"}},
 	{Name: "dns_providers", Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: "certificates", Label: "names", Ignore: []string{"status", "attempts", "last_error"}},
-	{Name: "db_servers", Label: "name", Host: "host", Ignore: []string{"status", "size_bytes"}},
-	{Name: "databases", Label: "name", Ignore: []string{"status", "size_bytes", "connections"}},
+	{Name: DBServers, Label: "name", Host: "host", Ignore: []string{
+		"status", "size_bytes", "connections", "max_connections", "version", "stats_at", "last_error", "container_ref",
+	}},
+	{Name: Databases, Label: "name", Ignore: []string{"status", "size_bytes", "connections", "last_error"}},
+	{Name: DBUsers, Label: "name"},
+	{Name: DBNetworks, Label: "name"},
 	{Name: "backup_targets", Label: "name", Ignore: []string{"capacity_bytes", "used_bytes"}},
 	{Name: "backup_jobs", Label: "name", Host: "host"},
 }

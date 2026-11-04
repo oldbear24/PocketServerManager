@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,9 +65,18 @@ type Agent struct {
 
 	client atomic.Pointer[agentv1.AgentServiceClient]
 
-	logSessions  sessionSet
-	execSessions sessionSet
-	metrics      *metricsCollector
+	logSessions     sessionSet
+	execSessions    sessionSet
+	adminerSessions sessionSet
+	metrics         *metricsCollector
+
+	// DialTool opens a connection to a tool container such as Adminer. Tests,
+	// which have no containers to reach, replace it.
+	DialTool func(ctx context.Context, address string) (net.Conn, error)
+
+	composeMu      sync.Mutex
+	composeRelease string
+	composeAt      time.Time
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
@@ -117,6 +127,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	a.Log.Info("the agent is starting", "version", version.Version, "host", a.Identity.Name, "panel", a.Identity.Panel)
+
+	a.restoreCleanEnvFiles()
+	a.removeStaleAdminers(ctx)
 
 	a.setHealth(false)
 	defer a.setHealth(false)
@@ -241,9 +254,14 @@ func (a *Agent) session(parent context.Context) error {
 
 	self := a.ownContainerID(ctx)
 
+	capabilities := a.Executor.Capabilities()
+	if a.Config.HostShell {
+		capabilities = append(capabilities, capabilityHostShell)
+	}
+
 	stream, err := client.SubscribeCommands(ctx, &agentv1.SubscribeCommandsRequest{
 		AgentVersion:     version.Version,
-		Capabilities:     a.Executor.Capabilities(),
+		Capabilities:     capabilities,
 		RecentlyFinished: a.store.recentlyFinished(),
 		ImageDigest:      a.ownImageDigest(ctx),
 		ContainerId:      self,
@@ -443,6 +461,7 @@ func (a *Agent) facts(ctx context.Context) *agentv1.HostFacts {
 
 	facts.AgentContainerId = a.ownContainerID(ctx)
 	facts.AgentImageDigest = a.ownImageDigest(ctx)
+	facts.ComposeVersion = a.composeVersion(ctx)
 
 	return facts
 }
@@ -467,8 +486,8 @@ func (a *Agent) runtimeStats(ctx context.Context) *agentv1.AgentRuntime {
 		stats.DockerApiLatencyMs = float64(time.Since(start).Microseconds()) / 1000
 	}
 
-	if _, free, err := diskUsage(a.Config.StateDir); err == nil {
-		stats.VolumeFreeBytes = free
+	if _, _, available, err := diskUsage(a.Config.StateDir); err == nil {
+		stats.VolumeFreeBytes = available
 	}
 
 	return stats
@@ -508,7 +527,22 @@ func (a *Agent) ownImageDigest(ctx context.Context) string {
 		return image[at+1:]
 	}
 
-	return strings.TrimPrefix(info.Image, "sha256:")
+	// started by a tag: the digest the registry gave for the image, so that the
+	// value means the same as for an agent started by digest
+	repository := image
+	if colon := strings.LastIndex(image, ":"); colon > strings.LastIndex(image, "/") {
+		repository = image[:colon]
+	}
+	if found, err := a.Docker.InspectImage(ctx, info.Image); err == nil {
+		for _, digest := range found.RepoDigests {
+			if name, value, ok := strings.Cut(digest, "@"); ok && name == repository {
+				return value
+			}
+		}
+	}
+
+	// an image that never came from a registry has only its local id
+	return info.Image
 }
 
 // reportOutcomes reports what the updater left in the volume, if anything.

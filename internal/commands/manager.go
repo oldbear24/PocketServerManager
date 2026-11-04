@@ -36,6 +36,9 @@ var ErrNotCancellable = errors.New("the command has already finished")
 
 // Options describes a new command.
 type Options struct {
+	// ID is the id of the new record; empty generates one. Knowing it up front lets
+	// a change in the same request link to the command it causes.
+	ID          string
 	Host        string
 	Type        string
 	Command     *agentv1.Command
@@ -92,6 +95,11 @@ func NewManager(app core.App) *Manager {
 		outputs:      make(map[string]*commandOutput),
 		ReapInterval: reapInterval,
 	}
+}
+
+// App returns the app of the queue.
+func (m *Manager) App() core.App {
+	return m.app
 }
 
 // RegisterEnricher sets the enricher of a command type.
@@ -289,6 +297,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error
 	}
 
 	record := core.NewRecord(collection)
+	record.Id = opts.ID
 	record.Set("host", opts.Host)
 	record.Set("type", commandType)
 	record.Set("label", opts.Label)
@@ -597,10 +606,6 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		return false, ErrWrongHost
 	}
 
-	if len(update.GetOutput()) > 0 {
-		m.appendOutput(record.Id, update.GetOutput())
-	}
-
 	status := record.GetString("status")
 	if isFinal(status) {
 		return status != schema.CommandSucceeded && status != schema.CommandFailed, nil
@@ -609,6 +614,10 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 	// idempotent by id + sequence; a replay's final answer always counts
 	if update.GetSequence() <= uint64(record.GetInt("last_sequence")) && !update.GetDuplicate() { //nolint:gosec // never negative
 		return false, nil
+	}
+
+	if len(update.GetOutput()) > 0 {
+		m.appendOutput(record.Id, update.GetOutput())
 	}
 
 	newStatus := statusOf(update.GetState())
@@ -660,7 +669,11 @@ func (m *Manager) finish(record *core.Record, status, message string, result map
 		record.Set("result", result)
 	}
 
-	output := m.takeOutput(record.Id)
+	// the watchers end after the save, so that whoever follows the output finds the
+	// final state as soon as it ends
+	defer m.dropOutput(record.Id)
+
+	output := m.currentOutput(record.Id)
 	if len(output) > 0 {
 		file, err := filesystem.NewFileFromBytes(output, record.Id+".log")
 		if err == nil {
@@ -822,7 +835,7 @@ func (m *Manager) appendOutput(id string, chunk []byte) {
 	}
 }
 
-func (m *Manager) takeOutput(id string) []byte {
+func (m *Manager) currentOutput(id string) []byte {
 	m.outputMu.Lock()
 	defer m.outputMu.Unlock()
 
@@ -831,16 +844,28 @@ func (m *Manager) takeOutput(id string) []byte {
 		return nil
 	}
 
+	return bytes.Clone(output.buffer.Bytes())
+}
+
+func (m *Manager) dropOutput(id string) {
+	m.outputMu.Lock()
+	defer m.outputMu.Unlock()
+
+	output := m.outputs[id]
+	if output == nil {
+		return
+	}
+
 	for watcher := range output.watchers {
 		close(watcher)
 	}
 	delete(m.outputs, id)
-
-	return output.buffer.Bytes()
 }
 
 // WatchOutput returns what a running command has written so far and a channel of
-// new chunks, closed when the command finishes. Call stop when done watching.
+// new chunks, closed when the command finishes. Call stop when done watching. A
+// command that has already finished never closes the channel: check its state
+// after this call, which leaves no gap.
 func (m *Manager) WatchOutput(id string) (past []byte, chunks <-chan []byte, stop func()) {
 	m.outputMu.Lock()
 	defer m.outputMu.Unlock()
@@ -859,6 +884,9 @@ func (m *Manager) WatchOutput(id string) (past []byte, chunks <-chan []byte, sto
 		defer m.outputMu.Unlock()
 		if current := m.outputs[id]; current != nil {
 			delete(current.watchers, watcher)
+			if len(current.watchers) == 0 && current.buffer.Len() == 0 {
+				delete(m.outputs, id)
+			}
 		}
 	}
 }

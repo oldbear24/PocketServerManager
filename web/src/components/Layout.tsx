@@ -21,6 +21,7 @@ import { Link, NavLink, Outlet } from "react-router-dom";
 
 import { api } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import type { Database as DatabaseRecord } from "../lib/databases";
 import type { Role } from "../lib/pb";
 import { useLiveList } from "../lib/realtime";
 import type { Alert, Container, Host, PanelInfo } from "../lib/types";
@@ -110,6 +111,7 @@ export function Layout() {
 
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const containers = useLiveList<Container>("containers", { perPage: 1 });
+  const databases = useLiveList<DatabaseRecord>("databases", { perPage: 1 });
   const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
 
   const overview: NavItem[] = [
@@ -119,7 +121,7 @@ export function Layout() {
   const infrastructure: NavItem[] = [
     { to: "/servers", label: t("nav.servers"), icon: Server, count: hosts.total },
     { to: "/stacks", label: t("nav.stacks"), icon: Layers, count: containers.total },
-    { to: "/databases", label: t("nav.databases"), icon: Database },
+    { to: "/databases", label: t("nav.databases"), icon: Database, count: databases.total },
     { to: "/backups", label: t("nav.backups"), icon: Archive },
   ];
 

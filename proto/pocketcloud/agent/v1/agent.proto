@@ -228,6 +228,8 @@ message HostFacts {
   string agent_image_digest = 11;
   // agent_container_id is the id of the agent's own container.
   string agent_container_id = 12;
+  // compose_version is the version of the Compose plugin.
+  string compose_version = 13;
 }
 
 // HostVitals is a compact summary of the host's current usage.
@@ -565,21 +567,33 @@ message UploadArtifactResponse {
 }
 
 // RelayRequest is a chunk of bytes from the tool container to the browser session.
+// One relay carries many connections, told apart by conn_id: a tool such as
+// Adminer serves every request on a connection of its own.
 message RelayRequest {
   // session_id comes from the command that opened the relay; only the first message needs it.
   string session_id = 1;
   // data is the chunk.
   bytes data = 2 [(pocketcloud.options.v1.sensitive) = true];
-  // closed is set when the tool container closed the connection.
+  // closed is set when the tool container closed the connection, or the agent
+  // could not open it.
   bool closed = 3;
+  // conn_id is the connection the message belongs to, as the panel numbered it.
+  uint32 conn_id = 4;
+  // error says why a connection could not be opened or broke.
+  string error = 5;
 }
 
 // RelayResponse is a chunk of bytes from the browser session to the tool container.
 message RelayResponse {
   // data is the chunk.
   bytes data = 1 [(pocketcloud.options.v1.sensitive) = true];
-  // close asks the agent to close the connection to the tool container.
+  // close asks the agent to close the connection to the tool container; with
+  // conn_id 0 it ends the whole relay.
   bool close = 2;
+  // conn_id is the connection the message belongs to. Ids start at 1.
+  uint32 conn_id = 3;
+  // open asks the agent to open the connection conn_id to the tool container.
+  bool open = 4;
 }
 
 // RenewCertificateRequest asks for a new client certificate.

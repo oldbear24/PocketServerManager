@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,8 +31,10 @@ import (
 
 const (
 	ruleAgentOffline = "agent_offline"
-	maxArtifactBytes = 1 << 30
-	bundleTTL        = 7 * 24 * time.Hour
+	// capabilityHostShell is how an agent says that it allows host shells.
+	capabilityHostShell = "host_shell"
+	maxArtifactBytes    = 1 << 30
+	bundleTTL           = 7 * 24 * time.Hour
 )
 
 func (s *Server) hostLock(hostID string) *sync.Mutex {
@@ -64,6 +67,14 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	ctx := stream.Context()
 	hostID := hostIDFrom(ctx)
 
+	// The stream is registered before the host is marked as connected: whoever sees
+	// stream_open can then rely on Commands.Connected, as the terminal and the logs do.
+	delivery := s.Commands.Connect(hostID, req.GetCapabilities(), req.GetRecentlyFinished())
+	defer func() {
+		s.Commands.Disconnect(delivery)
+		s.streamClosed(hostID)
+	}()
+
 	cameBack := false
 	err := s.updateHost(hostID, func(host *core.Record) {
 		// the first connection of a new server is not a recovery
@@ -73,6 +84,7 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 		host.Set("last_seen", types.NowDateTime())
 		host.Set("status", schema.HostOnline)
 		host.Set("capabilities", req.GetCapabilities())
+		host.Set("host_shell_enabled", slices.Contains(req.GetCapabilities(), capabilityHostShell))
 		if v := req.GetAgentVersion(); v != "" {
 			host.Set("agent_version", strings.TrimPrefix(v, "v"))
 		}
@@ -98,12 +110,6 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 		return err
 	}
 
-	delivery := s.Commands.Connect(hostID, req.GetCapabilities(), req.GetRecentlyFinished())
-	defer func() {
-		s.Commands.Disconnect(delivery)
-		s.streamClosed(hostID, delivery)
-	}()
-
 	for {
 		select {
 		case message := <-delivery.Out():
@@ -120,13 +126,20 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	}
 }
 
-func (s *Server) streamClosed(hostID string, delivery *commands.Stream) {
+func (s *Server) streamClosed(hostID string) {
 	// a newer stream may already have taken over
 	if s.Commands.Connected(hostID) {
 		return
 	}
 
+	closed := false
 	err := s.updateHost(hostID, func(host *core.Record) {
+		// Asked again under the host's lock: a newer stream connects before it takes
+		// that lock to mark the host, so it cannot be marked closed after that.
+		if s.Commands.Connected(hostID) {
+			return
+		}
+		closed = true
 		host.Set("stream_open", false)
 		if host.GetString("status") == schema.HostOnline {
 			host.Set("status", schema.HostDegraded)
@@ -134,6 +147,9 @@ func (s *Server) streamClosed(hostID string, delivery *commands.Stream) {
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.Log.Debug("failed to update a disconnected host", "host", hostID, "error", err)
+		return
+	}
+	if !closed {
 		return
 	}
 
@@ -175,6 +191,8 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 		if vitals := req.GetVitals(); vitals != nil {
 			host.Set("uptime_s", int64(vitals.GetUptime().AsDuration().Seconds()))
 			host.Set("load1", vitals.GetLoad1())
+			host.Set("load5", vitals.GetLoad5())
+			host.Set("load15", vitals.GetLoad15())
 			host.Set("cpu_percent", vitals.GetCpuPercent())
 			host.Set("mem_used_bytes", vitals.GetMemUsedBytes())
 			host.Set("mem_bytes", vitals.GetMemTotalBytes())
@@ -434,7 +452,8 @@ func (s *Server) UploadArtifact(stream agentv1.AgentService_UploadArtifactServer
 		return status.Error(codes.PermissionDenied, "the artifact does not belong to a command of this host")
 	}
 
-	if header.GetKind() != "diagnostics" {
+	handler, known := s.Artifacts[header.GetKind()]
+	if !known && header.GetKind() != "diagnostics" {
 		return status.Errorf(codes.InvalidArgument, "unknown artifact kind %q", header.GetKind())
 	}
 
@@ -484,6 +503,14 @@ func (s *Server) UploadArtifact(stream agentv1.AgentService_UploadArtifactServer
 		return status.Errorf(codes.Internal, "cannot store the artifact: %v", err)
 	}
 
+	if handler != nil {
+		id, err := handler(command, name, spool.Name(), size)
+		if err != nil {
+			return status.Errorf(codes.Internal, "cannot store the artifact: %v", err)
+		}
+		return stream.SendAndClose(&agentv1.UploadArtifactResponse{ArtifactId: id, SizeBytes: size})
+	}
+
 	file, err := filesystem.NewFileFromPath(spool.Name())
 	if err != nil {
 		return status.Errorf(codes.Internal, "cannot store the artifact: %v", err)
@@ -520,10 +547,12 @@ func (s *Server) StreamLogs(stream agentv1.AgentService_StreamLogsServer) error 
 		return status.Error(codes.Unimplemented, "log streaming is not available")
 	}
 
+	hostID := hostIDFrom(stream.Context())
+
 	sessionID := ""
 	defer func() {
 		if sessionID != "" {
-			s.Streams.LogsClosed(sessionID)
+			s.Streams.LogsClosed(hostID, sessionID)
 		}
 	}()
 
@@ -537,7 +566,9 @@ func (s *Server) StreamLogs(stream agentv1.AgentService_StreamLogsServer) error 
 		}
 
 		sessionID = chunk.GetSessionId()
-		s.Streams.Logs(sessionID, chunk.GetLines())
+		if !s.Streams.Logs(hostID, sessionID, chunk.GetLines()) {
+			return status.Error(codes.NotFound, "nobody is watching this log session")
+		}
 	}
 }
 
@@ -552,7 +583,22 @@ func (s *Server) Exec(stream agentv1.AgentService_ExecServer) error {
 		return err
 	}
 
-	return s.Streams.Terminal(stream.Context(), first.GetSessionId(), &firstExecMessage{AgentService_ExecServer: stream, first: first})
+	return s.Streams.Terminal(stream.Context(), hostIDFrom(stream.Context()), first.GetSessionId(), &firstExecMessage{AgentService_ExecServer: stream, first: first})
+}
+
+// Relay attaches an agent's stream to a tool container, such as Adminer, to the
+// session it was opened for. The first message only names the session.
+func (s *Server) Relay(stream agentv1.AgentService_RelayServer) error {
+	if s.Streams == nil {
+		return status.Error(codes.Unimplemented, "relays are not available")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+
+	return s.Streams.Relay(stream.Context(), hostIDFrom(stream.Context()), first.GetSessionId(), stream)
 }
 
 // firstExecMessage hands the session id message back to the reader of the stream.

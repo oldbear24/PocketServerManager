@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +23,19 @@ const (
 	// logRateLimit is the most lines per second sent for one session. A container
 	// that writes more loses lines, with a notice, rather than swamp the panel.
 	logRateLimit = 2000
+	// logBatchBytes keeps a batch well below the size limit of a gRPC message.
+	logBatchBytes = 1 << 20
+	// maxLogLine cuts endless lines, which some programs do write.
+	maxLogLine = 64 << 10
 
 	defaultLogTail = 200
+	logCloseWait   = 5 * time.Second
 
-	hostShellEnv   = "HOST_SHELL_ENABLED"
-	hostShellImage = "alpine:3.22"
-	execChunkSize  = 32 << 10
+	hostShellEnv = "HOST_SHELL_ENABLED"
+	// capabilityHostShell tells the panel about the opt-in, next to the command types.
+	capabilityHostShell = "host_shell"
+	hostShellImage      = "alpine:3.22"
+	execChunkSize       = 32 << 10
 )
 
 // handleLogsFollow opens the log stream of a session. It finishes as soon as the
@@ -68,6 +74,18 @@ func (a *Agent) followLogs(ctx context.Context, cancel context.CancelFunc, paylo
 
 	sessionID := payload.GetSessionId()
 
+	// the panel ends the stream when nobody is watching any more; a quiet container
+	// would not notice that until its next line
+	over := make(chan struct{})
+	go func() {
+		defer close(over)
+		var response agentv1.StreamLogsResponse
+		if err := stream.RecvMsg(&response); err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
+			a.Log.Debug("a log stream ended", "session", sessionID, "error", err)
+		}
+		cancel()
+	}()
+
 	tail := int(payload.GetTail())
 	if tail <= 0 {
 		tail = defaultLogTail
@@ -93,8 +111,14 @@ func (a *Agent) followLogs(ctx context.Context, cancel context.CancelFunc, paylo
 
 	a.forwardLogs(ctx, sessionID, lines, stream)
 
-	if _, err := stream.CloseAndRecv(); err != nil && ctx.Err() == nil {
+	if err := stream.CloseSend(); err != nil && ctx.Err() == nil {
 		a.Log.Debug("closing a log stream failed", "session", sessionID, "error", err)
+	}
+
+	// give what was sent last the time to arrive before the stream is cancelled
+	select {
+	case <-over:
+	case <-time.After(logCloseWait):
 	}
 }
 
@@ -104,6 +128,7 @@ func (a *Agent) forwardLogs(ctx context.Context, sessionID string, lines <-chan 
 	defer ticker.Stop()
 
 	batch := make([]*agentv1.LogLine, 0, logBatchLines)
+	batchBytes := 0
 	windowStart := time.Now()
 	sent := 0
 	dropped := 0
@@ -121,7 +146,8 @@ func (a *Agent) forwardLogs(ctx context.Context, sessionID string, lines <-chan 
 			return true
 		}
 		err := stream.Send(&agentv1.StreamLogsRequest{SessionId: sessionID, Lines: batch})
-		batch = batch[:0]
+		batch = make([]*agentv1.LogLine, 0, logBatchLines)
+		batchBytes = 0
 		return err == nil
 	}
 
@@ -151,7 +177,8 @@ func (a *Agent) forwardLogs(ctx context.Context, sessionID string, lines <-chan 
 			sent++
 
 			batch = append(batch, line)
-			if len(batch) >= logBatchLines && !flush() {
+			batchBytes += len(line.GetText())
+			if (len(batch) >= logBatchLines || batchBytes >= logBatchBytes) && !flush() {
 				return
 			}
 		case <-ticker.C:
@@ -182,6 +209,10 @@ func (a *Agent) readContainerLogs(ctx context.Context, id string, tail int, line
 	defer reader.Close()
 
 	emit := func(stream string, text string) {
+		if len(text) > maxLogLine {
+			text = strings.ToValidUTF8(text[:maxLogLine], "") + " […]"
+		}
+
 		line := parseLogLine(text)
 		line.Container = name
 		line.Service = service
@@ -205,7 +236,7 @@ func (a *Agent) readContainerLogs(ctx context.Context, id string, tail int, line
 	// a frame may end in the middle of a line, and may hold several lines
 	var stdoutTail, stderrTail bytes.Buffer
 
-	return dockerapi.ReadMultiplexed(reader, func(stream byte, data []byte) {
+	err = dockerapi.ReadMultiplexed(reader, func(stream byte, data []byte) {
 		name, pending := "stdout", &stdoutTail
 		if stream == 2 {
 			name, pending = "stderr", &stderrTail
@@ -215,12 +246,27 @@ func (a *Agent) readContainerLogs(ctx context.Context, id string, tail int, line
 		for {
 			index := bytes.IndexByte(pending.Bytes(), '\n')
 			if index < 0 {
+				// a line without an end must not grow without limit
+				if pending.Len() > maxLogLine {
+					emit(name, pending.String())
+					pending.Reset()
+				}
 				return
 			}
 			emit(name, string(pending.Next(index)))
 			pending.Next(1)
 		}
 	})
+
+	// the last line of a stopped container may have no end
+	if stdoutTail.Len() > 0 {
+		emit("stdout", stdoutTail.String())
+	}
+	if stderrTail.Len() > 0 {
+		emit("stderr", stderrTail.String())
+	}
+
+	return err
 }
 
 // parseLogLine splits the timestamp Docker puts in front of a line.
@@ -246,7 +292,7 @@ func (a *Agent) handleExecStart(_ context.Context, command *agentv1.Command, _ *
 		return nil, errors.New("not connected")
 	}
 
-	if payload.GetHostShell() && os.Getenv(hostShellEnv) != "1" {
+	if payload.GetHostShell() && !a.Config.HostShell {
 		return nil, fmt.Errorf("host shells are disabled on this server: start the agent with %s=1 to allow them", hostShellEnv)
 	}
 
@@ -297,7 +343,8 @@ func (a *Agent) runTerminal(ctx context.Context, payload *agentv1.ExecStart, str
 			return
 		}
 		defer func() {
-			if err := a.Docker.Remove(context.Background(), helper, false, true); err != nil {
+			err := a.Docker.Remove(context.Background(), helper, false, true)
+			if err != nil && !dockerapi.IsNotFound(err) {
 				a.Log.Warn("failed to remove the host shell helper", "error", err)
 			}
 		}()
@@ -334,7 +381,11 @@ func (a *Agent) runTerminal(ctx context.Context, payload *agentv1.ExecStart, str
 		}
 	}
 
-	go a.terminalInput(ctx, execID, connection, stream)
+	inputDone := make(chan struct{})
+	go func() {
+		defer close(inputDone)
+		a.terminalInput(ctx, execID, connection, stream)
+	}()
 
 	buffer := make([]byte, execChunkSize)
 	for {
@@ -362,6 +413,13 @@ func (a *Agent) runTerminal(ctx context.Context, payload *agentv1.ExecStart, str
 	}
 	if err := stream.CloseSend(); err != nil {
 		a.Log.Debug("failed to close a terminal stream", "error", err)
+	}
+
+	// cancelling the stream could overtake the last message: the panel ends it when
+	// it has read that, which ends the input as well
+	select {
+	case <-inputDone:
+	case <-time.After(logCloseWait):
 	}
 }
 

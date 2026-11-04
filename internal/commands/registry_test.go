@@ -109,6 +109,8 @@ func TestResources(t *testing.T) {
 		want    string
 	}{
 		{"stack", &agentv1.Command{Payload: &agentv1.Command_StackDeploy{StackDeploy: &agentv1.StackDeploy{Name: "a"}}}, "stack:a"},
+		// in order with the deploy that the panel queues right after it
+		{"database network", &agentv1.Command{Payload: &agentv1.Command_DbNetworkAttach{DbNetworkAttach: &agentv1.DbNetworkAttach{Network: "pcdb-a"}}}, "stack:a"},
 		{"container", &agentv1.Command{Payload: &agentv1.Command_ContainerStop{ContainerStop: &agentv1.ContainerStop{DockerId: "x"}}}, "container:x"},
 		{"site", &agentv1.Command{Payload: &agentv1.Command_SiteRollback{SiteRollback: &agentv1.SiteRollback{Site: "s"}}}, "site:s"},
 		{"backup", &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{Repository: &agentv1.BackupRepository{Url: "s3:b"}}}}, "backup:s3:b"},

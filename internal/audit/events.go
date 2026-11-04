@@ -12,18 +12,19 @@ import (
 
 // Security event actions.
 const (
-	ActionSignIn           = "sign_in"
-	ActionSignInFailed     = "sign_in_failed"
-	ActionMFAChanged       = "mfa_changed"
-	ActionEnrollmentToken  = "enrollment_token"
-	ActionEnrollment       = "enrollment"
-	ActionEnrollmentFailed = "enrollment_failed"
-	ActionCertRevoked      = "cert_revoked"
-	ActionCertRejected     = "cert_rejected"
-	ActionTerminalSession  = "terminal_session"
-	ActionAdminerSession   = "adminer_session"
-	ActionPayloadCapture   = "payload_capture"
-	ActionIntegrityBroken  = "integrity_broken"
+	ActionSignIn             = "sign_in"
+	ActionSignInFailed       = "sign_in_failed"
+	ActionMFAChanged         = "mfa_changed"
+	ActionEnrollmentToken    = "enrollment_token"
+	ActionEnrollment         = "enrollment"
+	ActionEnrollmentFailed   = "enrollment_failed"
+	ActionCertRevoked        = "cert_revoked"
+	ActionCertRejected       = "cert_rejected"
+	ActionTerminalSession    = "terminal_session"
+	ActionTerminalSessionEnd = "terminal_session_end"
+	ActionAdminerSession     = "adminer_session"
+	ActionPayloadCapture     = "payload_capture"
+	ActionIntegrityBroken    = "integrity_broken"
 )
 
 var sensitiveSetting = regexp.MustCompile(`(?i)password|secret|token|key`)

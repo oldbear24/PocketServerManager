@@ -11,6 +11,8 @@ import (
 const (
 	defaultStateDir = "/var/lib/pocketcloud"
 	defaultHostRoot = "/host"
+
+	defaultDockerCLI = "docker"
 )
 
 // Config comes from the container's environment.
@@ -31,16 +33,21 @@ type Config struct {
 	HostRoot string
 	// DockerHost is the Docker Engine to use.
 	DockerHost string
+	// DockerCLI is the Docker command line tool, which brings the Compose plugin.
+	DockerCLI string
 
 	// ContainerName is the name of the agent's own container.
 	ContainerName string
+
+	// HostShell allows terminals on the host itself, which need a privileged helper
+	// container. It is off unless HOST_SHELL_ENABLED=1 is set on this agent.
+	HostShell bool
 
 	// HeartbeatInterval is the time between heartbeats.
 	HeartbeatInterval time.Duration
 	// InventoryInterval is the time between complete inventory reports.
 	InventoryInterval time.Duration
-	// MetricsInterval is the time between metric samples. Zero turns them off,
-	// which is the default until the panel stores them (#17).
+	// MetricsInterval is the time between metric samples. Zero turns them off.
 	MetricsInterval time.Duration
 	// SelfCheckInterval is the time between self-checks.
 	SelfCheckInterval time.Duration
@@ -62,15 +69,25 @@ func ConfigFromEnv() Config {
 		StateDir:          envOr("STATE_DIR", defaultStateDir),
 		HostRoot:          envOr("HOST_ROOT", defaultHostRoot),
 		DockerHost:        os.Getenv("DOCKER_HOST"),
+		DockerCLI:         envOr("DOCKER_CLI", defaultDockerCLI),
 		ContainerName:     envOr("AGENT_CONTAINER", "pocketcloud-agent"),
+		HostShell:         os.Getenv(hostShellEnv) == "1",
 		HeartbeatInterval: 10 * time.Second,
 		InventoryInterval: 5 * time.Minute,
+		MetricsInterval:   10 * time.Second,
 		SelfCheckInterval: 5 * time.Minute,
 		BackoffMin:        time.Second,
 		BackoffMax:        time.Minute,
 		KeepaliveTime:     30 * time.Second,
 	}
 	return config
+}
+
+func (c Config) dockerCLI() string {
+	if c.DockerCLI != "" {
+		return c.DockerCLI
+	}
+	return defaultDockerCLI
 }
 
 func envOr(name, fallback string) string {

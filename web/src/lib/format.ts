@@ -31,7 +31,10 @@ export function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(date);
 }
 
-export function formatTime(value: string | null | undefined): string {
+export function formatTime(
+  value: string | null | undefined,
+  options: { milliseconds?: boolean } = {},
+): string {
   const date = parseDate(value);
   if (!date) {
     return "–";
@@ -40,6 +43,7 @@ export function formatTime(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    fractionalSecondDigits: options.milliseconds ? 3 : undefined,
     hourCycle: "h23",
   }).format(date);
 }
@@ -58,13 +62,22 @@ export function formatDay(value: string | null | undefined): string {
 }
 
 /** "4 s ago", "in 12 days": the largest unit that fits. */
-export function formatRelative(value: string | Date | null | undefined, now = Date.now()): string {
+export function formatRelative(
+  value: string | Date | null | undefined,
+  now = Date.now(),
+  options: { past?: boolean } = {},
+): string {
   const date = value instanceof Date ? value : parseDate(value);
   if (!date) {
     return "–";
   }
 
-  const seconds = Math.round((date.getTime() - now) / 1000);
+  let seconds = Math.round((date.getTime() - now) / 1000);
+  // A moment that has passed, such as a heartbeat, can look a little ahead of a
+  // clock that ticks every few seconds or runs behind the panel's.
+  if (options.past && seconds > 0) {
+    seconds = 0;
+  }
   const absolute = Math.abs(seconds);
   const format = new Intl.RelativeTimeFormat(locale(), { numeric: "auto", style: "short" });
 
@@ -105,6 +118,51 @@ export function formatBytes(value: number | null | undefined): string {
   const scaled = value / 1000 ** exponent;
   const digits = scaled >= 100 || exponent === 0 ? 0 : 1;
   return `${new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(scaled)} ${units[exponent]}`;
+}
+
+/** Traffic the way it is usually talked about: bits per second, from bytes per second. */
+export function formatBitrate(bytesPerSecond: number | null | undefined): string {
+  if (bytesPerSecond === null || bytesPerSecond === undefined || bytesPerSecond < 0) {
+    return "–";
+  }
+  const bits = bytesPerSecond * 8;
+  const units = ["b/s", "kb/s", "Mb/s", "Gb/s", "Tb/s"];
+  const exponent = bits < 1 ? 0 : Math.min(Math.floor(Math.log10(bits) / 3), units.length - 1);
+  const scaled = bits / 1000 ** exponent;
+  const digits = scaled >= 100 || exponent === 0 ? 0 : 1;
+  return `${new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(scaled)} ${units[exponent]}`;
+}
+
+/** A moment on a chart's axis: the time for up to a day, the date for a week. */
+export function formatChartTime(seconds: number, range: string): string {
+  const date = new Date(seconds * 1000);
+  if (range === "7d") {
+    return new Intl.DateTimeFormat(locale(), {
+      day: "numeric",
+      month: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
+/** A label of a time axis whose ticks are `step` seconds apart: a date for whole days. */
+export function formatAxisTime(seconds: number, step: number): string {
+  const date = new Date(seconds * 1000);
+  if (step >= 86400) {
+    return new Intl.DateTimeFormat(locale(), { day: "numeric", month: "numeric" }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
 }
 
 export function formatNumber(value: number, digits = 0): string {

@@ -27,6 +27,10 @@
   --off-bg: #1c2027;
   --off-text: #a7afbb;
 
+  /* Chart series, validated against --surface for colour blindness and contrast. */
+  --chart-1: #5c88e6;
+  --chart-2: #cc7a30;
+
   --radius-card: 12px;
   --radius-control: 9px;
 
