@@ -1835,3 +1835,95 @@ tr[aria-selected="true"] > td {
   font-family: var(--font-mono);
   font-size: 13px;
 }
+
+/* Edge proxy routes, as in design/preview/Server.html */
+.list.routes > li {
+  padding: 10px 18px;
+}
+
+.route-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.route-host {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.route-target {
+  flex: 1 1 180px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.route-tls {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--text-2);
+  padding-left: 28px;
+}
+
+.route-tls.warn {
+  color: var(--warn-text);
+}
+
+.route-tls.err {
+  color: var(--err-text);
+}
+
+.route-lock {
+  flex: none;
+  color: var(--text-2);
+}
+
+.route-lock.ok {
+  color: var(--ok);
+}
+
+.route-lock.warn {
+  color: var(--warn);
+}
+
+.route-lock.err {
+  color: var(--err);
+}
+
+.route-lock.info {
+  color: var(--accent);
+}
+
+.stack-gap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 8px 0 4px;
+}
+
+.check-line {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13.5px;
+}
+
+.check-line input {
+  margin-top: 3px;
+}
+
+textarea.input {
+  resize: vertical;
+  min-height: 72px;
+}

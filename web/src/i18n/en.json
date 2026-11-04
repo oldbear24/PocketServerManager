@@ -251,14 +251,14 @@
     "newStack": "New stack",
     "edgeRoutes": "Edge proxy routes",
     "edgeRoutesNote": "Caddy run by the agent · certificates from the panel",
-    "edgeRoutesLater": "Routes appear here with sites and domains, in milestone M3.",
-    "proxyLater": "The edge proxy, sites and their routes arrive in milestone M3.",
     "backupsLater": "Backup jobs for this server arrive in milestone M4.",
     "openTerminal": "Terminal in {{name}}",
     "internalOnly": "internal network only",
     "restarts_one": "{{count}}× restarted",
     "restarts_other": "{{count}}× restarted",
-    "load1": "Load"
+    "load1": "Load",
+    "httpRequests": "HTTP requests",
+    "perSecond": "{{value}} / s"
   },
   "connect": {
     "title": "Connect a new server",
@@ -876,5 +876,85 @@
     "downloadDump": "Download the dump of {{name}}",
     "credentials": "Credentials",
     "ownCredentials": "the stack {{name}} holds its users and passwords"
+  },
+  "edge": {
+    "title": "Edge proxy",
+    "routes": "Routes",
+    "addDomain": "Add domain",
+    "addDomainTitle": "Add a domain to {{server}}",
+    "add": "Add",
+    "noRoutes": "No domain is served by this edge yet.",
+    "noRole": "This server has no edge role, so it serves no sites or domains.",
+    "agentTooOld": "The agent of this server cannot run an edge proxy yet: update it first.",
+    "kind": {
+      "container": "container",
+      "redirect": "redirect"
+    },
+    "tls": {
+      "valid": "HTTPS until {{date}}",
+      "expiring": "HTTPS, the certificate expires {{date}}",
+      "expired": "The certificate expired {{date}}",
+      "installing": "Installing the certificate",
+      "none": "HTTP only: no certificate covers this name",
+      "off": "HTTP only"
+    },
+    "tlsShort": {
+      "valid": "HTTPS",
+      "expiring": "HTTPS, expiring",
+      "expired": "Certificate expired",
+      "installing": "Installing the certificate",
+      "none": "HTTP only",
+      "off": "HTTP only"
+    },
+    "state": "State",
+    "condition": {
+      "synced": "Serving revision {{revision}}",
+      "applying": "Applying the config",
+      "failed": "The last config failed",
+      "waiting": "Waiting for the agent"
+    },
+    "caddyVersion": "Caddy {{version}} · run by the agent",
+    "caddyPinned": "Caddy {{version}} · not running yet",
+    "applyAgain": "Apply again",
+    "applied": "The config was sent to the edge.",
+    "remove": "Remove",
+    "removeDomain": "Remove {{hostname}}",
+    "removeConfirm": "Remove {{hostname}}?",
+    "removeNote": "The edge stops serving it at once.",
+    "domainAdded": "{{hostname}} was added. The edge serves it in a few seconds.",
+    "domainRemoved": "{{hostname}} was removed.",
+    "hostname": "Domain",
+    "target": "Target",
+    "container": "Container",
+    "port": "Port",
+    "noContainers": "This server has no container that can be published.",
+    "redirectTo": "Redirect to",
+    "permanent": "Permanent redirect (308); browsers remember it",
+    "https": "Serve over HTTPS when a certificate covers the name",
+    "httpsRedirect": "Redirect HTTP to HTTPS",
+    "hsts": "Send HSTS: browsers then use only HTTPS for a year",
+    "compress": "Compress responses (zstd, gzip)",
+    "certificates": "Certificates",
+    "certificatesNote": "Uploaded by hand until certificates are issued automatically",
+    "noCertificates": "No certificate covers the domains of this server.",
+    "upload": "Upload certificate",
+    "uploadTitle": "Upload a certificate",
+    "uploadNote": "The key is encrypted with the master key and goes only to the edges whose domains the certificate covers.",
+    "chain": "Certificate chain (PEM)",
+    "key": "Private key (PEM)",
+    "note": "Note",
+    "uploaded": "The certificate was uploaded.",
+    "issuer": {
+      "manual": "uploaded",
+      "acme": "ACME",
+      "internal": "internal CA"
+    },
+    "validUntil": "valid until {{date}}",
+    "expiredOn": "expired {{date}}",
+    "installedHere": "installed here",
+    "removeCertificate": "Remove certificate",
+    "removeCertificateConfirm": "Remove the certificate for {{names}}?",
+    "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
+    "certificateRemoved": "The certificate was removed."
   }
 }
