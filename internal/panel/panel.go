@@ -137,6 +137,8 @@ func (p *Panel) Register() {
 		if p.Gateway != nil {
 			p.Gateway.Stop()
 		}
+		// after the gateway, whose handlers deliver commands too
+		p.Commands.Close()
 		if p.Metrics != nil {
 			if err := p.Metrics.Close(); err != nil {
 				p.Log.Error("failed to close the metrics database", "error", err)

@@ -70,6 +70,10 @@ type Manager struct {
 
 	mu      sync.Mutex
 	streams map[string]*Stream
+	// closed stops new deliveries; dispatching holds those under way, which
+	// Close waits for, as the app's database closes after it
+	closed      bool
+	dispatching sync.WaitGroup
 
 	enrichers map[string]Enricher
 	finishers map[string][]func(*core.Record)
@@ -415,9 +419,28 @@ func (m *Manager) Kick(hostID string) {
 	if hostID == "" {
 		return
 	}
-	if stream := m.stream(hostID); stream != nil {
-		go m.dispatch(stream)
+	stream := m.stream(hostID)
+	if stream == nil {
+		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	m.dispatching.Add(1)
+	go func() {
+		defer m.dispatching.Done()
+		m.dispatch(stream)
+	}()
+}
+
+// Close stops delivering commands and waits for deliveries under way.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.dispatching.Wait()
 }
 
 // dispatch sends the queued commands of a stream's host that may run now.
