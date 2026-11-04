@@ -708,6 +708,11 @@ func TestEnrollmentTokenRoute(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(script, "docker run") || !strings.Contains(script, h.panel.Authority.Pin()) {
 		t.Errorf("%d %s", status, script)
 	}
+	// docker run refuses the rslave mount of a root that is not shared, with an
+	// error that does not say what to do
+	if !strings.Contains(script, "mount --make-rshared /") {
+		t.Errorf("the script does not check the root mount: %s", script)
+	}
 }
 
 func TestInfoRoute(t *testing.T) {

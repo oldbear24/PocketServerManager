@@ -178,6 +178,14 @@ if ! docker info >/dev/null 2>&1; then
 	exit 1
 fi
 
+# The agent's read-only view of the host follows its mounts (rslave), which needs
+# / to be a shared mount. systemd sets that up; other init systems may not.
+if [ -r /proc/self/mountinfo ] && ! awk '$5 == "/" && / (shared|master):/ { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+	echo "The root file system is not a shared mount, which the agent's view of the host needs." >&2
+	echo "Run 'mount --make-rshared /' as root, add it to this system's start-up, and run this again." >&2
+	exit 1
+fi
+
 docker pull "$IMAGE"
 
 docker run -d --name pocketcloud-agent --restart unless-stopped \

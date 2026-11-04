@@ -41,6 +41,7 @@ The agent ships as a multi-arch image (`ghcr.io/oldbear24/pocketcloud-agent`, li
 | volume `pocketcloud-agent` → `/var/lib/pocketcloud` | read-write | identity (key, certificate), config, idempotency state, updater results |
 | `/` → `/host` | read-only, `rslave` | host metrics (`/host/proc`, `/host/sys`), disk usage, reading host paths for backups |
 
+- `rslave` lets mounts and unmounts on the host reach the agent's view, so the agent never holds on to a disk the host wants to detach. It needs `/` to be a shared mount, which systemd sets up; on hosts without systemd (Alpine, WSL) `docker run` refuses the mount until `mount --make-rshared /` has run, at every boot.
 - Host facts come through the `/host` mount. The addresses are read from `/host/proc/1/net`, the network namespace of the host's init rather than the agent container's, and skip Docker's and other container interfaces.
 - First start reads `PANEL`, `CA_PIN`, `TOKEN`, `NAME` and `ROLES` from the environment, enrolls, and stores its identity in the volume. The token is single use, so leaving it in the container environment is harmless.
 - The image `HEALTHCHECK` reports healthy only while the agent is connected to the panel; the updater relies on it.

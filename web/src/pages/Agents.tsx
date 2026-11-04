@@ -237,6 +237,8 @@ export function AgentsPage() {
               <dd>{t("connect.reqNetworkValue")}</dd>
               <dt>Edge</dt>
               <dd>{t("connect.reqEdge")}</dd>
+              <dt>{t("connect.reqRoot")}</dt>
+              <dd>{t("connect.reqRootValue")}</dd>
             </dl>
           </Card>
 

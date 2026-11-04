@@ -278,6 +278,8 @@
     "reqNetwork": "Network",
     "reqNetworkValue": "outgoing TCP to the panel's gRPC port",
     "reqEdge": "incoming 80 and 443 for sites",
+    "reqRoot": "Root mount",
+    "reqRootValue": "shared, as systemd sets it up. Without systemd (Alpine, WSL), docker run says that / is not a shared or slave mount: run mount --make-rshared / at every boot.",
     "checkToken": "Token created",
     "checkTokenNote": "single use, valid for 15 minutes",
     "checkWaiting": "Waiting for the first connection…",

@@ -290,6 +290,8 @@
     "reqNetwork": "Síť",
     "reqNetworkValue": "odchozí TCP na gRPC port panelu",
     "reqEdge": "příchozí 80 a 443 pro weby",
+    "reqRoot": "Kořenový mount",
+    "reqRootValue": "sdílený, jak ho nastavuje systemd. Bez systemd (Alpine, WSL) docker run hlásí, že / není sdílený ani podřízený mount: spouštějte mount --make-rshared / při každém startu.",
     "checkToken": "Token vytvořen",
     "checkTokenNote": "jednorázový, platí 15 min",
     "checkWaiting": "Čekám na první spojení agenta…",
