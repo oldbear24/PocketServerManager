@@ -64,8 +64,28 @@ describe("PHP versions", () => {
   it("says when a version has ended", () => {
     render(<PhpEolWarning version={{ ...php82, state: "ended", days_left: -1 }} />);
     expect(
-      screen.getByText(/PHP 8\.2 has had no security fixes since Dec 31, 2026/),
+      screen.getByText(/Security fixes for PHP 8\.2 ended on Dec 31, 2026/),
     ).toBeInTheDocument();
+  });
+
+  it("says when today is the last day", () => {
+    render(<PhpEolWarning version={{ ...php82, days_left: 0 }} />);
+    expect(
+      screen.getByText(/Today is the last day PHP 8\.2 gets security fixes/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the last day as that day west of UTC too", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      // the zone took: midnight UTC is the evening before in New York
+      expect(new Date("2026-12-31T00:00:00Z").getDate()).toBe(30);
+      render(<PhpEolWarning version={php82} />);
+      expect(screen.getByText(/until Dec 31, 2026/)).toBeInTheDocument();
+    } finally {
+      process.env.TZ = zone;
+    }
   });
 
   it("shows nothing for a supported version", () => {

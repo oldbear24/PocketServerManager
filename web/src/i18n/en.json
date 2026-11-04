@@ -976,8 +976,9 @@
       "ending": "Ending soon",
       "ended": "Ended"
     },
+    "endingWarning_zero": "Today is the last day PHP {{version}} gets security fixes. Move its sites to a newer version.",
     "endingWarning_one": "PHP {{version}} gets security fixes for {{count}} more day, until {{date}}. Move its sites to a newer version before then.",
     "endingWarning_other": "PHP {{version}} gets security fixes for {{count}} more days, until {{date}}. Move its sites to a newer version before then.",
-    "endedWarning": "PHP {{version}} has had no security fixes since {{date}}. Move its sites to a newer version."
+    "endedWarning": "Security fixes for PHP {{version}} ended on {{date}}. Move its sites to a newer version."
   }
 }

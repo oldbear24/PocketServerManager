@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { formatDate } from "../lib/format";
+import { formatCalendarDate } from "../lib/format";
 import { phpApi, phpNeedsWarning, type PhpState, type PhpVersion } from "../lib/php";
 import { useToast } from "./toast";
 import { Banner, Card, StatusPill, Table, type Tone } from "./ui";
@@ -25,7 +25,7 @@ export function PhpEolWarning({ version }: { version: PhpVersion }) {
     return null;
   }
 
-  const date = formatDate(version.security_support_until);
+  const date = formatCalendarDate(version.security_support_until);
   return (
     <Banner tone={version.state === "ended" ? "err" : "warn"}>
       {version.state === "ended"
@@ -87,8 +87,8 @@ export function PhpVersionsCard() {
                 <td>
                   <PhpStatePill state={version.state} />
                 </td>
-                <td>{formatDate(version.active_support_until)}</td>
-                <td>{formatDate(version.security_support_until)}</td>
+                <td>{formatCalendarDate(version.active_support_until)}</td>
+                <td>{formatCalendarDate(version.security_support_until)}</td>
                 <td className="mono small">{version.image}</td>
               </tr>
             ))}
