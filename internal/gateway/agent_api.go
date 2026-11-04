@@ -117,6 +117,9 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 				return err
 			}
 		case <-delivery.Closed():
+			if err := delivery.Dropped(); err != nil {
+				return err
+			}
 			return status.Error(codes.Aborted, "replaced by a newer connection of this agent")
 		case <-ctx.Done():
 			return ctx.Err()

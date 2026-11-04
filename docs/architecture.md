@@ -74,7 +74,7 @@ The panel runs an internal CA. Agents authenticate with client certificates; no 
 
 - Certificate SAN `pocketcloud://host/<hostId>` identifies the host on every call.
 - Agent certificates are valid for 180 days and renewed over the existing connection when 30 days remain (`RenewCertificate`). The previous certificate stays valid until the agent first calls with the new one, so a lost response cannot lock it out.
-- Removing a host revokes its certificate. The serial denylist is checked on every call, so a revoked certificate stops working on connections that are already open too.
+- Removing a host revokes its certificate. The serial denylist is checked on every call, so a revoked certificate stops working on connections that are already open too. A command stream is authenticated when it opens, so the removal also ends the host's open stream at once.
 - Agents identify the panel by its pinned CA and the name `pocketcloud://panel`, not by host name ([ADR 0006](adr/0006-agents-pin-the-panel-ca.md)).
 
 ## gRPC API (v1)
