@@ -169,7 +169,7 @@ func (p *Panel) guardMovedContainers(e *core.RecordRequestEvent) error {
 	name := container.GetString("name")
 	if old, err := p.App.FindFirstRecordByFilter(schema.DBMoves, "host={:host} && source_container={:name} && status={:done} && source_kind={:dedicated} && removed_at=''",
 		dbx.Params{"host": host, "name": name, "done": schema.MoveDone, "dedicated": schema.DBServerDedicated}); err == nil {
-		return e.BadRequestError(fmt.Sprintf("%s held the data that moved to %s: it stays stopped until the panel removes it.", name, old.GetString("target_name")), nil)
+		return e.BadRequestError(fmt.Sprintf("The container %s held the data that moved to %s: it stays stopped until the panel removes it.", name, old.GetString("target_name")), nil)
 	}
 	if project := container.GetString("project"); project != "" {
 		if move := p.moveOfStack(host, project); move != nil {
