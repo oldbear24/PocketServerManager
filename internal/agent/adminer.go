@@ -179,6 +179,9 @@ func (s *adminerSession) start(ctx context.Context, payload *agentv1.DbAdminerSt
 			"PC_PASSWORD=" + password,
 			"PC_DATABASE=" + payload.GetDatabase(),
 		},
+		// the image listens on [::], which fails where containers have no IPv6, as
+		// on hosts booted without it; the agent talks to Adminer over IPv4 anyway
+		"Cmd":    []string{"php", "-S", "0.0.0.0:" + strconv.Itoa(adminerPort), "-t", "/var/www/html"},
 		"Labels": labels,
 		"HostConfig": map[string]any{
 			"NetworkMode": s.network,
@@ -212,6 +215,9 @@ func (s *adminerSession) start(ctx context.Context, payload *agentv1.DbAdminerSt
 	info, err := a.Docker.Inspect(ctx, id)
 	if err != nil {
 		return err
+	}
+	if !info.State.Running {
+		return fmt.Errorf("the Adminer container stopped as soon as it started (exit code %d): %s", info.State.ExitCode, a.lastLogLine(ctx, id))
 	}
 	endpoint := info.NetworkSettings.Networks[s.network]
 	ip, _ := endpoint["IPAddress"].(string)
@@ -394,4 +400,31 @@ func (a *Agent) removeStaleAdminers(ctx context.Context) {
 			a.Log.Debug("failed to remove a stale Adminer network", "network", network.Name, "error", err)
 		}
 	}
+}
+
+// lastLogLine returns the last line a container wrote, which usually says why it
+// stopped.
+func (a *Agent) lastLogLine(ctx context.Context, id string) string {
+	reader, err := a.Docker.Logs(ctx, id, dockerapi.LogOptions{Tail: 5})
+	if err != nil {
+		return "its log cannot be read"
+	}
+	defer reader.Close()
+
+	var text strings.Builder
+	if err := dockerapi.ReadMultiplexed(io.LimitReader(reader, 64<<10), func(_ byte, data []byte) {
+		text.Write(data)
+	}); err != nil {
+		return "its log cannot be read"
+	}
+
+	lines := strings.Split(strings.TrimSpace(text.String()), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return "it wrote nothing"
+	}
+	if len(last) > 300 {
+		last = last[:300] + "…"
+	}
+	return last
 }
