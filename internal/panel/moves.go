@@ -481,6 +481,10 @@ func (p *Panel) completeMove(move *core.Record) error {
 
 	dedicated := move.GetString("source_kind") == schema.DBServerDedicated
 	network := databases.NetworkName(stack.GetString("name"))
+	engine, err := engineOfServer(target)
+	if err != nil {
+		return err
+	}
 
 	err = p.App.RunInTransaction(func(tx core.App) error {
 		owned := map[string][]string{}
@@ -595,6 +599,33 @@ func (p *Panel) completeMove(move *core.Record) error {
 			}
 		}
 
+		// a shared server's application names its server in variables the panel
+		// wrote: they change with the records, so that a move that says it is
+		// done has switched the application over
+		if !dedicated && sourceErr == nil {
+			fresh, err := tx.FindRecordById(schema.Stacks, stack.Id)
+			if err != nil {
+				return err
+			}
+			env := fresh.GetString("env")
+			changed := false
+			for _, item := range items {
+				before := databases.Connection{Engine: engine, Server: source.GetString("name"), Database: item.Name, User: item.User}
+				after := databases.Connection{Engine: engine, Server: target.GetString("name"), Database: item.Name, User: item.User}
+				if cleaned, removed := databases.RemoveEnv(env, before.EnvLines()); removed {
+					env, _ = databases.AddEnv(cleaned, after.EnvLines())
+					changed = true
+				}
+			}
+			if changed {
+				fresh.Set("env", env)
+				fresh.Set(recordNote, "The database moved to "+target.GetString("name"))
+				if err := tx.SaveWithContext(ctx, fresh); err != nil {
+					return err
+				}
+			}
+		}
+
 		now := types.NowDateTime()
 		move.Set("status", schema.MoveDone)
 		move.Set("moved_at", now)
@@ -609,36 +640,12 @@ func (p *Panel) completeMove(move *core.Record) error {
 		return err
 	}
 
-	// a shared server's application names its server in variables the panel wrote
-	if !dedicated && sourceErr == nil {
-		engine, err := engineOfServer(target)
-		if err != nil {
-			return err
-		}
-		err = p.update(ctx, stack, func(fresh *core.Record) error {
-			env := fresh.GetString("env")
-			changed := false
-			for _, item := range items {
-				name := item.Name
-				before := databases.Connection{Engine: engine, Server: source.GetString("name"), Database: name, User: name}
-				after := databases.Connection{Engine: engine, Server: target.GetString("name"), Database: name, User: name}
-				if cleaned, removed := databases.RemoveEnv(env, before.EnvLines()); removed {
-					env, _ = databases.AddEnv(cleaned, after.EnvLines())
-					changed = true
-				}
-			}
-			if !changed {
-				return errUnchanged
-			}
-			fresh.Set("env", env)
-			fresh.Set(recordNote, "The database moved to "+target.GetString("name"))
-			return nil
-		})
-		if err != nil {
-			return err
-		}
+	// the deploy takes the stack as it is now, with a new revision if its
+	// variables changed
+	stack, err = p.App.FindRecordById(schema.Stacks, stack.Id)
+	if err != nil {
+		return err
 	}
-
 	return p.redeploy(ctx, stack, move.GetString("requested_by"))
 }
 
