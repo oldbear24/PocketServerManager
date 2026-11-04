@@ -111,9 +111,8 @@ func (c Config) Validate() error {
 				return fmt.Errorf("%s: %w", host, err)
 			}
 		case KindRedirect:
-			target, err := url.Parse(route.RedirectTo)
-			if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-				return fmt.Errorf("%s: the redirect target must be an http or https URL", host)
+			if err := ValidRedirect(route.RedirectTo); err != nil {
+				return fmt.Errorf("%s: %w", host, err)
 			}
 		default:
 			return fmt.Errorf("%s: unknown kind of route %q", host, route.Kind)
@@ -152,6 +151,21 @@ func ValidHostname(host string) error {
 				return fmt.Errorf("%q is not a valid hostname", host)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidRedirect checks a redirect target. Caddy fills in placeholders such as
+// {env.*} and {file.*} in the headers it sends, so a target with braces could
+// make the edge answer with the content of any file it can read, its keys among
+// them; braces are refused, and %7B and %7D work instead.
+func ValidRedirect(target string) error {
+	if strings.ContainsAny(target, "{}") {
+		return errors.New("a redirect target cannot contain { or }: write them as %7B and %7D")
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("the redirect target must be an http or https URL")
 	}
 	return nil
 }

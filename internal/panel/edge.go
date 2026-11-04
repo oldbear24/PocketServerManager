@@ -134,9 +134,9 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		record.Set("redirect_to", "")
 	case schema.TargetRedirect:
 		target, err := url.Parse(record.GetString("redirect_to"))
-		if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-			errs["redirect_to"] = validation.NewError("validation_invalid_redirect", "The redirect must go to an http or https address.")
-		} else if strings.EqualFold(target.Hostname(), hostname) && target.Path == "" {
+		if problem := edge.ValidRedirect(record.GetString("redirect_to")); problem != nil {
+			errs["redirect_to"] = validation.NewError("validation_invalid_redirect", capitalize(problem.Error())+".")
+		} else if err == nil && strings.EqualFold(target.Hostname(), hostname) && target.Path == "" {
 			errs["redirect_to"] = validation.NewError("validation_redirect_loop", "A domain cannot redirect to itself.")
 		}
 		record.Set("container", "")

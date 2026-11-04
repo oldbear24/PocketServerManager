@@ -186,20 +186,23 @@ func TestRedirectKeepsThePath(t *testing.T) {
 
 func TestValidateRefusesMistakes(t *testing.T) {
 	cases := map[string]Config{
-		"a duplicate name":              {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80"}, {Hostname: "A.example.com", Kind: KindProxy, Upstream: "b:80"}}},
-		"an IP address":                 {Routes: []Route{{Hostname: "192.0.2.1", Kind: KindProxy, Upstream: "a:80"}}},
-		"a single label":                {Routes: []Route{{Hostname: "localhost", Kind: KindProxy, Upstream: "a:80"}}},
-		"a bad character":               {Routes: []Route{{Hostname: "a_b.example.com", Kind: KindProxy, Upstream: "a:80"}}},
-		"a deep wildcard":               {Routes: []Route{{Hostname: "*.*.example.com", Kind: KindProxy, Upstream: "a:80"}}},
-		"an upstream without port":      {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a"}}},
-		"an upstream port of 0":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:0"}}},
-		"an upstream with a URL":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "http://a:80"}}},
-		"a redirect to a path":          {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "/elsewhere"}}},
-		"a redirect to ftp":             {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "ftp://example.com"}}},
-		"an unknown kind":               {Routes: []Route{{Hostname: "a.example.com", Kind: "static"}}},
-		"a missing certificate":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "nope"}}},
-		"HTTPS without a certificate":   {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", HTTPSRedirect: true}}},
-		"a certificate id with a slash": {Certificates: []Certificate{{ID: "../x"}}},
+		"a duplicate name":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80"}, {Hostname: "A.example.com", Kind: KindProxy, Upstream: "b:80"}}},
+		"an IP address":            {Routes: []Route{{Hostname: "192.0.2.1", Kind: KindProxy, Upstream: "a:80"}}},
+		"a single label":           {Routes: []Route{{Hostname: "localhost", Kind: KindProxy, Upstream: "a:80"}}},
+		"a bad character":          {Routes: []Route{{Hostname: "a_b.example.com", Kind: KindProxy, Upstream: "a:80"}}},
+		"a deep wildcard":          {Routes: []Route{{Hostname: "*.*.example.com", Kind: KindProxy, Upstream: "a:80"}}},
+		"an upstream without port": {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a"}}},
+		"an upstream port of 0":    {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:0"}}},
+		"an upstream with a URL":   {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "http://a:80"}}},
+		"a redirect to a path":     {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "/elsewhere"}}},
+		"a redirect to ftp":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "ftp://example.com"}}},
+		// Caddy would send the file's content in the Location header
+		"a redirect with a placeholder":      {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "https://x.example.com/{file./pocketcloud/certs/c.key}"}}},
+		"a redirect with an env placeholder": {Routes: []Route{{Hostname: "a.example.com", Kind: KindRedirect, RedirectTo: "https://x.example.com/?{env.HOME}"}}},
+		"an unknown kind":                    {Routes: []Route{{Hostname: "a.example.com", Kind: "static"}}},
+		"a missing certificate":              {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "nope"}}},
+		"HTTPS without a certificate":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", HTTPSRedirect: true}}},
+		"a certificate id with a slash":      {Certificates: []Certificate{{ID: "../x"}}},
 	}
 	for name, config := range cases {
 		if _, err := Build(config); err == nil {

