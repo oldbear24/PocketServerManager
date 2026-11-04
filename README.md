@@ -4,7 +4,7 @@ Self-hosted control panel for a homelab or a few VPS: servers, Docker containers
 
 PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (embedded as a library) with a React UI. Every managed server runs a small **agent container** that dials out to the panel over gRPC with mutual TLS, so servers behind NAT need no open ports. Agent updates are done by a short-lived updater container with automatic rollback.
 
-> **Status: early development.** The foundations and the agent connection work (milestones M0 and M1 of the [Roadmap](https://github.com/oldbear24/PocketServerManager/issues/40)): servers connect with one command, report their state and containers, and run commands, with a full change audit and diagnostics. Stacks, sites, backups and the rest are still to come, and their pages say so.
+> **Status: early development.** The foundations and the agent connection work (milestones M0 and M1 of the [Roadmap](https://github.com/oldbear24/PocketServerManager/issues/40)): servers connect with one command, report their state and containers, and run commands, with a full change audit and diagnostics. Milestone M2 is built – container actions, Compose stacks with revisions and import, live logs, metrics, a web terminal, the server page, and shared MariaDB and PostgreSQL servers with a database per application – but it has only run against the fake Docker engine described below, not on a real host yet. Sites, domains, backups and the rest are still to come, and their pages say so.
 
 <img src="design/screenshots/01-overview.png" width="860" alt="PocketCloud overview screen">
 
@@ -28,8 +28,8 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 
 Every action becomes a record in the `commands` collection – the command history and the delivery queue at once – and every configuration change lands in an append-only audit log. Logs and terminal sessions stream agent → panel → browser without touching the database.
 
-- [docs/architecture.md](docs/architecture.md) – components, enrollment, gRPC API, command lifecycle, sites/DNS/TLS flow, PHP sites, database servers, backups, diagnostics, change audit, security model
-- [docs/data-model.md](docs/data-model.md) – proposed PocketBase collections
+- [docs/architecture.md](docs/architecture.md) – components, enrollment, gRPC API, command lifecycle, Compose stacks, logs and terminal, metrics, sites/DNS/TLS flow, PHP sites, database servers, backups, diagnostics, change audit, security model
+- [docs/data-model.md](docs/data-model.md) – PocketBase collections, those built and those planned
 - [docs/migration-from-coolify.md](docs/migration-from-coolify.md) – how a Coolify installation moves to PocketCloud, by hand or with the importer
 
 ## Design
@@ -76,15 +76,19 @@ The panel opens no browser by itself. On the first start its log prints a link w
 
 ### Without Docker
 
-An agent needs a Docker Engine, but developing does not. `cmd/fakedocker` is an in-memory engine with a few example containers, enough for the agent's inventory and container actions:
+An agent needs a Docker Engine, but developing does not. `cmd/fakedocker` is an in-memory engine with a few example containers that write a sample log line every 2 seconds (`-chatter 0` turns that off); it is enough for the inventory, container actions, logs and terminals, and it answers the agent's database scripts with made-up numbers. `cmd/fakecompose` stands in for `docker compose`: it reads Compose files with compose-go and creates their containers on that engine, so stacks and database servers can be deployed.
 
 ```sh
+go build -o bin/fakecompose ./cmd/fakecompose
 go run ./cmd/fakedocker &
 PANEL=127.0.0.1:9443 CA_PIN=sha256:… TOKEN=ENR-… NAME=dev-box ROLES=docker \
-  STATE_DIR=dev-data/agent DOCKER_HOST=tcp://127.0.0.1:2399 go run ./cmd/agent run
+  STATE_DIR=dev-data/agent DOCKER_HOST=tcp://127.0.0.1:2399 DOCKER_CLI=$PWD/bin/fakecompose \
+  go run ./cmd/agent run
 ```
 
-The values for `CA_PIN` and `TOKEN` come from the “Connect a server” page. For working on the UI, `task dev:panel` and `task dev:web` run the panel and Vite with hot reload.
+The values for `CA_PIN` and `TOKEN` come from the “Connect a server” page. The agent reads host facts and metrics through its host mount, `/host`; without one it reads the machine's own `/proc`, which only Linux has. For working on the UI, `task dev:panel` and `task dev:web` run the panel and Vite with hot reload.
+
+Both fakes only prove that the panel, the agent and the UI work together and call Docker as intended. They say nothing about how real Docker, Compose, MariaDB or PostgreSQL behave.
 
 ### Tests and checks
 
@@ -102,6 +106,7 @@ cmd/panel       panel binary (PocketBase + gRPC gateway + UI)
 cmd/agent       agent (runs as a container)
 cmd/updater     temporary container that swaps the agent on update
 cmd/fakedocker  in-memory Docker Engine for development and tests
+cmd/fakecompose stand-in for `docker compose` against cmd/fakedocker
 proto/          gRPC API (buf)
 gen/go/         generated code, committed (docs/adr/0005)
 migrations/     PocketBase collections as Go migrations

@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: M0 and M1 are implemented; later sections describe what is planned. Decisions are recorded as ADRs in [`adr/`](adr/).
+> Status: M0 and M1 are implemented. M2 – inventory and container actions, Compose stacks, live logs, metrics, the web terminal, the server page and database servers – is implemented and tested against `cmd/fakedocker` and `cmd/fakecompose`, but has not run on a real Docker host yet. Sections about later milestones describe what is planned. Decisions are recorded as ADRs in [`adr/`](adr/).
 >
 > Diagrams are PNG renders of the Mermaid sources in [`diagrams/`](diagrams/), so they show up everywhere, including the GitHub mobile app. Edit the `.mmd` file and run [`diagrams/render.sh`](diagrams/render.sh).
 
@@ -16,7 +16,7 @@ PocketCloud has two binaries:
 1. **Agents dial out.** The panel never opens connections to servers. Servers behind NAT work and need no inbound ports (except 80/443 on servers with the `edge` role).
 2. **The panel is the source of truth.** Agents keep only their identity and what they need to keep serving when the panel is down (edge config, certificates).
 3. **Every action is a command.** UI actions and scheduled jobs create records in `commands`. The collection is both the command history and the delivery queue. Delivery is at-least-once; agents deduplicate by command id.
-4. **Streams bypass the database.** Logs, terminal sessions, admin tool sessions and command output are relayed agent → panel → browser and never stored in PocketBase.
+4. **Streams bypass the database.** Logs, terminal sessions and admin tool sessions are relayed agent → panel → browser and never stored in PocketBase. A command's output streams live the same way and is stored once, as a file of the command, when it ends.
 5. **Secrets are encrypted at rest** with a master key kept outside the database, and are sent to an agent only inside the command that needs them.
 6. **Everything on a server is a container.** The agent, the edge proxy, PHP runtimes, database servers, site builds, backup and restore jobs and the updater all run in Docker; the agent never updates itself in place.
 7. **Every change is audited.** Configuration changes – from the UI, the API, the scheduler or the PocketBase dashboard – are written to an append-only, hash-chained audit log with field-level diffs.
@@ -41,6 +41,7 @@ The agent ships as a multi-arch image (`ghcr.io/oldbear24/pocketcloud-agent`, li
 | volume `pocketcloud-agent` → `/var/lib/pocketcloud` | read-write | identity (key, certificate), config, idempotency state, updater results |
 | `/` → `/host` | read-only, `rslave` | host metrics (`/host/proc`, `/host/sys`), disk usage, reading host paths for backups |
 
+- Host facts come through the `/host` mount. The addresses are read from `/host/proc/1/net`, the network namespace of the host's init rather than the agent container's, and skip Docker's and other container interfaces.
 - First start reads `PANEL`, `CA_PIN`, `TOKEN`, `NAME` and `ROLES` from the environment, enrolls, and stores its identity in the volume. The token is single use, so leaving it in the container environment is harmless.
 - The image `HEALTHCHECK` reports healthy only while the agent is connected to the panel; the updater relies on it.
 - The agent labels everything it runs with `pocketcloud.role` (`agent`, `updater`, `edge`, `job`) so the inventory can recognise and protect these containers.
@@ -89,8 +90,8 @@ The contract is in [`proto/pocketcloud/agent/v1`](../proto/pocketcloud/agent/v1)
 | `StreamLogs` | client stream | log chunks for an active `logs.follow` |
 | `Exec` | bidi stream | terminal sessions |
 | `FetchArtifact` | server stream | agent downloads uploads and site releases |
-| `UploadArtifact` | client stream | agent uploads diagnostics bundles, SQL exports and restore downloads to the panel |
-| `Relay` | bidi stream | admin-only byte stream to a temporary tool container (Adminer); opened by a command and bound to one browser session, like `Exec` |
+| `UploadArtifact` | client stream | agent uploads diagnostics bundles, imported Compose files, SQL dumps and (later) restore downloads to the panel |
+| `Relay` | bidi stream | admin-only connections to a temporary tool container (Adminer); opened by a command and bound to one browser session, like `Exec`. One stream carries every connection of the session, numbered by `conn_id` |
 | `RenewCertificate` | unary | identity rotation |
 
 Command payloads are a `oneof` per type: `container.*`, `image.*`, `stack.*`, `logs.*`, `exec.*`, `site.*` (static and PHP), `task.*` (scheduled tasks), `db.*`, `edge.*`, `cert.*`, `acme.*`, `backup.*`, `agent.*`. Each field is named after its type with dots as underscores. Agents advertise supported types in `capabilities`, which keeps old agents working while new command types are added; a type the agent does not support fails at once with a message saying so.
@@ -109,11 +110,31 @@ Fields holding secrets carry the `sensitive` option from `proto/pocketcloud/opti
 - The panel's own fields of a command (status, attempts, results) cannot be set through the API, and the state machine holds for every save, superusers included.
 - Multi-step flows (new site, restore) are a parent command with children sharing a correlation id, which drives the progress timelines in the UI.
 
+## Compose stacks
+
+A stack is a Compose project on one host. The panel keeps its Compose file, its env file and its secrets; the agent has them only while it deploys.
+
+- **Revisions** – a save that changes the files adds a `stack_revisions` entry. `current_revision` is the latest saved, `deployed_revision` the one that runs; a rollback deploys an old revision as a new one.
+- **Validation** – the panel checks a file while it is edited (`internal/stacks` with compose-go) and points at the line of each problem; a relative bind mount gets a warning, because it would resolve inside the agent's volume. The agent checks again with `docker compose config` before it deploys.
+- **Secrets** – values are sealed in `secrets`, their names listed in `secret_keys`. The env file may refer to them, and to the passwords of databases, as `${secret:name}`. The command's stored payload holds only the references: the panel adds the values when it delivers `stack.deploy`.
+- **Deploy** – the agent writes `compose.yaml`, the env file and, if the stack uses database servers, `compose.pocketcloud.yaml` to `stacks/<name>/` on its volume, and runs `docker compose --project-name <name> … config`, `pull` when asked, and `up --detach --remove-orphans`. The env file holds the secrets only during the deploy; a clean copy replaces it afterwards, and on the next start if the agent died in between. Output streams to the command, with secret values of four or more characters masked.
+- **Stop, down, restart** – use only the project name, so a missing secret cannot block them and projects started outside PocketCloud work too.
+- **Import** – Compose projects already running on a host are found by their Compose labels in the inventory. `stack.import` reads the Compose file and `.env` through the read-only host mount and uploads them as an artifact, not in the command's result, because they may hold passwords. The panel moves variables with secret-looking names (password, secret, token, key, …) into sealed secrets, rewrites relative bind mounts to absolute paths so the data stays where it is, and saves the stack as `imported` until its first deploy. A project started from several Compose files, or without the label that names its file, cannot be imported, and the page says why.
+
 ## Logs and terminal
 
 <img src="diagrams/logs-terminal.png" width="436" alt="Logs and terminal relay between browser, panel, agent and container">
 
-The relay is a custom route registered in `OnServe`; it checks the PocketBase auth token, fans one agent stream out to all viewers and stops it when the last viewer leaves.
+The streams are custom routes registered in `OnServe` that check the PocketBase auth token. Nothing that passes through them is stored: the database sees only the commands that open and close them.
+
+- **Logs** – `/api/pc/hosts/{id}/logs` (chosen containers) and `/api/pc/stacks/{id}/logs` (every container of a stack) are server-sent events. The first viewer of a set of containers queues `logs.follow` with a random session id, and the agent opens `StreamLogs` with it, in batches of at most 200 lines. Later viewers share that stream and start with up to 1,000 recent lines. A viewer that reads too slowly loses lines instead of holding up the others, and is told how many. The stream starts with an `open` event, so the page shows it as live before the first line arrives. The last viewer to leave queues `logs.stop`.
+- **Command output** – `/api/pc/commands/{id}/output` streams what a running command writes, such as a deploy, and ends with its final state; for a finished command it sends the stored output.
+- **Terminal** – admins only. `POST /api/pc/hosts/{id}/terminal` checks what may be opened and returns a ticket that works once within 30 seconds, because a WebSocket cannot carry an `Authorization` header and a token in a URL ends up in logs. The browser opens `/api/pc/terminal/socket` with the ticket, the panel queues `exec.start`, and the agent joins with an `Exec` stream to `docker exec` with a TTY. The socket accepts the origin of the public URL and of `localhost` (for a Vite dev server), a session without input or output ends after 30 minutes, and its start and end are security events in the audit.
+- **Host shells** – opt-in per agent (`HOST_SHELL_ENABLED=1`, stored as `host_shell_enabled`). The agent then starts a short-lived privileged helper container (`alpine`, host PID namespace) and runs `nsenter -t 1 -m -u -i -n -p -- /bin/sh -l` in it; the helper is removed with the session.
+
+## Metrics
+
+Every 10 seconds the agent samples the host (CPU, memory, load, network, usage of each mount) from `/host/proc` and `/host/sys`, and its running containers from the Docker API, and sends the batch with `PushMetrics`. The panel writes it to `pb_data/metrics.db`, outside PocketBase, and rolls it up to 1 minute and 1 hour ([ADR 0003](adr/0003-metrics-storage.md)). `/api/pc/metrics/hosts/{id}` and `…/containers/{docker id}` return a window of 1 hour, 24 hours or 7 days; the latest values stay on the `hosts` record from the heartbeat.
 
 ## Static sites, domains and TLS
 
@@ -158,15 +179,14 @@ Applications on the same host share a database server instead of each running it
 
 <img src="diagrams/database-servers.png" width="908" alt="Shared database server with a private network per application">
 
-- **Servers** – a shared server is a container managed by PocketCloud (MariaDB 11 LTS or PostgreSQL 17) with its data in a named volume, labelled `pocketcloud.role=db`, with no published ports. Admin credentials are generated by the panel and stored encrypted; memory settings (`innodb_buffer_pool_size`, `shared_buffers`) start from presets based on the host's RAM.
-- **Dedicated servers** – database containers found inside stacks are listed as dedicated (read-only until the stack's credentials are linked). They stay dedicated when they need something a shared server does not offer (e.g. immich with VectorChord) and can otherwise be consolidated.
-- **Networking** – for every application that uses a server the agent creates an internal network `pcdb-<app>` and attaches the server (alias = server name) and the application's containers. Applications reach `db-main:3306` but not each other.
-- **Databases and users** – `db.database.create` creates a database and a user with privileges on that database only; the password is generated by the panel and stored as the secret `db/<name>`. Applications get `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD=${secret:db/<name>}` (or `DATABASE_URL`) in their environment.
-- **Operations** – rotate a password (`ALTER USER`, update the secret, restart the application), clone a database (staging, restore tests), export SQL (uploaded to the panel with `UploadArtifact`), drop with a final dump kept. The agent runs the server's own client inside its container with `docker exec`; credentials are passed in the exec environment, never on a command line.
-- **Adminer** – started on demand as a temporary container on the database's network, removed after 30 minutes and opened through the panel with the `Relay` stream; it is never published on a port.
-- **Monitoring** – size per database, connections against `max_connections`, server version; alerts on connection saturation and disk usage.
-- **Upgrades** – minor versions by pulling the image and recreating the container (MariaDB with `MARIADB_AUTO_UPGRADE`); PostgreSQL major versions by dump and restore into a new server, guided by the UI.
-- **Consolidation** – moving a dedicated instance to a shared server: stop the application, dump, restore into a new database on a shared server with the same engine and the same or newer major version, switch the application's connection settings, start it, keep the old container stopped for 7 days before it is removed.
+- **Servers** – a shared server is a stack of its own (`source` `db_server`) that the panel generates: one service from the official image (`mariadb:11.8` or `postgres:17`), its data in the volume `pcdb-<server>-data`, a health check, labelled `pocketcloud.role=db`, no published ports. The cache (`innodb_buffer_pool_size`, `shared_buffers`) is an eighth of the host's memory, from 128 MiB to 2 GiB; `max_connections` is 200 for MariaDB and 100 for PostgreSQL. The administrator's password is generated by the panel, sealed, and reaches the container as `${secret:db-admin/<server>}`, which only the server's own stack can use. A server is removed only once it holds no databases: its stack goes down, and its volume only when someone asks for that.
+- **Dedicated servers** – database containers inside stacks (MariaDB, MySQL, PostgreSQL and its variants with extensions such as PostGIS, pgvector or VectorChord) are recognised by their image and offered for linking. The stack's Compose file suggests the administrator and the variable with the password; once linked, the server's databases are listed from its statistics as the stack's own: export and Adminer work, while users and passwords stay the stack's business. Unlinking leaves the container alone. A dedicated server without extensions says when a shared server of the same engine and the same or a newer major version runs on its host.
+- **Networking** – each application that uses a server gets an internal network `pcdb-<stack>`. `db.network.attach` creates it and attaches the server under its name and the application's running containers. Every later deploy keeps them there through `compose.pocketcloud.yaml`, an override the panel generates with the network as external, and so does the server's own deploy, which joins every network of its applications; the agent creates the networks before Compose runs. Applications reach `db-main:3306`, but not each other.
+- **Databases and users** – `db.database.create` creates a database and a user with privileges on that database only (PostgreSQL also revokes `PUBLIC`'s access), with a password the panel generates and keeps as the secret `db/<database>`; database names are unique per host. Connecting a stack adds `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD=${secret:db/<database>}` (and `DATABASE_URL` for PostgreSQL) to its env file as a new revision, attaches its network and redeploys it if it runs. References resolve per host: any stack of the host can name any database there, as operators manage every stack anyway.
+- **Operations** – rotate a password (the new one waits in `pending_password` until the server has taken it, then the application is redeployed with it), clone a database, export it as gzipped SQL (uploaded with `UploadArtifact`, kept 7 days, admins only), drop it after a final dump that is kept 30 days; nothing is dropped when the dump fails. The agent runs the server's own client inside its container with `docker exec`: passwords and SQL travel in the exec environment, never on a command line, and error messages are masked.
+- **Adminer** – admins only, for 30 minutes. `db.adminer.start` starts `adminer:4` on an internal network of its own (`pcadm-…`), which the server joins under its name and the agent joins to reach it, with a small plugin that signs in with credentials from the container's environment: the database's own user, or the administrator for a dedicated server. The panel serves it under `/api/pc/adminer/<session>/` through the `Relay` stream, one numbered connection per request. The link carries a one-time ticket that becomes an HttpOnly, SameSite=Strict cookie for that path, and the proxy passes on neither the panel's token nor that cookie. Nothing is published on a port; the agent removes the container and network when the session ends, and on its next start whatever a previous run left behind.
+- **Monitoring** – `db.stats` reports the server's version, size, connections and `max_connections`, and the size and connections of each database: hourly, and when an operator opens the server on the Databases page. Alerts on connection saturation and disk usage come with alerts (#34).
+- **Not built yet** – upgrades (minor versions by pulling the image and recreating the container, which `MARIADB_AUTO_UPGRADE` prepares for; PostgreSQL major versions by dump and restore into a new server, guided by the UI) and consolidation (moving a dedicated server's databases to a shared server: stop the application, dump, restore, switch its connection settings, start it, keep the old container stopped for 7 days). Per-database backups come with M4.
 
 ## Backups
 
@@ -218,6 +238,7 @@ Every configuration change is written to the append-only `audit_log` collection:
 - Enrollment tokens are single use, short-lived, stored hashed and rate limited; the install command pins the panel CA.
 - Terminal access is admin-only and audited; host shells are opt-in per agent.
 - PHP containers run as `www-data`, see only their own site directory and have no Docker socket; each application reaches its database server over its own internal network with a user limited to its own database.
+- Adminer runs on the panel's origin, under its own path. Its sign-in needs no password from the browser and the panel's token never reaches it, but a flaw in Adminer that let data run as script would run next to the panel's UI, which keeps its token in local storage. Serving tools from a separate origin would remove that; until then the sessions are admin-only, short and audited.
 - Roles: admin, operator, viewer. Automation (CI) uses scoped, expiring API tokens stored hashed; their use is attributed in the audit log.
 - Configuration changes are audited with tamper-evident hash chaining (see [Change audit](#change-audit)).
 
