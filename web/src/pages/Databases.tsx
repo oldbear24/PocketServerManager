@@ -29,6 +29,7 @@ import {
   dbApi,
   engines,
   envSnippet,
+  imageTag,
   serverLabel,
   serverNamePattern,
   type Database,
@@ -80,14 +81,14 @@ function moveTarget(server: DbServer, servers: DbServer[]): string {
     return "";
   }
   const major = (version: string) => Number.parseInt(version, 10) || 0;
-  const own = major(server.version || server.image.split(":")[1] || "");
+  const own = major(server.version || imageTag(server.image));
   const target = servers.find(
     (other) =>
       other.kind === "shared" &&
       other.host === server.host &&
       other.engine === server.engine &&
       own > 0 &&
-      major(other.version || other.image.split(":")[1] || "") >= own,
+      major(other.version || imageTag(other.image)) >= own,
   );
   return target?.name ?? "";
 }

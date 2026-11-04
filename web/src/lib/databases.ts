@@ -87,13 +87,17 @@ export function engineLabel(engine: string): string {
   return engines.find((item) => item.value === engine)?.label ?? engine;
 }
 
+/** The tag of an image: after the last colon that follows the last slash, as one before it is a registry's port. */
+export function imageTag(image: string): string {
+  return image.split("@")[0].split("/").pop()?.split(":")[1] ?? "";
+}
+
 /**
  * "MariaDB 11.8" from what the server said, or from its image tag. Servers add
  * their build to the number: "11.8.9-MariaDB-ubu2404", "17.11 (Debian 17.11-1…)".
  */
 export function serverLabel(server: DbServer): string {
-  // the tag follows the last colon after the last slash; one before it is a registry's port
-  const tag = server.image.split("@")[0].split("/").pop()?.split(":")[1] ?? "";
+  const tag = imageTag(server.image);
   const reported = server.version.match(/^\d+(\.\d+)*/)?.[0];
   const version = reported || tag.match(/^(?:pg)?(\d+(\.\d+)?)/)?.[1] || "";
   const label = `${engineLabel(server.engine)}${version ? ` ${version}` : ""}`;
