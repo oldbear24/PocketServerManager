@@ -28,6 +28,10 @@ type Spec struct {
 	// Resource returns the ordering key: commands with the same key run one after
 	// another, the others in parallel.
 	Resource func(*agentv1.Command) string
+	// Uninterruptible commands cannot be cancelled once they left the queue: only
+	// the agent knows whether a cancel would land where it can still undo its
+	// work, so it decides by itself, within the command's timeout.
+	Uninterruptible bool
 }
 
 func stack(c *agentv1.Command) string {
@@ -167,7 +171,7 @@ var Specs = map[string]Spec{
 	"db.database.clone":  {Timeout: 6 * time.Hour},
 	"db.database.export": {Timeout: 6 * time.Hour},
 	"db.network.attach":  {Timeout: 2 * time.Minute, Resource: databaseNetwork},
-	"db.server.move":     {Timeout: 6 * time.Hour, Resource: databaseMove},
+	"db.server.move":     {Timeout: 6 * time.Hour, Resource: databaseMove, Uninterruptible: true},
 	"db.stats":           {Timeout: 2 * time.Minute},
 	"db.adminer.start":   {Timeout: 5 * time.Minute},
 	"db.adminer.stop":    {Timeout: 2 * time.Minute},

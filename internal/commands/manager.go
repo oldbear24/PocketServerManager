@@ -34,6 +34,9 @@ const (
 // ErrNotCancellable is returned when a finished command is cancelled.
 var ErrNotCancellable = errors.New("the command has already finished")
 
+// ErrUninterruptible is returned when a running command that must finish by itself is cancelled.
+var ErrUninterruptible = fmt.Errorf("%w: it is under way and cannot be interrupted", ErrNotCancellable)
+
 // Options describes a new command.
 type Options struct {
 	// ID is the id of the new record; empty generates one. Knowing it up front lets
@@ -740,6 +743,9 @@ func (m *Manager) Cancel(id, reason string) error {
 	status := record.GetString("status")
 	if isFinal(status) {
 		return ErrNotCancellable
+	}
+	if spec, ok := Specs[record.GetString("type")]; ok && spec.Uninterruptible && status != schema.CommandQueued {
+		return ErrUninterruptible
 	}
 
 	m.finish(record, schema.CommandCancelled, reason, nil)
