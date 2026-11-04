@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -214,6 +215,22 @@ func TestADedicatedServerMovesIntoASharedOne(t *testing.T) {
 	if err != nil || strings.Contains(removal.GetString("payload"), "remove_volumes") {
 		t.Errorf("removal: %v %v", removal, err)
 	}
+	// the move counts as cleaned up once the container is gone from the inventory
+	if fresh, _ := d.app.FindRecordById(schema.DBMoves, move.Id); !fresh.GetDateTime("removed_at").IsZero() {
+		t.Error("the removal was recorded before the container was gone")
+	}
+	d.waitFor("the inventory to lose the old container", func() bool {
+		_, err := d.app.FindFirstRecordByFilter(schema.Containers, "name='analytics-db-1'", nil)
+		return err != nil
+	})
+	for _, job := range d.app.Cron().Jobs() {
+		if job.Id() == "pocketcloud_db_moves_cleanup" {
+			job.Run()
+		}
+	}
+	if fresh, _ := d.app.FindRecordById(schema.DBMoves, move.Id); fresh.GetDateTime("removed_at").IsZero() {
+		t.Error("the removal is not recorded")
+	}
 }
 
 func TestAMoveThatFailsLeavesEverythingAsItWas(t *testing.T) {
@@ -222,12 +239,12 @@ func TestAMoveThatFailsLeavesEverythingAsItWas(t *testing.T) {
 	shared := d.createServer("pg-main", "postgres")
 	stackID, dedicated := d.linkedAnalytics()
 
-	// the restore into the shared server fails
+	// the restore into the shared server fails, after many notices
 	answer := d.server.answer
 	d.docker.OnExec = func(call *fakedocker.ExecCall, stdin []byte) fakedocker.ExecResult {
 		for _, item := range call.Env {
 			if strings.HasPrefix(item, "PC_FILE=") {
-				return fakedocker.ExecResult{Code: 3, Stderr: "ERROR: relation already exists"}
+				return fakedocker.ExecResult{Code: 3, Stderr: strings.Repeat("NOTICE: a table is skipped\n", 300) + "ERROR: relation already exists"}
 			}
 		}
 		return answer(call, stdin)
@@ -270,6 +287,16 @@ func TestAMoveThatFailsLeavesEverythingAsItWas(t *testing.T) {
 		db, web := d.docker.Find("analytics-db-1"), d.docker.Find("analytics-web-1")
 		return db != nil && db.Status == "running" && web != nil && web.Status == "running"
 	})
+	failed, err := d.app.FindRecordById(schema.DBMoves, started.Move.ID)
+	if err != nil || len(failed.GetString("error")) > 2000 || failed.GetString("error") == "" {
+		t.Errorf("the error of the move: %d characters", len(failed.GetString("error")))
+	}
+
+	// the failed move holds nothing up
+	status, body = d.post("/api/pc/db-servers/"+dedicated.Id+"/move", d.operator, map[string]any{"target": shared.Id})
+	if status != http.StatusOK {
+		t.Errorf("a second move: %d %s", status, body)
+	}
 	_ = stackID
 }
 
@@ -447,4 +474,281 @@ func TestADatabaseMovesToANewerSharedServer(t *testing.T) {
 	d.waitFor("the application to be deployed again", func() bool {
 		return d.stack(stackID).GetInt("current_revision") == 3 && d.stack(stackID).GetString("status") == "deployed"
 	})
+}
+
+// holdRestores keeps every restore waiting until the returned function is called.
+func (d *databaseHarness) holdRestores() (release func()) {
+	gate := make(chan struct{})
+	answer := d.server.answer
+	d.docker.OnExec = func(call *fakedocker.ExecCall, stdin []byte) fakedocker.ExecResult {
+		for _, item := range call.Env {
+			if strings.HasPrefix(item, "PC_FILE=") {
+				<-gate
+			}
+		}
+		return answer(call, stdin)
+	}
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
+}
+
+func TestAMoveHoldsTheContainersAndServersItWorksOn(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	shared := d.createServer("pg-main", "postgres")
+	_, dedicated := d.linkedAnalytics()
+	release := d.holdRestores()
+	defer release()
+
+	status, body := d.post("/api/pc/db-servers/"+dedicated.Id+"/move", d.operator, map[string]any{"target": shared.Id})
+	if status != http.StatusOK {
+		t.Fatalf("move: %d %s", status, body)
+	}
+	var answer struct {
+		Move    struct{ ID string } `json:"move"`
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &answer)
+	d.waitFor("the application to stop", func() bool {
+		web := d.docker.Find("analytics-web-1")
+		return web != nil && web.Status == "exited"
+	})
+
+	start := func(name string) (int, string) {
+		return d.post("/api/collections/commands/records", d.operator, map[string]any{
+			"host": d.host.Id, "type": "container.start", "label": name,
+			"payload": map[string]any{"docker_id": d.docker.Find(name).ID},
+		})
+	}
+
+	// the application's containers wait for the move
+	if status, body := start("analytics-web-1"); status != http.StatusConflict || !strings.Contains(body, "moving") {
+		t.Errorf("starting the application during the move: %d %s", status, body)
+	}
+	// the target is neither updated nor removed meanwhile
+	if status, body := d.post("/api/pc/db-servers/"+shared.Id+"/update", d.operator, map[string]any{}); status != http.StatusConflict {
+		t.Errorf("updating the target during the move: %d %s", status, body)
+	}
+	status, body = testutil.Do(t, d.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/pc/db-servers/" + shared.Id, Token: d.operator})
+	if status != http.StatusConflict {
+		t.Errorf("removing the target during the move: %d %s", status, body)
+	}
+
+	release()
+	d.waitForStatus(answer.Command.ID, schema.CommandSucceeded)
+	d.waitFor("the move to be recorded", func() bool {
+		found, err := d.app.FindRecordById(schema.DBMoves, answer.Move.ID)
+		return err == nil && found.GetString("status") == schema.MoveDone
+	})
+
+	// the old database stays stopped: Docker does not start it, and neither does the table
+	old := d.docker.Find("analytics-db-1")
+	if policy, _ := old.Host["RestartPolicy"].(map[string]any); policy["Name"] != "no" {
+		t.Errorf("the restart policy of the old database: %v", old.Host["RestartPolicy"])
+	}
+	if networks := d.docker.NetworksOf(old.ID); len(networks) != 0 {
+		t.Errorf("the old database is still on %v", networks)
+	}
+	if status, body := start("analytics-db-1"); status != http.StatusBadRequest || !strings.Contains(body, "stays stopped") {
+		t.Errorf("starting the old database: %d %s", status, body)
+	}
+	d.waitFor("the application to run again", func() bool {
+		web := d.docker.Find("analytics-web-1")
+		return web != nil && web.Status == "running"
+	})
+	if status, body := start("analytics-web-1"); status != http.StatusOK {
+		t.Errorf("starting the application after the move: %d %s", status, body)
+	}
+}
+
+func TestAStacksOwnServerMovesWhole(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	shared := d.createServer("pg-main", "postgres")
+	_, dedicated := d.linkedAnalytics()
+
+	// the server has a database the panel does not know
+	answer := d.server.answer
+	d.docker.OnExec = func(call *fakedocker.ExecCall, stdin []byte) fakedocker.ExecResult {
+		for _, item := range call.Env {
+			if strings.HasPrefix(item, "PC_SQL=") && strings.Contains(item, "NOT datistemplate AND datname <>") {
+				return fakedocker.ExecResult{Stdout: "shop\nshop-archive\n"}
+			}
+		}
+		return answer(call, stdin)
+	}
+
+	status, body := d.post("/api/pc/db-servers/"+dedicated.Id+"/move", d.operator, map[string]any{"target": shared.Id})
+	if status != http.StatusOK {
+		t.Fatalf("move: %d %s", status, body)
+	}
+	var started struct {
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &started)
+	failed := d.waitForStatus(started.Command.ID, schema.CommandFailed)
+	if !strings.Contains(failed.GetString("error"), "shop-archive") {
+		t.Errorf("error: %s", failed.GetString("error"))
+	}
+	// nothing stopped and nothing created
+	if web := d.docker.Find("analytics-web-1"); web.Status != "running" || web.Restart != 0 {
+		t.Errorf("the application: %+v", web)
+	}
+	for _, exec := range d.server.statements() {
+		if exec.container == d.docker.Find("pg-main-db-1").ID && strings.Contains(exec.env["PC_SQL"], "CREATE DATABASE") {
+			t.Error("a database was created on the shared server")
+		}
+	}
+}
+
+func TestOnlyTheVariablesThePanelWroteAreSwitched(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	old := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	stackID := d.deployedApp("shop")
+	d.createDatabase(old.Id, "shop", stackID)
+	d.waitFor("the stack to be connected", func() bool { return d.stack(stackID).GetInt("current_revision") == 2 })
+	d.createDatabase(old.Id, "shop_logs", stackID)
+
+	// an export of another application's database on the old server
+	blog := d.deployedApp("blog")
+	d.createDatabase(old.Id, "blog", blog)
+	collection, err := d.app.FindCollectionByNameOrId(schema.DBDumps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump := core.NewRecord(collection)
+	dump.Set("server", old.Id)
+	dump.Set("database_name", "blog")
+	dump.Set("kind", schema.DumpExport)
+	if err := d.app.Save(dump); err != nil {
+		t.Fatal(err)
+	}
+
+	// shop_logs got no variables of its own, since shop's took the names first
+	status, body := d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "shop_logs"})
+	if status != http.StatusBadRequest || !strings.Contains(body, "not all as the panel wrote them") {
+		t.Errorf("moving shop_logs: %d %s", status, body)
+	}
+
+	status, body = d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "shop"})
+	if status != http.StatusOK {
+		t.Fatalf("moving shop: %d %s", status, body)
+	}
+	var answer struct {
+		Move    struct{ ID string } `json:"move"`
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &answer)
+	d.waitForStatus(answer.Command.ID, schema.CommandSucceeded)
+	d.waitFor("the move to be recorded", func() bool {
+		found, err := d.app.FindRecordById(schema.DBMoves, answer.Move.ID)
+		return err == nil && found.GetString("status") == schema.MoveDone
+	})
+
+	env := d.stack(stackID).GetString("env")
+	if !strings.Contains(env, "DB_HOST=pg-next") || !strings.Contains(env, "DB_NAME=shop\n") || strings.Contains(env, "@pg-main") {
+		t.Errorf("env: %q", env)
+	}
+	// shop_logs stays, and so do the network to the old server and its copy
+	if links, _ := d.app.FindRecordsByFilter(schema.DBNetworks, "stack={:stack}", "", 0, 0, dbx.Params{"stack": stackID}); len(links) != 2 {
+		t.Errorf("networks: %v", links)
+	}
+	if fresh, err := d.app.FindRecordById(schema.DBDumps, dump.Id); err != nil || fresh.GetString("server") != old.Id {
+		t.Errorf("another application's dump moved: %v %v", fresh, err)
+	}
+	dropped := false
+	for _, exec := range d.server.statements() {
+		if exec.container == d.docker.Find("pg-main-db-1").ID && strings.Contains(exec.env["PC_SQL"], "DROP") {
+			dropped = strings.Contains(exec.env["PC_SQL"], `"shop"`) && !strings.Contains(exec.env["PC_SQL"], "shop_logs")
+		}
+	}
+	if !dropped {
+		t.Error("the old copy of shop was not dropped, or more was")
+	}
+}
+
+func TestADatabaseKeepsTheNamesItCameWithWhenItMovesAgain(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	shared := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	stackID, dedicated := d.linkedAnalytics()
+
+	move := func(server string, body map[string]any) {
+		t.Helper()
+		status, answer := d.post("/api/pc/db-servers/"+server+"/move", d.operator, body)
+		if status != http.StatusOK {
+			t.Fatalf("move: %d %s", status, answer)
+		}
+		var started struct {
+			Move    struct{ ID string } `json:"move"`
+			Command struct{ ID string } `json:"command"`
+		}
+		answerOf(t, answer, &started)
+		d.waitForStatus(started.Command.ID, schema.CommandSucceeded)
+		d.waitFor("the move to be recorded", func() bool {
+			found, err := d.app.FindRecordById(schema.DBMoves, started.Move.ID)
+			return err == nil && found.GetString("status") == schema.MoveDone
+		})
+	}
+
+	move(dedicated.Id, map[string]any{"target": shared.Id})
+	envBefore := d.stack(stackID).GetString("env")
+
+	// as for PostgreSQL 18: the application still knows its database as db
+	move(shared.Id, map[string]any{"target": next.Id, "database": "shop"})
+
+	links, _ := d.app.FindRecordsByFilter(schema.DBNetworks, "stack={:stack}", "", 0, 0, dbx.Params{"stack": stackID})
+	if len(links) != 1 || links[0].GetString("server") != next.Id {
+		t.Fatalf("networks: %v", links)
+	}
+	var aliases []string
+	_ = links[0].UnmarshalJSONField("aliases", &aliases)
+	if !slices.Contains(aliases, "db") || !slices.Contains(aliases, "analytics-db-1") {
+		t.Errorf("aliases: %v", aliases)
+	}
+	account := d.user(next.Id, "shop")
+	if !account.GetBool("app_password") || d.password(account, "password") != "app-secret-7" {
+		t.Errorf("user: %v", account)
+	}
+	if env := d.stack(stackID).GetString("env"); env != envBefore {
+		t.Errorf("the variables changed: %q", env)
+	}
+	d.waitFor("the new server to answer as db", func() bool {
+		network := d.docker.FindNetwork("pcdb-analytics")
+		server := d.docker.Find("pg-next-db-1")
+		if network == nil || server == nil {
+			return false
+		}
+		return slices.Contains(network.Members[server.ID], "db")
+	})
+}
+
+func TestAMoveLeavesAStoppedStackStopped(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	old := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	stackID := d.newStack("quiet", "services:\n  web:\n    image: nginx:1\n", "")
+	d.createDatabase(old.Id, "quiet", stackID)
+
+	status, body := d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "quiet"})
+	if status != http.StatusOK {
+		t.Fatalf("move: %d %s", status, body)
+	}
+	var answer struct {
+		Move    struct{ ID string } `json:"move"`
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &answer)
+	d.waitForStatus(answer.Command.ID, schema.CommandSucceeded)
+	d.waitFor("the move to be recorded", func() bool {
+		found, err := d.app.FindRecordById(schema.DBMoves, answer.Move.ID)
+		return err == nil && found.GetString("status") == schema.MoveDone
+	})
+	if deploys, _ := d.app.CountRecords(schema.Commands, dbx.HashExp{"type": "stack.deploy", "resource": "stack:quiet"}); deploys != 0 {
+		t.Errorf("a stack that never ran was deployed %d times", deploys)
+	}
 }

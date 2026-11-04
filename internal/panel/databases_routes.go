@@ -165,6 +165,9 @@ func (p *Panel) handleUpdateServer(e *core.RequestEvent) error {
 	if server.GetString("kind") != schema.DBServerShared {
 		return e.BadRequestError("A stack's own database server is updated with its stack.", nil)
 	}
+	if move := p.moveOfServer(server); move != nil {
+		return e.Error(http.StatusConflict, "Databases are moving into or out of this server: update it once that is done.", nil)
+	}
 	if status := server.GetString("status"); status != dbReady && status != dbFailed {
 		return e.BadRequestError("The server is busy.", nil)
 	}
@@ -421,6 +424,9 @@ func (p *Panel) handleRemoveServer(e *core.RequestEvent) error {
 	if err != nil {
 		return e.NotFoundError("The database server does not exist.", err)
 	}
+	if move := p.moveOfServer(server); move != nil {
+		return e.Error(http.StatusConflict, "Databases are moving into or out of this server.", nil)
+	}
 
 	count, err := p.App.CountRecords(schema.Databases, dbx.HashExp{"server": server.Id})
 	if err != nil {
@@ -607,6 +613,12 @@ func (p *Panel) ownDatabaseFor(e *core.RequestEvent) (database, server *core.Rec
 	database, server, err = p.databaseFor(e)
 	if err == nil && server.GetString("kind") == schema.DBServerDedicated {
 		return nil, nil, e.BadRequestError("This database belongs to its stack, which manages its users.", nil)
+	}
+	// a database that is moving changes in no other way meanwhile
+	if err == nil {
+		if move := p.moveOfServer(server); move != nil && moveNames(move, database.GetString("name")) {
+			return nil, nil, e.Error(http.StatusConflict, "This database is moving to "+move.GetString("target_name")+".", nil)
+		}
 	}
 	return database, server, err
 }

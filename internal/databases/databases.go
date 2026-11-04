@@ -203,6 +203,32 @@ func (c Connection) EnvLines() []string {
 	return lines
 }
 
+// ReplaceEnv switches the variables of a connection for those of another, such as
+// the same database on a new server, only where the env file holds all of them
+// as the panel wrote them: lines someone changed are someone's own settings.
+func ReplaceEnv(env string, before, after []string) (string, bool) {
+	if !HasEnv(env, before) {
+		return env, false
+	}
+	cleaned, _ := RemoveEnv(env, before)
+	replaced, _ := AddEnv(cleaned, after)
+	return replaced, true
+}
+
+// HasEnv tells whether an env file holds all the lines, as they are.
+func HasEnv(env string, lines []string) bool {
+	present := map[string]bool{}
+	for _, line := range strings.Split(env, "\n") {
+		present[strings.TrimPrefix(strings.TrimSpace(line), "export ")] = true
+	}
+	for _, line := range lines {
+		if !present[line] {
+			return false
+		}
+	}
+	return true
+}
+
 // AddEnv adds the variables of a connection to an env file. Variables the file
 // already sets keep their values, so a second database does not overwrite the first.
 func AddEnv(env string, lines []string) (string, bool) {

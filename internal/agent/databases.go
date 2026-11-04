@@ -483,7 +483,21 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		}
 	}
 
+	// a stack's own server moves whole: a database the move does not name would
+	// stay behind in a container that is about to stop for good
+	if payload.GetStopSource() {
+		if err := a.checkWholeServer(ctx, source, engine, payload.GetDatabases(), secrets); err != nil {
+			return nil, err
+		}
+	}
+
+	// the application stops: its containers as they are now, not as the panel
+	// saw them, since a deploy may have recreated them since
 	reporter.Progress("stop", "Stopping the application", 10)
+	containers, err := a.Docker.Containers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	stopped := []string{}
 	startAgain := func() {
 		for _, id := range stopped {
@@ -492,12 +506,18 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 			}
 		}
 	}
-	for _, id := range payload.GetStopContainerIds() {
-		if err := a.Docker.Stop(ctx, id, moveStopTimeout); err != nil && !dockerapi.IsNotFound(err) {
+	for _, container := range containers {
+		if container.Labels[composeProjectLabel] != payload.GetStack() || isContainer(container, source.GetContainerId()) {
+			continue
+		}
+		if container.State != "running" && container.State != "restarting" {
+			continue
+		}
+		if err := a.Docker.Stop(ctx, container.ID, moveStopTimeout); err != nil && !dockerapi.IsNotFound(err) {
 			startAgain()
 			return nil, fmt.Errorf("failed to stop the application: %w", err)
 		}
-		stopped = append(stopped, id)
+		stopped = append(stopped, container.ID)
 	}
 
 	moved := []movedDatabase{}
@@ -528,25 +548,24 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 	stoppedSource := false
 	if payload.GetStopSource() {
 		reporter.Progress("source", "Stopping the old database server", 95)
-		if err := a.Docker.Stop(ctx, source.GetContainerId(), 0); err != nil && !dockerapi.IsNotFound(err) {
-			a.Log.Warn("failed to stop the old database server", "container", source.GetContainerId(), "error", err)
-		} else {
-			stoppedSource = true
-		}
+		stoppedSource = a.retire(ctx, source.GetContainerId())
 	}
 
 	// a shared server keeps no stale copy that a new database of the same name
 	// would quietly reuse
-	dropped := 0
+	dropped := false
 	if payload.GetDropFromSource() {
 		reporter.Progress("source", "Dropping the databases from the old server", 95)
+		names, users := []string{}, []string{}
 		for _, item := range payload.GetDatabases() {
-			drop := databases.Statements(engine, source.GetAdminUser(), source.GetAdminPassword(), databases.DropSQL(engine, item.GetDatabase(), item.GetUser()))
-			if err := a.runScript(ctx, source.GetContainerId(), drop, io.Discard, secrets...); err != nil {
-				a.Log.Warn("failed to drop a moved database from the old server", "database", item.GetDatabase(), "error", err)
-				continue
-			}
-			dropped++
+			names = append(names, item.GetDatabase())
+			users = append(users, item.GetUser())
+		}
+		drop := databases.Statements(engine, source.GetAdminUser(), source.GetAdminPassword(), databases.DropManySQL(engine, names, users))
+		if err := a.runScript(ctx, source.GetContainerId(), drop, io.Discard, secrets...); err != nil {
+			a.Log.Warn("failed to drop the moved databases from the old server", "error", err)
+		} else {
+			dropped = true
 		}
 	}
 	if network := payload.GetLeaveNetwork(); network != "" {
@@ -555,7 +574,82 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		}
 	}
 
-	return map[string]any{"databases": results, "source_stopped": stoppedSource, "source_dropped": dropped}, nil
+	return map[string]any{
+		"databases":      results,
+		"source_stopped": stoppedSource,
+		"source_dropped": dropped,
+		// the panel deploys the application again if it was running
+		"app_stopped": len(stopped),
+	}, nil
+}
+
+// checkWholeServer refuses to move a server whose databases the move does not
+// all name, such as one created since the panel last read the server or one
+// with a name the panel cannot take, and a PostgreSQL server whose application
+// keeps tables in the database postgres, which a shared server keeps for itself.
+func (a *Agent) checkWholeServer(ctx context.Context, source *agentv1.DbConnection, engine databases.Engine, items []*agentv1.DbMoveItem, secrets []string) error {
+	var output bytes.Buffer
+	list := databases.Statements(engine, source.GetAdminUser(), source.GetAdminPassword(), databases.DatabasesSQL(engine))
+	if err := a.runScript(ctx, source.GetContainerId(), list, &output, secrets...); err != nil {
+		return err
+	}
+	named := map[string]bool{}
+	for _, item := range items {
+		named[item.GetDatabase()] = true
+	}
+	left := []string{}
+	for _, name := range databases.ParseNames(output.String()) {
+		if !named[name] {
+			left = append(left, name)
+		}
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("the server also has %s, which the move does not name: read the server's numbers again, or move by hand what the panel cannot", strings.Join(left, ", "))
+	}
+
+	if engine.Name == databases.Postgres.Name {
+		tables, err := a.countTables(ctx, source, engine, engine.AdminUser, secrets)
+		if err != nil {
+			return err
+		}
+		if tables > 0 {
+			return fmt.Errorf("the application keeps %d tables in the database %s, which a shared server keeps for itself", tables, engine.AdminUser)
+		}
+	}
+	return nil
+}
+
+// retire keeps a stack's old database container out of the way for good: it is
+// stopped, Docker no longer starts it by itself, and it leaves its networks, so
+// that nothing reaches the old data if someone starts it anyway.
+func (a *Agent) retire(ctx context.Context, container string) bool {
+	if err := a.Docker.Stop(ctx, container, 0); err != nil && !dockerapi.IsNotFound(err) {
+		a.Log.Warn("failed to stop the old database server", "container", container, "error", err)
+		return false
+	}
+	if err := a.Docker.SetRestartPolicy(ctx, container, "no"); err != nil {
+		a.Log.Warn("failed to keep the old database server from starting again", "container", container, "error", err)
+	}
+	inspect, err := a.Docker.Inspect(ctx, container)
+	if err != nil {
+		a.Log.Warn("failed to read the old database server's networks", "container", container, "error", err)
+		return true
+	}
+	for network := range inspect.NetworkSettings.Networks {
+		if err := a.Docker.DisconnectNetwork(ctx, network, container, true); err != nil && !dockerapi.IsNotFound(err) {
+			a.Log.Warn("the old database server failed to leave a network", "network", network, "error", err)
+		}
+	}
+	return true
+}
+
+// isContainer tells whether a listed container is the one a reference names, by
+// its id, the start of its id, or its name.
+func isContainer(container dockerapi.Container, reference string) bool {
+	if reference == "" {
+		return false
+	}
+	return container.ID == reference || strings.HasPrefix(container.ID, reference) || slices.Contains(container.Names, "/"+reference)
 }
 
 // moveDatabase moves one database. Once it exists on the target it is in moved,

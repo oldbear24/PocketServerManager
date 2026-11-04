@@ -558,9 +558,9 @@ message DbServerMove {
   DbConnection target = 2;
   // databases are moved one after the other.
   repeated DbMoveItem databases = 3;
-  // stop_container_ids are the application's containers.
-  repeated string stop_container_ids = 4;
-  // stack is the application's stack: no deploy of it runs during the move.
+  // stack is the application's stack: the agent stops the containers of its
+  // Compose project, as they are when the move starts, and no deploy of it runs
+  // during the move.
   string stack = 5;
   // stop_source stops the source server once its databases have moved: a stack's
   // own database container, which nothing may write to any more.

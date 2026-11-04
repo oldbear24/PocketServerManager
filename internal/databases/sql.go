@@ -143,6 +143,32 @@ func DropSQL(engine Engine, database, user string) string {
 	return "DROP DATABASE IF EXISTS " + postgresIdent(database) + " WITH (FORCE);\nDROP ROLE IF EXISTS " + postgresIdent(user) + ";"
 }
 
+// DropManySQL removes databases, then their users, as a user may own several of
+// them and PostgreSQL keeps a role that still owns a database.
+func DropManySQL(engine Engine, names, users []string) string {
+	lines := []string{}
+	for _, name := range names {
+		if engine.Name == MariaDB.Name {
+			lines = append(lines, "DROP DATABASE IF EXISTS "+mariadbIdent(name)+";")
+		} else {
+			lines = append(lines, "DROP DATABASE IF EXISTS "+postgresIdent(name)+" WITH (FORCE);")
+		}
+	}
+	seen := map[string]bool{}
+	for _, user := range users {
+		if seen[user] {
+			continue
+		}
+		seen[user] = true
+		if engine.Name == MariaDB.Name {
+			lines = append(lines, "DROP USER IF EXISTS "+mariadbString(user)+"@'%';")
+		} else {
+			lines = append(lines, "DROP ROLE IF EXISTS "+postgresIdent(user)+";")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // StatsSQL reads the size and the connections of every database, and the
 // server's limit and version, as rows of kind, name and value.
 func StatsSQL(engine Engine) string {
@@ -256,6 +282,26 @@ func ExistsSQL(engine Engine, database, user string) string {
 	}
 	return "SELECT 'database', count(*) FROM pg_database WHERE datname = " + postgresString(database) + ";\n" +
 		"SELECT 'user', count(*) FROM pg_roles WHERE rolname = " + postgresString(user) + ";"
+}
+
+// DatabasesSQL lists a server's databases, one name per line, without those the
+// engine keeps for itself.
+func DatabasesSQL(engine Engine) string {
+	if engine.Name == MariaDB.Name {
+		return "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys');"
+	}
+	return "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres';"
+}
+
+// ParseNames reads a list of names, one per line.
+func ParseNames(output string) []string {
+	names := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // ParseExists reads the output of ExistsSQL.

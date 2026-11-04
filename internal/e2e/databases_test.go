@@ -54,6 +54,9 @@ func (f *fakeDatabase) answer(call *fakedocker.ExecCall, _ []byte) fakedocker.Ex
 		return fakedocker.ExecResult{Stdout: "size\tshop\t2048\nconn\tshop\t3\nconn\t\t1\nmax\t\t200\nversion\t11.8.2-MariaDB\t0\n"}
 	case env["PC_SQL"] != "", env["PC_SOURCE"] != "", env["PC_FILE"] != "":
 		return fakedocker.ExecResult{}
+	case strings.Contains(strings.Join(call.Cmd, " "), "information_schema.tables") && env["PC_DATABASE"] == "postgres":
+		// the database a PostgreSQL server keeps for itself holds no tables
+		return fakedocker.ExecResult{Stdout: "0\n"}
 	case strings.Contains(strings.Join(call.Cmd, " "), "information_schema.tables"):
 		return fakedocker.ExecResult{Stdout: "1\n"}
 	case env["PC_DATABASE"] != "":

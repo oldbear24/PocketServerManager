@@ -3488,9 +3488,9 @@ type DbServerMove struct {
 	Target *DbConnection `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
 	// databases are moved one after the other.
 	Databases []*DbMoveItem `protobuf:"bytes,3,rep,name=databases,proto3" json:"databases,omitempty"`
-	// stop_container_ids are the application's containers.
-	StopContainerIds []string `protobuf:"bytes,4,rep,name=stop_container_ids,json=stopContainerIds,proto3" json:"stop_container_ids,omitempty"`
-	// stack is the application's stack: no deploy of it runs during the move.
+	// stack is the application's stack: the agent stops the containers of its
+	// Compose project, as they are when the move starts, and no deploy of it runs
+	// during the move.
 	Stack string `protobuf:"bytes,5,opt,name=stack,proto3" json:"stack,omitempty"`
 	// stop_source stops the source server once its databases have moved: a stack's
 	// own database container, which nothing may write to any more.
@@ -3553,13 +3553,6 @@ func (x *DbServerMove) GetTarget() *DbConnection {
 func (x *DbServerMove) GetDatabases() []*DbMoveItem {
 	if x != nil {
 		return x.Databases
-	}
-	return nil
-}
-
-func (x *DbServerMove) GetStopContainerIds() []string {
-	if x != nil {
-		return x.StopContainerIds
 	}
 	return nil
 }
@@ -5110,12 +5103,11 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\bpassword\x18\t \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\".\n" +
 	"\rDbAdminerStop\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xfa\x02\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xcc\x02\n" +
 	"\fDbServerMove\x12:\n" +
 	"\x06source\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\x06source\x12:\n" +
 	"\x06target\x18\x02 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\x06target\x12>\n" +
-	"\tdatabases\x18\x03 \x03(\v2 .pocketcloud.agent.v1.DbMoveItemR\tdatabases\x12,\n" +
-	"\x12stop_container_ids\x18\x04 \x03(\tR\x10stopContainerIds\x12\x14\n" +
+	"\tdatabases\x18\x03 \x03(\v2 .pocketcloud.agent.v1.DbMoveItemR\tdatabases\x12\x14\n" +
 	"\x05stack\x18\x05 \x01(\tR\x05stack\x12\x1f\n" +
 	"\vstop_source\x18\x06 \x01(\bR\n" +
 	"stopSource\x12(\n" +
