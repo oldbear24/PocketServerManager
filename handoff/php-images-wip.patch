@@ -1,0 +1,2120 @@
+From 6310dd38aff245c18eb54c4e1335f98ff12999b3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 17:32:52 +0000
+Subject: [PATCH] WIP: PHP runtime images, cut short by a usage limit
+
+Unfinished work from an earlier attempt, kept so the next one can review
+and finish it. To be replaced by reviewable commits before it is merged.
+
+Part of #49
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Pzc3KHzj1g2x4xwRcnAbJQ
+---
+ cmd/php-status/fcgi.go        | 284 +++++++++++++++++++++++++++
+ cmd/php-status/fcgi_test.go   | 309 +++++++++++++++++++++++++++++
+ cmd/php-status/main.go        | 353 ++++++++++++++++++++++++++++++++++
+ cmd/php-status/main_test.go   | 241 +++++++++++++++++++++++
+ images/php/Dockerfile         | 135 +++++++++++++
+ images/php/entrypoint.sh      | 162 ++++++++++++++++
+ images/php/opcache-status.php |  28 +++
+ images/php/php-fpm.conf       |  35 ++++
+ images/php/php.ini            |  33 ++++
+ images/php/versions.go        |  14 ++
+ images/php/versions.json      |  29 +++
+ internal/php/php.go           | 192 ++++++++++++++++++
+ internal/php/php_test.go      | 183 ++++++++++++++++++
+ 13 files changed, 1998 insertions(+)
+ create mode 100644 cmd/php-status/fcgi.go
+ create mode 100644 cmd/php-status/fcgi_test.go
+ create mode 100644 cmd/php-status/main.go
+ create mode 100644 cmd/php-status/main_test.go
+ create mode 100644 images/php/Dockerfile
+ create mode 100644 images/php/entrypoint.sh
+ create mode 100644 images/php/opcache-status.php
+ create mode 100644 images/php/php-fpm.conf
+ create mode 100644 images/php/php.ini
+ create mode 100644 images/php/versions.go
+ create mode 100644 images/php/versions.json
+ create mode 100644 internal/php/php.go
+ create mode 100644 internal/php/php_test.go
+
+diff --git a/cmd/php-status/fcgi.go b/cmd/php-status/fcgi.go
+new file mode 100644
+index 0000000..b9ae205
+--- /dev/null
++++ b/cmd/php-status/fcgi.go
+@@ -0,0 +1,284 @@
++package main
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/binary"
++	"errors"
++	"fmt"
++	"io"
++	"maps"
++	"net"
++	"net/textproto"
++	"slices"
++	"strconv"
++	"strings"
++	"time"
++)
++
++// The parts of FastCGI 1.0 that a client of one responder needs.
++const (
++	fcgiVersion      = 1
++	fcgiBeginRequest = 1
++	fcgiEndRequest   = 3
++	fcgiParams       = 4
++	fcgiStdin        = 5
++	fcgiStdout       = 6
++	fcgiStderr       = 7
++
++	fcgiResponder = 1
++	// one request per connection, so its id can be fixed
++	fcgiRequestID  = 1
++	fcgiMaxContent = 65535
++
++	fcgiRequestComplete = 0
++	fcgiCantMultiplex   = 1
++	fcgiOverloaded      = 2
++	fcgiUnknownRole     = 3
++)
++
++// A response may hold this much output, and this much of what the server wrote
++// to its error stream is kept, so a confused server cannot fill the memory.
++const (
++	maxOutput = 16 << 20
++	maxStderr = 64 << 10
++)
++
++// fcgiResponse is a responder's answer: a CGI response and its error stream.
++type fcgiResponse struct {
++	Status int
++	Header textproto.MIMEHeader
++	Body   []byte
++	Stderr []byte
++}
++
++// fcgiGet sends one request without a body to a FastCGI responder at the
++// address and reads the answer. The connection closes with the request.
++func fcgiGet(ctx context.Context, network, address string, params map[string]string) (*fcgiResponse, error) {
++	var dialer net.Dialer
++	conn, err := dialer.DialContext(ctx, network, address)
++	if err != nil {
++		return nil, err
++	}
++	defer conn.Close()
++
++	if deadline, ok := ctx.Deadline(); ok {
++		if err := conn.SetDeadline(deadline); err != nil {
++			return nil, err
++		}
++	}
++	// a cancelled context without a deadline ends a read or write too
++	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
++	defer stop()
++
++	if err := writeRequest(conn, params); err != nil {
++		return nil, fmt.Errorf("sending the request: %w", contextError(ctx, err))
++	}
++
++	stdout, stderr, err := readResponse(conn)
++	if err != nil {
++		return nil, contextError(ctx, err)
++	}
++
++	response, err := parseCGIResponse(stdout)
++	if err != nil {
++		return nil, err
++	}
++	response.Stderr = stderr
++
++	return response, nil
++}
++
++// contextError names the context's reason when it is why a read or write
++// failed. The connection's deadline is the context's, and may pass a moment
++// before the context says so.
++func contextError(ctx context.Context, err error) error {
++	if ctx.Err() != nil {
++		return ctx.Err()
++	}
++
++	var netErr net.Error
++	if errors.As(err, &netErr) && netErr.Timeout() {
++		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
++			return context.DeadlineExceeded
++		}
++	}
++
++	return err
++}
++
++// writeRequest writes a request of the responder role: the parameters, and an
++// empty body.
++func writeRequest(w io.Writer, params map[string]string) error {
++	buffered := bufio.NewWriter(w)
++
++	// the role, then flags: 0 asks the server to close the connection afterwards
++	begin := []byte{0, fcgiResponder, 0, 0, 0, 0, 0, 0}
++	if err := writeRecord(buffered, fcgiBeginRequest, begin); err != nil {
++		return err
++	}
++
++	pairs := encodeParams(params)
++	for len(pairs) > 0 {
++		n := min(len(pairs), fcgiMaxContent)
++		if err := writeRecord(buffered, fcgiParams, pairs[:n]); err != nil {
++			return err
++		}
++		pairs = pairs[n:]
++	}
++
++	// an empty record ends a stream
++	if err := writeRecord(buffered, fcgiParams, nil); err != nil {
++		return err
++	}
++	if err := writeRecord(buffered, fcgiStdin, nil); err != nil {
++		return err
++	}
++
++	return buffered.Flush()
++}
++
++func writeRecord(w io.Writer, kind byte, content []byte) error {
++	if len(content) > fcgiMaxContent {
++		return fmt.Errorf("a record cannot hold %d bytes", len(content))
++	}
++
++	padding := (8 - len(content)%8) % 8
++	header := []byte{fcgiVersion, kind}
++	header = binary.BigEndian.AppendUint16(header, fcgiRequestID)
++	header = binary.BigEndian.AppendUint16(header, uint16(len(content))) //nolint:gosec // checked above
++	header = append(header, byte(padding), 0)                            //nolint:gosec // below 8
++
++	if _, err := w.Write(header); err != nil {
++		return err
++	}
++	if _, err := w.Write(content); err != nil {
++		return err
++	}
++	_, err := w.Write(make([]byte, padding))
++	return err
++}
++
++// encodeParams encodes name-value pairs, in the order of their names so that a
++// request is always the same bytes.
++func encodeParams(params map[string]string) []byte {
++	var encoded []byte
++	for _, name := range slices.Sorted(maps.Keys(params)) {
++		value := params[name]
++		encoded = appendLength(encoded, len(name))
++		encoded = appendLength(encoded, len(value))
++		encoded = append(encoded, name...)
++		encoded = append(encoded, value...)
++	}
++	return encoded
++}
++
++// appendLength writes a length in one byte below 128, otherwise in four with
++// the top bit set.
++func appendLength(b []byte, n int) []byte {
++	if n < 128 {
++		return append(b, byte(n)) //nolint:gosec // below 128
++	}
++	return binary.BigEndian.AppendUint32(b, uint32(n)|1<<31) //nolint:gosec // a parameter is far below 2 GiB
++}
++
++// readResponse reads records until the end of the request and returns what the
++// server wrote to the output and to the error stream.
++func readResponse(r io.Reader) (stdout, stderr []byte, err error) {
++	reader := bufio.NewReader(r)
++	header := make([]byte, 8)
++
++	for {
++		if _, err := io.ReadFull(reader, header); err != nil {
++			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
++				return nil, nil, errors.New("the server closed the connection before it ended the response")
++			}
++			return nil, nil, err
++		}
++		if header[0] != fcgiVersion {
++			return nil, nil, fmt.Errorf("the server does not speak FastCGI 1: a record has version %d", header[0])
++		}
++
++		kind := header[1]
++		id := int(header[2])<<8 | int(header[3])
++		length := int(header[4])<<8 | int(header[5])
++		padding := int(header[6])
++
++		content := make([]byte, length+padding)
++		if _, err := io.ReadFull(reader, content); err != nil {
++			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
++				return nil, nil, errors.New("the server closed the connection in the middle of a record")
++			}
++			return nil, nil, err
++		}
++		content = content[:length]
++
++		// management records have id 0; nothing else shares the connection
++		if id != fcgiRequestID {
++			continue
++		}
++
++		switch kind {
++		case fcgiStdout:
++			if len(stdout)+len(content) > maxOutput {
++				return nil, nil, fmt.Errorf("the response is longer than %d bytes", maxOutput)
++			}
++			stdout = append(stdout, content...)
++		case fcgiStderr:
++			if room := maxStderr - len(stderr); room > 0 {
++				stderr = append(stderr, content[:min(room, len(content))]...)
++			}
++		case fcgiEndRequest:
++			if len(content) < 8 {
++				return nil, nil, errors.New("the server ended the request with a short record")
++			}
++			if status := content[4]; status != fcgiRequestComplete {
++				return nil, nil, fmt.Errorf("the server did not take the request: %s", protocolStatusText(status))
++			}
++			return stdout, stderr, nil
++		}
++	}
++}
++
++func protocolStatusText(status byte) string {
++	switch status {
++	case fcgiCantMultiplex:
++		return "it cannot take more requests on this connection"
++	case fcgiOverloaded:
++		return "it is overloaded"
++	case fcgiUnknownRole:
++		return "it does not know the responder role"
++	default:
++		return fmt.Sprintf("protocol status %d", status)
++	}
++}
++
++// parseCGIResponse splits a CGI response into its status, header and body. A
++// response without a Status header has the status 200.
++func parseCGIResponse(output []byte) (*fcgiResponse, error) {
++	end, separator := bytes.Index(output, []byte("\r\n\r\n")), 4
++	if lf := bytes.Index(output, []byte("\n\n")); lf >= 0 && (end < 0 || lf < end) {
++		end, separator = lf, 2
++	}
++	if end < 0 {
++		return nil, errors.New("the response has no end of its header")
++	}
++
++	headerBlock := append(output[:end:end], "\r\n\r\n"...)
++	header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(headerBlock))).ReadMIMEHeader()
++	if err != nil {
++		return nil, fmt.Errorf("the response has a bad header: %w", err)
++	}
++
++	status := 200
++	if value := header.Get("Status"); value != "" {
++		code, _, _ := strings.Cut(value, " ")
++		status, err = strconv.Atoi(code)
++		if err != nil || status < 100 || status > 999 {
++			return nil, fmt.Errorf("the response has a bad status %q", value)
++		}
++	}
++
++	return &fcgiResponse{Status: status, Header: header, Body: output[end+separator:]}, nil
++}
+diff --git a/cmd/php-status/fcgi_test.go b/cmd/php-status/fcgi_test.go
+new file mode 100644
+index 0000000..fe4e847
+--- /dev/null
++++ b/cmd/php-status/fcgi_test.go
+@@ -0,0 +1,309 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/fcgi"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++// serveFCGI runs Go's own FastCGI server with the handler, as a stand-in for FPM.
++func serveFCGI(t *testing.T, network string, handler http.Handler) string {
++	t.Helper()
++
++	address := "127.0.0.1:0"
++	if network == "unix" {
++		address = filepath.Join(t.TempDir(), "fpm.sock")
++	}
++
++	listener, err := net.Listen(network, address)
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = listener.Close() })
++
++	go func() { _ = fcgi.Serve(listener, handler) }()
++
++	return listener.Addr().String()
++}
++
++// echo answers with what the request carried, so a test can see what arrived.
++func echo(w http.ResponseWriter, r *http.Request) {
++	w.Header().Set("Content-Type", "application/json")
++	w.Header().Set("X-Seen", "yes")
++	w.WriteHeader(http.StatusAccepted)
++	_ = json.NewEncoder(w).Encode(map[string]any{
++		"method": r.Method,
++		"path":   r.URL.Path,
++		"query":  r.URL.RawQuery,
++		"env":    fcgi.ProcessEnv(r),
++	})
++}
++
++func TestRequestReachesGoFastCGIServer(t *testing.T) {
++	for _, network := range []string{"tcp", "unix"} {
++		t.Run(network, func(t *testing.T) {
++			address := serveFCGI(t, network, http.HandlerFunc(echo))
++
++			long := strings.Repeat("x", 300)
++			params := requestParams("/status", "/srv/status", "json&full")
++			params["PHP_ADMIN_VALUE"] = "open_basedir=/usr/local/lib\nauto_prepend_file="
++			params["LONG_NAME_"+strings.Repeat("N", 200)] = long
++
++			response, err := fcgiGet(context.Background(), network, address, params)
++			if err != nil {
++				t.Fatal(err)
++			}
++
++			if response.Status != http.StatusAccepted || response.Header.Get("X-Seen") != "yes" {
++				t.Fatalf("status %d, header %v", response.Status, response.Header)
++			}
++
++			var seen struct {
++				Method string            `json:"method"`
++				Path   string            `json:"path"`
++				Query  string            `json:"query"`
++				Env    map[string]string `json:"env"`
++			}
++			if err := json.Unmarshal(response.Body, &seen); err != nil {
++				t.Fatalf("%v: %q", err, response.Body)
++			}
++
++			if seen.Method != "GET" || seen.Path != "/status" || seen.Query != "json&full" {
++				t.Errorf("the server saw %+v", seen)
++			}
++			if seen.Env["SCRIPT_FILENAME"] != "/srv/status" || seen.Env["PHP_ADMIN_VALUE"] != params["PHP_ADMIN_VALUE"] {
++				t.Errorf("the parameters arrived as %v", seen.Env)
++			}
++			if seen.Env["LONG_NAME_"+strings.Repeat("N", 200)] != long {
++				t.Error("a parameter longer than 127 bytes did not arrive whole")
++			}
++		})
++	}
++}
++
++func TestParametersLargerThanOneRecord(t *testing.T) {
++	address := serveFCGI(t, "tcp", http.HandlerFunc(echo))
++
++	huge := strings.Repeat("0123456789", 10_000) // 100 kB: two records of parameters
++	params := requestParams("/x", "/x", "")
++	params["HUGE"] = huge
++
++	response, err := fcgiGet(context.Background(), "tcp", address, params)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	var seen struct {
++		Env map[string]string `json:"env"`
++	}
++	if err := json.Unmarshal(response.Body, &seen); err != nil {
++		t.Fatal(err)
++	}
++	if seen.Env["HUGE"] != huge {
++		t.Fatalf("the parameter arrived with %d bytes instead of %d", len(seen.Env["HUGE"]), len(huge))
++	}
++}
++
++func TestResponseLongerThanOneRecord(t *testing.T) {
++	body := bytes.Repeat([]byte("abcdefgh"), 40_000) // 320 kB
++	address := serveFCGI(t, "tcp", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		_, _ = w.Write(body)
++	}))
++
++	response, err := fcgiGet(context.Background(), "tcp", address, requestParams("/x", "/x", ""))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if response.Status != http.StatusOK || !bytes.Equal(response.Body, body) {
++		t.Fatalf("status %d and %d bytes of %d", response.Status, len(response.Body), len(body))
++	}
++}
++
++func TestStatusFromTheHeader(t *testing.T) {
++	address := serveFCGI(t, "tcp", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		http.Error(w, "File not found.", http.StatusNotFound)
++	}))
++
++	response, err := fcgiGet(context.Background(), "tcp", address, requestParams("/x", "/x", ""))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if response.Status != http.StatusNotFound || !strings.Contains(string(response.Body), "File not found.") {
++		t.Fatalf("status %d, body %q", response.Status, response.Body)
++	}
++}
++
++// fakeServer accepts one connection, reads the request and answers with the
++// records that answer writes, for what Go's server never does.
++func fakeServer(t *testing.T, answer func(conn net.Conn)) string {
++	t.Helper()
++
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = listener.Close() })
++
++	go func() {
++		conn, err := listener.Accept()
++		if err != nil {
++			return
++		}
++		defer conn.Close()
++
++		if err := readRequest(conn); err != nil {
++			t.Error(err)
++			return
++		}
++		answer(conn)
++	}()
++
++	return listener.Addr().String()
++}
++
++// readRequest reads records up to the end of the request's input.
++func readRequest(r io.Reader) error {
++	header := make([]byte, 8)
++	for {
++		if _, err := io.ReadFull(r, header); err != nil {
++			return err
++		}
++		length := int(binary.BigEndian.Uint16(header[4:6]))
++		if _, err := io.CopyN(io.Discard, r, int64(length+int(header[6]))); err != nil {
++			return err
++		}
++		if header[1] == fcgiStdin && length == 0 {
++			return nil
++		}
++	}
++}
++
++func record(kind byte, id uint16, content []byte) []byte {
++	var b bytes.Buffer
++	if err := writeRecordID(&b, kind, id, content); err != nil {
++		panic(err)
++	}
++	return b.Bytes()
++}
++
++func writeRecordID(w io.Writer, kind byte, id uint16, content []byte) error {
++	padding := (8 - len(content)%8) % 8
++	header := []byte{fcgiVersion, kind, byte(id >> 8), byte(id), byte(len(content) >> 8), byte(len(content)), byte(padding), 0}
++	_, err := w.Write(append(append(header, content...), make([]byte, padding)...))
++	return err
++}
++
++func endRequest(protocolStatus byte) []byte {
++	return record(fcgiEndRequest, fcgiRequestID, []byte{0, 0, 0, 0, protocolStatus, 0, 0, 0})
++}
++
++func TestStderrAndRecordsOfOthers(t *testing.T) {
++	address := fakeServer(t, func(conn net.Conn) {
++		_, _ = conn.Write(record(fcgiStdout, 0, []byte("not ours")))
++		_, _ = conn.Write(record(fcgiStderr, fcgiRequestID, []byte("PHP message: PHP Warning: x")))
++		_, _ = conn.Write(record(fcgiStdout, fcgiRequestID, []byte("Status: 500 Internal Server Error\nContent-type: text/html\n\n")))
++		_, _ = conn.Write(record(fcgiStdout, fcgiRequestID, []byte("oops")))
++		_, _ = conn.Write(endRequest(fcgiRequestComplete))
++	})
++
++	response, err := fcgiGet(context.Background(), "tcp", address, requestParams("/x", "/x", ""))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if response.Status != 500 || string(response.Body) != "oops" || string(response.Stderr) != "PHP message: PHP Warning: x" {
++		t.Fatalf("status %d, body %q, stderr %q", response.Status, response.Body, response.Stderr)
++	}
++}
++
++func TestRefusedOrBrokenResponses(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		answer []byte
++		want   string
++	}{
++		{"overloaded", endRequest(fcgiOverloaded), "overloaded"},
++		{"closed early", record(fcgiStdout, fcgiRequestID, []byte("Status: 200\r\n\r\n")), "closed the connection before it ended"},
++		{"cut record", record(fcgiStdout, fcgiRequestID, []byte("Status: 200 OK\r\n\r\nbody"))[:12], "middle of a record"},
++		{"wrong version", append([]byte{2}, endRequest(fcgiRequestComplete)[1:]...), "does not speak FastCGI 1"},
++		{"no header end", append(record(fcgiStdout, fcgiRequestID, []byte("Status: 200 OK\r\n")), endRequest(fcgiRequestComplete)...), "no end of its header"},
++		{"bad status", append(record(fcgiStdout, fcgiRequestID, []byte("Status: abc\r\n\r\n")), endRequest(fcgiRequestComplete)...), "bad status"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			address := fakeServer(t, func(conn net.Conn) { _, _ = conn.Write(tc.answer) })
++
++			_, err := fcgiGet(context.Background(), "tcp", address, requestParams("/x", "/x", ""))
++			if err == nil || !strings.Contains(err.Error(), tc.want) {
++				t.Fatalf("error %v, want one saying %q", err, tc.want)
++			}
++		})
++	}
++}
++
++func TestSilentServerTimesOut(t *testing.T) {
++	hold := make(chan struct{})
++	t.Cleanup(func() { close(hold) })
++	address := fakeServer(t, func(net.Conn) { <-hold })
++
++	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
++	defer cancel()
++
++	started := time.Now()
++	_, err := fcgiGet(ctx, "tcp", address, requestParams("/x", "/x", ""))
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("error %v, want the deadline", err)
++	}
++	if waited := time.Since(started); waited > 2*time.Second {
++		t.Fatalf("waited %v", waited)
++	}
++}
++
++func TestParseCGIResponse(t *testing.T) {
++	for _, tc := range []struct {
++		output string
++		status int
++		body   string
++	}{
++		{"Content-Type: text/plain\r\n\r\npong", 200, "pong"},
++		{"Status: 404 Not Found\r\nContent-Type: text/html\r\n\r\nFile not found.\n", 404, "File not found.\n"},
++		{"Status: 403\nContent-type: text/html\n\nAccess denied.", 403, "Access denied."},
++		{"Content-Type: application/json\r\n\r\n", 200, ""},
++		{"X-A: 1\r\n\r\nline\n\nwith a blank line", 200, "line\n\nwith a blank line"},
++	} {
++		response, err := parseCGIResponse([]byte(tc.output))
++		if err != nil {
++			t.Errorf("%q: %v", tc.output, err)
++			continue
++		}
++		if response.Status != tc.status || string(response.Body) != tc.body {
++			t.Errorf("%q: status %d, body %q", tc.output, response.Status, response.Body)
++		}
++	}
++}
++
++func TestEncodeParamsIsStable(t *testing.T) {
++	params := map[string]string{"B": "2", "A": "1", strings.Repeat("L", 130): ""}
++
++	first := encodeParams(params)
++	for range 20 {
++		if !bytes.Equal(encodeParams(params), first) {
++			t.Fatal("the same parameters encoded differently")
++		}
++	}
++
++	// the 130-byte name takes a four-byte length with the top bit set
++	want := fmt.Sprintf("\x01\x01A1\x01\x01B2\x80\x00\x00\x82\x00%s", strings.Repeat("L", 130))
++	if string(first) != want {
++		t.Fatalf("encoded as %q", first)
++	}
++}
+diff --git a/cmd/php-status/main.go b/cmd/php-status/main.go
+new file mode 100644
+index 0000000..52d15c3
+--- /dev/null
++++ b/cmd/php-status/main.go
+@@ -0,0 +1,353 @@
++// Command pocketcloud-php-status prints the state of the PHP-FPM in its
++// container as one JSON object: the status of the pool and the statistics of
++// OPcache. It is part of the PHP runtime images (images/php), where the agent
++// runs it with `docker exec`.
++//
++// It talks FastCGI to the status listener that FPM opens next to the pool
++// (pm.status_listen), a Unix socket inside the container. The pool's status
++// comes from FPM's status page (?json&full); OPcache's statistics come from a
++// small PHP script run by FPM, as only FPM's own processes share its OPcache:
++// the command-line PHP has an OPcache of its own.
++//
++// With -ping it only checks that FPM answers, for the image's health check.
++package main
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"flag"
++	"fmt"
++	"io"
++	"io/fs"
++	"os"
++	"path"
++	"strings"
++	"time"
++)
++
++const (
++	// defaultConfig is where the image's entrypoint writes the status settings
++	// at every start, with paths that change each time.
++	defaultConfig = "/run/pocketcloud-php/fpm-status.conf"
++	// defaultScript answers with OPcache's statistics.
++	defaultScript = "/usr/local/lib/pocketcloud-php/opcache-status.php"
++)
++
++// settings say where FPM's status listener is and at which paths it answers.
++type settings struct {
++	Listen       string
++	StatusPath   string
++	PingPath     string
++	PingResponse string
++}
++
++// report is what the command prints. A part that could not be read is null,
++// and the errors say why.
++type report struct {
++	PHPVersion string          `json:"php_version,omitempty"`
++	FPM        json.RawMessage `json:"fpm"`
++	OPcache    json.RawMessage `json:"opcache"`
++	Errors     []string        `json:"errors,omitempty"`
++}
++
++func main() {
++	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
++}
++
++// run is the command; it returns the exit status: 0 when every part was read,
++// 1 when one was not (the JSON says which) and 2 for a wrong invocation.
++func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
++	flags := flag.NewFlagSet("pocketcloud-php-status", flag.ContinueOnError)
++	flags.SetOutput(stderr)
++	configPath := flags.String("config", defaultConfig, "the status settings that the image's entrypoint writes at start")
++	listen := flags.String("listen", "", "the status listener, a socket path or host:port, instead of the one in -config")
++	statusPath := flags.String("status-path", "", "the path of FPM's status page, instead of the one in -config")
++	pingPath := flags.String("ping-path", "", "the path of FPM's ping, instead of the one in -config")
++	script := flags.String("script", defaultScript, "the PHP script that reports OPcache's statistics")
++	ping := flags.Bool("ping", false, "only check that FPM answers its ping, as a health check")
++	timeout := flags.Duration("timeout", 5*time.Second, "how long to wait for FPM")
++	flags.Usage = func() {
++		fmt.Fprintln(stderr, "Usage: pocketcloud-php-status [flags]")
++		fmt.Fprintln(stderr, "Prints FPM's pool status and OPcache's statistics as one JSON object.")
++		flags.PrintDefaults()
++	}
++
++	if err := flags.Parse(args); err != nil {
++		if errors.Is(err, flag.ErrHelp) {
++			return 0
++		}
++		return 2
++	}
++	if flags.NArg() > 0 {
++		fmt.Fprintf(stderr, "pocketcloud-php-status takes no arguments, only flags: %q\n", flags.Arg(0))
++		return 2
++	}
++
++	s, err := loadSettings(*configPath, settings{Listen: *listen, StatusPath: *statusPath, PingPath: *pingPath})
++	if err != nil {
++		fmt.Fprintln(stderr, "pocketcloud-php-status:", err)
++		return 1
++	}
++
++	ctx, cancel := context.WithTimeout(ctx, *timeout)
++	defer cancel()
++
++	if *ping {
++		if err := checkPing(ctx, s); err != nil {
++			fmt.Fprintln(stderr, "pocketcloud-php-status:", err)
++			return 1
++		}
++		fmt.Fprintln(stdout, "FPM answers its ping")
++		return 0
++	}
++
++	r := collect(ctx, s, *script)
++
++	encoded, err := json.Marshal(r)
++	if err != nil {
++		fmt.Fprintln(stderr, "pocketcloud-php-status:", err)
++		return 1
++	}
++	fmt.Fprintf(stdout, "%s\n", encoded)
++
++	for _, message := range r.Errors {
++		fmt.Fprintln(stderr, "pocketcloud-php-status:", message)
++	}
++	if len(r.Errors) > 0 {
++		return 1
++	}
++	return 0
++}
++
++// loadSettings reads the settings the entrypoint wrote; what is set in
++// overrides wins. The file may be missing when overrides say everything needed.
++func loadSettings(file string, overrides settings) (settings, error) {
++	var s settings
++
++	content, err := os.ReadFile(file)
++	switch {
++	case err == nil:
++		s = parseSettings(content)
++	case errors.Is(err, fs.ErrNotExist):
++		if overrides.Listen == "" {
++			return s, fmt.Errorf("FPM's status is off: %s is missing, so the container did not start with the image's entrypoint, or could not write it", file)
++		}
++	default:
++		return s, err
++	}
++
++	if overrides.Listen != "" {
++		s.Listen = overrides.Listen
++	}
++	if overrides.StatusPath != "" {
++		s.StatusPath = overrides.StatusPath
++	}
++	if overrides.PingPath != "" {
++		s.PingPath = overrides.PingPath
++	}
++	if s.PingResponse == "" {
++		s.PingResponse = "pong"
++	}
++
++	if s.Listen == "" {
++		return s, fmt.Errorf("%s does not say where FPM's status listener is (pm.status_listen)", file)
++	}
++
++	return s, nil
++}
++
++// parseSettings reads the entries of a pool configuration that matter here.
++// Values may be quoted; comments and section names are skipped.
++func parseSettings(content []byte) settings {
++	var s settings
++
++	scanner := bufio.NewScanner(bytes.NewReader(content))
++	for scanner.Scan() {
++		line := strings.TrimSpace(scanner.Text())
++		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "[") {
++			continue
++		}
++
++		key, value, ok := strings.Cut(line, "=")
++		if !ok {
++			continue
++		}
++		key = strings.TrimSpace(key)
++		value = strings.TrimSpace(value)
++		if len(value) >= 2 && (value[0] == '"' && value[len(value)-1] == '"' || value[0] == '\'' && value[len(value)-1] == '\'') {
++			value = value[1 : len(value)-1]
++		}
++
++		switch key {
++		case "pm.status_listen":
++			s.Listen = value
++		case "pm.status_path":
++			s.StatusPath = value
++		case "ping.path":
++			s.PingPath = value
++		case "ping.response":
++			s.PingResponse = value
++		}
++	}
++
++	return s
++}
++
++// dialTarget turns an FPM listen value into a network and an address: a path
++// is a Unix socket, a bare port is on the loopback address.
++func dialTarget(listen string) (network, address string) {
++	switch {
++	case strings.HasPrefix(listen, "/"):
++		return "unix", listen
++	case !strings.Contains(listen, ":"):
++		return "tcp", "127.0.0.1:" + listen
++	default:
++		return "tcp", listen
++	}
++}
++
++// collect reads both parts. One that fails leaves an error and null, so the
++// other is still reported.
++func collect(ctx context.Context, s settings, script string) report {
++	r := report{FPM: json.RawMessage("null"), OPcache: json.RawMessage("null")}
++
++	if pool, err := fpmStatus(ctx, s); err != nil {
++		r.Errors = append(r.Errors, "fpm: "+err.Error())
++	} else {
++		r.FPM = pool
++	}
++
++	if version, opcache, err := opcacheStatus(ctx, s, script); err != nil {
++		r.Errors = append(r.Errors, "opcache: "+err.Error())
++	} else {
++		r.PHPVersion = version
++		r.OPcache = opcache
++	}
++
++	return r
++}
++
++// fpmStatus fetches the full status of the pool as JSON.
++func fpmStatus(ctx context.Context, s settings) (json.RawMessage, error) {
++	if s.StatusPath == "" {
++		return nil, errors.New("the settings do not say the path of the status page (pm.status_path)")
++	}
++
++	response, err := request(ctx, s, requestParams(s.StatusPath, s.StatusPath, "json&full"))
++	if err != nil {
++		return nil, err
++	}
++	if response.Status != 200 {
++		return nil, fmt.Errorf("the status page answered with status %d%s", response.Status, stderrNote(response))
++	}
++
++	body := bytes.TrimSpace(response.Body)
++	if !json.Valid(body) || !bytes.HasPrefix(body, []byte("{")) {
++		return nil, errors.New("the status page did not answer with a JSON object")
++	}
++
++	return body, nil
++}
++
++// opcacheStatus runs the script that reports OPcache's statistics. The status
++// pool takes the site pool's php_admin_value settings, so the request lifts an
++// open_basedir that would keep the script out, the files a site may have FPM
++// run before and after every script, and a restriction of OPcache's functions
++// to the site's own files.
++func opcacheStatus(ctx context.Context, s settings, script string) (version string, opcache json.RawMessage, err error) {
++	params := requestParams("/"+path.Base(script), script, "")
++	params["DOCUMENT_ROOT"] = path.Dir(script)
++	params["PHP_ADMIN_VALUE"] = strings.Join([]string{
++		"open_basedir=" + path.Dir(script),
++		"auto_prepend_file=",
++		"auto_append_file=",
++		"opcache.restrict_api=",
++	}, "\n")
++
++	response, err := request(ctx, s, params)
++	if err != nil {
++		return "", nil, err
++	}
++	if response.Status != 200 {
++		return "", nil, fmt.Errorf("%s answered with status %d%s", script, response.Status, stderrNote(response))
++	}
++
++	var answer struct {
++		PHPVersion string          `json:"php_version"`
++		OPcache    json.RawMessage `json:"opcache"`
++	}
++	if err := json.Unmarshal(bytes.TrimSpace(response.Body), &answer); err != nil || !bytes.HasPrefix(answer.OPcache, []byte("{")) {
++		return "", nil, fmt.Errorf("%s did not answer with OPcache's statistics", script)
++	}
++
++	return answer.PHPVersion, answer.OPcache, nil
++}
++
++// checkPing asks FPM's ping and expects its configured answer.
++func checkPing(ctx context.Context, s settings) error {
++	if s.PingPath == "" {
++		return errors.New("the settings do not say the path of the ping (ping.path)")
++	}
++
++	response, err := request(ctx, s, requestParams(s.PingPath, s.PingPath, ""))
++	if err != nil {
++		return err
++	}
++	if response.Status != 200 || strings.TrimSpace(string(response.Body)) != s.PingResponse {
++		return fmt.Errorf("the ping answered with status %d and %q", response.Status, truncate(string(response.Body), 80))
++	}
++
++	return nil
++}
++
++func request(ctx context.Context, s settings, params map[string]string) (*fcgiResponse, error) {
++	network, address := dialTarget(s.Listen)
++
++	response, err := fcgiGet(ctx, network, address, params)
++	if err != nil {
++		return nil, fmt.Errorf("asking FPM at %s: %w", s.Listen, err)
++	}
++
++	return response, nil
++}
++
++// requestParams are the CGI variables of a GET request, as a web server sends them.
++func requestParams(scriptName, scriptFilename, query string) map[string]string {
++	uri := scriptName
++	if query != "" {
++		uri += "?" + query
++	}
++
++	return map[string]string{
++		"GATEWAY_INTERFACE": "CGI/1.1",
++		"REQUEST_METHOD":    "GET",
++		"REQUEST_URI":       uri,
++		"SCRIPT_NAME":       scriptName,
++		"SCRIPT_FILENAME":   scriptFilename,
++		"QUERY_STRING":      query,
++		"SERVER_PROTOCOL":   "HTTP/1.1",
++		"SERVER_SOFTWARE":   "pocketcloud-php-status",
++		"SERVER_NAME":       "localhost",
++		"REMOTE_ADDR":       "127.0.0.1",
++	}
++}
++
++// stderrNote quotes what FPM wrote to the error stream, which says why a script
++// failed.
++func stderrNote(response *fcgiResponse) string {
++	message := strings.TrimSpace(string(response.Stderr))
++	if message == "" {
++		return ""
++	}
++	return ": " + truncate(message, 300)
++}
++
++func truncate(s string, n int) string {
++	if len(s) <= n {
++		return s
++	}
++	return s[:n] + "…"
++}
+diff --git a/cmd/php-status/main_test.go b/cmd/php-status/main_test.go
+new file mode 100644
+index 0000000..1560567
+--- /dev/null
++++ b/cmd/php-status/main_test.go
+@@ -0,0 +1,241 @@
++package main
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/fcgi"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++const (
++	testStatusPath = "/status-0123456789abcdef"
++	testPingPath   = "/ping-0123456789abcdef"
++	testScript     = "/usr/local/lib/pocketcloud-php/opcache-status.php"
++)
++
++// fakeFPM answers like FPM's status listener: the status page, the ping and the
++// OPcache script. broken names the parts that fail.
++func fakeFPM(t *testing.T, broken ...string) http.Handler {
++	t.Helper()
++
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		env := fcgi.ProcessEnv(r)
++		is := func(part string) bool {
++			for _, b := range broken {
++				if b == part {
++					return true
++				}
++			}
++			return false
++		}
++
++		switch {
++		case r.URL.Path == testStatusPath && is("status-html"):
++			w.Header().Set("Content-Type", "text/html")
++			_, _ = fmt.Fprint(w, "<html>pool www</html>")
++		case r.URL.Path == testStatusPath:
++			if r.URL.RawQuery != "json&full" {
++				http.Error(w, "the status must be asked for as json&full, not "+r.URL.RawQuery, http.StatusBadRequest)
++				return
++			}
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = fmt.Fprint(w, `{"pool":"www","process manager":"ondemand","accepted conn":12,"processes":[{"pid":7,"state":"Idle","request uri":"/index.php"}]}`)
++		case r.URL.Path == testPingPath:
++			w.Header().Set("Content-Type", "text/plain")
++			if is("ping") {
++				_, _ = fmt.Fprint(w, "pang")
++				return
++			}
++			_, _ = fmt.Fprint(w, "pong")
++		case env["SCRIPT_FILENAME"] == testScript:
++			if is("opcache") {
++				http.Error(w, "", http.StatusInternalServerError)
++				return
++			}
++			if !strings.Contains(env["PHP_ADMIN_VALUE"], "open_basedir=/usr/local/lib/pocketcloud-php") {
++				http.Error(w, "open_basedir restriction in effect", http.StatusInternalServerError)
++				return
++			}
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = fmt.Fprint(w, `{"php_version":"8.5.12","opcache":{"opcache_enabled":true,"memory_usage":{"used_memory":9000000}}}`)
++		default:
++			http.Error(w, "File not found.", http.StatusNotFound)
++		}
++	})
++}
++
++// startFakeFPM serves fakeFPM on a Unix socket and writes settings for it as
++// the entrypoint would; it returns the settings file.
++func startFakeFPM(t *testing.T, broken ...string) string {
++	t.Helper()
++
++	socket := serveFCGI(t, "unix", fakeFPM(t, broken...))
++
++	config := filepath.Join(t.TempDir(), "fpm-status.conf")
++	content := fmt.Sprintf("; written at start\n[www]\npm.status_listen = %s\npm.status_path = %s\nping.path = \"%s\"\nping.response = pong\n", socket, testStatusPath, testPingPath)
++	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	return config
++}
++
++func runCommand(t *testing.T, args ...string) (int, string, string) {
++	t.Helper()
++
++	var stdout, stderr bytes.Buffer
++	code := run(context.Background(), args, &stdout, &stderr)
++	return code, stdout.String(), stderr.String()
++}
++
++func TestPrintsPoolAndOPcacheAsOneObject(t *testing.T) {
++	config := startFakeFPM(t)
++
++	code, stdout, stderr := runCommand(t, "-config", config, "-script", testScript)
++	if code != 0 {
++		t.Fatalf("exit %d: %s", code, stderr)
++	}
++	if strings.Count(stdout, "\n") != 1 {
++		t.Errorf("the output is not one line: %q", stdout)
++	}
++
++	var r struct {
++		PHPVersion string `json:"php_version"`
++		FPM        struct {
++			Pool      string           `json:"pool"`
++			Accepted  int              `json:"accepted conn"`
++			Processes []map[string]any `json:"processes"`
++		} `json:"fpm"`
++		OPcache struct {
++			Enabled bool `json:"opcache_enabled"`
++		} `json:"opcache"`
++		Errors []string `json:"errors"`
++	}
++	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
++		t.Fatalf("%v: %s", err, stdout)
++	}
++
++	if r.PHPVersion != "8.5.12" || r.FPM.Pool != "www" || r.FPM.Accepted != 12 || len(r.FPM.Processes) != 1 || !r.OPcache.Enabled {
++		t.Errorf("printed %s", stdout)
++	}
++	if r.Errors != nil {
++		t.Errorf("errors: %v", r.Errors)
++	}
++}
++
++func TestKeepsThePartThatWorked(t *testing.T) {
++	for _, tc := range []struct {
++		broken string
++		want   string
++		null   string
++	}{
++		{"opcache", "opcache: " + testScript + " answered with status 500", "opcache"},
++		{"status-html", "fpm: the status page did not answer with a JSON object", "fpm"},
++	} {
++		t.Run(tc.broken, func(t *testing.T) {
++			config := startFakeFPM(t, tc.broken)
++
++			code, stdout, stderr := runCommand(t, "-config", config, "-script", testScript)
++			if code != 1 {
++				t.Fatalf("exit %d", code)
++			}
++
++			var r map[string]json.RawMessage
++			if err := json.Unmarshal([]byte(stdout), &r); err != nil {
++				t.Fatalf("%v: %s", err, stdout)
++			}
++			if string(r[tc.null]) != "null" {
++				t.Errorf("%s is %s, want null", tc.null, r[tc.null])
++			}
++			for part := range map[string]bool{"fpm": true, "opcache": true} {
++				if part != tc.null && !bytes.HasPrefix(r[part], []byte("{")) {
++					t.Errorf("%s was lost: %s", part, r[part])
++				}
++			}
++			if !strings.Contains(string(r["errors"]), tc.want) || !strings.Contains(stderr, tc.want) {
++				t.Errorf("errors %s, stderr %q; want %q", r["errors"], stderr, tc.want)
++			}
++		})
++	}
++}
++
++func TestPing(t *testing.T) {
++	config := startFakeFPM(t)
++	if code, stdout, stderr := runCommand(t, "-config", config, "-ping"); code != 0 || !strings.Contains(stdout, "answers") {
++		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
++	}
++
++	config = startFakeFPM(t, "ping")
++	if code, _, stderr := runCommand(t, "-config", config, "-ping"); code != 1 || !strings.Contains(stderr, `"pang"`) {
++		t.Fatalf("exit %d, stderr %q", code, stderr)
++	}
++}
++
++func TestFlagsOverrideTheSettings(t *testing.T) {
++	config := startFakeFPM(t)
++	settings, err := loadSettings(config, settings{})
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// what another container would try: the right listener, but guessed paths
++	code, stdout, _ := runCommand(t, "-config", filepath.Join(t.TempDir(), "missing.conf"),
++		"-listen", settings.Listen, "-status-path", "/status", "-ping-path", "/ping", "-script", testScript)
++	if code != 1 || !strings.Contains(stdout, "status page answered with status 404") {
++		t.Fatalf("exit %d: %s", code, stdout)
++	}
++
++	code, _, _ = runCommand(t, "-config", "/nonexistent", "-listen", settings.Listen, "-ping-path", "/ping", "-ping")
++	if code != 1 {
++		t.Fatalf("a guessed ping path passed: exit %d", code)
++	}
++}
++
++func TestMissingSettingsSayWhy(t *testing.T) {
++	code, _, stderr := runCommand(t, "-config", filepath.Join(t.TempDir(), "fpm-status.conf"))
++	if code != 1 || !strings.Contains(stderr, "entrypoint") {
++		t.Fatalf("exit %d, stderr %q", code, stderr)
++	}
++
++	if code, _, _ := runCommand(t, "unexpected"); code != 2 {
++		t.Fatalf("an argument gave exit %d", code)
++	}
++}
++
++func TestParseSettings(t *testing.T) {
++	s := parseSettings([]byte(`
++; comment
++# another
++[www]
++pm.status_listen = /run/pocketcloud-php/status.sock
++pm.status_path='/status-abc'
++ping.path = "/ping-abc"
++ping.response = pong
++listen = 9000
++`))
++	want := settings{Listen: "/run/pocketcloud-php/status.sock", StatusPath: "/status-abc", PingPath: "/ping-abc", PingResponse: "pong"}
++	if s != want {
++		t.Fatalf("parsed %+v", s)
++	}
++}
++
++func TestDialTarget(t *testing.T) {
++	for listen, want := range map[string]string{
++		"/run/pocketcloud-php/status.sock": "unix /run/pocketcloud-php/status.sock",
++		"9001":                             "tcp 127.0.0.1:9001",
++		"127.0.0.1:9001":                   "tcp 127.0.0.1:9001",
++		"[::1]:9001":                       "tcp [::1]:9001",
++		"pc-php-site:9000":                 "tcp pc-php-site:9000",
++	} {
++		network, address := dialTarget(listen)
++		if got := network + " " + address; got != want {
++			t.Errorf("%s: %s, want %s", listen, got, want)
++		}
++	}
++}
+diff --git a/images/php/Dockerfile b/images/php/Dockerfile
+new file mode 100644
+index 0000000..58ab846
+--- /dev/null
++++ b/images/php/Dockerfile
+@@ -0,0 +1,135 @@
++# The PHP runtime of PHP sites: the official php:<version>-fpm image with the
++# extensions, tools and settings that sites expect. One image per PHP version
++# in versions.json, built by .github/workflows/php.yml; see docs/architecture.md,
++# "PHP sites".
++#
++#   docker build -f images/php/Dockerfile --build-arg PHP_VERSION=8.4 .
++
++# the newest version in versions.json, and the Debian release named there
++ARG PHP_VERSION=8.5
++ARG DEBIAN_RELEASE=trixie
++# CI pins the base by digest: php:<version>-fpm-<release>@sha256:…
++ARG BASE_IMAGE=php:${PHP_VERSION}-fpm-${DEBIAN_RELEASE}
++
++FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS status
++ARG TARGETOS
++ARG TARGETARCH
++WORKDIR /src
++COPY go.mod go.sum ./
++COPY cmd/php-status ./cmd/php-status
++RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" \
++    -o /out/pocketcloud-php-status ./cmd/php-status
++
++FROM ${BASE_IMAGE}
++ARG PHP_VERSION
++
++# Extensions from PECL and the tools, pinned and checked against these sums.
++ARG REDIS_VERSION=6.3.0
++ARG REDIS_SHA256=0d5141f634bd1db6c1ddcda053d25ecf2c4fc1c395430d534fd3f8d51dd7f0b5
++ARG IMAGICK_VERSION=3.8.1
++ARG IMAGICK_SHA256=3a3587c0a524c17d0dad9673a160b90cd776e836838474e173b549ed864352ee
++ARG COMPOSER_VERSION=2.11.1
++ARG COMPOSER_SHA256=6f1b891e1d4927d62740276c540fb490e47689e19e102c49e8da849794882f8c
++ARG WP_CLI_VERSION=2.12.0
++ARG WP_CLI_SHA512=be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832
++ARG WP_CLI_URL=https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar
++
++# The extensions, built against the headers of the libraries they need. Only
++# those libraries stay, found with ldd as the official WordPress image does;
++# the headers and the compilers of the base image ($PHPIZE_DEPS) go, so an image
++# derived from this one that builds more extensions installs $PHPIZE_DEPS again.
++RUN set -eux; \
++    apt-get update; \
++    apt-get upgrade -y; \
++    savedAptMark="$(apt-mark showmanual)"; \
++    apt-get install -y --no-install-recommends \
++        libavif-dev \
++        libfreetype-dev \
++        libicu-dev \
++        libjpeg62-turbo-dev \
++        libmagickwand-dev \
++        libpng-dev \
++        libpq-dev \
++        libwebp-dev \
++        libzip-dev \
++    ; \
++    \
++    docker-php-source extract; \
++    curl -fsSL -o /tmp/redis.tgz "https://pecl.php.net/get/redis-${REDIS_VERSION}.tgz"; \
++    echo "${REDIS_SHA256}  /tmp/redis.tgz" | sha256sum -c -; \
++    mkdir /usr/src/php/ext/redis; \
++    tar -xzf /tmp/redis.tgz -C /usr/src/php/ext/redis --strip-components=1; \
++    curl -fsSL -o /tmp/imagick.tgz "https://pecl.php.net/get/imagick-${IMAGICK_VERSION}.tgz"; \
++    echo "${IMAGICK_SHA256}  /tmp/imagick.tgz" | sha256sum -c -; \
++    mkdir /usr/src/php/ext/imagick; \
++    tar -xzf /tmp/imagick.tgz -C /usr/src/php/ext/imagick --strip-components=1; \
++    rm /tmp/redis.tgz /tmp/imagick.tgz; \
++    \
++    docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp; \
++    extensions="bcmath exif gd imagick intl mysqli pdo_mysql pdo_pgsql redis zip"; \
++    # PHP 8.5 has OPcache built in; before, it is an extension of its own
++    if ! php -m | grep -qx 'Zend OPcache'; then extensions="$extensions opcache"; fi; \
++    docker-php-ext-install -j"$(nproc)" $extensions; \
++    docker-php-source delete; \
++    \
++    apt-mark auto '.*' > /dev/null; \
++    apt-mark manual $savedAptMark > /dev/null; \
++    apt-mark auto $PHPIZE_DEPS libc6-dev > /dev/null; \
++    extdir="$(php -r 'echo ini_get("extension_dir");')"; \
++    ldd "$extdir"/*.so \
++        | awk '/=>/ { so = $(NF-1); if (index(so, "/usr/local/") == 1) { next }; gsub("^/(usr/)?", "", so); printf "*%s\n", so }' \
++        | sort -u \
++        | xargs -r dpkg-query --search \
++        | cut -d: -f1 \
++        | sort -u \
++        | xargs -rt apt-mark manual; \
++    \
++    apt-get install -y --no-install-recommends msmtp unzip; \
++    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
++    rm -rf /var/lib/apt/lists/* /tmp/pear ~/.pearrc; \
++    \
++    # every extension still finds its libraries, and PHP starts without a warning
++    if ldd "$extdir"/*.so | grep 'not found'; then exit 1; fi; \
++    err="$(php --version 3>&1 1>&2 2>&3)"; \
++    [ -z "$err" ]; \
++    php -m
++
++# Composer and WP-CLI
++RUN set -eux; \
++    curl -fsSL -o /usr/local/bin/composer "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"; \
++    echo "${COMPOSER_SHA256}  /usr/local/bin/composer" | sha256sum -c -; \
++    curl -fsSL -o /usr/local/bin/wp "${WP_CLI_URL}"; \
++    echo "${WP_CLI_SHA512}  /usr/local/bin/wp" | sha512sum -c -; \
++    chmod 0755 /usr/local/bin/composer /usr/local/bin/wp
++
++# Settings: php.ini-production with PocketCloud's own on top, FPM's pool, and
++# the place where the entrypoint writes what changes at every start. msmtp
++# reads its configuration from there through /etc/msmtprc.
++RUN set -eux; \
++    cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"; \
++    rm /usr/local/etc/php-fpm.d/*; \
++    install -d -o www-data -g www-data -m 0700 /run/pocketcloud-php; \
++    ln -s /run/pocketcloud-php/msmtprc /etc/msmtprc; \
++    ln -s /usr/bin/msmtp /usr/sbin/sendmail
++COPY images/php/php.ini $PHP_INI_DIR/conf.d/zz-pocketcloud.ini
++COPY images/php/php-fpm.conf /usr/local/etc/php-fpm.d/www.conf
++COPY images/php/opcache-status.php /usr/local/lib/pocketcloud-php/opcache-status.php
++COPY --chmod=0755 images/php/entrypoint.sh /usr/local/bin/pocketcloud-php-entrypoint
++COPY --from=status /out/pocketcloud-php-status /usr/local/bin/pocketcloud-php-status
++
++# Caches of the tools in /tmp, as www-data's home is not its own.
++ENV COMPOSER_HOME=/tmp/composer \
++    WP_CLI_CACHE_DIR=/tmp/wp-cli-cache
++
++LABEL org.opencontainers.image.title="pocketcloud-php" \
++      org.opencontainers.image.description="PHP-FPM ${PHP_VERSION} for PocketCloud's PHP sites" \
++      org.opencontainers.image.source="https://github.com/oldbear24/PocketServerManager" \
++      org.opencontainers.image.version="${PHP_VERSION}"
++
++USER www-data
++RUN php-fpm --test
++
++HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
++    CMD ["pocketcloud-php-status", "-ping"]
++ENTRYPOINT ["pocketcloud-php-entrypoint"]
++CMD ["php-fpm"]
+diff --git a/images/php/entrypoint.sh b/images/php/entrypoint.sh
+new file mode 100644
+index 0000000..6814809
+--- /dev/null
++++ b/images/php/entrypoint.sh
+@@ -0,0 +1,162 @@
++#!/bin/sh
++# The entrypoint of PocketCloud's PHP runtime images. At every start it writes
++# what cannot be part of the image to /run/pocketcloud-php, then runs the
++# command, php-fpm unless another one is given:
++#
++# - fpm-status.conf: FPM's status page and ping for pocketcloud-php-status and
++#   the health check, on a Unix socket of their own (pm.status_listen). FPM
++#   answers them on the pool's port 9000 too, which other containers reach, so
++#   their paths are made up anew at every start and only exist in here.
++# - msmtprc: the SMTP relay for mail(), from POCKETCLOUD_SMTP_HOST, _PORT,
++#   _TLS (starttls, tls or off), _USER, _PASSWORD or _PASSWORD_FILE and _FROM.
++#   A password goes into a file of its own that msmtp reads, never onto a
++#   command line, and POCKETCLOUD_SMTP_PASSWORD is unset before PHP starts.
++#
++# The container runs as www-data. As root, which only jobs need, nothing is
++# written: FPM would not run as root anyway.
++set -eu
++
++runtime=/run/pocketcloud-php
++
++warn() {
++	echo "pocketcloud-php: $*" >&2
++}
++
++newline='
++'
++carriage_return=$(printf '\r')
++
++# safe_value tells whether a value can stand in msmtp's configuration, which
++# has one setting per line and quotes values with double quotes.
++safe_value() {
++	case $1 in
++		*[\"\\]* | *"$newline"* | *"$carriage_return"*) return 1 ;;
++	esac
++	return 0
++}
++
++write_status_config() {
++	token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
++	if [ ${#token} -ne 32 ]; then
++		warn "cannot make up the status paths, so FPM's status is off"
++		return 0
++	fi
++
++	rm -f "$runtime/status.sock"
++	cat >"$runtime/fpm-status.conf.new" <<-EOF
++		; Written by pocketcloud-php-entrypoint at start.
++		[www]
++		pm.status_listen = $runtime/status.sock
++		pm.status_path = /status-$token
++		ping.path = /ping-$token
++		ping.response = pong
++	EOF
++	mv -f "$runtime/fpm-status.conf.new" "$runtime/fpm-status.conf"
++}
++
++write_mail_config() {
++	rm -f "$runtime/msmtprc" "$runtime/smtp-password"
++
++	host=${POCKETCLOUD_SMTP_HOST:-}
++	if [ -z "$host" ]; then
++		return 0
++	fi
++
++	port=${POCKETCLOUD_SMTP_PORT:-587}
++	tls=${POCKETCLOUD_SMTP_TLS:-}
++	if [ -z "$tls" ]; then
++		if [ "$port" = 465 ]; then tls=tls; else tls=starttls; fi
++	fi
++	user=${POCKETCLOUD_SMTP_USER:-}
++	from=${POCKETCLOUD_SMTP_FROM:-}
++	password_file=${POCKETCLOUD_SMTP_PASSWORD_FILE:-}
++
++	case $host in
++		*[!A-Za-z0-9.:-]*)
++			warn "POCKETCLOUD_SMTP_HOST is not a host name or address, so mail is off"
++			return 0
++			;;
++	esac
++	case $port in
++		'' | *[!0-9]*)
++			warn "POCKETCLOUD_SMTP_PORT is not a port, so mail is off"
++			return 0
++			;;
++	esac
++	case $tls in
++		starttls | tls | off) ;;
++		*)
++			warn "POCKETCLOUD_SMTP_TLS must be starttls, tls or off, so mail is off"
++			return 0
++			;;
++	esac
++	if ! safe_value "$user" || ! safe_value "$from"; then
++		warn "POCKETCLOUD_SMTP_USER or _FROM holds a quote, a backslash or a line break, so mail is off"
++		return 0
++	fi
++	case $password_file in
++		*[!A-Za-z0-9._/-]*)
++			warn "POCKETCLOUD_SMTP_PASSWORD_FILE is not a plain path, so mail is off"
++			return 0
++			;;
++	esac
++
++	{
++		echo "# Written by pocketcloud-php-entrypoint at start, from POCKETCLOUD_SMTP_*."
++		echo "defaults"
++		echo "syslog off"
++		# one line per mail on the container's log: the base of the counts of sent and failed mail
++		echo "logfile /dev/stderr"
++		echo
++		echo "account default"
++		echo "host $host"
++		echo "port $port"
++		case $tls in
++			starttls) printf 'tls on\ntls_starttls on\n' ;;
++			tls) printf 'tls on\ntls_starttls off\n' ;;
++			off) echo "tls off" ;;
++		esac
++		if [ -n "$user" ]; then
++			echo "auth on"
++			echo "user \"$user\""
++			if [ -n "$password_file" ]; then
++				echo "passwordeval \"cat $password_file\""
++			else
++				echo "passwordeval \"cat $runtime/smtp-password\""
++			fi
++		else
++			echo "auth off"
++		fi
++		# the envelope sender: the one given, or else the From header of the mail
++		if [ -n "$from" ]; then
++			echo "from \"$from\""
++		else
++			echo "from %F"
++		fi
++	} >"$runtime/msmtprc.new"
++
++	if [ -n "$user" ] && [ -z "$password_file" ]; then
++		# printf is built into the shell: the password is on no command line
++		printf '%s' "${POCKETCLOUD_SMTP_PASSWORD:-}" >"$runtime/smtp-password"
++	fi
++	mv -f "$runtime/msmtprc.new" "$runtime/msmtprc"
++}
++
++if [ "$(id -u)" != 0 ]; then
++	if [ -d "$runtime" ] && [ -w "$runtime" ]; then
++		umask 077
++		write_status_config
++		write_mail_config
++		umask 022
++	else
++		warn "$runtime is not writable by this user, so FPM's status and mail are off"
++	fi
++fi
++unset POCKETCLOUD_SMTP_PASSWORD
++
++# like the official image: options alone are options of php-fpm
++if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
++	set -- php-fpm "$@"
++fi
++
++exec "$@"
+diff --git a/images/php/opcache-status.php b/images/php/opcache-status.php
+new file mode 100644
+index 0000000..0da809d
+--- /dev/null
++++ b/images/php/opcache-status.php
+@@ -0,0 +1,28 @@
++<?php
++
++// Answers pocketcloud-php-status with OPcache's statistics. It must run in
++// FPM: the command-line PHP has an OPcache of its own and would see nothing.
++//
++// It answers only in FPM's status pool, which listens on a Unix socket inside
++// the container; through the site's pool on port 9000, which other containers
++// reach, it does not exist.
++
++$pool = function_exists('fpm_get_status') ? (fpm_get_status()['pool'] ?? '') : '';
++if (!str_ends_with($pool, '_status')) {
++    http_response_code(404);
++    exit;
++}
++
++$opcache = function_exists('opcache_get_status') ? opcache_get_status(false) : false;
++
++header('Content-Type: application/json');
++header('Cache-Control: no-store');
++
++echo json_encode(
++    [
++        'php_version' => PHP_VERSION,
++        // false when OPcache is off for this pool
++        'opcache' => $opcache === false ? ['opcache_enabled' => false] : $opcache,
++    ],
++    JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
++);
+diff --git a/images/php/php-fpm.conf b/images/php/php-fpm.conf
+new file mode 100644
+index 0000000..a0de14a
+--- /dev/null
++++ b/images/php/php-fpm.conf
+@@ -0,0 +1,35 @@
++; PocketCloud's PHP-FPM settings. They replace the php-fpm.d files of the
++; official image. A site's own pool settings come later and win (#50).
++
++[global]
++error_log = /proc/self/fd/2
++; a longer line of a worker's output is split
++log_limit = 8192
++daemonize = no
++
++[www]
++; The container runs as www-data, so FPM does, and so do its workers: no user
++; or group here, which FPM would only ignore with a notice.
++listen = 9000
++
++; Workers start when requests come and stop after a minute without one, so a
++; quiet site holds no more than FPM's master.
++pm = ondemand
++pm.max_children = 5
++pm.process_idle_timeout = 60s
++pm.max_requests = 500
++
++; What workers write goes to the container's log as it is, and so do PHP's
++; errors (error_log in php.ini). The edge logs every request, so FPM does not.
++catch_workers_output = yes
++decorate_workers_output = no
++
++; Variables of the container reach PHP, as a site's configuration is passed in them.
++clear_env = no
++
++; Only .php files run, not .phar ones that a site may hold for download.
++security.limit_extensions = .php
++
++; The status page and the ping, with paths that change at every start: the
++; entrypoint writes them, as only a process in the container may know them.
++include = /run/pocketcloud-php/fpm-*.conf
+diff --git a/images/php/php.ini b/images/php/php.ini
+new file mode 100644
+index 0000000..ebdf6b4
+--- /dev/null
++++ b/images/php/php.ini
+@@ -0,0 +1,33 @@
++; PocketCloud's settings on top of php.ini-production, which the image uses as
++; php.ini. A site's own settings come later and win (#50).
++
++; Do not say which PHP runs in the X-Powered-By header.
++expose_php = Off
++
++; Errors go to the container's log, like everything FPM and its workers write,
++; and never to the page (display_errors is off in production).
++error_log = /proc/self/fd/2
++date.timezone = UTC
++
++; mail() goes through the SMTP relay that the entrypoint configures at start
++; from POCKETCLOUD_SMTP_*. msmtp reads /etc/msmtprc, which points there.
++sendmail_path = "/usr/bin/msmtp -t"
++
++[opcache]
++; Every site has a container and so an OPcache of its own.
++opcache.enable = 1
++opcache.enable_cli = 0
++opcache.memory_consumption = 128
++; WordPress with plugins and Laravel load thousands of files and many strings
++; (the defaults are 10000 files and 8 MB).
++opcache.max_accelerated_files = 20000
++opcache.interned_strings_buffer = 16
++; Classic mode: a site that changes its own code in place, such as WordPress
++; updated from wp-admin, sees a change within two seconds, and a file is not
++; cached until it has not changed for two seconds. Release mode needs neither:
++; every release has new paths, so #50 may turn the checks off per site.
++opcache.validate_timestamps = 1
++opcache.revalidate_freq = 2
++opcache.file_update_protection = 2
++; Doctrine's annotations and other tools that read doc comments need them.
++opcache.save_comments = 1
+diff --git a/images/php/versions.go b/images/php/versions.go
+new file mode 100644
+index 0000000..b4ab632
+--- /dev/null
++++ b/images/php/versions.go
+@@ -0,0 +1,14 @@
++// Package php holds the manifest of the PHP runtime images, versions.json: the
++// PHP versions an image is built for, with the dates their support ends, and
++// the Debian release of the official images they start from. It is the one
++// list for CI, which builds an image per version while the version has
++// security support (.github/workflows/php.yml), and for the panel, which warns
++// before support ends (internal/php).
++package php
++
++import _ "embed"
++
++// Manifest is versions.json.
++//
++//go:embed versions.json
++var Manifest []byte
+diff --git a/images/php/versions.json b/images/php/versions.json
+new file mode 100644
+index 0000000..73d8cf9
+--- /dev/null
++++ b/images/php/versions.json
+@@ -0,0 +1,29 @@
++{
++  "debian": "trixie",
++  "versions": [
++    {
++      "version": "8.5",
++      "released": "2025-11-20",
++      "active_support_until": "2027-12-31",
++      "security_support_until": "2029-12-31"
++    },
++    {
++      "version": "8.4",
++      "released": "2024-11-21",
++      "active_support_until": "2026-12-31",
++      "security_support_until": "2028-12-31"
++    },
++    {
++      "version": "8.3",
++      "released": "2023-11-23",
++      "active_support_until": "2025-12-31",
++      "security_support_until": "2027-12-31"
++    },
++    {
++      "version": "8.2",
++      "released": "2022-12-08",
++      "active_support_until": "2024-12-31",
++      "security_support_until": "2026-12-31"
++    }
++  ]
++}
+diff --git a/internal/php/php.go b/internal/php/php.go
+new file mode 100644
+index 0000000..d23f367
+--- /dev/null
++++ b/internal/php/php.go
+@@ -0,0 +1,192 @@
++// Package php knows the PHP versions that PocketCloud's runtime images are
++// built for, from the manifest images/php/versions.json, and where each one
++// stands in its support on a given day.
++package php
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"slices"
++	"strconv"
++	"strings"
++	"time"
++
++	manifest "github.com/oldbear24/PocketServerManager/images/php"
++)
++
++// Image is the repository of the runtime images; Tag names a version's image.
++const Image = "ghcr.io/oldbear24/pocketcloud-php"
++
++// WarnDays is how long before its security support ends a version is warned about.
++const WarnDays = 90
++
++// State is where a version stands in its support.
++type State string
++
++const (
++	// Supported versions get bug fixes and security fixes (active support).
++	Supported State = "supported"
++	// SecurityOnly versions get security fixes only.
++	SecurityOnly State = "security"
++	// Ending versions lose their security support within the days given to State.
++	Ending State = "ending"
++	// Ended versions get no fixes at all.
++	Ended State = "ended"
++)
++
++// Version is a PHP version of the manifest. Its dates are days (at midnight
++// UTC), and support lasts until the end of the day named.
++type Version struct {
++	Version              string
++	Released             time.Time
++	ActiveSupportUntil   time.Time
++	SecuritySupportUntil time.Time
++}
++
++// Tag is the tag of the version's image, such as 8.4-fpm.
++func (v Version) Tag() string {
++	return v.Version + "-fpm"
++}
++
++// DaysLeft is the number of days from the day of t, in UTC, to the last day
++// of security support: 0 on that day, and below 0 once support has ended.
++func (v Version) DaysLeft(t time.Time) int {
++	return int(v.SecuritySupportUntil.Sub(day(t)).Hours() / 24)
++}
++
++// State tells where the version stands on the day of t, in UTC: Ending once
++// at most warnDays are left of its security support.
++func (v Version) State(t time.Time, warnDays int) State {
++	left := v.DaysLeft(t)
++
++	switch {
++	case left < 0:
++		return Ended
++	case left <= warnDays:
++		return Ending
++	case day(t).After(v.ActiveSupportUntil):
++		return SecurityOnly
++	default:
++		return Supported
++	}
++}
++
++func day(t time.Time) time.Time {
++	year, month, d := t.UTC().Date()
++	return time.Date(year, month, d, 0, 0, 0, 0, time.UTC)
++}
++
++// Versions returns the versions of the manifest, the newest first.
++func Versions() []Version {
++	return slices.Clone(versions.Versions)
++}
++
++// Find returns the version with the name, such as "8.4".
++func Find(name string) (Version, bool) {
++	for _, v := range versions.Versions {
++		if v.Version == name {
++			return v, true
++		}
++	}
++	return Version{}, false
++}
++
++// manifestFile is versions.json.
++type manifestFile struct {
++	// Debian is the release of the official images the runtime images start from.
++	Debian   string
++	Versions []Version
++}
++
++var versions = mustParse(manifest.Manifest)
++
++func mustParse(content []byte) manifestFile {
++	parsed, err := parse(content)
++	if err != nil {
++		panic(fmt.Sprintf("images/php/versions.json: %v", err))
++	}
++	return parsed
++}
++
++// parse reads and checks a manifest: every version once, the newest first,
++// with dates in order.
++func parse(content []byte) (manifestFile, error) {
++	var raw struct {
++		Debian   string `json:"debian"`
++		Versions []struct {
++			Version              string `json:"version"`
++			Released             string `json:"released"`
++			ActiveSupportUntil   string `json:"active_support_until"`
++			SecuritySupportUntil string `json:"security_support_until"`
++		} `json:"versions"`
++	}
++
++	decoder := json.NewDecoder(bytes.NewReader(content))
++	decoder.DisallowUnknownFields()
++	if err := decoder.Decode(&raw); err != nil {
++		return manifestFile{}, err
++	}
++
++	if raw.Debian == "" {
++		return manifestFile{}, errors.New("it names no Debian release")
++	}
++	if len(raw.Versions) == 0 {
++		return manifestFile{}, errors.New("it lists no version")
++	}
++
++	parsed := manifestFile{Debian: raw.Debian}
++	for i, entry := range raw.Versions {
++		if _, err := versionNumbers(entry.Version); err != nil {
++			return manifestFile{}, err
++		}
++
++		v := Version{Version: entry.Version}
++		for _, field := range []struct {
++			name  string
++			value string
++			into  *time.Time
++		}{
++			{"released", entry.Released, &v.Released},
++			{"active_support_until", entry.ActiveSupportUntil, &v.ActiveSupportUntil},
++			{"security_support_until", entry.SecuritySupportUntil, &v.SecuritySupportUntil},
++		} {
++			date, err := time.Parse(time.DateOnly, field.value)
++			if err != nil {
++				return manifestFile{}, fmt.Errorf("PHP %s: %s is not a date like 2026-12-31: %q", entry.Version, field.name, field.value)
++			}
++			*field.into = date
++		}
++
++		if v.ActiveSupportUntil.Before(v.Released) || v.SecuritySupportUntil.Before(v.ActiveSupportUntil) {
++			return manifestFile{}, fmt.Errorf("PHP %s: its dates must follow each other: released, active support, security support", v.Version)
++		}
++
++		if i > 0 && !newer(parsed.Versions[i-1].Version, v.Version) {
++			return manifestFile{}, fmt.Errorf("PHP %s comes after %s: the newest version must come first, and each only once", v.Version, parsed.Versions[i-1].Version)
++		}
++
++		parsed.Versions = append(parsed.Versions, v)
++	}
++
++	return parsed, nil
++}
++
++// versionNumbers reads a release series such as 8.4.
++func versionNumbers(name string) ([2]int, error) {
++	major, minor, ok := strings.Cut(name, ".")
++	a, errMajor := strconv.Atoi(major)
++	b, errMinor := strconv.Atoi(minor)
++	if !ok || errMajor != nil || errMinor != nil || a < 0 || b < 0 {
++		return [2]int{}, fmt.Errorf("%q is not a PHP release series like 8.4", name)
++	}
++	return [2]int{a, b}, nil
++}
++
++// newer tells whether release series a comes after b.
++func newer(a, b string) bool {
++	x, _ := versionNumbers(a)
++	y, _ := versionNumbers(b)
++	return x[0] > y[0] || x[0] == y[0] && x[1] > y[1]
++}
+diff --git a/internal/php/php_test.go b/internal/php/php_test.go
+new file mode 100644
+index 0000000..60f0be3
+--- /dev/null
++++ b/internal/php/php_test.go
+@@ -0,0 +1,183 @@
++package php
++
++import (
++	"os"
++	"regexp"
++	"strings"
++	"testing"
++	"time"
++)
++
++func date(t *testing.T, value string) time.Time {
++	t.Helper()
++
++	parsed, err := time.Parse(time.RFC3339, value)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return parsed
++}
++
++func find(t *testing.T, name string) Version {
++	t.Helper()
++
++	v, ok := Find(name)
++	if !ok {
++		t.Fatalf("PHP %s is not in the manifest", name)
++	}
++	return v
++}
++
++// The dates of php.net/supported-versions.php, as of November 2026.
++func TestManifestHasTheDatesOfPHP(t *testing.T) {
++	want := map[string][3]string{
++		"8.5": {"2025-11-20", "2027-12-31", "2029-12-31"},
++		"8.4": {"2024-11-21", "2026-12-31", "2028-12-31"},
++		"8.3": {"2023-11-23", "2025-12-31", "2027-12-31"},
++		"8.2": {"2022-12-08", "2024-12-31", "2026-12-31"},
++	}
++
++	var names []string
++	for _, v := range Versions() {
++		names = append(names, v.Version)
++
++		dates, ok := want[v.Version]
++		if !ok {
++			t.Errorf("PHP %s is new to this test", v.Version)
++			continue
++		}
++		got := [3]string{
++			v.Released.Format(time.DateOnly),
++			v.ActiveSupportUntil.Format(time.DateOnly),
++			v.SecuritySupportUntil.Format(time.DateOnly),
++		}
++		if got != dates {
++			t.Errorf("PHP %s: %v, want %v", v.Version, got, dates)
++		}
++	}
++
++	if strings.Join(names, " ") != "8.5 8.4 8.3 8.2" {
++		t.Errorf("versions %v", names)
++	}
++	if versions.Debian != "trixie" {
++		t.Errorf("Debian %q", versions.Debian)
++	}
++}
++
++func TestStates(t *testing.T) {
++	for _, tc := range []struct {
++		version string
++		at      string
++		state   State
++		left    int
++	}{
++		// the day of the issue: PHP 8.2 has 57 days of security fixes left
++		{"8.2", "2026-11-04T12:00:00Z", Ending, 57},
++		{"8.3", "2026-11-04T12:00:00Z", SecurityOnly, 422},
++		{"8.4", "2026-11-04T12:00:00Z", Supported, 787},
++		{"8.5", "2026-11-04T12:00:00Z", Supported, 1153},
++
++		// a warning from 90 days before the last day of security support
++		{"8.2", "2026-10-01T23:59:59Z", SecurityOnly, 91},
++		{"8.2", "2026-10-02T00:00:00Z", Ending, 90},
++		// support lasts through the day named, in UTC
++		{"8.2", "2026-12-31T23:59:59Z", Ending, 0},
++		{"8.2", "2027-01-01T00:00:00Z", Ended, -1},
++		{"8.2", "2026-12-31T20:00:00-05:00", Ended, -1},
++		{"8.2", "2030-01-01T00:00:00Z", Ended, -1097},
++
++		// active support ends, security fixes go on
++		{"8.4", "2026-12-31T23:59:59Z", Supported, 730},
++		{"8.4", "2027-01-01T00:00:00Z", SecurityOnly, 729},
++		{"8.4", "2028-12-31T00:00:00Z", Ending, 0},
++	} {
++		v := find(t, tc.version)
++		at := date(t, tc.at)
++
++		if got := v.State(at, WarnDays); got != tc.state {
++			t.Errorf("PHP %s on %s: %s, want %s", tc.version, tc.at, got, tc.state)
++		}
++		if got := v.DaysLeft(at); got != tc.left {
++			t.Errorf("PHP %s on %s: %d days left, want %d", tc.version, tc.at, got, tc.left)
++		}
++	}
++}
++
++func TestWarningDaysAreAParameter(t *testing.T) {
++	v := find(t, "8.3")
++	at := date(t, "2026-11-04T12:00:00Z")
++
++	if got := v.State(at, 500); got != Ending {
++		t.Errorf("with 500 days: %s", got)
++	}
++	if got := v.State(at, 0); got != SecurityOnly {
++		t.Errorf("with no days: %s", got)
++	}
++}
++
++func TestFind(t *testing.T) {
++	if v, ok := Find("8.4"); !ok || v.Tag() != "8.4-fpm" {
++		t.Errorf("8.4: %v %v", v, ok)
++	}
++	for _, name := range []string{"7.4", "8", "8.4.1", ""} {
++		if _, ok := Find(name); ok {
++			t.Errorf("%q was found", name)
++		}
++	}
++}
++
++func TestVersionsIsACopy(t *testing.T) {
++	list := Versions()
++	list[0].Version = "changed"
++
++	if Versions()[0].Version == "changed" {
++		t.Fatal("a caller changed the manifest")
++	}
++}
++
++func TestParseRejectsBadManifests(t *testing.T) {
++	entry := func(version, released, active, security string) string {
++		return `{"version":"` + version + `","released":"` + released + `","active_support_until":"` + active + `","security_support_until":"` + security + `"}`
++	}
++	good := entry("8.5", "2025-11-20", "2027-12-31", "2029-12-31")
++
++	for name, content := range map[string]string{
++		"no Debian":      `{"versions":[` + good + `]}`,
++		"no version":     `{"debian":"trixie","versions":[]}`,
++		"unknown field":  `{"debian":"trixie","versions":[` + good + `],"extra":1}`,
++		"bad version":    `{"debian":"trixie","versions":[` + entry("8", "2025-11-20", "2027-12-31", "2029-12-31") + `]}`,
++		"bad date":       `{"debian":"trixie","versions":[` + entry("8.5", "2025-11-20", "31 Dec 2027", "2029-12-31") + `]}`,
++		"dates reversed": `{"debian":"trixie","versions":[` + entry("8.5", "2025-11-20", "2029-12-31", "2027-12-31") + `]}`,
++		"oldest first":   `{"debian":"trixie","versions":[` + entry("8.4", "2024-11-21", "2026-12-31", "2028-12-31") + `,` + good + `]}`,
++		"twice":          `{"debian":"trixie","versions":[` + good + `,` + good + `]}`,
++	} {
++		if _, err := parse([]byte(content)); err == nil {
++			t.Errorf("%s: accepted", name)
++		}
++	}
++
++	if _, err := parse([]byte(`{"debian":"trixie","versions":[` + good + `]}`)); err != nil {
++		t.Errorf("a good manifest: %v", err)
++	}
++}
++
++// The Dockerfile builds the newest version on the manifest's Debian release
++// when CI does not say otherwise, as local builds do.
++func TestDockerfileDefaultsFollowTheManifest(t *testing.T) {
++	dockerfile, err := os.ReadFile("../../images/php/Dockerfile")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	defaults := map[string]string{}
++	for _, match := range regexp.MustCompile(`(?m)^ARG (PHP_VERSION|DEBIAN_RELEASE)=(\S+)$`).FindAllStringSubmatch(string(dockerfile), -1) {
++		defaults[match[1]] = match[2]
++	}
++
++	if defaults["PHP_VERSION"] != Versions()[0].Version {
++		t.Errorf("the Dockerfile builds PHP %q by default, the newest is %s", defaults["PHP_VERSION"], Versions()[0].Version)
++	}
++	if defaults["DEBIAN_RELEASE"] != versions.Debian {
++		t.Errorf("the Dockerfile starts from Debian %q by default, the manifest says %s", defaults["DEBIAN_RELEASE"], versions.Debian)
++	}
++}
+-- 
+2.43.0
+
