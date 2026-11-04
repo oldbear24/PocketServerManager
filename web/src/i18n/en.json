@@ -324,6 +324,9 @@
     "description": "Every configuration change, from the UI, the API, the scheduler, agents and the PocketBase dashboard, with its author and the difference in values. Entries can only be added, and they are hash-chained.",
     "chainOk": "Chain intact · verified {{time}}",
     "chainBroken": "Chain broken at entry {{seq}}",
+    "unsealed_one": "The newest entry is not sealed yet",
+    "unsealed_other": "The newest {{count}} entries are not sealed yet",
+    "unsealedNote": "Written by a command that ran without the master key. The panel seals them when it starts with the key.",
     "verify": "Verify integrity",
     "export": "Export JSONL",
     "tab": {

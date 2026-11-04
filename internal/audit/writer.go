@@ -60,6 +60,10 @@ type Writer struct {
 	// txActors holds the actor of a transaction, so that saves made inside it by
 	// hooks (cascade deletes, for example) are attributed to the same actor.
 	txActors sync.Map
+
+	// SealKey returns the key that seals the head of the chain (see HeadTable),
+	// or nil where the master key is not available.
+	SealKey func() []byte
 }
 
 // New creates a writer for the given audited collections.
@@ -294,14 +298,14 @@ func (w *Writer) append(tx core.App, e entry) error {
 		return nil //nolint:nilerr
 	}
 
-	last := struct {
-		Seq  int    `db:"seq"`
-		Hash string `db:"hash"`
-	}{}
-	err = tx.DB().Select("seq", "hash").From(schema.AuditLog).OrderBy("seq DESC").Limit(1).One(&last)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	lastSeq, lastHash, err := tail(tx.DB())
+	if err != nil {
 		return err
 	}
+	last := struct {
+		Seq  int
+		Hash string
+	}{lastSeq, lastHash}
 
 	now, err := types.ParseDateTime(time.Now().UTC())
 	if err != nil {
@@ -339,9 +343,23 @@ func (w *Writer) append(tx core.App, e entry) error {
 	if err != nil {
 		return err
 	}
-	record.Set("hash", entryHash(last.Hash, canonical))
+	hash := entryHash(last.Hash, canonical)
+	record.Set("hash", hash)
 
-	return tx.SaveNoValidateWithContext(context.WithValue(context.Background(), writerKey{}, true), record)
+	if err := tx.SaveNoValidateWithContext(context.WithValue(context.Background(), writerKey{}, true), record); err != nil {
+		return err
+	}
+
+	// the head moves in the same transaction as the entry
+	current, found, err := readHead(tx.DB())
+	if err != nil {
+		return err
+	}
+	following, err := current.next(tx.DB(), w.sealKey(), found, last.Seq, last.Hash, last.Seq+1, hash)
+	if err != nil {
+		return err
+	}
+	return writeHead(tx.DB(), following)
 }
 
 // Security records a security event outside of any record change.

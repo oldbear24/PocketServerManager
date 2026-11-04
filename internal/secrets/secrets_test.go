@@ -149,3 +149,24 @@ func TestKeyFile(t *testing.T) {
 		t.Fatal("expected an error for a malformed key file")
 	}
 }
+
+func TestDeriveKeyIsPerPurpose(t *testing.T) {
+	master := bytes.Repeat([]byte{7}, KeySize)
+
+	a, err := DeriveKey(master, "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := DeriveKey(master, "one")
+	b, _ := DeriveKey(master, "two")
+
+	if len(a) != KeySize || !bytes.Equal(a, again) {
+		t.Error("the same purpose gives a different key")
+	}
+	if bytes.Equal(a, b) || bytes.Equal(a, master) {
+		t.Error("purposes share a key, or a key is the master key")
+	}
+	if _, err := DeriveKey([]byte("short"), "one"); err == nil {
+		t.Error("a short master key is accepted")
+	}
+}

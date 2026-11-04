@@ -346,6 +346,11 @@
     "description": "Každá změna konfigurace – z UI, API, plánovače, agentů i administrace PocketBase – s autorem a rozdílem hodnot. Záznamy se dají jen přidávat a jsou řetězené hashem.",
     "chainOk": "Řetězec neporušen · ověřeno {{time}}",
     "chainBroken": "Řetězec porušen u záznamu {{seq}}",
+    "unsealed_one": "Poslední záznam ještě není zapečetěn",
+    "unsealed_few": "Poslední {{count}} záznamy ještě nejsou zapečetěny",
+    "unsealed_many": "Posledních {{count}} záznamů ještě není zapečetěno",
+    "unsealed_other": "Posledních {{count}} záznamů ještě není zapečetěno",
+    "unsealedNote": "Zapsal je příkaz spuštěný bez hlavního klíče. Panel je zapečetí, až se spustí s klíčem.",
     "verify": "Ověřit integritu",
     "export": "Export JSONL",
     "tab": {

@@ -220,6 +220,8 @@ export type VerifyResult = {
   last_seq: number;
   bad_seq?: number;
   reason?: string;
+  sealed: boolean;
+  unsealed?: number;
 };
 
 export type DiagAgent = {

@@ -152,6 +152,13 @@ export function AuditPage() {
                     {t("audit.chainBroken", { seq: verify.bad_seq })}
                   </StatusPill>
                 ))}
+              {verify?.ok && (verify.unsealed ?? 0) > 0 && (
+                <span title={t("audit.unsealedNote")}>
+                  <StatusPill tone="warn" dot={false}>
+                    {t("audit.unsealed", { count: verify.unsealed })}
+                  </StatusPill>
+                </span>
+              )}
               <Button disabled={verifying} onClick={() => void runVerify()}>
                 {t("audit.verify")}
               </Button>

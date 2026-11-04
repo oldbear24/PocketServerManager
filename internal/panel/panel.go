@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/pocketbase/apis"
@@ -57,6 +58,9 @@ type Panel struct {
 	adminers        adminerSessions
 	later           laterWork
 
+	auditKeyOnce sync.Once
+	auditKey     []byte
+
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
 
@@ -77,7 +81,35 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 	}
 	p.Updates = newUpdateBatches(p)
 	p.Streams = streams.New(p.Commands)
+	p.Audit.SealKey = p.AuditKey
 	return p
+}
+
+// AuditKey returns the key that seals the head of the audit chain, derived from
+// the master key. Commands that do not start the panel, such as migrations, load
+// the key too, so that their entries are sealed as well; without a readable key
+// it is nil and the head waits for the next start of the panel.
+func (p *Panel) AuditKey() []byte {
+	p.auditKeyOnce.Do(func() {
+		master := p.Config.MasterKey
+		if master == nil && p.Config.MasterKeyFile != "" {
+			loaded, err := secrets.LoadKeyFile(p.Config.MasterKeyFile)
+			if err != nil {
+				return
+			}
+			master = loaded
+		}
+		if master == nil {
+			return
+		}
+		key, err := secrets.DeriveKey(master, audit.SealPurpose)
+		if err != nil {
+			p.Log.Error("cannot derive the key of the audit seal", "error", err)
+			return
+		}
+		p.auditKey = key
+	})
+	return p.auditKey
 }
 
 // Register binds the panel's hooks. The components start from OnServe, so
@@ -103,6 +135,11 @@ func (p *Panel) Register() {
 
 		if err := p.loadMasterKey(); err != nil {
 			return err
+		}
+
+		// entries written by commands that ran without the master key
+		if err := p.Audit.SealHead(); err != nil {
+			return fmt.Errorf("sealing the audit log: %w", err)
 		}
 
 		if err := p.startGateway(); err != nil {
