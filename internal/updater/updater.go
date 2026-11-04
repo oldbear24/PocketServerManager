@@ -317,6 +317,12 @@ func waitHealthy(ctx context.Context, docker *dockerapi.Client, id string, timeo
 		if info.State.Status == "exited" || info.State.Status == "dead" {
 			return fmt.Errorf("the new agent exited with code %d", info.State.ExitCode)
 		}
+		// the restart policy it took over keeps a crashing agent from staying
+		// exited: without this, a release that cannot start would only be rolled
+		// back at the end of the timeout, minutes without an agent
+		if info.State.Restarting || info.RestartCount > 0 {
+			return fmt.Errorf("the new agent keeps exiting, last with code %d", info.State.ExitCode)
+		}
 
 		last = info.Health()
 		switch last {

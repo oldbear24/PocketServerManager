@@ -557,10 +557,11 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 
 func (e *Engine) inspectDocument(c *Container) map[string]any {
 	state := map[string]any{
-		"Status":  c.Status,
-		"Running": c.Status == "running",
+		"Status":     c.Status,
+		"Running":    c.Status == "running",
+		"Restarting": c.Status == "restarting",
 		"ExitCode": func() int {
-			if c.Status == "exited" {
+			if c.Status == "exited" || c.Status == "restarting" {
 				return 1
 			}
 			return 0
