@@ -3494,7 +3494,14 @@ type DbServerMove struct {
 	Stack string `protobuf:"bytes,5,opt,name=stack,proto3" json:"stack,omitempty"`
 	// stop_source stops the source server once its databases have moved: a stack's
 	// own database container, which nothing may write to any more.
-	StopSource    bool `protobuf:"varint,6,opt,name=stop_source,json=stopSource,proto3" json:"stop_source,omitempty"`
+	StopSource bool `protobuf:"varint,6,opt,name=stop_source,json=stopSource,proto3" json:"stop_source,omitempty"`
+	// drop_from_source drops each database and its user from the source once all
+	// have moved: a shared server, which keeps serving other applications. The
+	// panel keeps a copy of each.
+	DropFromSource bool `protobuf:"varint,7,opt,name=drop_from_source,json=dropFromSource,proto3" json:"drop_from_source,omitempty"`
+	// leave_network is the application's database network, which the source server
+	// leaves once the application uses none of its databases.
+	LeaveNetwork  string `protobuf:"bytes,8,opt,name=leave_network,json=leaveNetwork,proto3" json:"leave_network,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3569,6 +3576,20 @@ func (x *DbServerMove) GetStopSource() bool {
 		return x.StopSource
 	}
 	return false
+}
+
+func (x *DbServerMove) GetDropFromSource() bool {
+	if x != nil {
+		return x.DropFromSource
+	}
+	return false
+}
+
+func (x *DbServerMove) GetLeaveNetwork() string {
+	if x != nil {
+		return x.LeaveNetwork
+	}
+	return ""
 }
 
 // DbMoveItem is a database to move, with the user that owns it on the target.
@@ -5089,7 +5110,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\bpassword\x18\t \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\".\n" +
 	"\rDbAdminerStop\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xab\x02\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xfa\x02\n" +
 	"\fDbServerMove\x12:\n" +
 	"\x06source\x18\x01 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\x06source\x12:\n" +
 	"\x06target\x18\x02 \x01(\v2\".pocketcloud.agent.v1.DbConnectionR\x06target\x12>\n" +
@@ -5097,7 +5118,9 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x12stop_container_ids\x18\x04 \x03(\tR\x10stopContainerIds\x12\x14\n" +
 	"\x05stack\x18\x05 \x01(\tR\x05stack\x12\x1f\n" +
 	"\vstop_source\x18\x06 \x01(\bR\n" +
-	"stopSource\"^\n" +
+	"stopSource\x12(\n" +
+	"\x10drop_from_source\x18\a \x01(\bR\x0edropFromSource\x12#\n" +
+	"\rleave_network\x18\b \x01(\tR\fleaveNetwork\"^\n" +
 	"\n" +
 	"DbMoveItem\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x12\n" +

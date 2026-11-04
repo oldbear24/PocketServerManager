@@ -565,6 +565,13 @@ message DbServerMove {
   // stop_source stops the source server once its databases have moved: a stack's
   // own database container, which nothing may write to any more.
   bool stop_source = 6;
+  // drop_from_source drops each database and its user from the source once all
+  // have moved: a shared server, which keeps serving other applications. The
+  // panel keeps a copy of each.
+  bool drop_from_source = 7;
+  // leave_network is the application's database network, which the source server
+  // leaves once the application uses none of its databases.
+  string leave_network = 8;
 }
 
 // DbMoveItem is a database to move, with the user that owns it on the target.

@@ -55,6 +55,7 @@ type Panel struct {
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions
+	later           laterWork
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -131,6 +132,7 @@ func (p *Panel) Register() {
 	})
 
 	p.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		p.later.stop()
 		p.Streams.Close()
 		if p.Gateway != nil {
 			p.Gateway.Stop()

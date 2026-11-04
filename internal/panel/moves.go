@@ -71,6 +71,9 @@ type movePlan struct {
 	stop           []string
 	dedicated      bool
 	aliases        []string
+	// leave is the application's network, which a shared source server leaves
+	// when the application uses none of its databases any more
+	leave string
 }
 
 // handleMoveServer moves the databases of a stack's own database server into a
@@ -151,6 +154,8 @@ func (p *Panel) handleMoveServer(e *core.RequestEvent) error {
 			StopContainerIds: plan.stop,
 			Stack:            plan.stack.GetString("name"),
 			StopSource:       plan.dedicated,
+			DropFromSource:   !plan.dedicated,
+			LeaveNetwork:     plan.leave,
 		}}},
 	})
 	if err != nil {
@@ -349,6 +354,17 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 	}
 	plan.passwords[account.GetString("name")] = password
 	plan.items = []*agentv1.DbMoveItem{{Database: name, User: account.GetString("name")}}
+
+	others, err := p.App.CountRecords(schema.Databases, dbx.And(
+		dbx.HashExp{"server": plan.source.Id, "stack": stack.Id},
+		dbx.Not(dbx.HashExp{"id": database.Id}),
+	))
+	if err != nil {
+		return err
+	}
+	if others == 0 {
+		plan.leave = databases.NetworkName(stack.GetString("name"))
+	}
 	return nil
 }
 

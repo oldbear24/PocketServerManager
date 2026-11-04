@@ -19,9 +19,12 @@ type Engine struct {
 	Name string
 	// Label is how people call it.
 	Label string
-	// Image is the image of new shared servers: the LTS series of MariaDB 11 and
-	// PostgreSQL 17. Pulling it again brings the newest minor version.
+	// Image is the image of new shared servers by default: the LTS series of
+	// MariaDB 11 and PostgreSQL 17. Pulling it again brings the newest minor version.
 	Image string
+	// Versions are the series a new shared server can run, the default first. A
+	// tag of a series follows its minor versions only.
+	Versions []string
 	// Port is where the server listens on its networks.
 	Port int
 	// AdminUser is the administrator the official image creates.
@@ -40,6 +43,7 @@ var (
 		Name:           "mariadb",
 		Label:          "MariaDB",
 		Image:          "mariadb:11.8",
+		Versions:       []string{"11.8", "11.4"},
 		Port:           3306,
 		AdminUser:      "root",
 		DataDir:        "/var/lib/mysql",
@@ -50,6 +54,7 @@ var (
 		Name:           "postgres",
 		Label:          "PostgreSQL",
 		Image:          "postgres:17",
+		Versions:       []string{"17", "18", "16"},
 		Port:           5432,
 		AdminUser:      "postgres",
 		DataDir:        "/var/lib/postgresql/data",
@@ -57,6 +62,31 @@ var (
 		ReservedNames:  []string{"postgres", "template0", "template1", "public"},
 	}
 )
+
+// ImageFor is the image of a new shared server of a series, or of the default
+// one when none is chosen.
+func (e Engine) ImageFor(version string) (string, bool) {
+	if version == "" {
+		return e.Image, true
+	}
+	if !slices.Contains(e.Versions, version) {
+		return "", false
+	}
+	repository, _ := splitReference(e.Image)
+	return repository + ":" + version, true
+}
+
+// DataDirOf is where an image of the engine keeps its data. PostgreSQL 18 and
+// later keep it a level higher, in a directory of the major version, so that
+// pg_upgrade can find both versions in one volume.
+func (e Engine) DataDirOf(image string) string {
+	if e.Name == Postgres.Name {
+		if _, tag := splitReference(image); MajorVersion(tag) >= 18 {
+			return "/var/lib/postgresql"
+		}
+	}
+	return e.DataDir
+}
 
 // EngineOf returns an engine by its name.
 func EngineOf(name string) (Engine, bool) {

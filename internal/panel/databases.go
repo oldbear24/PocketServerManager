@@ -42,6 +42,8 @@ const (
 	exportLifetime    = 7 * 24 * time.Hour
 	finalDumpLifetime = 30 * 24 * time.Hour
 	statsInterval     = time.Minute
+	// statsAfterDeploy gives a server time to start before it is asked its version
+	statsAfterDeploy = 15 * time.Second
 )
 
 var dbActor = audit.System("databases", "panel")
@@ -660,6 +662,16 @@ func (p *Panel) serverDeployFinished(record *core.Record) {
 		server.Set("last_error", record.GetString("error"))
 	}
 	p.saveAs(server)
+
+	// an update may have brought a new version: the server says which once it
+	// accepts connections again
+	if record.GetString("status") == schema.CommandSucceeded && server.GetString("admin_password") != "" {
+		p.later.after(statsAfterDeploy, func() {
+			if _, err := p.statsCommand(context.Background(), server, ""); err != nil {
+				p.Log.Debug("failed to ask a database server for its numbers", "server", server.Id, "error", err)
+			}
+		})
+	}
 }
 
 // isLive tells whether a stack runs or is about to: a deploy that is under way
@@ -872,6 +884,11 @@ func (p *Panel) queueStats(ctx context.Context, server *core.Record, userID stri
 		return recent[0], errStatsRunning
 	}
 
+	return p.statsCommand(ctx, server, userID)
+}
+
+// statsCommand asks a server for its numbers.
+func (p *Panel) statsCommand(ctx context.Context, server *core.Record, userID string) (*core.Record, error) {
 	return p.Commands.Create(ctx, commands.Options{
 		Host:        server.GetString("host"),
 		Label:       server.GetString("name"),

@@ -81,7 +81,7 @@ services:
 volumes:
   data:
     name: %[8]s
-`, s.Name, s.Engine.Label, s.Engine.Port, ServerService, s.Image, engineLines, s.Engine.DataDir, s.Volume)
+`, s.Name, s.Engine.Label, s.Engine.Port, ServerService, s.Image, engineLines, s.Engine.DataDirOf(s.Image), s.Volume)
 }
 
 // ServerEnv is the env file of a shared server.

@@ -296,3 +296,145 @@ func TestAMoveNeedsTheApplicationsOwnUser(t *testing.T) {
 		t.Errorf("a move as the administrator: %d %s", status, body)
 	}
 }
+
+func TestSharedServersChooseTheirVersionAndAreUpdated(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	// a new major version is a new server, of a series the panel offers
+	status, body := d.post("/api/pc/db-servers", d.operator, map[string]any{"host": d.host.Id, "name": "pg-old", "engine": "postgres", "version": "9.6"})
+	if status != http.StatusBadRequest || !strings.Contains(body, "17, 18, 16") {
+		t.Errorf("an unknown version: %d %s", status, body)
+	}
+	status, body = d.post("/api/pc/db-servers", d.operator, map[string]any{"host": d.host.Id, "name": "pg-next", "engine": "postgres", "version": "18"})
+	if status != http.StatusOK {
+		t.Fatalf("a server of PostgreSQL 18: %d %s", status, body)
+	}
+	var created struct {
+		Server  struct{ ID string } `json:"server"`
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &created)
+	d.waitForStatus(created.Command.ID, schema.CommandSucceeded)
+	var server *core.Record
+	d.waitFor("the server to be ready", func() bool {
+		found, err := d.app.FindRecordById(schema.DBServers, created.Server.ID)
+		server = found
+		return err == nil && found.GetString("status") == "ready"
+	})
+	if server.GetString("image") != "postgres:18" {
+		t.Fatalf("server: %v", server)
+	}
+	if container := d.docker.Find("pg-next-db-1"); container == nil || container.Image != "postgres:18" {
+		t.Errorf("container: %+v", container)
+	}
+	stack := d.stack(server.GetString("stack"))
+	if !strings.Contains(stack.GetString("compose_yaml"), "data:/var/lib/postgresql\n") {
+		t.Errorf("the data of PostgreSQL 18:\n%s", stack.GetString("compose_yaml"))
+	}
+
+	// an update pulls the image of its series again and recreates the container
+	pulls := func() int {
+		count := 0
+		for _, call := range d.calls() {
+			if call.Project == "pg-next" && call.Verb == "pull" {
+				count++
+			}
+		}
+		return count
+	}
+	before := pulls()
+	status, body = d.post("/api/pc/db-servers/"+server.Id+"/update", d.viewer, map[string]any{})
+	if status != http.StatusForbidden {
+		t.Errorf("a viewer updated a server: %d %s", status, body)
+	}
+	status, body = d.post("/api/pc/db-servers/"+server.Id+"/update", d.operator, map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("update: %d %s", status, body)
+	}
+	d.waitForStatus(recordID(t, body), schema.CommandSucceeded)
+	if pulls() != before+1 {
+		t.Errorf("the update pulled %d times", pulls()-before)
+	}
+
+	// a stack's own server is updated with its stack
+	_, dedicated := d.linkedAnalytics()
+	status, body = d.post("/api/pc/db-servers/"+dedicated.Id+"/update", d.operator, map[string]any{})
+	if status != http.StatusBadRequest {
+		t.Errorf("updating a dedicated server: %d %s", status, body)
+	}
+}
+
+func TestADatabaseMovesToANewerSharedServer(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	old := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	stackID := d.deployedApp("shop")
+	database := d.createDatabase(old.Id, "shop", stackID)
+	d.waitFor("the stack to be connected", func() bool { return d.stack(stackID).GetInt("current_revision") == 2 })
+	password := d.password(d.user(old.Id, "shop"), "password")
+
+	status, body := d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "nothing"})
+	if status != http.StatusBadRequest {
+		t.Errorf("a database that does not exist: %d %s", status, body)
+	}
+	status, body = d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "shop"})
+	if status != http.StatusOK {
+		t.Fatalf("move: %d %s", status, body)
+	}
+	var answer struct {
+		Move    struct{ ID string } `json:"move"`
+		Command struct{ ID string } `json:"command"`
+	}
+	answerOf(t, body, &answer)
+	d.waitForStatus(answer.Command.ID, schema.CommandSucceeded)
+	d.waitFor("the move to be recorded", func() bool {
+		found, err := d.app.FindRecordById(schema.DBMoves, answer.Move.ID)
+		return err == nil && found.GetString("status") == schema.MoveDone
+	})
+
+	// created on the new server with the same password, dropped from the old one
+	created, dropped := false, false
+	for _, exec := range d.server.statements() {
+		switch {
+		case exec.container == d.docker.Find("pg-next-db-1").ID && strings.Contains(exec.env["PC_SQL"], "CREATE DATABASE"):
+			created = strings.Contains(exec.env["PC_SQL"], "'"+password+"'")
+		case exec.container == d.docker.Find("pg-main-db-1").ID && strings.Contains(exec.env["PC_SQL"], "DROP DATABASE"):
+			dropped = strings.Contains(exec.env["PC_SQL"], `"shop"`)
+		}
+	}
+	if !created || !dropped {
+		t.Errorf("created %v, dropped %v", created, dropped)
+	}
+
+	// the database, its user and secret, and the stack's variables follow it
+	fresh, err := d.app.FindRecordById(schema.Databases, database.Id)
+	if err != nil || fresh.GetString("server") != next.Id {
+		t.Errorf("database: %v %v", fresh, err)
+	}
+	account := d.user(next.Id, "shop")
+	if account.GetString("secret_name") != "db/shop" || account.GetBool("app_password") || d.password(account, "password") != password {
+		t.Errorf("user: %v", account)
+	}
+	env := d.stack(stackID).GetString("env")
+	if !strings.Contains(env, "DB_HOST=pg-next") || strings.Contains(env, "pg-main") {
+		t.Errorf("env: %q", env)
+	}
+	if links, _ := d.app.FindRecordsByFilter(schema.DBNetworks, "stack={:stack}", "", 0, 0, dbx.Params{"stack": stackID}); len(links) != 1 || links[0].GetString("server") != next.Id {
+		t.Errorf("networks: %v", links)
+	}
+
+	// the application reaches the new server on its network, and the old one no more
+	d.waitFor("the application to reach the new server", func() bool {
+		network := d.docker.FindNetwork("pcdb-shop")
+		if network == nil {
+			return false
+		}
+		_, newServer := network.Members[d.docker.Find("pg-next-db-1").ID]
+		_, oldServer := network.Members[d.docker.Find("pg-main-db-1").ID]
+		return newServer && !oldServer
+	})
+	d.waitFor("the application to be deployed again", func() bool {
+		return d.stack(stackID).GetInt("current_revision") == 3 && d.stack(stackID).GetString("status") == "deployed"
+	})
+}

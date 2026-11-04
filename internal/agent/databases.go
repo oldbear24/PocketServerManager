@@ -535,7 +535,27 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		}
 	}
 
-	return map[string]any{"databases": results, "source_stopped": stoppedSource}, nil
+	// a shared server keeps no stale copy that a new database of the same name
+	// would quietly reuse
+	dropped := 0
+	if payload.GetDropFromSource() {
+		reporter.Progress("source", "Dropping the databases from the old server", 95)
+		for _, item := range payload.GetDatabases() {
+			drop := databases.Statements(engine, source.GetAdminUser(), source.GetAdminPassword(), databases.DropSQL(engine, item.GetDatabase(), item.GetUser()))
+			if err := a.runScript(ctx, source.GetContainerId(), drop, io.Discard, secrets...); err != nil {
+				a.Log.Warn("failed to drop a moved database from the old server", "database", item.GetDatabase(), "error", err)
+				continue
+			}
+			dropped++
+		}
+	}
+	if network := payload.GetLeaveNetwork(); network != "" {
+		if err := a.Docker.DisconnectNetwork(ctx, network, source.GetContainerId(), false); err != nil && !dockerapi.IsNotFound(err) {
+			a.Log.Warn("the old server failed to leave the application's network", "network", network, "error", err)
+		}
+	}
+
+	return map[string]any{"databases": results, "source_stopped": stoppedSource, "source_dropped": dropped}, nil
 }
 
 // moveDatabase moves one database. Once it exists on the target it is in moved,

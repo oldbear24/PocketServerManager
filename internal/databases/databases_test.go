@@ -539,3 +539,46 @@ func TestParseExists(t *testing.T) {
 		}
 	}
 }
+
+func TestNewServersChooseAVersionSeries(t *testing.T) {
+	for _, tc := range []struct {
+		engine  Engine
+		version string
+		image   string
+		ok      bool
+	}{
+		{Postgres, "", "postgres:17", true},
+		{Postgres, "18", "postgres:18", true},
+		{Postgres, "16", "postgres:16", true},
+		{Postgres, "9.6", "", false},
+		{MariaDB, "", "mariadb:11.8", true},
+		{MariaDB, "11.4", "mariadb:11.4", true},
+		{MariaDB, "18", "", false},
+	} {
+		if image, ok := tc.engine.ImageFor(tc.version); image != tc.image || ok != tc.ok {
+			t.Errorf("%s %q: %q %v", tc.engine.Name, tc.version, image, ok)
+		}
+	}
+
+	// PostgreSQL 18 keeps its data a level higher; earlier versions and MariaDB do not
+	for image, dir := range map[string]string{
+		"postgres:16":      "/var/lib/postgresql/data",
+		"postgres:17":      "/var/lib/postgresql/data",
+		"postgres:18":      "/var/lib/postgresql",
+		"postgres:18.1":    "/var/lib/postgresql",
+		"postgres:latest":  "/var/lib/postgresql/data",
+		"registry:5000/pg": "/var/lib/postgresql/data",
+	} {
+		if got := Postgres.DataDirOf(image); got != dir {
+			t.Errorf("%s: %s", image, got)
+		}
+	}
+	if got := MariaDB.DataDirOf("mariadb:11.8"); got != "/var/lib/mysql" {
+		t.Errorf("mariadb: %s", got)
+	}
+
+	compose := ServerCompose(Server{Name: "pg-next", Engine: Postgres, Image: "postgres:18", Volume: "v", MaxConnections: 100, Buffer: 128 * mib})
+	if !strings.Contains(compose, "image: postgres:18\n") || !strings.Contains(compose, "- data:/var/lib/postgresql\n") {
+		t.Errorf("compose of PostgreSQL 18:\n%s", compose)
+	}
+}

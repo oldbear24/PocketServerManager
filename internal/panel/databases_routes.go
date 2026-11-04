@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/pocketbase/dbx"
@@ -30,6 +31,7 @@ func (p *Panel) bindDatabaseRoutes(group *router.RouterGroup[*core.RequestEvent]
 	group.POST("/db-servers/{id}/stats", p.handleServerStats).BindFunc(operators)
 	group.DELETE("/db-servers/{id}", p.handleRemoveServer).BindFunc(operators)
 	group.POST("/db-servers/{id}/move", p.handleMoveServer).BindFunc(operators)
+	group.POST("/db-servers/{id}/update", p.handleUpdateServer).BindFunc(operators)
 
 	group.POST("/databases", p.handleCreateDatabase).BindFunc(operators)
 	group.POST("/databases/{id}/connect", p.handleConnectDatabase).BindFunc(operators)
@@ -44,9 +46,10 @@ func (p *Panel) bindDatabaseRoutes(group *router.RouterGroup[*core.RequestEvent]
 // official image, a named volume and no published ports, and deploys it.
 func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 	var body struct {
-		Host   string `json:"host"`
-		Name   string `json:"name"`
-		Engine string `json:"engine"`
+		Host    string `json:"host"`
+		Name    string `json:"name"`
+		Engine  string `json:"engine"`
+		Version string `json:"version"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
@@ -55,6 +58,10 @@ func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 	engine, ok := databases.EngineOf(body.Engine)
 	if !ok {
 		return e.BadRequestError("Choose MariaDB or PostgreSQL.", nil)
+	}
+	image, ok := engine.ImageFor(body.Version)
+	if !ok {
+		return e.BadRequestError(fmt.Sprintf("Choose %s %s.", engine.Label, strings.Join(engine.Versions, ", ")), nil)
 	}
 	if err := databases.ValidServerName(body.Name); err != nil {
 		return e.BadRequestError(err.Error(), nil)
@@ -76,7 +83,7 @@ func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 	compose := databases.ServerCompose(databases.Server{
 		Name:           body.Name,
 		Engine:         engine,
-		Image:          engine.Image,
+		Image:          image,
 		Volume:         databases.VolumeName(body.Name),
 		MaxConnections: engine.MaxConnections,
 		Buffer:         databases.BufferSize(uint64(max(host.GetInt("mem_bytes"), 0))), //nolint:gosec // not negative
@@ -116,7 +123,7 @@ func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 		server.Set("name", body.Name)
 		server.Set("engine", engine.Name)
 		server.Set("kind", schema.DBServerShared)
-		server.Set("image", engine.Image)
+		server.Set("image", image)
 		server.Set("container_ref", serverContainer(body.Name))
 		server.Set("service", databases.ServerService)
 		server.Set("stack", stack.Id)
@@ -144,6 +151,41 @@ func (p *Panel) handleCreateServer(e *core.RequestEvent) error {
 	}
 
 	return e.JSON(http.StatusOK, map[string]any{"server": server, "stack": stack, "command": command})
+}
+
+// handleUpdateServer brings a shared server to the newest minor version of its
+// series: its image is pulled again and its container recreated. MariaDB upgrades
+// its system tables on the way; a new major version of PostgreSQL is a new server
+// to move the databases to.
+func (p *Panel) handleUpdateServer(e *core.RequestEvent) error {
+	server, err := p.App.FindRecordById(schema.DBServers, e.Request.PathValue("id"))
+	if err != nil {
+		return e.NotFoundError("The database server does not exist.", err)
+	}
+	if server.GetString("kind") != schema.DBServerShared {
+		return e.BadRequestError("A stack's own database server is updated with its stack.", nil)
+	}
+	if status := server.GetString("status"); status != dbReady && status != dbFailed {
+		return e.BadRequestError("The server is busy.", nil)
+	}
+	stack, err := p.App.FindRecordById(schema.Stacks, server.GetString("stack"))
+	if err != nil {
+		return e.NotFoundError("The server's stack does not exist.", err)
+	}
+	if !p.Commands.Connected(server.GetString("host")) {
+		return e.Error(http.StatusConflict, "The server is not connected.", nil)
+	}
+
+	revision, err := p.findRevision(stack, stack.GetInt("current_revision"))
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	userID, label := requester(e)
+	command, err := p.deployRevision(e.Request.Context(), stack, revision, true, "", userID, label)
+	if err != nil {
+		return p.deployAnswer(e, nil, stack, err)
+	}
+	return e.JSON(http.StatusOK, command)
 }
 
 // candidate is a database container inside a stack that no server record covers yet.
