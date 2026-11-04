@@ -138,6 +138,15 @@ export function serverLabel(server: DbServer): string {
   return extensions.length ? `${label} + ${extensions.join(", ")}` : label;
 }
 
+/** Whether an image is MySQL's, as the panel recognises it, which moves nowhere. */
+export function isMySQL(image: string): boolean {
+  const repository = image
+    .split("@")[0]
+    .replace(/:[^/]*$/, "")
+    .replace(/^docker\.io\//, "");
+  return /^(library\/)?mysql$|^bitnami\/mysql$|^mysql\/mysql-server$/.test(repository);
+}
+
 /** The major version of a server, from what it said or from its image tag. */
 export const majorOf = (server: DbServer) =>
   Number.parseInt(server.version || imageTag(server.image), 10) || 0;
@@ -159,7 +168,13 @@ export function seriesOf(server: DbServer): [number, number] {
  * engine and not of an older series, as a dump does not restore into an older server.
  */
 export function moveTargets(server: DbServer, servers: DbServer[]): DbServer[] {
-  if ((server.extensions ?? []).length > 0) {
+  // MySQL is not MariaDB, whatever its version; a server outside a stack has no
+  // application to switch over
+  if (
+    (server.extensions ?? []).length > 0 ||
+    isMySQL(server.image) ||
+    (server.kind === "dedicated" && !server.stack)
+  ) {
     return [];
   }
   const [major, minor] = seriesOf(server);

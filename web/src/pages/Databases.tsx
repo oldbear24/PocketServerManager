@@ -402,8 +402,9 @@ export function DatabasesPage() {
                   moving={moves.items.some(
                     (move) =>
                       move.status === "moving" &&
-                      (move.databases ?? []).some((item) => item.name === database.name) &&
-                      move.source_name === current.name,
+                      move.host === current.host &&
+                      move.source_container === current.container_ref &&
+                      (move.databases ?? []).some((item) => item.name === database.name),
                   )}
                   stacks={stacks.items}
                   canAct={canAct}
@@ -415,10 +416,10 @@ export function DatabasesPage() {
                 hostName={hostName(current.host)}
                 databases={serverDatabases.length}
                 targets={current.kind === "dedicated" ? moveTargets(current, servers.items) : []}
-                moves={moves.items.filter((move) =>
-                  current.kind === "shared"
-                    ? move.target === current.id && move.status === "moved"
-                    : move.host === current.host && move.source_container === current.container_ref,
+                moves={moves.items.filter(
+                  (move) =>
+                    move.target === current.id ||
+                    (move.host === current.host && move.source_container === current.container_ref),
                 )}
                 stacks={stacks.items}
                 canAct={canAct}
@@ -1133,8 +1134,10 @@ function ServerCard({
     (version) => Number.parseInt(version, 10) > majorOf(server),
   );
   const moveTo = targets.find((item) => item.id === target) ?? targets[0];
-  const latest = server.kind === "dedicated" ? moves[0] : undefined;
-  const moving = latest?.status === "moving";
+  // the newest move into or out of this server says how it went
+  const latest = moves[0];
+  const moving = moves.some((item) => item.status === "moving");
+  const movedHere = moves.filter((item) => item.target === server.id && item.status === "moved");
   const stackName = stacks.find((item) => item.id === server.stack)?.name ?? "–";
 
   const update = async () => {
@@ -1202,11 +1205,22 @@ function ServerCard({
       }
     >
       {server.last_error && <Banner tone="warn">{server.last_error}</Banner>}
-      {moving && <Banner tone="info">{t("db.moving", { name: latest.target_name })}</Banner>}
-      {latest?.status === "failed" && (
-        <Banner tone="warn">
-          {t("db.moveFailed", { name: latest.target_name, error: latest.error })}
+      {moving && latest && (
+        <Banner tone="info">
+          {t("db.moving", { source: latest.source_name, name: latest.target_name })}
         </Banner>
+      )}
+      {!moving && latest?.status === "failed" && (
+        <Banner tone="warn">
+          {t("db.moveFailed", {
+            source: latest.source_name,
+            name: latest.target_name,
+            error: latest.error,
+          })}
+        </Banner>
+      )}
+      {!moving && latest?.status === "moved" && latest.error && (
+        <Banner tone="warn">{latest.error}</Banner>
       )}
       <p className="muted">{text}</p>
       {server.kind === "dedicated" && move && !moving && (
@@ -1244,11 +1258,11 @@ function ServerCard({
           )}
         </>
       )}
-      {server.kind === "shared" && moves.length > 0 && (
+      {server.kind === "shared" && movedHere.length > 0 && (
         <>
           <h3 className="db-moves-title">{t("db.movedHere")}</h3>
           <ul className="db-moves small">
-            {moves.map((item) => {
+            {movedHere.map((item) => {
               // servers add their build to the number: "16.15 (Debian 16.15-1…)"
               const version = item.source_version.match(/^\d+(\.\d+)*/)?.[0];
               const names = (item.databases ?? []).map((entry) => entry.name).join(", ");
@@ -1283,7 +1297,7 @@ function ServerCard({
         <div className="button-row">
           <Button
             size="small"
-            disabled={server.status === "creating"}
+            disabled={server.status === "creating" || moving}
             onClick={() => setUpdating(true)}
           >
             {t("db.update")}
