@@ -811,6 +811,7 @@ func (p *Panel) artifactHandlers() map[string]gateway.ArtifactHandler {
 		artifactStackImport: p.importStack,
 		artifactSQLExport:   p.storeDump(artifactSQLExport),
 		artifactSQLFinal:    p.storeDump(artifactSQLFinal),
+		artifactSQLMove:     p.storeMoveDump,
 	}
 }
 

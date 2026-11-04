@@ -164,10 +164,12 @@ func (p *Panel) secretResolver(stack *core.Record) func(string) (string, error) 
 }
 
 // stackOverride generates the second Compose file of a deploy, which puts a stack on
-// its database networks, and the networks the agent prepares for it. Most stacks
-// have none.
+// its database networks and keeps a database service stopped whose data moved to
+// a shared server, and the networks the agent prepares for it. Most stacks have
+// neither.
 func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*agentv1.DbNetworkAttach, error) {
-	// a shared server joins the networks of every application that uses it
+	// a shared server joins the networks of every application that uses it, under
+	// its own name and those of the database services that moved to it
 	if stack.GetString("source") == stackSourceDBServer {
 		server, err := p.App.FindFirstRecordByFilter(schema.DBServers, "stack={:stack}", dbx.Params{"stack": stack.Id})
 		if err != nil {
@@ -179,25 +181,33 @@ func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*ag
 			return "", nil, err
 		}
 
-		names := []string{}
+		joins := []databases.Join{}
 		attach := []*agentv1.DbNetworkAttach{}
 		for _, network := range networks {
-			if !slices.Contains(names, network.GetString("name")) {
-				names = append(names, network.GetString("name"))
-				attach = append(attach, &agentv1.DbNetworkAttach{Network: network.GetString("name")})
-			}
+			joins = append(joins, databases.Join{
+				Network: network.GetString("name"),
+				Aliases: append([]string{server.GetString("name")}, aliasesOf(network)...),
+			})
+			attach = append(attach, &agentv1.DbNetworkAttach{Network: network.GetString("name")})
 		}
 
-		override, err := databases.Override(compose, names, databases.ServerService, []string{server.GetString("name")})
+		override, err := databases.Override(compose, joins, databases.ServerService, nil)
 		return override, attach, err
 	}
 
 	networks, err := p.App.FindRecordsByFilter(schema.DBNetworks, "stack={:stack}", "name", 0, 0, dbx.Params{"stack": stack.Id})
-	if err != nil || len(networks) == 0 {
+	if err != nil {
 		return "", nil, err
 	}
+	retired, err := p.retiredServices(stack)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(networks) == 0 && len(retired) == 0 {
+		return "", nil, nil
+	}
 
-	names := []string{}
+	joins := []databases.Join{}
 	attach := []*agentv1.DbNetworkAttach{}
 	for _, network := range networks {
 		server, err := p.App.FindRecordById(schema.DBServers, network.GetString("server"))
@@ -208,14 +218,24 @@ func (p *Panel) stackOverride(stack *core.Record, compose string) (string, []*ag
 			Network:           network.GetString("name"),
 			ServerContainerId: server.GetString("container_ref"),
 			ServerAlias:       server.GetString("name"),
+			ExtraAliases:      aliasesOf(network),
 		})
-		if !slices.Contains(names, network.GetString("name")) {
-			names = append(names, network.GetString("name"))
+		if !slices.ContainsFunc(joins, func(join databases.Join) bool { return join.Network == network.GetString("name") }) {
+			joins = append(joins, databases.Join{Network: network.GetString("name")})
 		}
 	}
 
-	override, err := databases.Override(compose, names, "", nil)
+	override, err := databases.Override(compose, joins, "", retired)
 	return override, attach, err
+}
+
+// aliasesOf reads the extra names a server answers to on a database network.
+func aliasesOf(network *core.Record) []string {
+	var aliases []string
+	if err := network.UnmarshalJSONField("aliases", &aliases); err != nil {
+		return nil
+	}
+	return aliases
 }
 
 // enrichDatabaseCommand adds the passwords to a database command right before it

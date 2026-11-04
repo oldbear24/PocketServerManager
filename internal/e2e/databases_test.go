@@ -52,8 +52,10 @@ func (f *fakeDatabase) answer(call *fakedocker.ExecCall, _ []byte) fakedocker.Ex
 	switch {
 	case strings.Contains(env["PC_SQL"], "'version'"):
 		return fakedocker.ExecResult{Stdout: "size\tshop\t2048\nconn\tshop\t3\nconn\t\t1\nmax\t\t200\nversion\t11.8.2-MariaDB\t0\n"}
-	case env["PC_SQL"] != "", env["PC_SOURCE"] != "":
+	case env["PC_SQL"] != "", env["PC_SOURCE"] != "", env["PC_FILE"] != "":
 		return fakedocker.ExecResult{}
+	case strings.Contains(strings.Join(call.Cmd, " "), "information_schema.tables"):
+		return fakedocker.ExecResult{Stdout: "1\n"}
 	case env["PC_DATABASE"] != "":
 		return fakedocker.ExecResult{Stdout: "-- the dump of " + env["PC_DATABASE"] + "\nCREATE TABLE orders (id int);\n"}
 	}

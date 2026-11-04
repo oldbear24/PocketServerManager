@@ -60,6 +60,15 @@ func databaseNetwork(c *agentv1.Command) string {
 	return ""
 }
 
+// databaseMove orders a move with the deploys of the stack whose databases move:
+// the panel deploys the stack again right after, and none may run in between.
+func databaseMove(c *agentv1.Command) string {
+	if name := c.GetDbServerMove().GetStack(); name != "" {
+		return "stack:" + name
+	}
+	return ""
+}
+
 func container(c *agentv1.Command) string {
 	switch p := c.GetPayload().(type) {
 	case *agentv1.Command_ContainerStart:
@@ -158,6 +167,7 @@ var Specs = map[string]Spec{
 	"db.database.clone":  {Timeout: 6 * time.Hour},
 	"db.database.export": {Timeout: 6 * time.Hour},
 	"db.network.attach":  {Timeout: 2 * time.Minute, Resource: databaseNetwork},
+	"db.server.move":     {Timeout: 6 * time.Hour, Resource: databaseMove},
 	"db.stats":           {Timeout: 2 * time.Minute},
 	"db.adminer.start":   {Timeout: 5 * time.Minute},
 	"db.adminer.stop":    {Timeout: 2 * time.Minute},

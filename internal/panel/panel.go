@@ -91,6 +91,7 @@ func (p *Panel) Register() {
 	p.Streams.Register()
 	p.registerStacks()
 	p.registerDatabases()
+	p.registerMoves()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a

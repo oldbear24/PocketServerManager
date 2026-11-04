@@ -169,7 +169,7 @@ networks:
 `
 
 func TestOverrideOfAnApplication(t *testing.T) {
-	override, err := Override(appCompose, []string{"pcdb-shop"}, "", nil)
+	override, err := Override(appCompose, []Join{{Network: "pcdb-shop"}}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,15 +207,108 @@ func TestOverrideOfAnApplication(t *testing.T) {
 func TestOverrideOfAServer(t *testing.T) {
 	compose := ServerCompose(Server{Name: "db-main", Engine: MariaDB, Image: MariaDB.Image, Volume: "v", MaxConnections: 200, Buffer: 128 * mib})
 
-	override, err := Override(compose, []string{"pcdb-ghost", "pcdb-shop"}, ServerService, []string{"db-main"})
+	// on the network of an application whose own database moved here, the server
+	// also answers to that database service's names
+	override, err := Override(compose, []Join{
+		{Network: "pcdb-ghost", Aliases: []string{"db-main", "db", "ghost-db-1"}},
+		{Network: "pcdb-shop", Aliases: []string{"db-main"}},
+	}, ServerService, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	project := load(t, map[string]string{ServerEnvKey: "x"}, compose, override)
 	networks := project.Services[ServerService].Networks
-	if len(networks) != 3 || networks["default"] == nil || !slices.Equal(networks["pcdb-shop"].Aliases, []string{"db-main"}) {
+	if len(networks) != 3 || networks["default"] == nil || !slices.Equal(networks["pcdb-shop"].Aliases, []string{"db-main"}) ||
+		!slices.Equal(networks["pcdb-ghost"].Aliases, []string{"db-main", "db", "ghost-db-1"}) {
 		t.Errorf("networks: %+v", networks)
+	}
+}
+
+const movedCompose = `services:
+  db:
+    image: postgres:16
+  cache:
+    image: redis:7
+  app:
+    image: ghost:5
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+        restart: true
+  worker:
+    image: ghost:5
+    depends_on: [db]
+  plain:
+    image: busybox
+`
+
+// TestOverrideKeepsAMovedDatabaseStopped: the database service of a stack whose data
+// moved to a shared server is in a profile nobody activates, and nothing depends
+// on it any more.
+func TestOverrideKeepsAMovedDatabaseStopped(t *testing.T) {
+	override, err := Override(movedCompose, []Join{{Network: "pcdb-ghost"}}, "", []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	project := load(t, nil, movedCompose, override)
+
+	if _, active := project.Services["db"]; active {
+		t.Fatal("the moved database service is still active")
+	}
+	if disabled, ok := project.DisabledServices["db"]; !ok || !slices.Equal(disabled.Profiles, []string{RetiredProfile}) {
+		t.Errorf("disabled: %+v", project.DisabledServices)
+	}
+
+	app := project.Services["app"]
+	if len(app.DependsOn) != 1 || app.DependsOn["cache"].Condition != "service_started" || !app.DependsOn["cache"].Restart {
+		t.Errorf("app keeps its other dependency as it was: %+v", app.DependsOn)
+	}
+	if worker := project.Services["worker"]; len(worker.DependsOn) != 0 {
+		t.Errorf("worker: %+v", worker.DependsOn)
+	}
+	for _, name := range []string{"app", "worker", "plain", "cache"} {
+		if _, ok := project.Services[name].Networks["pcdb-ghost"]; !ok {
+			t.Errorf("%s is not on the database network", name)
+		}
+	}
+
+	// without networks the retirement alone is an override too
+	if alone, err := Override(movedCompose, nil, "", []string{"db"}); err != nil || !strings.Contains(alone, RetiredProfile) {
+		t.Errorf("retirement alone: %q %v", alone, err)
+	}
+
+	// the agent reads back what the override keeps stopped
+	if retired := RetiredServices(override); !slices.Equal(retired, []string{"db"}) {
+		t.Errorf("retired services: %v", retired)
+	}
+	plain, err := Override(movedCompose, []Join{{Network: "pcdb-ghost"}}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired := RetiredServices(plain); len(retired) != 0 {
+		t.Errorf("retired without a move: %v", retired)
+	}
+}
+
+func TestRetireProblem(t *testing.T) {
+	if err := RetireProblem(movedCompose, "db"); err != nil {
+		t.Errorf("depends_on is no problem: %v", err)
+	}
+	if err := RetireProblem(movedCompose, "nothing"); err == nil {
+		t.Error("an unknown service")
+	}
+	for _, compose := range []string{
+		"services:\n  db: {image: postgres}\n  app: {image: x, network_mode: \"service:db\"}\n",
+		"services:\n  db: {image: postgres}\n  app: {image: x, links: [\"db:database\"]}\n",
+		"services:\n  db: {image: postgres}\n  app: {image: x, volumes_from: [db]}\n",
+	} {
+		if err := RetireProblem(compose, "db"); err == nil {
+			t.Errorf("no problem found in %q", compose)
+		}
 	}
 }
 
@@ -226,6 +319,8 @@ func TestScriptsKeepPasswordsOffTheCommandLine(t *testing.T) {
 			Statements(engine, engine.AdminUser, "admin-password", sql),
 			Dump(engine, engine.AdminUser, "admin-password", "shop"),
 			Clone(engine, engine.AdminUser, "admin-password", "shop", "shop_copy", "shop_copy"),
+			RestoreFile(engine, engine.AdminUser, "admin-password", "shop", "shop", "/tmp/pocketcloud-move.sql"),
+			CountTables(engine, engine.AdminUser, "admin-password", "shop"),
 		}
 		for _, script := range scripts {
 			line := strings.Join(script.Cmd, " ")
@@ -395,5 +490,52 @@ func TestRemoveEnvTakesOutOnlyWhatWasAdded(t *testing.T) {
 	}
 	if again, _ := RemoveEnv("A=1\nexport DB_PORT=3306\n", maria.EnvLines()); again != "A=1\n" {
 		t.Errorf("an exported line: %q", again)
+	}
+}
+
+func TestApplicationCredentials(t *testing.T) {
+	const postgres = `services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: ${DB_PASS}
+`
+	if got := ApplicationCredentials(postgres, "db", Postgres); got.User != "umami" || got.PasswordVar != "DB_PASS" {
+		t.Errorf("postgres: %+v", got)
+	}
+	// without POSTGRES_USER the application signs in as the administrator
+	if got := ApplicationCredentials("services:\n  db:\n    image: postgres\n    environment: [POSTGRES_PASSWORD=$PW]\n", "db", Postgres); got.User != "postgres" || got.PasswordVar != "PW" {
+		t.Errorf("default user: %+v", got)
+	}
+
+	// MariaDB: the application's own user, not root
+	const mariadb = `services:
+  db:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: ${ROOT_PW}
+      MARIADB_USER: shop
+      MARIADB_PASSWORD: ${SHOP_PW}
+`
+	if got := ApplicationCredentials(mariadb, "db", MariaDB); got.User != "shop" || got.PasswordVar != "SHOP_PW" {
+		t.Errorf("mariadb: %+v", got)
+	}
+	if got := ApplicationCredentials("services:\n  db:\n    image: mariadb\n    environment: {MARIADB_ROOT_PASSWORD: x}\n", "db", MariaDB); got.User != "" {
+		t.Errorf("a root-only server names no application user: %+v", got)
+	}
+}
+
+func TestParseExists(t *testing.T) {
+	if database, user := ParseExists("database\t1\nuser\t0\n"); !database || user {
+		t.Errorf("got %v %v", database, user)
+	}
+	if database, user := ParseExists("database\t0\nuser\t2\n"); database || !user {
+		t.Errorf("got %v %v", database, user)
+	}
+	for _, engine := range []Engine{MariaDB, Postgres} {
+		if sql := ExistsSQL(engine, "it's", "o'brien"); strings.Contains(sql, "it's") || strings.Contains(sql, "o'brien") {
+			t.Errorf("%s: names are not quoted: %s", engine.Name, sql)
+		}
 	}
 }

@@ -229,3 +229,63 @@ func ParseStats(engine Engine, output string) (Stats, error) {
 
 	return stats, scanner.Err()
 }
+
+// RestoreFile restores a dump that lies in the server's container into an existing
+// database, and removes the file whatever happens. A PostgreSQL restore runs as
+// the database's owner, so that what it creates belongs to that user.
+func RestoreFile(engine Engine, user, password, database, owner, file string) Script {
+	var restore string
+	if engine.Name == MariaDB.Name {
+		restore = selectClient + `"$client" --user="$PC_ADMIN_USER" "$PC_DATABASE" < "$PC_FILE"`
+	} else {
+		restore = `{ printf 'SET ROLE "%s";\n' "$PC_OWNER"; cat "$PC_FILE"; } | psql -X -q -v ON_ERROR_STOP=1 --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE"`
+	}
+
+	return Script{
+		Cmd: []string{"sh", "-c", restore + "\nstatus=$?\nrm -f \"$PC_FILE\"\nexit $status"},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database, "PC_OWNER="+owner, "PC_FILE="+file),
+	}
+}
+
+// ExistsSQL tells whether a database and a user of these names exist, as rows of
+// kind and count.
+func ExistsSQL(engine Engine, database, user string) string {
+	if engine.Name == MariaDB.Name {
+		return "SELECT 'database', COUNT(*) FROM information_schema.schemata WHERE schema_name = " + mariadbString(database) + ";\n" +
+			"SELECT 'user', COUNT(*) FROM mysql.user WHERE user = " + mariadbString(user) + ";"
+	}
+	return "SELECT 'database', count(*) FROM pg_database WHERE datname = " + postgresString(database) + ";\n" +
+		"SELECT 'user', count(*) FROM pg_roles WHERE rolname = " + postgresString(user) + ";"
+}
+
+// ParseExists reads the output of ExistsSQL.
+func ParseExists(output string) (database, user bool) {
+	for _, line := range strings.Split(output, "\n") {
+		kind, count, found := strings.Cut(strings.TrimSpace(line), "\t")
+		if !found || strings.TrimSpace(count) == "0" {
+			continue
+		}
+		switch kind {
+		case "database":
+			database = true
+		case "user":
+			user = true
+		}
+	}
+	return database, user
+}
+
+// CountTables prints how many tables and views a database has, for comparing a
+// restored database with its original.
+func CountTables(engine Engine, user, password, database string) Script {
+	var script string
+	if engine.Name == MariaDB.Name {
+		script = selectClient + `"$client" --user="$PC_ADMIN_USER" --batch --skip-column-names -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()" "$PC_DATABASE"`
+	} else {
+		script = `psql -X -q -A -t --username="$PC_ADMIN_USER" --dbname="$PC_DATABASE" -c "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"`
+	}
+	return Script{
+		Cmd: []string{"sh", "-c", script},
+		Env: append(credentials(engine, user, password), "PC_DATABASE="+database),
+	}
+}

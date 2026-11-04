@@ -29,6 +29,7 @@ func (p *Panel) bindDatabaseRoutes(group *router.RouterGroup[*core.RequestEvent]
 	group.POST("/db-servers/link", p.handleLinkServer).BindFunc(operators)
 	group.POST("/db-servers/{id}/stats", p.handleServerStats).BindFunc(operators)
 	group.DELETE("/db-servers/{id}", p.handleRemoveServer).BindFunc(operators)
+	group.POST("/db-servers/{id}/move", p.handleMoveServer).BindFunc(operators)
 
 	group.POST("/databases", p.handleCreateDatabase).BindFunc(operators)
 	group.POST("/databases/{id}/connect", p.handleConnectDatabase).BindFunc(operators)
@@ -612,6 +613,9 @@ func (p *Panel) handleRotateDatabase(e *core.RequestEvent) error {
 	account, err := p.userOf(server, database.GetString("name"))
 	if err != nil {
 		return e.NotFoundError("The database has no user.", err)
+	}
+	if account.GetBool("app_password") {
+		return e.BadRequestError("The application keeps this password in its own settings: change it there and on the server together.", nil)
 	}
 	if account.GetString("pending_password") != "" {
 		return e.BadRequestError("A rotation of this password is already under way.", nil)

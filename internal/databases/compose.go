@@ -89,84 +89,249 @@ func ServerEnv(server string) string {
 	return ServerEnvKey + "=${secret:" + AdminSecretName(server) + "}\n"
 }
 
-// Override generates the second Compose file of a deploy, which puts services on
-// database networks. Without aliases every service of the stack joins every
-// network: the applications. With aliases only the given service joins, under
-// them: a shared server, which the applications find by its name.
+// Join is a database network the services of a deploy join, with the names a
+// shared server answers to there: its own, and those of a database service whose
+// data moved to it, so that the application finds it under the old name.
+type Join struct {
+	Network string
+	Aliases []string
+}
+
+// RetiredProfile is the Compose profile of a service the panel keeps stopped: a
+// database container whose data moved to a shared server. No deploy activates it,
+// so Compose neither starts nor removes the container.
+const RetiredProfile = "pocketcloud-moved"
+
+// Override generates the second Compose file of a deploy. Without a service, every
+// service of the stack joins every network: an application. With one, only that
+// service joins, under the aliases of each network: a shared server.
+//
+// Retired services are put into RetiredProfile, and the services that depend on
+// them stop doing so: `depends_on: !override` keeps their other dependencies.
 //
 // A service whose file names no networks is on the default network only; naming
 // one in an override would take it off that one, so the override names it too.
 // Services with a network_mode of their own cannot join networks and are left out.
-func Override(compose string, networks []string, service string, aliases []string) (string, error) {
-	if len(networks) == 0 {
+func Override(compose string, joins []Join, service string, retired []string) (string, error) {
+	if len(joins) == 0 && len(retired) == 0 {
 		return "", nil
 	}
 
-	var file struct {
-		Services map[string]struct {
-			Networks    any    `yaml:"networks"`
-			NetworkMode string `yaml:"network_mode"`
-		} `yaml:"services"`
-	}
-	if err := yaml.Unmarshal([]byte(compose), &file); err != nil {
-		return "", fmt.Errorf("the Compose file cannot be read: %w", err)
+	services, err := composeServices(compose)
+	if err != nil {
+		return "", err
 	}
 
-	names := []string{}
-	for name := range file.Services {
-		if service == "" || name == service {
-			names = append(names, name)
-		}
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
 	}
 	slices.Sort(names)
 
-	type endpoint struct {
-		Aliases []string `yaml:"aliases,omitempty"`
-	}
-	type overrideService struct {
-		Networks map[string]endpoint `yaml:"networks"`
-	}
-	type externalNetwork struct {
-		External bool `yaml:"external"`
-	}
-
-	out := struct {
-		Services map[string]overrideService `yaml:"services"`
-		Networks map[string]externalNetwork `yaml:"networks"`
-	}{
-		Services: map[string]overrideService{},
-		Networks: map[string]externalNetwork{},
-	}
+	out := map[string]*yaml.Node{}
 
 	for _, name := range names {
-		definition := file.Services[name]
-		if definition.NetworkMode != "" {
+		definition := services[name]
+		if slices.Contains(retired, name) {
+			out[name] = mapping("profiles", sequence(RetiredProfile))
 			continue
 		}
 
-		joined := map[string]endpoint{}
-		if definition.Networks == nil {
-			joined["default"] = endpoint{}
+		entry := &yaml.Node{Kind: yaml.MappingNode}
+
+		if len(joins) > 0 && (service == "" || name == service) && mappingValue(definition, "network_mode") == nil {
+			joined := &yaml.Node{Kind: yaml.MappingNode}
+			if mappingValue(definition, "networks") == nil {
+				joined.Content = append(joined.Content, scalar("default"), &yaml.Node{Kind: yaml.MappingNode})
+			}
+			for _, join := range joins {
+				endpoint := &yaml.Node{Kind: yaml.MappingNode}
+				if service != "" && len(join.Aliases) > 0 {
+					endpoint = mapping("aliases", sequence(join.Aliases...))
+				}
+				joined.Content = append(joined.Content, scalar(join.Network), endpoint)
+			}
+			entry.Content = append(entry.Content, scalar("networks"), joined)
 		}
-		for _, network := range networks {
-			joined[network] = endpoint{Aliases: aliases}
+
+		if dependencies := withoutRetired(mappingValue(definition, "depends_on"), retired); dependencies != nil {
+			entry.Content = append(entry.Content, scalar("depends_on"), dependencies)
 		}
-		out.Services[name] = overrideService{Networks: joined}
+
+		if len(entry.Content) > 0 {
+			out[name] = entry
+		}
 	}
 
-	if len(out.Services) == 0 {
+	if len(out) == 0 {
 		return "", nil
 	}
 
-	for _, network := range networks {
-		out.Networks[network] = externalNetwork{External: true}
+	servicesNode := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range names {
+		if entry, ok := out[name]; ok {
+			servicesNode.Content = append(servicesNode.Content, scalar(name), entry)
+		}
+	}
+	root := mapping("services", servicesNode)
+
+	if len(joins) > 0 && (service == "" || out[service] != nil) {
+		networks := &yaml.Node{Kind: yaml.MappingNode}
+		for _, join := range joins {
+			networks.Content = append(networks.Content, scalar(join.Network), mapping("external", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}))
+		}
+		root.Content = append(root.Content, scalar("networks"), networks)
 	}
 
-	raw, err := yaml.Marshal(out)
+	raw, err := yaml.Marshal(root)
 	if err != nil {
 		return "", err
 	}
 
 	return "# Generated by PocketCloud for every deploy: the database networks of this stack.\n" +
 		strings.TrimLeft(string(raw), "\n"), nil
+}
+
+// withoutRetired returns what replaces a service's depends_on when some of its
+// dependencies are retired, or nil when nothing changes. The other dependencies
+// keep their conditions.
+func withoutRetired(dependsOn *yaml.Node, retired []string) *yaml.Node {
+	if dependsOn == nil || len(retired) == 0 {
+		return nil
+	}
+
+	kept := &yaml.Node{Kind: yaml.MappingNode, Tag: "!override"}
+	changed := false
+
+	switch dependsOn.Kind {
+	case yaml.SequenceNode:
+		for _, item := range dependsOn.Content {
+			if slices.Contains(retired, item.Value) {
+				changed = true
+				continue
+			}
+			kept.Content = append(kept.Content, scalar(item.Value), mapping("condition", scalar("service_started")))
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(dependsOn.Content); i += 2 {
+			if slices.Contains(retired, dependsOn.Content[i].Value) {
+				changed = true
+				continue
+			}
+			kept.Content = append(kept.Content, dependsOn.Content[i], dependsOn.Content[i+1])
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+	if len(kept.Content) == 0 {
+		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!reset", Style: yaml.FlowStyle}
+	}
+	return kept
+}
+
+// RetireProblem tells why a service cannot be kept stopped while the rest of its
+// stack runs on: another service that shares its network namespace or volumes, or
+// links to it, would not start without it.
+func RetireProblem(compose, service string) error {
+	services, err := composeServices(compose)
+	if err != nil {
+		return err
+	}
+	if services[service] == nil {
+		return fmt.Errorf("the stack has no service %s", service)
+	}
+
+	for name, definition := range services {
+		if name == service {
+			continue
+		}
+		if mode := mappingValue(definition, "network_mode"); mode != nil && (mode.Value == "service:"+service || mode.Value == "container:"+service) {
+			return fmt.Errorf("%s uses the network of %s", name, service)
+		}
+		for _, key := range []string{"links", "volumes_from"} {
+			list := mappingValue(definition, key)
+			if list == nil {
+				continue
+			}
+			for _, item := range list.Content {
+				target, _, _ := strings.Cut(strings.TrimPrefix(item.Value, "service:"), ":")
+				if target == service {
+					return fmt.Errorf("%s has %s to %s", name, key, service)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// composeServices reads the services of a Compose file as YAML nodes.
+// RetiredServices are the services an override keeps stopped for good, as their
+// data moved to a shared server.
+func RetiredServices(override string) []string {
+	services, err := composeServices(override)
+	if err != nil {
+		return nil
+	}
+	retired := []string{}
+	for name, service := range services {
+		if profiles := mappingValue(service, "profiles"); profiles != nil && profiles.Kind == yaml.SequenceNode {
+			for _, profile := range profiles.Content {
+				if profile.Value == RetiredProfile {
+					retired = append(retired, name)
+				}
+			}
+		}
+	}
+	slices.Sort(retired)
+	return retired
+}
+
+func composeServices(compose string) (map[string]*yaml.Node, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(compose), &document); err != nil {
+		return nil, fmt.Errorf("the Compose file cannot be read: %w", err)
+	}
+
+	services := map[string]*yaml.Node{}
+	if len(document.Content) == 0 {
+		return services, nil
+	}
+	list := mappingValue(document.Content[0], "services")
+	if list == nil || list.Kind != yaml.MappingNode {
+		return services, nil
+	}
+	for i := 0; i+1 < len(list.Content); i += 2 {
+		services[list.Content[i].Value] = list.Content[i+1]
+	}
+	return services, nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func scalar(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+func sequence(values ...string) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, value := range values {
+		node.Content = append(node.Content, scalar(value))
+	}
+	return node
+}
+
+func mapping(key string, value *yaml.Node) *yaml.Node {
+	return &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{scalar(key), value}}
 }
