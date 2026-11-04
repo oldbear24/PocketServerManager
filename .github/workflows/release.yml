@@ -90,11 +90,16 @@ jobs:
           PANEL_DIGEST: ${{ steps.panel.outputs.digest }}
         run: |
           # the PHP runtime images are built by php.yml on their own schedule;
-          # the release records the ones current when it was made
+          # the release records the ones current when it was made. One that was
+          # never published is recorded as null, with a warning.
+          set -o pipefail
           php='{}'
           for version in $(jq -r --arg today "$(date -u +%F)" '.versions[] | select(.security_support_until >= $today) | .version' images/php/versions.json); do
-            digest="$(docker buildx imagetools inspect "$REGISTRY/pocketcloud-php:$version-fpm" --format '{{json .Manifest}}' | jq -r .digest)"
-            php="$(jq -c --arg v "$version" --arg d "$digest" '. + {($v): $d}' <<<"$php")"
+            if ! digest="$(docker buildx imagetools inspect "$REGISTRY/pocketcloud-php:$version-fpm" --format '{{json .Manifest}}' | jq -er .digest)"; then
+              echo "::warning::No published PHP $version image to record; php.yml has not built it yet"
+              digest=null
+            fi
+            php="$(jq -c --arg v "$version" --arg d "$digest" '. + {($v): (if $d == "null" then null else $d end)}' <<<"$php")"
           done
           jq -n --arg agent "$AGENT_DIGEST" --arg updater "$UPDATER_DIGEST" --arg panel "$PANEL_DIGEST" --argjson php "$php" \
             '{agent: $agent, updater: $updater, panel: $panel, php: $php}' > image-digests.json

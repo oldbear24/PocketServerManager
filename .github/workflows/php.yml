@@ -16,21 +16,30 @@ on:
     paths:
       - images/php/**
       - cmd/php-status/**
+      - go.mod
+      - go.sum
       - .github/workflows/php.yml
   pull_request:
     paths:
       - images/php/**
       - cmd/php-status/**
+      - go.mod
+      - go.sum
       - .github/workflows/php.yml
   workflow_dispatch:
     inputs:
       force:
-        description: Rebuild every image, even when its base did not change
+        description: Rebuild every image, even when its base did not change since the last build
         type: boolean
         default: false
 
 permissions:
   contents: read
+
+# one run at a time, so an older build is never pushed after a newer one
+concurrency:
+  group: php-images-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/oldbear24/pocketcloud-php
@@ -68,7 +77,8 @@ jobs:
     env:
       VERSION: ${{ matrix.version }}
       DEBIAN: ${{ needs.versions.outputs.debian }}
-      PUBLISH: ${{ github.event_name != 'pull_request' }}
+      # only what is on main is published; a run on another ref only tests
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-qemu-action@v3
@@ -97,11 +107,13 @@ jobs:
           published="$(docker buildx imagetools inspect "$IMAGE:${VERSION}-fpm" --format '{{json .Image}}' 2>/dev/null \
             | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.base.digest"] // empty' || true)"
 
+          # a scheduled run on a weekday, or a manual one without force, skips
+          # an image whose base did not change; a push always builds
           rebuild=true
-          if [ "$EVENT" = schedule ] && [ "$(date -u +%u)" != 1 ] && [ "$published" = "$digest" ]; then
-            rebuild=false
+          if [ "$published" = "$digest" ]; then
+            if [ "$EVENT" = schedule ] && [ "$(date -u +%u)" != 1 ]; then rebuild=false; fi
+            if [ "$EVENT" = workflow_dispatch ] && [ "$FORCE" != true ]; then rebuild=false; fi
           fi
-          if [ "$FORCE" = true ]; then rebuild=true; fi
           echo "rebuild=$rebuild" >> "$GITHUB_OUTPUT"
           echo "base $base@$digest, published from ${published:-nothing}: rebuild=$rebuild"
 

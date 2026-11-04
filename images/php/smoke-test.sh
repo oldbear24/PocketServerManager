@@ -80,6 +80,12 @@ done
 status=$(docker exec pcsmoke-fpm pocketcloud-php-status) || fail "the status helper failed: $status"
 printf '%s\n' "$status" | grep -q '"fpm":{' || fail "no pool status: $status"
 printf '%s\n' "$status" | grep -q '"opcache":{' || fail "no OPcache statistics: $status"
+# cached_scripts counts the scripts in OPcache; the status script is one of them
+cached_scripts() {
+	docker exec pcsmoke-fpm pocketcloud-php-status | sed -n 's/.*"num_cached_scripts":\([0-9]*\).*/\1/p'
+}
+before=$(cached_scripts)
+[ -n "$before" ] || fail "OPcache reports no count of cached scripts"
 docker exec pcsmoke-fpm sh -ec '
 	grep -q "^host mail.invalid$" /run/pocketcloud-php/msmtprc
 	[ "$(cat /run/pocketcloud-php/smtp-password)" = secret ]
@@ -146,7 +152,10 @@ page=$(get http://pcsmoke-caddy:8081/)
 printf '%s\n' "$page" | grep -qi 'laravel' || fail "Laravel did not render its welcome page"
 
 say "OPcache saw the apps"
-docker exec pcsmoke-fpm pocketcloud-php-status | grep -q '"num_cached_scripts":[1-9]' || fail "OPcache cached no script"
+# WordPress and Laravel each load dozens of files
+after=$(cached_scripts)
+[ "${after:-0}" -gt $((before + 50)) ] || fail "OPcache cached $before scripts before the apps and ${after:-none} after"
+echo "OPcache cached $after scripts, $before before the apps"
 
 echo
 echo "OK: $image"
