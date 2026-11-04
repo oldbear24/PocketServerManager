@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/fcgi"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -380,5 +381,40 @@ func TestEncodeParamsIsStable(t *testing.T) {
 	want := fmt.Sprintf("\x01\x01A1\x01\x01B2\x80\x00\x00\x82\x00%s", strings.Repeat("L", 130))
 	if string(first) != want {
 		t.Fatalf("encoded as %q", first)
+	}
+}
+
+// TestRealFPMTakesLargeParameters sends large parameters to a real PHP-FPM,
+// which is stricter about records than Go's FastCGI server. It runs only when
+// POCKETCLOUD_FPM_TEST names the address of a pool, such as one of the image's
+// on a published port 9000:
+//
+//	docker run -d -p 127.0.0.1:9000:9000 ghcr.io/oldbear24/pocketcloud-php:8.5-fpm
+//	POCKETCLOUD_FPM_TEST=127.0.0.1:9000 go test -run TestRealFPM ./cmd/php-status
+func TestRealFPMTakesLargeParameters(t *testing.T) {
+	address := os.Getenv("POCKETCLOUD_FPM_TEST")
+	if address == "" {
+		t.Skip("POCKETCLOUD_FPM_TEST does not name a PHP-FPM pool")
+	}
+
+	for _, size := range []int{60_000, 65_528, 65_529, 65_535 - 20, 100_000} {
+		params := requestParams("/nothing.php", "/nothing.php", "")
+		// a value up to the largest a record holds, or split over several
+		value := strings.Repeat("x", size)
+		if size > 65_000 {
+			params["HUGE_A"] = value[:size/2]
+			params["HUGE_B"] = value[size/2:]
+		} else {
+			params["HUGE"] = value
+		}
+
+		response, err := fcgiGet(context.Background(), "tcp", address, params)
+		if err != nil {
+			t.Fatalf("%d bytes: %v", size, err)
+		}
+		// FPM read the request: it looked for the script and did not find it
+		if response.Status != http.StatusNotFound {
+			t.Fatalf("%d bytes: status %d", size, response.Status)
+		}
 	}
 }
