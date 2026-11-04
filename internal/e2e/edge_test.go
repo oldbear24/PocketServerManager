@@ -185,9 +185,7 @@ func hostRoutes(config map[string]any) []string {
 	for _, route := range routes {
 		matchers, _ := route.(map[string]any)["match"].([]any)
 		for _, matcher := range matchers {
-			for _, host := range asStrings(matcher.(map[string]any)["host"]) {
-				hosts = append(hosts, host)
-			}
+			hosts = append(hosts, asStrings(matcher.(map[string]any)["host"])...)
 		}
 	}
 	return hosts
