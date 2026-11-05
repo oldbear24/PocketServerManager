@@ -7,11 +7,62 @@
   },
   "apps": {
     "http": {
-      "metrics": {},
+      "metrics": {
+        "per_host": true
+      },
       "servers": {
         "http": {
           "automatic_https": {
             "disable": true
+          },
+          "errors": {
+            "routes": [
+              {
+                "handle": [
+                  {
+                    "handler": "subroute",
+                    "routes": [
+                      {
+                        "handle": [
+                          {
+                            "handler": "rewrite",
+                            "uri": "/404.html"
+                          },
+                          {
+                            "handler": "file_server",
+                            "precompressed": {
+                              "br": {},
+                              "gzip": {},
+                              "zstd": {}
+                            },
+                            "precompressed_order": [
+                              "br",
+                              "zstd",
+                              "gzip"
+                            ],
+                            "root": "/srv/sites/blog/current",
+                            "status_code": "{http.error.status_code}"
+                          }
+                        ],
+                        "match": [
+                          {
+                            "expression": "{http.error.status_code} == 404"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ],
+                "match": [
+                  {
+                    "host": [
+                      "blog.example.com"
+                    ]
+                  }
+                ],
+                "terminal": true
+              }
+            ]
           },
           "listen": [
             ":80"
@@ -70,6 +121,52 @@
                 {
                   "host": [
                     "app.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "body": "This site asks for a password, so it is served over HTTPS only, once it has its certificate.\n",
+                  "handler": "static_response",
+                  "headers": {
+                    "Content-Type": [
+                      "text/plain; charset=utf-8"
+                    ],
+                    "Retry-After": [
+                      "300"
+                    ]
+                  },
+                  "status_code": 503
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "app.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "blog.example.com"
                   ]
                 }
               ],
@@ -215,6 +312,55 @@
           "automatic_https": {
             "disable": true
           },
+          "errors": {
+            "routes": [
+              {
+                "handle": [
+                  {
+                    "handler": "subroute",
+                    "routes": [
+                      {
+                        "handle": [
+                          {
+                            "handler": "rewrite",
+                            "uri": "/404.html"
+                          },
+                          {
+                            "handler": "file_server",
+                            "precompressed": {
+                              "br": {},
+                              "gzip": {},
+                              "zstd": {}
+                            },
+                            "precompressed_order": [
+                              "br",
+                              "zstd",
+                              "gzip"
+                            ],
+                            "root": "/srv/sites/blog/current",
+                            "status_code": "{http.error.status_code}"
+                          }
+                        ],
+                        "match": [
+                          {
+                            "expression": "{http.error.status_code} == 404"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ],
+                "match": [
+                  {
+                    "host": [
+                      "blog.example.com"
+                    ]
+                  }
+                ],
+                "terminal": true
+              }
+            ]
+          },
           "listen": [
             ":443"
           ],
@@ -303,6 +449,160 @@
                 {
                   "host": [
                     "app.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "http://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "app.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "encodings": {
+                    "gzip": {},
+                    "zstd": {}
+                  },
+                  "handler": "encode",
+                  "prefer": [
+                    "zstd",
+                    "gzip"
+                  ]
+                },
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "set": {
+                              "X-Frame-Options": [
+                                "DENY"
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "set": {
+                              "Content-Type": [
+                                "application/rss+xml"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "/feed.xml"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "set": {
+                              "Cache-Control": [
+                                "public, max-age=31536000"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "/assets/*"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "set": {
+                              "Cache-Control": [
+                                "no-cache"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "*.html"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "file_server",
+                          "precompressed": {
+                            "br": {},
+                            "gzip": {},
+                            "zstd": {}
+                          },
+                          "precompressed_order": [
+                            "br",
+                            "zstd",
+                            "gzip"
+                          ],
+                          "root": "/srv/sites/blog/current"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "blog.example.com"
                   ]
                 }
               ],

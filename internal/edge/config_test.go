@@ -32,6 +32,15 @@ var golden = map[string]Config{
 			}},
 			{Hostname: "example.com", Kind: KindRedirect, RedirectTo: "https://www.example.com", RedirectPermanent: true, Certificate: "certapp"},
 			{Hostname: "old.example.org", Kind: KindRedirect, RedirectTo: "https://new.example.org/landing"},
+			{Hostname: "blog.example.com", Kind: KindSite, Certificate: "certapp", HTTPSRedirect: true, HSTS: true, Compress: true, Site: &SiteOptions{
+				Root:     "/srv/sites/blog/current",
+				NotFound: "/404.html",
+				Headers:  []SiteHeader{{Name: "X-Frame-Options", Value: "DENY"}, {Path: "/feed.xml", Name: "Content-Type", Value: "application/rss+xml"}},
+				Cache:    []CacheRule{{Path: "/assets/*", MaxAge: 31536000}, {Path: "*.html", MaxAge: 0}},
+			}},
+			{Hostname: "app.example.org", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/app/current", SPA: true}, BasicAuth: []BasicAuthUser{
+				{Username: "carol", Hash: "$2a$05$cdSx43KWUy4Imu5KZU9RrOmFF/YsG/lIIWlXA8QAYE1NcKuKSOyte"},
+			}},
 		},
 	},
 }
@@ -211,6 +220,16 @@ func TestValidateRefusesMistakes(t *testing.T) {
 		"a missing certificate":              {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "nope"}}},
 		"HTTPS without a certificate":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", HTTPSRedirect: true}}},
 		"a certificate id with a slash":      {Certificates: []Certificate{{ID: "../x"}}},
+		"a site without options":             {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite}}},
+		"a site outside the sites":           {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/etc"}}}},
+		"a site that climbs out":             {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/../../etc"}}}},
+		"a site root with a placeholder":     {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/{env.HOME}"}}}},
+		"a 404 page that is no path":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", NotFound: "404.html"}}}},
+		"a header with a line break":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", Headers: []SiteHeader{{Name: "X-A", Value: "a\r\nSet-Cookie: x"}}}}}},
+		"a header name with a colon":         {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", Headers: []SiteHeader{{Name: "X-A:", Value: "a"}}}}}},
+		"a header with a placeholder":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", Headers: []SiteHeader{{Name: "X-A", Value: "{file./etc/passwd}"}}}}}},
+		"a cache rule without a path":        {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", Cache: []CacheRule{{Path: "", MaxAge: 60}}}}}},
+		"a cache time of ten years":          {Routes: []Route{{Hostname: "a.example.com", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/a/current", Cache: []CacheRule{{Path: "/a/*", MaxAge: 315360000}}}}}},
 	}
 	for name, config := range cases {
 		if _, err := Build(config); err == nil {

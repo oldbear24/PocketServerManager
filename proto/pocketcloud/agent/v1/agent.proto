@@ -322,6 +322,9 @@ message EdgeStatus {
   double requests_per_s = 5;
   // caddy_version is the version of Caddy in the edge container.
   string caddy_version = 6;
+  // requests_by_host counts the requests of each hostname since the previous
+  // heartbeat, for the sites' request charts.
+  map<string, uint64> requests_by_host = 7;
 }
 
 // HeartbeatResponse carries the panel's clock and hints for the agent.

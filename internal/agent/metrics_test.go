@@ -85,7 +85,27 @@ caddy_http_requests_total{handler="static_response",server="http"} 3
 caddy_http_requests_total{handler="file_server",server="http"} 2
 caddy_http_request_duration_seconds_count{code="200",handler="reverse_proxy",method="GET",server="https"} 7
 `)
-	if got := countRequests(metrics); got != 12 {
+	if got, _ := countRequests(metrics); got != 12 {
 		t.Errorf("counted %v requests, want 12", got)
+	}
+}
+
+// TestRequestsAreCountedPerHostname: with per_host metrics each hostname has
+// its own counters, and a heartbeat reports what each had since the last one.
+func TestRequestsAreCountedPerHostname(t *testing.T) {
+	metrics := []byte(`caddy_http_requests_total{handler="subroute",host="blog.example.com",server="https"} 40
+caddy_http_requests_total{handler="file_server",host="blog.example.com",server="https"} 40
+caddy_http_requests_total{handler="file_server",host="Docs.example.com",server="http"} 5
+caddy_http_requests_total{handler="reverse_proxy",host="app.example.com",server="https"} 9
+`)
+	total, byHost := countRequests(metrics)
+	if total != 54 || byHost["blog.example.com"] != 40 || byHost["docs.example.com"] != 5 || byHost["app.example.com"] != 9 {
+		t.Errorf("total %v, by host %v", total, byHost)
+	}
+
+	since := requestsSince(map[string]float64{"blog.example.com": 30, "app.example.com": 20, "docs.example.com": 5}, byHost)
+	// app's counter went down: the edge restarted, and counted 9 since
+	if since["blog.example.com"] != 10 || since["app.example.com"] != 9 || len(since) != 2 {
+		t.Errorf("since the last count: %v", since)
 	}
 }

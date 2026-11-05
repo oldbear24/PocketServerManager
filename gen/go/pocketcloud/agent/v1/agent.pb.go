@@ -1359,9 +1359,12 @@ type EdgeStatus struct {
 	// previous heartbeat.
 	RequestsPerS float64 `protobuf:"fixed64,5,opt,name=requests_per_s,json=requestsPerS,proto3" json:"requests_per_s,omitempty"`
 	// caddy_version is the version of Caddy in the edge container.
-	CaddyVersion  string `protobuf:"bytes,6,opt,name=caddy_version,json=caddyVersion,proto3" json:"caddy_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CaddyVersion string `protobuf:"bytes,6,opt,name=caddy_version,json=caddyVersion,proto3" json:"caddy_version,omitempty"`
+	// requests_by_host counts the requests of each hostname since the previous
+	// heartbeat, for the sites' request charts.
+	RequestsByHost map[string]uint64 `protobuf:"bytes,7,rep,name=requests_by_host,json=requestsByHost,proto3" json:"requests_by_host,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *EdgeStatus) Reset() {
@@ -1434,6 +1437,13 @@ func (x *EdgeStatus) GetCaddyVersion() string {
 		return x.CaddyVersion
 	}
 	return ""
+}
+
+func (x *EdgeStatus) GetRequestsByHost() map[string]uint64 {
+	if x != nil {
+		return x.RequestsByHost
+	}
+	return nil
 }
 
 // HeartbeatResponse carries the panel's clock and hints for the agent.
@@ -3529,7 +3539,7 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\rclock_skew_ms\x18\x06 \x01(\x01R\vclockSkewMs\x12@\n" +
 	"\vself_checks\x18\a \x03(\v2\x1f.pocketcloud.agent.v1.SelfCheckR\n" +
 	"selfChecks\x124\n" +
-	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\"\xbb\x01\n" +
+	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\"\xde\x02\n" +
 	"\n" +
 	"EdgeStatus\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x1a\n" +
@@ -3537,7 +3547,11 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\arunning\x18\x03 \x01(\bR\arunning\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12$\n" +
 	"\x0erequests_per_s\x18\x05 \x01(\x01R\frequestsPerS\x12#\n" +
-	"\rcaddy_version\x18\x06 \x01(\tR\fcaddyVersion\"}\n" +
+	"\rcaddy_version\x18\x06 \x01(\tR\fcaddyVersion\x12^\n" +
+	"\x10requests_by_host\x18\a \x03(\v24.pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntryR\x0erequestsByHost\x1aA\n" +
+	"\x13RequestsByHostEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"}\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vserver_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12+\n" +
@@ -3733,7 +3747,7 @@ func file_pocketcloud_agent_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_pocketcloud_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pocketcloud_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_pocketcloud_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_pocketcloud_agent_v1_agent_proto_goTypes = []any{
 	(CommandState)(0),                   // 0: pocketcloud.agent.v1.CommandState
 	(*EnrollRequest)(nil),               // 1: pocketcloud.agent.v1.EnrollRequest
@@ -3779,86 +3793,88 @@ var file_pocketcloud_agent_v1_agent_proto_goTypes = []any{
 	(*RelayResponse)(nil),               // 41: pocketcloud.agent.v1.RelayResponse
 	(*RenewCertificateRequest)(nil),     // 42: pocketcloud.agent.v1.RenewCertificateRequest
 	(*RenewCertificateResponse)(nil),    // 43: pocketcloud.agent.v1.RenewCertificateResponse
-	nil,                                 // 44: pocketcloud.agent.v1.ContainerInfo.LabelsEntry
-	nil,                                 // 45: pocketcloud.agent.v1.VolumeInfo.LabelsEntry
-	nil,                                 // 46: pocketcloud.agent.v1.NetworkInfo.LabelsEntry
-	(*timestamppb.Timestamp)(nil),       // 47: google.protobuf.Timestamp
-	(*Command)(nil),                     // 48: pocketcloud.agent.v1.Command
-	(*structpb.Struct)(nil),             // 49: google.protobuf.Struct
-	(*durationpb.Duration)(nil),         // 50: google.protobuf.Duration
+	nil,                                 // 44: pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
+	nil,                                 // 45: pocketcloud.agent.v1.ContainerInfo.LabelsEntry
+	nil,                                 // 46: pocketcloud.agent.v1.VolumeInfo.LabelsEntry
+	nil,                                 // 47: pocketcloud.agent.v1.NetworkInfo.LabelsEntry
+	(*timestamppb.Timestamp)(nil),       // 48: google.protobuf.Timestamp
+	(*Command)(nil),                     // 49: pocketcloud.agent.v1.Command
+	(*structpb.Struct)(nil),             // 50: google.protobuf.Struct
+	(*durationpb.Duration)(nil),         // 51: google.protobuf.Duration
 }
 var file_pocketcloud_agent_v1_agent_proto_depIdxs = []int32{
 	10, // 0: pocketcloud.agent.v1.EnrollRequest.facts:type_name -> pocketcloud.agent.v1.HostFacts
-	47, // 1: pocketcloud.agent.v1.EnrollResponse.expires_at:type_name -> google.protobuf.Timestamp
+	48, // 1: pocketcloud.agent.v1.EnrollResponse.expires_at:type_name -> google.protobuf.Timestamp
 	4,  // 2: pocketcloud.agent.v1.SubscribeCommandsRequest.recently_finished:type_name -> pocketcloud.agent.v1.FinishedCommand
 	0,  // 3: pocketcloud.agent.v1.FinishedCommand.state:type_name -> pocketcloud.agent.v1.CommandState
-	47, // 4: pocketcloud.agent.v1.FinishedCommand.finished_at:type_name -> google.protobuf.Timestamp
-	48, // 5: pocketcloud.agent.v1.SubscribeCommandsResponse.command:type_name -> pocketcloud.agent.v1.Command
+	48, // 4: pocketcloud.agent.v1.FinishedCommand.finished_at:type_name -> google.protobuf.Timestamp
+	49, // 5: pocketcloud.agent.v1.SubscribeCommandsResponse.command:type_name -> pocketcloud.agent.v1.Command
 	6,  // 6: pocketcloud.agent.v1.SubscribeCommandsResponse.cancel:type_name -> pocketcloud.agent.v1.CommandCancel
 	0,  // 7: pocketcloud.agent.v1.ReportCommandUpdateRequest.state:type_name -> pocketcloud.agent.v1.CommandState
 	8,  // 8: pocketcloud.agent.v1.ReportCommandUpdateRequest.progress:type_name -> pocketcloud.agent.v1.CommandProgress
-	49, // 9: pocketcloud.agent.v1.ReportCommandUpdateRequest.result:type_name -> google.protobuf.Struct
-	50, // 10: pocketcloud.agent.v1.HostVitals.uptime:type_name -> google.protobuf.Duration
-	47, // 11: pocketcloud.agent.v1.SelfCheck.checked_at:type_name -> google.protobuf.Timestamp
-	47, // 12: pocketcloud.agent.v1.HeartbeatRequest.sent_at:type_name -> google.protobuf.Timestamp
+	50, // 9: pocketcloud.agent.v1.ReportCommandUpdateRequest.result:type_name -> google.protobuf.Struct
+	51, // 10: pocketcloud.agent.v1.HostVitals.uptime:type_name -> google.protobuf.Duration
+	48, // 11: pocketcloud.agent.v1.SelfCheck.checked_at:type_name -> google.protobuf.Timestamp
+	48, // 12: pocketcloud.agent.v1.HeartbeatRequest.sent_at:type_name -> google.protobuf.Timestamp
 	10, // 13: pocketcloud.agent.v1.HeartbeatRequest.facts:type_name -> pocketcloud.agent.v1.HostFacts
 	11, // 14: pocketcloud.agent.v1.HeartbeatRequest.vitals:type_name -> pocketcloud.agent.v1.HostVitals
 	12, // 15: pocketcloud.agent.v1.HeartbeatRequest.runtime:type_name -> pocketcloud.agent.v1.AgentRuntime
 	13, // 16: pocketcloud.agent.v1.HeartbeatRequest.self_checks:type_name -> pocketcloud.agent.v1.SelfCheck
 	15, // 17: pocketcloud.agent.v1.HeartbeatRequest.edge:type_name -> pocketcloud.agent.v1.EdgeStatus
-	47, // 18: pocketcloud.agent.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
-	17, // 19: pocketcloud.agent.v1.ContainerInfo.ports:type_name -> pocketcloud.agent.v1.PortMapping
-	44, // 20: pocketcloud.agent.v1.ContainerInfo.labels:type_name -> pocketcloud.agent.v1.ContainerInfo.LabelsEntry
-	47, // 21: pocketcloud.agent.v1.ContainerInfo.started_at:type_name -> google.protobuf.Timestamp
-	45, // 22: pocketcloud.agent.v1.VolumeInfo.labels:type_name -> pocketcloud.agent.v1.VolumeInfo.LabelsEntry
-	46, // 23: pocketcloud.agent.v1.NetworkInfo.labels:type_name -> pocketcloud.agent.v1.NetworkInfo.LabelsEntry
-	18, // 24: pocketcloud.agent.v1.ReportInventoryRequest.containers:type_name -> pocketcloud.agent.v1.ContainerInfo
-	19, // 25: pocketcloud.agent.v1.ReportInventoryRequest.volumes:type_name -> pocketcloud.agent.v1.VolumeInfo
-	20, // 26: pocketcloud.agent.v1.ReportInventoryRequest.networks:type_name -> pocketcloud.agent.v1.NetworkInfo
-	47, // 27: pocketcloud.agent.v1.ReportInventoryRequest.collected_at:type_name -> google.protobuf.Timestamp
-	18, // 28: pocketcloud.agent.v1.ReportEventsRequest.container_updated:type_name -> pocketcloud.agent.v1.ContainerInfo
-	19, // 29: pocketcloud.agent.v1.ReportEventsRequest.volume_updated:type_name -> pocketcloud.agent.v1.VolumeInfo
-	20, // 30: pocketcloud.agent.v1.ReportEventsRequest.network_updated:type_name -> pocketcloud.agent.v1.NetworkInfo
-	47, // 31: pocketcloud.agent.v1.ReportEventsRequest.occurred_at:type_name -> google.protobuf.Timestamp
-	47, // 32: pocketcloud.agent.v1.MetricSample.ts:type_name -> google.protobuf.Timestamp
-	26, // 33: pocketcloud.agent.v1.MetricSample.mounts:type_name -> pocketcloud.agent.v1.DiskUsage
-	25, // 34: pocketcloud.agent.v1.PushMetricsRequest.samples:type_name -> pocketcloud.agent.v1.MetricSample
-	30, // 35: pocketcloud.agent.v1.StreamLogsRequest.lines:type_name -> pocketcloud.agent.v1.LogLine
-	47, // 36: pocketcloud.agent.v1.LogLine.ts:type_name -> google.protobuf.Timestamp
-	34, // 37: pocketcloud.agent.v1.ExecResponse.resize:type_name -> pocketcloud.agent.v1.TerminalSize
-	38, // 38: pocketcloud.agent.v1.UploadArtifactRequest.header:type_name -> pocketcloud.agent.v1.UploadArtifactHeader
-	47, // 39: pocketcloud.agent.v1.RenewCertificateResponse.expires_at:type_name -> google.protobuf.Timestamp
-	1,  // 40: pocketcloud.agent.v1.AgentService.Enroll:input_type -> pocketcloud.agent.v1.EnrollRequest
-	3,  // 41: pocketcloud.agent.v1.AgentService.SubscribeCommands:input_type -> pocketcloud.agent.v1.SubscribeCommandsRequest
-	7,  // 42: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:input_type -> pocketcloud.agent.v1.ReportCommandUpdateRequest
-	14, // 43: pocketcloud.agent.v1.AgentService.Heartbeat:input_type -> pocketcloud.agent.v1.HeartbeatRequest
-	21, // 44: pocketcloud.agent.v1.AgentService.ReportInventory:input_type -> pocketcloud.agent.v1.ReportInventoryRequest
-	23, // 45: pocketcloud.agent.v1.AgentService.ReportEvents:input_type -> pocketcloud.agent.v1.ReportEventsRequest
-	27, // 46: pocketcloud.agent.v1.AgentService.PushMetrics:input_type -> pocketcloud.agent.v1.PushMetricsRequest
-	29, // 47: pocketcloud.agent.v1.AgentService.StreamLogs:input_type -> pocketcloud.agent.v1.StreamLogsRequest
-	32, // 48: pocketcloud.agent.v1.AgentService.Exec:input_type -> pocketcloud.agent.v1.ExecRequest
-	35, // 49: pocketcloud.agent.v1.AgentService.FetchArtifact:input_type -> pocketcloud.agent.v1.FetchArtifactRequest
-	37, // 50: pocketcloud.agent.v1.AgentService.UploadArtifact:input_type -> pocketcloud.agent.v1.UploadArtifactRequest
-	40, // 51: pocketcloud.agent.v1.AgentService.Relay:input_type -> pocketcloud.agent.v1.RelayRequest
-	42, // 52: pocketcloud.agent.v1.AgentService.RenewCertificate:input_type -> pocketcloud.agent.v1.RenewCertificateRequest
-	2,  // 53: pocketcloud.agent.v1.AgentService.Enroll:output_type -> pocketcloud.agent.v1.EnrollResponse
-	5,  // 54: pocketcloud.agent.v1.AgentService.SubscribeCommands:output_type -> pocketcloud.agent.v1.SubscribeCommandsResponse
-	9,  // 55: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:output_type -> pocketcloud.agent.v1.ReportCommandUpdateResponse
-	16, // 56: pocketcloud.agent.v1.AgentService.Heartbeat:output_type -> pocketcloud.agent.v1.HeartbeatResponse
-	22, // 57: pocketcloud.agent.v1.AgentService.ReportInventory:output_type -> pocketcloud.agent.v1.ReportInventoryResponse
-	24, // 58: pocketcloud.agent.v1.AgentService.ReportEvents:output_type -> pocketcloud.agent.v1.ReportEventsResponse
-	28, // 59: pocketcloud.agent.v1.AgentService.PushMetrics:output_type -> pocketcloud.agent.v1.PushMetricsResponse
-	31, // 60: pocketcloud.agent.v1.AgentService.StreamLogs:output_type -> pocketcloud.agent.v1.StreamLogsResponse
-	33, // 61: pocketcloud.agent.v1.AgentService.Exec:output_type -> pocketcloud.agent.v1.ExecResponse
-	36, // 62: pocketcloud.agent.v1.AgentService.FetchArtifact:output_type -> pocketcloud.agent.v1.FetchArtifactResponse
-	39, // 63: pocketcloud.agent.v1.AgentService.UploadArtifact:output_type -> pocketcloud.agent.v1.UploadArtifactResponse
-	41, // 64: pocketcloud.agent.v1.AgentService.Relay:output_type -> pocketcloud.agent.v1.RelayResponse
-	43, // 65: pocketcloud.agent.v1.AgentService.RenewCertificate:output_type -> pocketcloud.agent.v1.RenewCertificateResponse
-	53, // [53:66] is the sub-list for method output_type
-	40, // [40:53] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	44, // 18: pocketcloud.agent.v1.EdgeStatus.requests_by_host:type_name -> pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
+	48, // 19: pocketcloud.agent.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
+	17, // 20: pocketcloud.agent.v1.ContainerInfo.ports:type_name -> pocketcloud.agent.v1.PortMapping
+	45, // 21: pocketcloud.agent.v1.ContainerInfo.labels:type_name -> pocketcloud.agent.v1.ContainerInfo.LabelsEntry
+	48, // 22: pocketcloud.agent.v1.ContainerInfo.started_at:type_name -> google.protobuf.Timestamp
+	46, // 23: pocketcloud.agent.v1.VolumeInfo.labels:type_name -> pocketcloud.agent.v1.VolumeInfo.LabelsEntry
+	47, // 24: pocketcloud.agent.v1.NetworkInfo.labels:type_name -> pocketcloud.agent.v1.NetworkInfo.LabelsEntry
+	18, // 25: pocketcloud.agent.v1.ReportInventoryRequest.containers:type_name -> pocketcloud.agent.v1.ContainerInfo
+	19, // 26: pocketcloud.agent.v1.ReportInventoryRequest.volumes:type_name -> pocketcloud.agent.v1.VolumeInfo
+	20, // 27: pocketcloud.agent.v1.ReportInventoryRequest.networks:type_name -> pocketcloud.agent.v1.NetworkInfo
+	48, // 28: pocketcloud.agent.v1.ReportInventoryRequest.collected_at:type_name -> google.protobuf.Timestamp
+	18, // 29: pocketcloud.agent.v1.ReportEventsRequest.container_updated:type_name -> pocketcloud.agent.v1.ContainerInfo
+	19, // 30: pocketcloud.agent.v1.ReportEventsRequest.volume_updated:type_name -> pocketcloud.agent.v1.VolumeInfo
+	20, // 31: pocketcloud.agent.v1.ReportEventsRequest.network_updated:type_name -> pocketcloud.agent.v1.NetworkInfo
+	48, // 32: pocketcloud.agent.v1.ReportEventsRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	48, // 33: pocketcloud.agent.v1.MetricSample.ts:type_name -> google.protobuf.Timestamp
+	26, // 34: pocketcloud.agent.v1.MetricSample.mounts:type_name -> pocketcloud.agent.v1.DiskUsage
+	25, // 35: pocketcloud.agent.v1.PushMetricsRequest.samples:type_name -> pocketcloud.agent.v1.MetricSample
+	30, // 36: pocketcloud.agent.v1.StreamLogsRequest.lines:type_name -> pocketcloud.agent.v1.LogLine
+	48, // 37: pocketcloud.agent.v1.LogLine.ts:type_name -> google.protobuf.Timestamp
+	34, // 38: pocketcloud.agent.v1.ExecResponse.resize:type_name -> pocketcloud.agent.v1.TerminalSize
+	38, // 39: pocketcloud.agent.v1.UploadArtifactRequest.header:type_name -> pocketcloud.agent.v1.UploadArtifactHeader
+	48, // 40: pocketcloud.agent.v1.RenewCertificateResponse.expires_at:type_name -> google.protobuf.Timestamp
+	1,  // 41: pocketcloud.agent.v1.AgentService.Enroll:input_type -> pocketcloud.agent.v1.EnrollRequest
+	3,  // 42: pocketcloud.agent.v1.AgentService.SubscribeCommands:input_type -> pocketcloud.agent.v1.SubscribeCommandsRequest
+	7,  // 43: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:input_type -> pocketcloud.agent.v1.ReportCommandUpdateRequest
+	14, // 44: pocketcloud.agent.v1.AgentService.Heartbeat:input_type -> pocketcloud.agent.v1.HeartbeatRequest
+	21, // 45: pocketcloud.agent.v1.AgentService.ReportInventory:input_type -> pocketcloud.agent.v1.ReportInventoryRequest
+	23, // 46: pocketcloud.agent.v1.AgentService.ReportEvents:input_type -> pocketcloud.agent.v1.ReportEventsRequest
+	27, // 47: pocketcloud.agent.v1.AgentService.PushMetrics:input_type -> pocketcloud.agent.v1.PushMetricsRequest
+	29, // 48: pocketcloud.agent.v1.AgentService.StreamLogs:input_type -> pocketcloud.agent.v1.StreamLogsRequest
+	32, // 49: pocketcloud.agent.v1.AgentService.Exec:input_type -> pocketcloud.agent.v1.ExecRequest
+	35, // 50: pocketcloud.agent.v1.AgentService.FetchArtifact:input_type -> pocketcloud.agent.v1.FetchArtifactRequest
+	37, // 51: pocketcloud.agent.v1.AgentService.UploadArtifact:input_type -> pocketcloud.agent.v1.UploadArtifactRequest
+	40, // 52: pocketcloud.agent.v1.AgentService.Relay:input_type -> pocketcloud.agent.v1.RelayRequest
+	42, // 53: pocketcloud.agent.v1.AgentService.RenewCertificate:input_type -> pocketcloud.agent.v1.RenewCertificateRequest
+	2,  // 54: pocketcloud.agent.v1.AgentService.Enroll:output_type -> pocketcloud.agent.v1.EnrollResponse
+	5,  // 55: pocketcloud.agent.v1.AgentService.SubscribeCommands:output_type -> pocketcloud.agent.v1.SubscribeCommandsResponse
+	9,  // 56: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:output_type -> pocketcloud.agent.v1.ReportCommandUpdateResponse
+	16, // 57: pocketcloud.agent.v1.AgentService.Heartbeat:output_type -> pocketcloud.agent.v1.HeartbeatResponse
+	22, // 58: pocketcloud.agent.v1.AgentService.ReportInventory:output_type -> pocketcloud.agent.v1.ReportInventoryResponse
+	24, // 59: pocketcloud.agent.v1.AgentService.ReportEvents:output_type -> pocketcloud.agent.v1.ReportEventsResponse
+	28, // 60: pocketcloud.agent.v1.AgentService.PushMetrics:output_type -> pocketcloud.agent.v1.PushMetricsResponse
+	31, // 61: pocketcloud.agent.v1.AgentService.StreamLogs:output_type -> pocketcloud.agent.v1.StreamLogsResponse
+	33, // 62: pocketcloud.agent.v1.AgentService.Exec:output_type -> pocketcloud.agent.v1.ExecResponse
+	36, // 63: pocketcloud.agent.v1.AgentService.FetchArtifact:output_type -> pocketcloud.agent.v1.FetchArtifactResponse
+	39, // 64: pocketcloud.agent.v1.AgentService.UploadArtifact:output_type -> pocketcloud.agent.v1.UploadArtifactResponse
+	41, // 65: pocketcloud.agent.v1.AgentService.Relay:output_type -> pocketcloud.agent.v1.RelayResponse
+	43, // 66: pocketcloud.agent.v1.AgentService.RenewCertificate:output_type -> pocketcloud.agent.v1.RenewCertificateResponse
+	54, // [54:67] is the sub-list for method output_type
+	41, // [41:54] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_agent_proto_init() }
@@ -3889,7 +3905,7 @@ func file_pocketcloud_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_agent_proto_rawDesc), len(file_pocketcloud_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   46,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

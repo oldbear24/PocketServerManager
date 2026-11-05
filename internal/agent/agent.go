@@ -84,6 +84,7 @@ type Agent struct {
 	edgeMetricsMu sync.Mutex
 	edgeCount     float64
 	edgeCountAt   time.Time
+	edgeByHost    map[string]float64
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
