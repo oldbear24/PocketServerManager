@@ -2,6 +2,7 @@ import type { RecordModel } from "pocketbase";
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AcmeAccountsCard } from "../components/AcmeAccounts";
 import { PageHead } from "../components/Layout";
 import { PhpVersionsCard } from "../components/PhpVersions";
 import { useToast } from "../components/toast";
@@ -29,6 +30,7 @@ export function SettingsPage() {
       <div className="columns">
         <div className="column-wide">
           {hasRole(user, "admin") && <PanelSettingsCard />}
+          {hasRole(user, "admin") && <AcmeAccountsCard />}
           <PhpVersionsCard />
           <AboutCard />
         </div>

@@ -587,6 +587,11 @@
       "failed": "The DNS records of {{domain}} could not be set: {{error}}",
       "drift": "The DNS records of {{domain}} were changed outside PocketCloud",
       "remove_failed": "The DNS records of the removed domain {{domain}} could not be removed: {{error}}"
+    },
+    "certificate": {
+      "issued": "Got the certificate for {{names}}, valid until {{date}}",
+      "renewed": "Renewed the certificate for {{names}}, valid until {{date}}",
+      "failed": "Could not get the certificate for {{names}}: {{error}}"
     }
   },
   "alert": {
@@ -990,7 +995,7 @@
     "endedWarning": "Security fixes for PHP {{version}} ended on {{date}}. Move its sites to a newer version."
   },
   "dns": {
-    "lead": "DNS providers and their zones. Domains in a managed zone get their records by themselves.",
+    "lead": "DNS providers, zones and certificates in one place. The panel issues the certificates, and the edges that serve their names get them.",
     "connect": "Connect a DNS provider",
     "connecting": "Connecting…",
     "connectTitle": "Connect a DNS provider",
@@ -1075,5 +1080,134 @@
     "publicAddressesNote": "what the A and AAAA records of this server's domains point at",
     "addressesSaved": "The public addresses were saved.",
     "testName": "Test {{name}}"
+  },
+  "cert": {
+    "title": "Certificates",
+    "acme": "ACME",
+    "request": "Request certificate",
+    "requesting": "Requesting…",
+    "requestTitle": "Request a certificate",
+    "requestText": "Domains with automatic TLS get a certificate on their own. Request one here for a wildcard, or for several names in one certificate.",
+    "requested": "The certificate for {{name}} is being requested.",
+    "names": "Names",
+    "issuerColumn": "Issuer",
+    "issuerName": "Issued by",
+    "validation": "Validation",
+    "validity": "Validity",
+    "deployedOn": "Deployed on",
+    "actions": "Actions",
+    "detail": "Detail",
+    "detailName": "Details of the certificate for {{name}}",
+    "retry": "Retry",
+    "retryName": "Try the certificate for {{name}} again",
+    "retrying": "Trying the certificate for {{name}} again.",
+    "filter": "Filter certificates",
+    "filterAll": "All",
+    "filterAction": "Needs action",
+    "filterInternal": "Internal",
+    "none": "No certificates yet",
+    "noneText": "Every domain with automatic TLS gets one as soon as an ACME account is set in Settings. Certificates can be uploaded on a server's Proxy tab.",
+    "noneHere": "Nothing here",
+    "validCount_one": "{{count}} valid",
+    "validCount_other": "{{count}} valid",
+    "issuingCount_one": "{{count}} being issued",
+    "issuingCount_other": "{{count}} being issued",
+    "renewalNote": "renewed 30 days before they expire",
+    "andMore_one": "{{names}} and {{count}} more",
+    "andMore_other": "{{names}} and {{count}} more",
+    "daysLeft_one": "{{count}} day · until {{date}}",
+    "daysLeft_other": "{{count}} days · until {{date}}",
+    "expiredOn": "expired on {{date}}",
+    "lifetimeLeft": "Validity left",
+    "issuingNow": "being issued…",
+    "challengeAuto": "Automatic",
+    "challengeNote": {
+      "auto": "HTTP-01 when an edge with a public address serves every name; DNS-01 for wildcards and names in a zone of a connected DNS provider.",
+      "http-01": "The CA fetches an answer from the edge that serves each name, on port 80.",
+      "dns-01": "PocketCloud puts the answer in a TXT record at the DNS provider of each name's zone."
+    },
+    "state": {
+      "valid": "Valid",
+      "expiring": "Expires soon",
+      "expired": "Expired",
+      "issuing": "Being issued",
+      "pending": "Waiting",
+      "failed": "Not issued",
+      "renewal_failed": "Renewal failed"
+    },
+    "issuer": {
+      "manual": "Uploaded",
+      "acme": "ACME",
+      "internal": "Internal CA"
+    },
+    "ca": {
+      "letsencrypt": "Let's Encrypt",
+      "letsencrypt-staging": "Let's Encrypt (staging)",
+      "zerossl": "ZeroSSL"
+    },
+    "nextAttempt": "Next attempt {{when}}",
+    "renewsAfter": "Renews after",
+    "fingerprint": "SHA-256 fingerprint",
+    "ordered": "Ordered",
+    "orderedAuto": "by the panel, for a domain",
+    "orderedByHand": "by an admin",
+    "note": "Note",
+    "history": "History",
+    "issued": "Issued",
+    "renewed": "Renewed",
+    "issueFailed": "Not issued",
+    "renewalFailed": "Renewal failed",
+    "validUntil": "valid until {{date}}",
+    "fallback": "fallback CA",
+    "chain": "Certificate chain (PEM)",
+    "removeAutoNote": "The edges stop serving it. A domain that still needs a certificate gets a new one from ACME.",
+    "account": "ACME account",
+    "changeInSettings": "Change in Settings",
+    "noAccount": "No ACME account is set yet: an admin sets one in Settings, and domains get their certificates then.",
+    "noAccountAdmin": "Set an ACME account in Settings: domains get their certificates as soon as there is one.",
+    "contact": "Contact",
+    "primaryCA": "Primary CA",
+    "fallbackCA": "Fallback CA",
+    "noFallback": "none",
+    "eabSet": "EAB set",
+    "renewal": "Renewal",
+    "renewalPolicy_one": "30 days ahead · at most {{count}} failed attempt a day",
+    "renewalPolicy_other": "30 days ahead · at most {{count}} failed attempts a day",
+    "alerts": "Alerts",
+    "alertsPolicy": "in the panel, 14 days before a certificate expires, and when one fails"
+  },
+  "acme": {
+    "title": "Certificates (ACME)",
+    "note": "where the edges' certificates come from",
+    "role": {
+      "primary": "Primary CA",
+      "fallback": "Fallback CA"
+    },
+    "roleNote": {
+      "primary": "Every certificate comes from here first. Let's Encrypt needs nothing but an email address.",
+      "fallback": "Tried when the primary CA fails, as during an outage or past its rate limits. ZeroSSL needs the EAB keys from its dashboard."
+    },
+    "registered": "registered {{when}}",
+    "add": "Set up",
+    "change": "Change",
+    "ca": "Certificate authority",
+    "custom": "Another CA (directory URL)",
+    "directory": "ACME directory URL",
+    "stagingNote": "The staging CA's certificates are not trusted by browsers: use it to try things out.",
+    "email": "Contact email",
+    "eabNote": "External account binding ties the account to yours at the CA.",
+    "eabKid": "EAB key ID",
+    "eabHmac": "EAB HMAC key",
+    "hmacKept": "stored: type to replace it",
+    "terms": "Saving registers the account at the CA, which means agreeing to its terms of service.",
+    "save": "Save and register",
+    "registering": "Registering…",
+    "saved": "The CA took the account.",
+    "removed": "The ACME account is removed.",
+    "removeTitle": "Remove this ACME account?",
+    "removeText": {
+      "primary": "Certificates are not renewed until there is an account again, except by the fallback CA. The certificates already issued keep working.",
+      "fallback": "Certificates come from the primary CA only."
+    }
   }
 }

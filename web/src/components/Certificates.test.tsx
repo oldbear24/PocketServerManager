@@ -1,0 +1,333 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { AuthProvider } from "../lib/auth";
+import {
+  caName,
+  certificatesApi,
+  certificateState,
+  needsAction,
+  parseNames,
+  providerFor,
+  validity,
+  type AcmeAccount,
+} from "../lib/certificates";
+import type { DnsProvider, DnsZone } from "../lib/dns";
+import type { Certificate } from "../lib/edge";
+import { pb } from "../lib/pb";
+import type { Host } from "../lib/types";
+import { AcmeAccountsCard } from "./AcmeAccounts";
+import { CertificatesCard, RequestCertificateDialog } from "./Certificates";
+import { ToastProvider } from "./toast";
+
+const live = vi.hoisted(() => ({ items: [] as unknown[] }));
+vi.mock("../lib/realtime", () => ({
+  useLiveList: () => ({ items: live.items, loading: false, error: null, total: live.items.length }),
+}));
+
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    this.open = false;
+  };
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  live.items = [];
+});
+
+const day = 24 * 60 * 60 * 1000;
+const now = Date.parse("2026-11-05T12:00:00Z");
+
+function iso(ms: number) {
+  return new Date(ms).toISOString().replace("T", " ");
+}
+
+function cert(fields: Partial<Certificate>): Certificate {
+  return {
+    id: "c1",
+    collectionId: "certificates",
+    collectionName: "certificates",
+    names: ["shop.example.com"],
+    issuer: "acme",
+    not_before: iso(now - 16 * day),
+    not_after: iso(now + 74 * day),
+    status: "active",
+    chain_pem: "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n",
+    fingerprint: "ab12",
+    subject: "CN=shop.example.com",
+    issuer_name: "CN=R11,O=Let's Encrypt,C=US",
+    installed: { h1: "c1-0123456789abcdef" },
+    note: "",
+    last_error: "",
+    challenge: "auto",
+    auto: true,
+    renew_after: iso(now + 44 * day),
+    attempts: 0,
+    next_attempt: "",
+    attempt_started: "",
+    history: [{ at: iso(now - 16 * day), ok: true, challenge: "http-01", account: "primary" }],
+    ...fields,
+  } as Certificate;
+}
+
+describe("the state of a certificate", () => {
+  it("follows its validity and its attempts", () => {
+    expect(certificateState(cert({}), now)).toBe("valid");
+    expect(certificateState(cert({ not_after: iso(now + 10 * day) }), now)).toBe("expiring");
+    expect(certificateState(cert({ not_after: iso(now - day) }), now)).toBe("expired");
+    expect(certificateState(cert({ attempts: 2 }), now)).toBe("renewal_failed");
+    expect(certificateState(cert({ attempt_started: iso(now - 60_000) }), now)).toBe("issuing");
+    // an attempt that started an hour ago did not finish
+    expect(certificateState(cert({ attempt_started: iso(now - 3_600_000) }), now)).toBe("valid");
+
+    const unissued = { fingerprint: "", chain_pem: "", not_before: "", not_after: "" };
+    expect(certificateState(cert({ ...unissued, status: "pending" }), now)).toBe("pending");
+    expect(certificateState(cert({ ...unissued, status: "failed", attempts: 1 }), now)).toBe(
+      "failed",
+    );
+    // an uploaded one that is failing to install is still valid
+    expect(certificateState(cert({ issuer: "manual", attempts: 0 }), now)).toBe("valid");
+  });
+
+  it("needs action when it failed, expires soon or waits for something", () => {
+    expect(needsAction(cert({}), now)).toBe(false);
+    expect(needsAction(cert({ attempts: 1 }), now)).toBe(true);
+    expect(needsAction(cert({ not_after: iso(now + 3 * day) }), now)).toBe(true);
+    const waiting = cert({ fingerprint: "", status: "pending", last_error: "Add an ACME account" });
+    expect(needsAction(waiting, now)).toBe(true);
+    expect(needsAction({ ...waiting, last_error: "" }, now)).toBe(false);
+  });
+
+  it("measures the lifetime left", () => {
+    expect(validity(cert({}), now)).toEqual({ days: 74, left: 74 / 90 });
+    expect(validity(cert({ not_after: iso(now - day) }), now)).toEqual({ days: 0, left: 0 });
+    expect(validity(cert({ not_before: "", not_after: "" }), now)).toEqual({ days: 0, left: 0 });
+  });
+
+  it("reads the CA's name and the names typed", () => {
+    expect(caName("CN=R11,O=Let's Encrypt,C=US")).toBe("Let's Encrypt");
+    expect(caName("CN=Pebble Intermediate CA 1234")).toBe("Pebble Intermediate CA 1234");
+    expect(parseNames("*.Example.com,\nexample.com. example.com")).toEqual([
+      "*.example.com",
+      "example.com",
+    ]);
+  });
+
+  it("finds the provider of a name's zone, the longest one that is managed", () => {
+    const zones = [
+      { id: "z1", name: "example.com", provider: "p1", managed: true },
+      { id: "z2", name: "shop.example.com", provider: "p2", managed: false },
+      { id: "z3", name: "eu.example.com", provider: "p3", managed: true },
+    ] as DnsZone[];
+    const providers = [
+      { id: "p1", name: "Cloudflare" },
+      { id: "p2", name: "WEDOS" },
+      { id: "p3", name: "Hetzner" },
+    ] as DnsProvider[];
+    expect(providerFor("*.shop.example.com", zones, providers)?.name).toBe("Cloudflare");
+    expect(providerFor("a.eu.example.com", zones, providers)?.name).toBe("Hetzner");
+    expect(providerFor("example.org", zones, providers)).toBeUndefined();
+  });
+});
+
+function signInAs(role: "viewer" | "operator" | "admin") {
+  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, type: "auth" }));
+  pb.authStore.save(`header.${payload}.signature`, {
+    id: "u1",
+    collectionId: "users",
+    collectionName: "users",
+    email: `${role}@example.com`,
+    role,
+  } as never);
+}
+
+function wrap(children: React.ReactNode) {
+  return render(
+    <MemoryRouter>
+      <AuthProvider>
+        <ToastProvider>{children}</ToastProvider>
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+}
+
+const hosts = [{ id: "h1", name: "vps-1" }] as Host[];
+
+function card(certificates: Certificate[], canRetry: boolean) {
+  return wrap(
+    <CertificatesCard
+      certificates={certificates}
+      hosts={hosts}
+      zones={[]}
+      providers={[]}
+      accounts={[]}
+      canRetry={canRetry}
+      isAdmin={canRetry}
+      loading={false}
+      onRequest={() => undefined}
+    />,
+  );
+}
+
+describe("the certificates table", () => {
+  const failed = cert({
+    id: "c2",
+    names: ["blog.example.com"],
+    fingerprint: "",
+    chain_pem: "",
+    not_before: "",
+    not_after: "",
+    status: "failed",
+    attempts: 1,
+    installed: null,
+    last_error: "blog.example.com: Connection refused (connection)",
+    history: [
+      { at: iso(now - 60_000), ok: false, challenge: "http-01", error: "Connection refused" },
+    ],
+  });
+
+  it("shows the lifetime left as a meter with its words, and what the CA said", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    try {
+      card([cert({}), failed], false);
+      const meter = screen.getByRole("meter", { name: "Validity left" });
+      expect(meter.getAttribute("aria-valuenow")).toBe("82");
+      expect(meter.getAttribute("aria-valuetext")).toMatch(/^74 days · until /);
+      expect(screen.getByText("vps-1")).toBeTruthy();
+      expect(screen.getAllByText("Let's Encrypt")).toHaveLength(2);
+      expect(screen.getByText("blog.example.com: Connection refused (connection)")).toBeTruthy();
+      // a viewer cannot try again
+      expect(screen.queryByRole("button", { name: /Try the certificate/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tries a failed certificate again, and filters what needs action", async () => {
+    signInAs("operator");
+    const retry = vi.spyOn(certificatesApi, "retry").mockResolvedValue({ id: "c2" });
+    card([cert({}), failed], true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Try the certificate for blog.example.com again" }),
+    );
+    await waitFor(() => expect(retry).toHaveBeenCalledWith("c2"));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Needs action/ }));
+    expect(screen.queryByText("shop.example.com")).toBeNull();
+    expect(screen.getByText("blog.example.com")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Internal" }));
+    expect(screen.getByText("Nothing here")).toBeTruthy();
+  });
+
+  it("opens the details with the history and the chain", () => {
+    card([failed], false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the certificate for blog.example.com" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Not issued", { selector: ".timeline-title" })).toBeTruthy();
+    expect(within(dialog).getByText("Connection refused")).toBeTruthy();
+    expect(within(dialog).getByText("by the panel, for a domain")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("requesting a certificate", () => {
+  it("sends the names typed and the challenge", async () => {
+    const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
+    const onClose = vi.fn();
+    wrap(<RequestCertificateDialog onClose={onClose} />);
+
+    const confirm = screen.getByRole("button", { name: "Request certificate" });
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Names"), {
+      target: { value: "*.example.com\nexample.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Validation"), { target: { value: "dns-01" } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(request).toHaveBeenCalledWith(["*.example.com", "example.com"], "dns-01");
+  });
+
+  it("shows why the panel refused", async () => {
+    vi.spyOn(certificatesApi, "request").mockRejectedValue(
+      new Error("A wildcard (*.x.com) can only be checked with DNS-01."),
+    );
+    wrap(<RequestCertificateDialog onClose={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("Names"), { target: { value: "*.x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Request certificate" }));
+    expect(
+      await screen.findByText("A wildcard (*.x.com) can only be checked with DNS-01."),
+    ).toBeTruthy();
+  });
+});
+
+describe("the ACME accounts in Settings", () => {
+  it("asks ZeroSSL for its EAB keys and registers the account", async () => {
+    const set = vi.spyOn(certificatesApi, "setAccount").mockResolvedValue({} as AcmeAccount);
+    wrap(<AcmeAccountsCard />);
+
+    // the primary account is set up first
+    const primary = screen.getByRole("region", { name: "Primary CA" });
+    expect(within(primary).queryByLabelText("EAB key ID")).toBeNull();
+    fireEvent.change(within(primary).getByLabelText("Certificate authority"), {
+      target: { value: "zerossl" },
+    });
+    fireEvent.change(within(primary).getByLabelText("Contact email"), {
+      target: { value: "admin@example.com" },
+    });
+    fireEvent.change(within(primary).getByLabelText("EAB key ID"), { target: { value: "kid-1" } });
+    fireEvent.change(within(primary).getByLabelText("EAB HMAC key"), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(within(primary).getByRole("button", { name: "Save and register" }));
+
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith("primary", {
+        directory_url: "https://acme.zerossl.com/v2/DV90",
+        email: "admin@example.com",
+        eab_kid: "kid-1",
+        eab_hmac: "secret",
+      }),
+    );
+  });
+
+  it("shows what the CA said when it refused, and keeps a stored HMAC key", async () => {
+    live.items = [
+      {
+        id: "a1",
+        role: "primary",
+        directory_url: "https://acme.example.org/dir",
+        email: "admin@example.com",
+        eab_kid: "kid-1",
+        status: "ok",
+        registered_at: iso(Date.now() - day),
+      },
+    ];
+    vi.spyOn(certificatesApi, "setAccount").mockRejectedValue(
+      new Error(
+        "The CA did not take the account: the email domain is not allowed (invalidContact)",
+      ),
+    );
+    wrap(<AcmeAccountsCard />);
+
+    const primary = screen.getByRole("region", { name: "Primary CA" });
+    fireEvent.click(within(primary).getByRole("button", { name: "Change" }));
+    expect((within(primary).getByLabelText("ACME directory URL") as HTMLInputElement).value).toBe(
+      "https://acme.example.org/dir",
+    );
+    expect(within(primary).getByLabelText("EAB HMAC key").getAttribute("placeholder")).toMatch(
+      /stored/,
+    );
+    fireEvent.click(within(primary).getByRole("button", { name: "Save and register" }));
+    expect(await within(primary).findByText(/invalidContact/)).toBeTruthy();
+  });
+});
