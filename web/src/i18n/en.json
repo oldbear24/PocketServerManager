@@ -9,7 +9,10 @@
     "actions": "Actions",
     "name": "Name",
     "save": "Save",
-    "edit": "Edit"
+    "edit": "Edit",
+    "close": "Close",
+    "remove": "Remove",
+    "loading": "Loading…"
   },
   "nav": {
     "label": "Main navigation",
@@ -579,6 +582,10 @@
     },
     "terminal": {
       "opened": "A terminal was opened by {{user}}: {{target}}"
+    },
+    "dns": {
+      "failed": "The DNS records of {{domain}} could not be set: {{error}}",
+      "drift": "The DNS records of {{domain}} were changed outside PocketCloud"
     }
   },
   "alert": {
@@ -980,5 +987,91 @@
     "endingWarning_one": "PHP {{version}} gets security fixes for {{count}} more day, until {{date}}. Move its sites to a newer version before then.",
     "endingWarning_other": "PHP {{version}} gets security fixes for {{count}} more days, until {{date}}. Move its sites to a newer version before then.",
     "endedWarning": "Security fixes for PHP {{version}} ended on {{date}}. Move its sites to a newer version."
+  },
+  "dns": {
+    "lead": "DNS providers and their zones. Domains in a managed zone get their records by themselves.",
+    "connect": "Connect a DNS provider",
+    "connecting": "Connecting…",
+    "connectTitle": "Connect a DNS provider",
+    "connected_one": "{{name}} is connected, with {{count}} zone.",
+    "connected_other": "{{name}} is connected, with {{count}} zones.",
+    "providers": "DNS providers",
+    "noProviders": "No DNS provider yet",
+    "noProvidersText": "Without one, every domain is in manual mode: PocketCloud shows the records to create at your DNS host and checks until they resolve.",
+    "noZones": "no zones",
+    "checked": "checked {{when}}",
+    "test": "Test",
+    "tested": "{{name}} answered.",
+    "remove": "Remove {{name}}",
+    "removeTitle": "Remove {{name}}?",
+    "removeText": "PocketCloud forgets the provider and its credentials. Records it created stay at the provider.",
+    "removed": "{{name}} was removed.",
+    "zones": "Zones",
+    "zonesNote": "records created by the panel are tracked and watched",
+    "zone": "Zone",
+    "provider": "Provider",
+    "domains": "Domains",
+    "state": "State",
+    "managed": "Managed",
+    "unused": "not used yet",
+    "manageZone": "PocketCloud manages {{zone}}",
+    "managedYes": "yes",
+    "managedNo": "no",
+    "kind": "Provider",
+    "name": "Name",
+    "zonesField": "Zones, separated by commas",
+    "status": {
+      "unknown": "Not checked",
+      "ok": "Connected",
+      "error": "API error",
+      "pending": "Waiting",
+      "drift": "Changed outside",
+      "manual": "Manual",
+      "none": "None"
+    },
+    "kindName": {
+      "cloudflare": "Cloudflare",
+      "hetzner": "Hetzner DNS",
+      "wedos": "WEDOS (WAPI)",
+      "manual": "Manual"
+    },
+    "kindNote": {
+      "cloudflare": "An API token with the Zone.DNS:Edit and Zone:Read permissions, for all zones or the ones PocketCloud may change.",
+      "hetzner": "An API token of the Hetzner DNS Console. Name the zones it may change: its API does not list them here.",
+      "wedos": "WEDOS's WAPI answers only the IP addresses on its allow-list: add the panel's public address in the WEDOS administration first. Name the zones it may change.",
+      "manual": "No API: PocketCloud shows the records to create at your DNS host and checks until they resolve."
+    },
+    "field": {
+      "api_token": "API token",
+      "username": "User name",
+      "password": "WAPI password"
+    },
+    "domainStatus": {
+      "ok": "DNS ok",
+      "error": "DNS error",
+      "pending": "DNS propagating",
+      "drift": "DNS changed",
+      "manual": "DNS by hand",
+      "none": "No DNS",
+      "unknown": "DNS unknown"
+    },
+    "openRecords": "{{state}}: show the DNS records",
+    "domainTitle": "DNS of {{hostname}}",
+    "inZone": "zone {{zone}} at {{provider}}",
+    "noZoneFor": "in no connected zone",
+    "manualText": "Create these records at the DNS host of the name. PocketCloud checks every minute until every resolver answers them.",
+    "records": "DNS records",
+    "recordName": "Name",
+    "recordType": "Type",
+    "recordValue": "Value",
+    "resolves": "Resolves",
+    "resolvesYes": "everywhere",
+    "resolvesCount": "{{ok}} of {{count}} servers",
+    "checkNow": "Check now",
+    "sync": "Set the records again",
+    "synced": "The records were set again.",
+    "publicAddresses": "Public addresses",
+    "publicAddressesNote": "what the A and AAAA records of this server's domains point at",
+    "addressesSaved": "The public addresses were saved."
   }
 }

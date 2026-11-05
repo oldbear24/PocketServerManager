@@ -52,6 +52,8 @@ const state: EdgeState = {
       https_redirect: true,
       hsts: false,
       compress: false,
+      dns_status: "ok",
+      dns_error: "",
     },
     {
       id: "d2",
@@ -62,6 +64,8 @@ const state: EdgeState = {
       https_redirect: false,
       hsts: false,
       compress: false,
+      dns_status: "manual",
+      dns_error: "",
     },
   ],
   edge: {

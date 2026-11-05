@@ -686,16 +686,19 @@ func (p *Panel) markExpiredCertificates() {
 
 // edgeRoute is one route of an edge as the server page shows it.
 type edgeRoute struct {
-	ID            string          `json:"id"`
-	Hostname      string          `json:"hostname"`
-	TargetKind    string          `json:"target_kind"`
-	Target        string          `json:"target"`
-	TLS           string          `json:"tls"`
-	Certificate   *edgeCertBrief  `json:"certificate,omitempty"`
-	HTTPSRedirect bool            `json:"https_redirect"`
-	HSTS          bool            `json:"hsts"`
-	Compress      bool            `json:"compress"`
-	Domain        json.RawMessage `json:"-"`
+	ID            string         `json:"id"`
+	Hostname      string         `json:"hostname"`
+	TargetKind    string         `json:"target_kind"`
+	Target        string         `json:"target"`
+	TLS           string         `json:"tls"`
+	Certificate   *edgeCertBrief `json:"certificate,omitempty"`
+	HTTPSRedirect bool           `json:"https_redirect"`
+	HSTS          bool           `json:"hsts"`
+	Compress      bool           `json:"compress"`
+	// DNSStatus and DNSError are the state of the domain's DNS records (#22).
+	DNSStatus string          `json:"dns_status"`
+	DNSError  string          `json:"dns_error"`
+	Domain    json.RawMessage `json:"-"`
 }
 
 type edgeCertBrief struct {
@@ -735,6 +738,8 @@ func (p *Panel) handleEdgeState(e *core.RequestEvent) error {
 			HTTPSRedirect: domain.GetBool("https_redirect"),
 			HSTS:          domain.GetBool("hsts"),
 			Compress:      domain.GetBool("compress"),
+			DNSStatus:     domain.GetString("dns_status"),
+			DNSError:      domain.GetString("dns_error"),
 		}
 		if route.TargetKind == schema.TargetContainer {
 			route.Target = domain.GetString("container") + ":" + strconv.Itoa(domain.GetInt("port"))

@@ -1,5 +1,6 @@
 import type { RecordModel } from "pocketbase";
 
+import type { DnsStatus } from "./dns";
 import { pb } from "./pb";
 
 /** How a route is served: over HTTPS with a certificate, or plain HTTP. */
@@ -15,6 +16,8 @@ export type EdgeRoute = {
   https_redirect: boolean;
   hsts: boolean;
   compress: boolean;
+  dns_status: DnsStatus;
+  dns_error: string;
 };
 
 export type EdgeState = {
@@ -46,6 +49,9 @@ export type Domain = RecordModel & {
   https_redirect: boolean;
   hsts: boolean;
   compress: boolean;
+  zone: string;
+  dns_status: DnsStatus;
+  dns_error: string;
 };
 
 export type Certificate = RecordModel & {
