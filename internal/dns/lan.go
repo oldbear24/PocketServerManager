@@ -38,7 +38,7 @@ func init() {
 		Agent:  true,
 		Note: "PocketCloud sets DNS rewrites in AdGuard Home through the agent of a server on the same network, " +
 			"with the address, username and password of its web interface. Name the zones it answers for, such as lan or home.arpa.",
-		explain: explainLAN("the username or password of AdGuard Home's web interface"),
+		explain: explainLAN("the username or password of AdGuard Home's web interface", ""),
 	})
 	Register(Driver{
 		Kind:   PiHole,
@@ -48,20 +48,20 @@ func init() {
 		Note: "Pi-hole v6. PocketCloud sets its local DNS records through the agent of a server on the same network, " +
 			"with the address and password of its web interface; an app password works once webserver.api.app_sudo is on. " +
 			"Name the zones it answers for, such as lan or home.arpa.",
-		explain: explainLAN("the password of Pi-hole's web interface"),
+		explain: explainLAN("the password of Pi-hole's web interface", "An app password of Pi-hole changes records only with webserver.api.app_sudo on."),
 	})
 }
 
 // explainLAN says what went wrong in words: the errors come from the agent
 // as text.
-func explainLAN(credentials string) func(error) string {
+func explainLAN(credentials, forbidden string) func(error) string {
 	return func(err error) string {
 		text := err.Error()
 		switch {
 		case strings.Contains(text, rewrite.ErrUnauthorized.Error()):
 			return "It refused " + credentials + "."
-		case strings.Contains(text, "answered 403"):
-			return text + ". An app password of Pi-hole changes records only with webserver.api.app_sudo on."
+		case strings.Contains(text, "answered 403") && forbidden != "":
+			return capitalizeFirst(text) + ". " + forbidden
 		}
 		return capitalizeFirst(text)
 	}

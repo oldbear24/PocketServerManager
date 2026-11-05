@@ -747,6 +747,66 @@
             }
           ],
           "tls_connection_policies": [
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "certapp"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "admin.example.com"
+                ]
+              }
+            },
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "certapp"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "app.example.com"
+                ]
+              }
+            },
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "certapp"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "blog.example.com"
+                ]
+              }
+            },
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "certapp"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "example.com"
+                ]
+              }
+            },
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "certwild"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "*.example.com"
+                ]
+              }
+            },
             {}
           ]
         }

@@ -1171,7 +1171,11 @@
       "wedos": {
         "password": "Heslo k WAPI"
       }
-    }
+    },
+    "changeServer": "Server, jehož agent dosáhne na {{name}}",
+    "noServer": "Žádný server na něj nedosáhne: vyber jeden.",
+    "serverChanged": "{{name}} je teď dostupný přes {{server}}.",
+    "throughLabel": "Přes agenta serveru"
   },
   "cert": {
     "title": "Certifikáty",
@@ -1462,7 +1466,8 @@
     "notLive": "Zatím nic neběží",
     "serverDegraded": "Server s potížemi",
     "expired": "Vypršel",
-    "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách"
+    "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách",
+    "internalRenews": "Interní CA · obnoví se sám"
   },
   "siteNew": {
     "title": "Nový web",
@@ -1556,7 +1561,12 @@
     "files_other": "{{formatted}} souborů",
     "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává.",
     "internalNote": "Pro jméno v LAN: certifikát hned podepíše interní CA a důvěřují mu zařízení, která mají její kořenový certifikát.",
-    "lanAnswered": "{{provider}} na jména odpovídá hned: nic se nemusí šířit."
+    "lanAnswered": "{{provider}} na jména odpovídá hned: nic se nemusí šířit.",
+    "planLan": {
+      "propagation": "žádné: DNS server v LAN odpovídá hned",
+      "certificate": "interní CA, jeden certifikát pro všechna jména",
+      "check": "HTTPS na adrese serveru v jeho síti"
+    }
   },
   "ca": {
     "title": "Interní CA",
@@ -1582,8 +1592,8 @@
     "steps": {
       "windows": {
         "1": "Otevři pocketcloud-root-ca.crt a zvol Nainstalovat certifikát.",
-        "2": "Zvol Místní počítač, pak Všechny certifikáty umístit v následujícím úložišti a přes Procházet vyber Důvěryhodné kořenové certifikační autority.",
-        "3": "Dokonči průvodce a potvrď bezpečnostní upozornění.",
+        "2": "Zvol Místní počítač a povol změnu jako správce. Pak zvol Všechny certifikáty umístit v následujícím úložišti a přes Procházet vyber Důvěryhodné kořenové certifikační autority.",
+        "3": "Dokonči průvodce: Windows ohlásí, že import proběhl úspěšně.",
         "4": "Restartuj prohlížeč. Chrome a Edge používají certifikáty Windows."
       },
       "macos": {
@@ -1608,6 +1618,7 @@
         "1": "Firefox má na každém systému vlastní seznam: v Nastavení → Soukromí a zabezpečení → Certifikáty → Zobrazit certifikáty → Autority importuj pocketcloud-root-ca.pem.",
         "2": "Zaškrtni Důvěřovat této certifikační autoritě pro identifikaci webových serverů. Na Windows a macOS může Firefox místo toho používat seznam systému, když v about:config zapneš security.enterprise_roots.enabled."
       }
-    }
+    },
+    "windowsAdmin": "Nebo v PowerShellu spuštěném jako správce:"
   }
 }

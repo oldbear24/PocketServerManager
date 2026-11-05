@@ -526,7 +526,7 @@ function CertificateDetail({
             <dd>
               {formatDate(cert.not_before)} – {formatDate(cert.not_after)}
             </dd>
-            {cert.issuer === "acme" && cert.renew_after && (
+            {cert.issuer !== "manual" && cert.renew_after && (
               <>
                 <dt>{t("cert.renewsAfter")}</dt>
                 <dd>{formatDate(cert.renew_after)}</dd>
@@ -540,7 +540,7 @@ function CertificateDetail({
         )}
         <dt>{t("cert.deployedOn")}</dt>
         <dd className="mono">{deployed.length > 0 ? deployed.join(", ") : "–"}</dd>
-        {cert.issuer === "acme" && (
+        {cert.issuer !== "manual" && (
           <>
             <dt>{t("cert.ordered")}</dt>
             <dd>{cert.auto ? t("cert.orderedAuto") : t("cert.orderedByHand")}</dd>
@@ -638,7 +638,7 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
             className="input mono"
             rows={3}
             placeholder={
-              issuer === "internal" ? "nas.lan\n*.home.arpa" : "*.example.com\nexample.com"
+              issuer === "internal" ? "nas.lan\n*.home.lan" : "*.example.com\nexample.com"
             }
             value={names}
             onChange={(event) => setNames(event.target.value)}

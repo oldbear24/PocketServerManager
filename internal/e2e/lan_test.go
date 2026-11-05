@@ -151,28 +151,39 @@ func TestALANNameIsServedWithACertificateOfTheInternalCA(t *testing.T) {
 		return testutil.Do(t, a.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/certificates/acme", Token: token,
 			Body: `{"names":` + names + `,"issuer":"internal"}`})
 	}
-	if status, _ := ask(operator, `["*.home.arpa"]`); status != http.StatusForbidden {
+	if status, _ := ask(operator, `["*.home.lan"]`); status != http.StatusForbidden {
 		t.Errorf("an operator asked for a certificate: %d", status)
 	}
-	// Chrome would refuse it
-	if status, raw := ask(a.admin, `["*.lan"]`); status != http.StatusBadRequest || !strings.Contains(raw, "name each host, such as wiki.lan") {
-		t.Errorf("a wildcard under a top-level name: %d %s", status, raw)
+	// Chrome would refuse them: a wildcard of a top-level name, or of a public suffix
+	for _, names := range []string{`["*.lan"]`, `["*.home.arpa"]`} {
+		if status, raw := ask(a.admin, names); status != http.StatusBadRequest || !strings.Contains(raw, "name each host, such as wiki.") {
+			t.Errorf("%s: %d %s", names, status, raw)
+		}
 	}
-	if status, raw := ask(a.admin, `["*.home.arpa"]`); status != http.StatusCreated {
+	// a name of the internet: every device with the root would trust it
+	if status, raw := ask(a.admin, `["login.example.com"]`); status != http.StatusBadRequest || !strings.Contains(raw, "is a name of the internet") {
+		t.Errorf("a public name: %d %s", status, raw)
+	}
+	if status, raw := ask(a.admin, `["*.home.lan"]`); status != http.StatusCreated {
 		t.Fatalf("%d %s", status, raw)
 	}
-	wildcard := a.internalCertificate("*.home.arpa")
-	if status, _ := ask(a.admin, `["*.home.arpa"]`); status != http.StatusConflict {
+	wildcard := a.internalCertificate("*.home.lan")
+	if status, _ := ask(a.admin, `["*.home.lan"]`); status != http.StatusConflict {
 		t.Errorf("the same names twice: %d", status)
 	}
 	// a domain it covers needs no certificate of its own
 	if status, raw := addDomain(t, a.harness, operator, fmt.Sprintf(
-		`{"hostname":"nas.home.arpa","host":%q,"target_kind":"container","container":"wiki","port":3000,"tls":"internal"}`, a.host.Id)); status != http.StatusOK {
+		`{"hostname":"nas.home.lan","host":%q,"target_kind":"container","container":"wiki","port":3000,"tls":"internal"}`, a.host.Id)); status != http.StatusOK {
 		t.Fatalf("%d %s", status, raw)
 	}
-	a.verifyOnEdge(a.served("nas.home.arpa", wildcard), root, "nas.home.arpa")
+	a.verifyOnEdge(a.served("nas.home.lan", wildcard), root, "nas.home.lan")
 	if count, _ := a.app.CountRecords(schema.Certificates, dbx.HashExp{"issuer": schema.IssuerInternal}); count != 2 {
-		t.Errorf("%d certificates of the internal CA, not those of wiki.lan and *.home.arpa", count)
+		t.Errorf("%d certificates of the internal CA, not those of wiki.lan and *.home.lan", count)
+	}
+	// nor can an operator get one for a name of the internet through a domain
+	if status, raw := addDomain(t, a.harness, operator, fmt.Sprintf(
+		`{"hostname":"login.example.com","host":%q,"target_kind":"container","container":"wiki","port":3000,"tls":"internal"}`, a.host.Id)); status != http.StatusBadRequest || !strings.Contains(raw, "is a name of the internet") {
+		t.Errorf("a public name with internal TLS: %d %s", status, raw)
 	}
 
 	// back to automatic TLS, the internal CA's certificates no longer serve it
@@ -240,9 +251,14 @@ func TestALANNameResolvesThroughTheDNSServerOfItsNetwork(t *testing.T) {
 	if status, out := a.lanDNS("Home", "adguard", map[string]string{"url": "192.168.1.2:3000"}, "lan"); status != http.StatusBadRequest {
 		t.Errorf("an address that is not a URL: %d %v", status, out)
 	}
-	status, out := a.lanDNS("Home", "adguard", map[string]string{"url": adguard.URL, "username": "admin", "password": "adguard-secret"}, "lan")
+	status, out := a.lanDNS("Home", "adguard", map[string]string{"url": adguard.URL, "username": "admin", "password": "adguard-secret"}, "lan", "corp.example.com")
 	if state, message := providerStatus(out); status != http.StatusOK || state != schema.DNSOK {
 		t.Fatalf("connecting AdGuard Home: %d %s %s", status, state, message)
+	}
+	// split horizon: a name of a zone of the LAN's DNS server may have internal TLS
+	if status, raw := addDomain(t, a.harness, a.admin, fmt.Sprintf(
+		`{"hostname":"intranet.corp.example.com","host":%q,"target_kind":"container","container":"wiki","port":3000,"tls":"internal"}`, a.host.Id)); status != http.StatusOK {
+		t.Errorf("a name of a LAN zone with internal TLS: %d %s", status, raw)
 	}
 	if adguard.Calls("/control/rewrite/list") == 0 {
 		t.Fatal("AdGuard Home was not asked")
@@ -257,9 +273,13 @@ func TestALANNameResolvesThroughTheDNSServerOfItsNetwork(t *testing.T) {
 	a.waitFor("wiki.lan to resolve", func() bool {
 		return a.record(schema.Domains, wiki.Id).GetString("dns_status") == schema.DNSOK
 	})
-	if got := adguard.Rewrites(); len(got) != 2 || got[1].Domain != "wiki.lan" || got[1].Answer != addr {
-		t.Fatalf("the rewrites: %+v", got)
-	}
+	a.waitFor("the rewrites", func() bool {
+		got := map[string]string{}
+		for _, rw := range adguard.Rewrites() {
+			got[rw.Domain] = rw.Answer
+		}
+		return len(got) == 3 && got["wiki.lan"] == addr && got["intranet.corp.example.com"] == addr
+	})
 	nas := a.domain("nas.home.arpa")
 	a.waitFor("nas.home.arpa to resolve", func() bool {
 		return a.record(schema.Domains, nas.Id).GetString("dns_status") == schema.DNSOK
@@ -293,7 +313,7 @@ func TestALANNameResolvesThroughTheDNSServerOfItsNetwork(t *testing.T) {
 	if status, raw := testutil.Do(t, a.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/collections/domains/records/" + wiki.Id, Token: a.admin}); status != http.StatusNoContent {
 		t.Fatalf("%d %s", status, raw)
 	}
-	a.waitFor("the rewrite to go", func() bool { return len(adguard.Rewrites()) == 1 })
+	a.waitFor("the rewrite to go", func() bool { return len(adguard.Rewrites()) == 2 })
 	if got := adguard.Rewrites()[0]; got.Domain != "router.lan" {
 		t.Errorf("a rewrite PocketCloud did not make went: %+v", got)
 	}

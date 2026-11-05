@@ -129,6 +129,11 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 	if record.GetString("tls") == "" {
 		record.Set("tls", schema.TLSAuto)
 	}
+	if record.GetString("tls") == schema.TLSInternal && errs["hostname"] == nil {
+		if err := p.checkInternalName(hostname); err != nil {
+			errs["tls"] = validation.NewError("validation_not_internal", capitalize(err.Error())+".")
+		}
+	}
 
 	if host, err := e.App.FindRecordById(schema.Hosts, record.GetString("host")); err == nil && !hasEdgeRole(host) {
 		errs["host"] = validation.NewError("validation_no_edge", "The server has no edge role: give it one first.")

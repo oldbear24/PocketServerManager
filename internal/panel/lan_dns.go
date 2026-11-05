@@ -86,12 +86,17 @@ func (p *Panel) rewriter(provider *core.Record, driver dns.Driver) (dns.Rewriter
 			return nil, nil
 		}
 		var result struct {
-			Records []rewrite.Record `json:"records"`
+			Records *[]rewrite.Record `json:"records"`
 		}
 		if err := json.Unmarshal([]byte(done.GetString("result")), &result); err != nil {
 			return nil, fmt.Errorf("the agent's answer cannot be read: %w", err)
 		}
-		return result.Records, nil
+		if result.Records == nil {
+			// a command settled from the agent's list of finished ones has no
+			// result: an empty zone would remove nothing and add everything again
+			return nil, errors.New("the agent's answer has no records: try again")
+		}
+		return *result.Records, nil
 	}, nil
 }
 

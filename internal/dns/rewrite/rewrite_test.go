@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oldbear24/PocketServerManager/internal/dns/rewrite"
 	"github.com/oldbear24/PocketServerManager/internal/dns/rewrite/rewritetest"
@@ -151,5 +152,72 @@ func TestOnlyTheAddressOfAWebInterfaceIsTaken(t *testing.T) {
 		if got, err := rewrite.ParseURL(raw); err != nil || got.String() != want {
 			t.Errorf("%q: %v %v", raw, got, err)
 		}
+	}
+}
+
+func TestAPiHoleThatRestartsAfterACNAMEChangeIsWaitedFor(t *testing.T) {
+	rewrite.PiHoleRestartWait = 3 * time.Second
+	t.Cleanup(func() { rewrite.PiHoleRestartWait = 10 * time.Second })
+	ctx := context.Background()
+	server := rewritetest.NewPiHole(t, "secret")
+	server.Restart = 300 * time.Millisecond
+	client, _ := rewrite.New(rewrite.PiHole, server.URL, "", "secret", server.Client())
+
+	// each change restarts it, and the next one comes once it is back
+	if err := client.Append(ctx, []rewrite.Record{
+		{Name: "www.wiki.lan", Type: "CNAME", Value: "wiki.lan"},
+		{Name: "docs.lan", Type: "CNAME", Value: "wiki.lan"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(server.CNAMEs(), "; "); got != "www.wiki.lan,wiki.lan; docs.lan,wiki.lan" {
+		t.Fatalf("dns.cnameRecords: %s", got)
+	}
+	if err := client.Delete(ctx, []rewrite.Record{{Name: "www.wiki.lan", Type: "CNAME", Value: "wiki.lan"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if server.Open() != 0 {
+		t.Errorf("%d sessions are still open", server.Open())
+	}
+	if refused := server.Refused(); len(refused) != 0 {
+		t.Errorf("requests came while it restarted: %v", refused)
+	}
+}
+
+func TestRecordsAreDeletedAsTheyAreListed(t *testing.T) {
+	ctx := context.Background()
+	// AdGuard Home keeps an address as it was typed
+	adguard := rewritetest.NewAdGuard(t, "admin", "secret",
+		rewritetest.Rewrite{Domain: "wiki.lan", Answer: "fd00:0:0:0:0:0:0:9"})
+	client, _ := rewrite.New(rewrite.AdGuard, adguard.URL, "admin", "secret", adguard.Client())
+	if err := client.Delete(ctx, []rewrite.Record{{Name: "wiki.lan", Type: "AAAA", Value: "fd00::9"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := adguard.Rewrites(); len(got) != 0 {
+		t.Fatalf("left: %+v", got)
+	}
+
+	// two names of one Pi-hole entry go together
+	pihole := rewritetest.NewPiHole(t, "secret", "192.168.1.9 wiki.lan nas.lan files.lan")
+	client, _ = rewrite.New(rewrite.PiHole, pihole.URL, "", "secret", pihole.Client())
+	if err := client.Delete(ctx, []rewrite.Record{
+		{Name: "wiki.lan", Type: "A", Value: "192.168.1.9"},
+		{Name: "nas.lan", Type: "A", Value: "192.168.1.9"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(pihole.Hosts(), "; "); got != "192.168.1.9 files.lan" {
+		t.Fatalf("dns.hosts: %s", got)
+	}
+
+	// older AdGuard Home answers wrong credentials with 403
+	old := rewritetest.NewAdGuard(t, "admin", "secret")
+	old.Forbidden = true
+	wrong, _ := rewrite.New(rewrite.AdGuard, old.URL, "admin", "nope", old.Client())
+	if _, err := wrong.List(ctx); !errors.Is(err, rewrite.ErrUnauthorized) {
+		t.Fatalf("a 403: %v", err)
 	}
 }

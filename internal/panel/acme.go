@@ -20,6 +20,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"golang.org/x/net/publicsuffix"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/acme"
@@ -323,9 +324,13 @@ func checkNames(names []string) ([]string, error) {
 		if name == "" {
 			continue
 		}
-		if rest, ok := strings.CutPrefix(name, "*."); ok && rest != "" && !strings.Contains(rest, ".") {
-			// Chrome refuses *.lan, as it does *.com, and CAs refuse both
-			return nil, fmt.Errorf("browsers do not accept a wildcard right under a top-level name, such as %s: name each host, such as wiki.%s", name, rest)
+		if rest, ok := strings.CutPrefix(name, "*."); ok && rest != "" {
+			// Chrome refuses a wildcard of a public suffix or of a top-level
+			// name it does not know: *.com, *.co.uk, *.home.arpa, *.lan; CAs
+			// refuse them too
+			if suffix, icann := publicsuffix.PublicSuffix(rest); suffix == rest && (icann || !strings.Contains(rest, ".")) {
+				return nil, fmt.Errorf("browsers do not accept a wildcard right under a public suffix or a top-level name, such as %s: name each host, such as wiki.%s", name, rest)
+			}
 		}
 		if err := edge.ValidHostname(name); err != nil {
 			return nil, err
@@ -374,8 +379,13 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 		return e.BadRequestError("The challenge is auto, http-01 or dns-01.", nil)
 	}
 	if issuer == schema.IssuerInternal {
-		// the internal CA checks nothing: the names are the admin's word
+		// the internal CA checks nothing, so it signs names of the LAN only
 		challenge = ""
+		for _, name := range names {
+			if err := p.checkInternalName(name); err != nil {
+				return e.BadRequestError(capitalize(err.Error())+".", nil)
+			}
+		}
 	}
 	for _, name := range names {
 		if strings.HasPrefix(name, "*.") && challenge == schema.ChallengeHTTP01 {
@@ -672,6 +682,11 @@ func (p *Panel) startIssue(id, requester string, scheduled bool) {
 	}
 	p.later.after(0, func() {
 		defer p.acme.issuing.Delete(id)
+		// the internal CA signs at once: it does not wait for the CA's slots
+		if record, err := p.App.FindRecordById(schema.Certificates, id); err == nil && record.GetString("issuer") == schema.IssuerInternal {
+			p.issue(id, requester, scheduled)
+			return
+		}
 		select {
 		case p.acme.slots <- struct{}{}:
 		case <-p.acme.ctx.Done():
@@ -1000,6 +1015,11 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 	zoneNames := make([]string, 0, len(zoneRecords))
 	byName := map[string]*core.Record{}
 	for _, zone := range zoneRecords {
+		// a DNS server of the LAN holds no TXT records, and the CA cannot ask
+		// it: the zone around it answers DNS-01, as for split horizon
+		if provider, err := p.App.FindRecordById(schema.DNSProviders, zone.GetString("provider")); err == nil && lanDriver(provider) {
+			continue
+		}
 		zoneNames = append(zoneNames, zone.GetString("name"))
 		byName[zone.GetString("name")] = zone
 	}

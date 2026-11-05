@@ -92,12 +92,13 @@ export function certificateState(cert: Certificate, now = Date.now()): CertState
   if (end <= now) {
     return "expired";
   }
-  if (cert.issuer === "acme" && cert.attempts > 0) {
+  // the internal CA renews its own as ACME does
+  if (cert.issuer !== "manual" && cert.attempts > 0) {
     return "renewal_failed";
   }
   // due, but it waits: for an account, or for the edge
   const renew = parseDate(cert.renew_after)?.getTime();
-  if (cert.issuer === "acme" && cert.last_error && renew !== undefined && renew <= now) {
+  if (cert.issuer !== "manual" && cert.last_error && renew !== undefined && renew <= now) {
     return "renewal_waiting";
   }
   return end - now < expiringWithin ? "expiring" : "valid";

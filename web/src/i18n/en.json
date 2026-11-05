@@ -1121,7 +1121,11 @@
       "wedos": {
         "password": "WAPI password"
       }
-    }
+    },
+    "changeServer": "Server whose agent reaches {{name}}",
+    "noServer": "No server reaches it: choose one.",
+    "serverChanged": "{{name}} is reached through {{server}} now.",
+    "throughLabel": "Through the agent of"
   },
   "cert": {
     "title": "Certificates",
@@ -1396,7 +1400,8 @@
     "notLive": "Nothing live yet",
     "serverDegraded": "Server degraded",
     "expired": "Expired",
-    "requestsKeys": "Requests per hour; the arrow keys move along the hours"
+    "requestsKeys": "Requests per hour; the arrow keys move along the hours",
+    "internalRenews": "Internal CA · renews by itself"
   },
   "siteNew": {
     "title": "New site",
@@ -1486,7 +1491,12 @@
     "files_other": "{{formatted}} files",
     "endedCleanup": "The domains it created were removed, with their DNS records; the site stays.",
     "internalNote": "For a LAN name: the internal CA signs the certificate at once, and the devices that have its root certificate trust it.",
-    "lanAnswered": "{{provider}} answers the names at once: nothing has to propagate."
+    "lanAnswered": "{{provider}} answers the names at once: nothing has to propagate.",
+    "planLan": {
+      "propagation": "none: the DNS server of the LAN answers at once",
+      "certificate": "the internal CA, one certificate for every name",
+      "check": "HTTPS at the server's address on its network"
+    }
   },
   "ca": {
     "title": "Internal CA",
@@ -1512,8 +1522,8 @@
     "steps": {
       "windows": {
         "1": "Open pocketcloud-root-ca.crt and choose Install Certificate.",
-        "2": "Choose Local Machine, then Place all certificates in the following store, and Browse to Trusted Root Certification Authorities.",
-        "3": "Finish, and confirm the security warning.",
+        "2": "Choose Local Machine, and allow the change as an administrator. Then choose Place all certificates in the following store, and Browse to Trusted Root Certification Authorities.",
+        "3": "Finish: Windows says the import was successful.",
         "4": "Restart the browser. Chrome and Edge use the certificates of Windows."
       },
       "macos": {
@@ -1538,6 +1548,7 @@
         "1": "Firefox keeps its own list on every system: in Settings → Privacy & Security → Certificates → View Certificates → Authorities, import pocketcloud-root-ca.pem.",
         "2": "Tick Trust this CA to identify websites. On Windows and macOS, Firefox can use the system's list instead, with security.enterprise_roots.enabled in about:config."
       }
-    }
+    },
+    "windowsAdmin": "Or in PowerShell, run as administrator:"
   }
 }

@@ -551,7 +551,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 		return
 	}
 	var records []map[string]any
-	mode, zone, provider := "automatic", "", ""
+	mode, zone, provider, lan := "automatic", "", "", false
 	for _, domain := range domains {
 		want := p.desiredDNS(domain)
 		if want.Problem != "" {
@@ -561,6 +561,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 		if want.Manual {
 			mode = "manual"
 		}
+		lan = lan || want.LAN
 		zone = want.ZoneName
 		if want.Provider != nil {
 			provider = want.Provider.GetString("name")
@@ -579,7 +580,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 			return // not synced yet
 		}
 	}
-	result := map[string]any{"mode": mode, "zone": zone, "provider": provider, "records": records, "created": createdOf(step)}
+	result := map[string]any{"mode": mode, "zone": zone, "provider": provider, "records": records, "created": createdOf(step), "lan": lan}
 	_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", result)
 }
 

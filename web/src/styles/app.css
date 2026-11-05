@@ -1940,9 +1940,25 @@ textarea.input {
 /* DNS providers on the Domains & TLS page */
 .dns-provider {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: flex-start;
   padding: 12px 0;
+}
+
+/* the server whose agent reaches a DNS server of the LAN (#26) */
+.dns-provider-server {
+  flex: 0 1 200px;
+  min-width: 140px;
+}
+
+.dns-provider-server .input {
+  width: 100%;
+}
+
+.dns-provider-server label {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .dns-provider + .dns-provider {
@@ -1950,7 +1966,8 @@ textarea.input {
 }
 
 .dns-provider-body {
-  flex: 1 1 auto;
+  /* the avatar and the text stay on one line; the server and the actions wrap */
+  flex: 1 1 180px;
   min-width: 0;
   display: grid;
   gap: 4px;

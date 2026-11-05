@@ -112,6 +112,9 @@ export function DomainsPage() {
   );
 }
 
+/** Kinds reached through the agent of a server on their network (#26). */
+const lanKinds = new Set(["adguard", "pihole"]);
+
 function initials(name: string) {
   return name
     .split(/\s+/)
@@ -147,6 +150,27 @@ function ProvidersCard({
         toast.success(t("dns.tested", { name: provider.name }));
       } else {
         toast.error(result.provider.last_error);
+      }
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const moveTo = async (provider: DnsProvider, host: string) => {
+    setBusy(provider.id);
+    try {
+      const result = await dnsApi.change(provider.id, { host });
+      if (result.provider.status === "error") {
+        toast.error(result.provider.last_error);
+      } else {
+        toast.success(
+          t("dns.serverChanged", {
+            name: provider.name,
+            server: hosts.find((item) => item.id === host)?.name ?? host,
+          }),
+        );
       }
     } catch (err) {
       toast.error(err);
@@ -200,6 +224,7 @@ function ProvidersCard({
                     <p className="muted small">
                       {t(`dns.kindName.${provider.kind}`, { defaultValue: provider.kind })}
                       {provider.host &&
+                        !isAdmin &&
                         " · " +
                           t("dns.throughAgent", {
                             server: hosts.find((host) => host.id === provider.host)?.name ?? "–",
@@ -209,6 +234,30 @@ function ProvidersCard({
                     </p>
                   )}
                 </div>
+                {isAdmin && lanKinds.has(provider.kind) && (
+                  <div className="dns-provider-server">
+                    <label className="small muted" htmlFor={`dns-server-${provider.id}`}>
+                      {t("dns.throughLabel")}
+                    </label>
+                    <select
+                      id={`dns-server-${provider.id}`}
+                      className="input"
+                      title={t("dns.changeServer", { name: provider.name })}
+                      value={provider.host}
+                      disabled={busy === provider.id}
+                      onChange={(event) => void moveTo(provider, event.target.value)}
+                    >
+                      {!provider.host && <option value="">{t("dns.chooseServer")}</option>}
+                      {hosts.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                          {item.status === "online" ? "" : ` (${t("dns.serverOffline")})`}
+                        </option>
+                      ))}
+                    </select>
+                    {!provider.host && <p className="field-error small">{t("dns.noServer")}</p>}
+                  </div>
+                )}
                 {isAdmin && (
                   <div className="dns-provider-actions">
                     <Button

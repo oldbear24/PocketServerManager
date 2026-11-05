@@ -2,11 +2,36 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AuthProvider } from "../lib/auth";
 import { caApi } from "../lib/certificates";
+import { pb, type User } from "../lib/pb";
 import { guessPlatform, InternalCACard } from "./InternalCA";
+
+function signInAs(role: User["role"]) {
+  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, type: "auth" }));
+  pb.authStore.save(`header.${payload}.signature`, {
+    id: "u1",
+    collectionId: "users",
+    collectionName: "users",
+    email: `${role}@example.com`,
+    name: "",
+    role,
+  } as unknown as User);
+}
+
+function renderCard() {
+  return render(
+    <MemoryRouter>
+      <AuthProvider>
+        <InternalCACard />
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
+  pb.authStore.clear();
 });
 
 describe("the internal CA", () => {
@@ -20,11 +45,8 @@ describe("the internal CA", () => {
       agents: 7,
       lan_certificates: 3,
     });
-    render(
-      <MemoryRouter>
-        <InternalCACard />
-      </MemoryRouter>,
-    );
+    signInAs("admin");
+    renderCard();
 
     expect(
       await screen.findByText(
@@ -50,6 +72,10 @@ describe("the internal CA", () => {
     const steps = screen.getByRole("list");
     expect(within(steps).getAllByRole("listitem")).toHaveLength(3);
     expect(within(steps).getByText(/Certificate Trust Settings/)).toBeInTheDocument();
+    // Windows: the command needs an administrator
+    fireEvent.change(screen.getByLabelText("Device"), { target: { value: "windows" } });
+    expect(screen.getByText("Or in PowerShell, run as administrator:")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Device"), { target: { value: "ios" } });
     // a phone has no terminal
     expect(screen.queryByRole("region", { name: "Command" })).toBeNull();
     fireEvent.change(screen.getByLabelText("Device"), { target: { value: "linux" } });
@@ -58,13 +84,22 @@ describe("the internal CA", () => {
     );
   });
 
+  it("shows the agents' certificates to admins only", async () => {
+    vi.spyOn(caApi, "info").mockResolvedValue({
+      root: { subject: "PocketCloud Root CA", not_after: "2046-11-05T12:00:00Z", sha256: "AB" },
+      agents: 1,
+      lan_certificates: 0,
+    });
+    signInAs("viewer");
+    renderCard();
+    expect(await screen.findByText(/PocketCloud Root CA/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Agent certificates" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Download the root certificate" })).toBeInTheDocument();
+  });
+
   it("says so when the CA is not open", async () => {
     vi.spyOn(caApi, "info").mockRejectedValue(new Error("The internal CA is not open yet."));
-    render(
-      <MemoryRouter>
-        <InternalCACard />
-      </MemoryRouter>,
-    );
+    renderCard();
     expect(await screen.findByText("The internal CA is not open yet.")).toBeInTheDocument();
   });
 
@@ -75,6 +110,14 @@ describe("the internal CA", () => {
     );
     expect(guessPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Safari/605")).toBe("macos");
     expect(guessPlatform("Mozilla/5.0 (Linux; Android 15) Chrome/140")).toBe("android");
+    // Firefox on a phone uses the phone's certificates
+    expect(
+      guessPlatform("Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"),
+    ).toBe("android");
+    // an iPad says it is a Mac
+    expect(guessPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605", 5)).toBe(
+      "ios",
+    );
     expect(guessPlatform("Mozilla/5.0 (X11; Linux x86_64) Chrome/140")).toBe("linux");
   });
 });

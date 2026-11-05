@@ -598,6 +598,8 @@ function Timeline({
   }, [steps]);
 
   const states = rows.map((row) => rowState(row, latest));
+  // the DNS step says whether the name is one of the LAN
+  const lan = Boolean((latest.get("site.dns")?.result as { lan?: boolean } | null)?.lan);
   const done = states.filter((state) => state === "done").length;
   const current = Math.min(
     states.findIndex((state) => state !== "done"),
@@ -672,7 +674,7 @@ function Timeline({
                     {step && state !== "waiting" && <StepTime step={step} state={state} />}
                   </div>
                   <div className="timeline-detail mono">
-                    {step ? stepDetail(row, step, t) : t(`siteNew.plan.${row}`)}
+                    {step ? stepDetail(row, step, t, planOf(row, lan, t)) : planOf(row, lan, t)}
                   </div>
                   {state === "failed" && step?.error && <p className="field-error">{step.error}</p>}
                   {state === "failed" && paused && canAct && (
@@ -799,11 +801,19 @@ function StepTime({ step, state }: { step: Command; state: RowState }) {
 type Translate = ReturnType<typeof useTranslation>["t"];
 
 /** One line under a step: what it did, or what it waits for. */
-function stepDetail(row: Row, step: Command, t: Translate): string {
+/** What a step does before it ran: a name of the LAN skips the world (#26). */
+function planOf(row: Row, lan: boolean, t: Translate): string {
+  if (lan && (row === "site.propagation" || row === "site.certificate" || row === "site.check")) {
+    return t(`siteNew.planLan.${row.slice("site.".length)}`);
+  }
+  return t(`siteNew.plan.${row}`);
+}
+
+function stepDetail(row: Row, step: Command, t: Translate, plan: string): string {
   const result = (step.result ?? {}) as Record<string, unknown>;
   const progress = step.progress?.message ?? "";
   if (step.status !== "succeeded" && row !== "build" && row !== "release") {
-    return progress || t(`siteNew.plan.${row}`);
+    return progress || plan;
   }
   switch (row) {
     case "site.create":

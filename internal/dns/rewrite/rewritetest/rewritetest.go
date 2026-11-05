@@ -13,12 +13,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // AdGuard is AdGuard Home's rewrite API.
 type AdGuard struct {
 	*httptest.Server
 	Username, Password string
+	// Forbidden answers wrong credentials with 403, as versions before
+	// v0.107.56 do; newer ones answer 401
+	Forbidden bool
 
 	mu       sync.Mutex
 	rewrites []Rewrite
@@ -60,6 +64,10 @@ func (a *AdGuard) serve(w http.ResponseWriter, r *http.Request) {
 	defer a.mu.Unlock()
 	a.calls[r.URL.Path]++
 	if user, password, ok := r.BasicAuth(); !ok || user != a.Username || password != a.Password {
+		if a.Forbidden {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -98,16 +106,31 @@ type PiHole struct {
 	Password string
 	// Seats is how many sessions can be open at once.
 	Seats int
+	// Restart is how long its DNS server is away after a change of
+	// dns.cnameRecords, from right after the answer, as Pi-hole restarts it
+	// (a real one goes a moment later); zero for none.
+	Restart time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]bool
 	hosts    []string
 	cnames   []string
+	started  time.Time
+	down     [2]time.Time
+	refused  []string
+}
+
+// Refused are the requests other than its uptime that came while it
+// restarted.
+func (p *PiHole) Refused() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.refused)
 }
 
 // NewPiHole starts Pi-hole with a password, and entries of dns.hosts.
 func NewPiHole(t testing.TB, password string, hosts ...string) *PiHole {
-	p := &PiHole{Password: password, Seats: 2, sessions: map[string]bool{}, hosts: hosts}
+	p := &PiHole{Password: password, Seats: 2, Restart: 50 * time.Millisecond, sessions: map[string]bool{}, hosts: hosts, started: time.Now().Add(-time.Hour)}
 	p.Server = httptest.NewServer(http.HandlerFunc(p.serve))
 	t.Cleanup(p.Close)
 	return p
@@ -143,7 +166,25 @@ func piError(w http.ResponseWriter, status int, key, message string) {
 func (p *PiHole) serve(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if now := time.Now(); !now.Before(p.down[0]) && now.Before(p.down[1]) {
+		// restarting: nothing listens
+		if r.URL.Path != "/api/info/ftl" {
+			p.refused = append(p.refused, r.Method+" "+r.URL.Path)
+		}
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/api/info/ftl" {
+		if p.Password != "" && !p.sessions[r.Header.Get("X-FTL-SID")] {
+			piError(w, http.StatusUnauthorized, "unauthorized", "Unauthorized")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ftl": map[string]any{"uptime": float64(p.uptime().Milliseconds())}})
+		return
+	}
 	if r.URL.Path == "/api/auth" {
 		switch r.Method {
 		case http.MethodPost:
@@ -216,6 +257,7 @@ func (p *PiHole) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		*list = append(*list, item)
+		p.restartFor(segments[0])
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"took": 0.001})
 	case http.MethodDelete:
@@ -224,8 +266,28 @@ func (p *PiHole) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		*list = slices.Delete(*list, at, at+1)
+		p.restartFor(segments[0])
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		piError(w, http.StatusMethodNotAllowed, "bad_request", "Method not allowed")
 	}
+}
+
+// restartFor restarts the DNS server after a change of dns.cnameRecords, as
+// Pi-hole does: away a moment after the answer, then started again.
+func (p *PiHole) restartFor(list string) {
+	if list != "cnameRecords" || p.Restart == 0 {
+		return
+	}
+	from := time.Now()
+	p.down = [2]time.Time{from, from.Add(p.Restart)}
+}
+
+// uptime is how long its DNS server has run, since the last restart that
+// is over.
+func (p *PiHole) uptime() time.Duration {
+	if !p.down[1].IsZero() && !time.Now().Before(p.down[1]) {
+		p.started, p.down = p.down[1], [2]time.Time{}
+	}
+	return time.Since(p.started)
 }

@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Kinds of servers.
@@ -45,6 +46,10 @@ type Client interface {
 	Delete(ctx context.Context, records []Record) error
 }
 
+// PiHoleRestartWait is how long Pi-hole may take to restart its DNS server
+// after a change of its CNAME records; tests shorten it.
+var PiHoleRestartWait = 10 * time.Second
+
 // ErrUnauthorized is returned when the server refuses the credentials.
 var ErrUnauthorized = errors.New("the server refused the credentials")
 
@@ -64,7 +69,7 @@ func New(kind, baseURL, username, password string, client *http.Client) (Client,
 	case PiHole:
 		// the address of its web interface ends in /admin; its API is at /api
 		base.Path = strings.TrimSuffix(base.Path, "/admin")
-		return &piHole{api: api{base: base, client: client, label: "Pi-hole"}, password: password}, nil
+		return &piHole{api: api{base: base, client: client, label: "Pi-hole"}, password: password, restartWait: PiHoleRestartWait}, nil
 	}
 	return nil, fmt.Errorf("unknown kind %q", kind)
 }

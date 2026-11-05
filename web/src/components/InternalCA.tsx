@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
 import { errorMessage } from "../lib/api";
+import { hasRole, useAuth } from "../lib/auth";
 import { caApi, type InternalCA } from "../lib/certificates";
 import { formatDate } from "../lib/format";
 import { Banner, Card, CodeBlock, Field } from "./ui";
@@ -40,18 +41,20 @@ const commands: Partial<Record<Platform, string>> = {
 };
 
 /** The device the page is opened on, to show its steps first. */
-export function guessPlatform(userAgent: string): Platform {
-  if (/Firefox\//.test(userAgent)) {
-    return "firefox";
-  }
+export function guessPlatform(userAgent: string, touchPoints = 0): Platform {
+  // phones first: Firefox there uses the system's certificates
   if (/iPhone|iPad|iPod/.test(userAgent)) {
     return "ios";
   }
   if (/Android/.test(userAgent)) {
     return "android";
   }
+  if (/Firefox\//.test(userAgent)) {
+    return "firefox";
+  }
   if (/Mac OS X|Macintosh/.test(userAgent)) {
-    return "macos";
+    // an iPad says it is a Mac, but has a touch screen
+    return touchPoints > 1 ? "ios" : "macos";
   }
   if (/Windows/.test(userAgent)) {
     return "windows";
@@ -66,7 +69,10 @@ export function InternalCACard() {
   const { t } = useTranslation();
   const [ca, setCA] = useState<InternalCA | null>(null);
   const [error, setError] = useState("");
-  const [platform, setPlatform] = useState<Platform>(() => guessPlatform(navigator.userAgent));
+  const { user } = useAuth();
+  const [platform, setPlatform] = useState<Platform>(() =>
+    guessPlatform(navigator.userAgent, navigator.maxTouchPoints),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -117,9 +123,11 @@ export function InternalCACard() {
         >
           PEM
         </a>
-        <Link className="button" to="/agents">
-          {t("ca.agents")}
-        </Link>
+        {hasRole(user, "admin") && (
+          <Link className="button" to="/agents">
+            {t("ca.agents")}
+          </Link>
+        )}
       </div>
       <details className="ca-install">
         <summary>{t("ca.install")}</summary>
@@ -151,7 +159,12 @@ export function InternalCACard() {
               <li key={i}>{t(`ca.steps.${platform}.${i + 1}`)}</li>
             ))}
           </ol>
-          {command && <CodeBlock code={command} label={t("ca.command")} />}
+          {command && (
+            <>
+              {platform === "windows" && <p className="muted small">{t("ca.windowsAdmin")}</p>}
+              <CodeBlock code={command} label={t("ca.command")} />
+            </>
+          )}
           <p className="muted small">{t("ca.after")}</p>
         </div>
       </details>

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // piHole holds the local DNS records of Pi-hole v6: dns.hosts ("IP name")
@@ -17,6 +18,9 @@ import (
 type piHole struct {
 	api
 	password string
+	// restartWait is how long a change of dns.cnameRecords may keep the
+	// API away: Pi-hole restarts its DNS server for it
+	restartWait time.Duration
 }
 
 type piHoleConfig struct {
@@ -136,6 +140,43 @@ func entry(r Record) (string, string) {
 	return "hosts", r.Value + " " + r.Name
 }
 
+// change sends one change of the configuration. A change of dns.cnameRecords
+// restarts Pi-hole's DNS server, which keeps the API away for a moment, even
+// with ?restart=false: the next request waits until it is back.
+func (p *piHole) change(ctx context.Context, method, list, item string, auth func(*http.Request)) error {
+	changed := time.Now()
+	if err := p.call(ctx, method, "/api/config/dns/"+list+"/"+url.PathEscape(item), nil, auth, nil); err != nil {
+		return err
+	}
+	if list == "cnameRecords" {
+		p.restarted(ctx, auth, changed)
+	}
+	return nil
+}
+
+// restarted waits until Pi-hole's DNS server started after a change, as its
+// uptime tells, or restartWait passed: one that does not restart goes on.
+func (p *piHole) restarted(ctx context.Context, auth func(*http.Request), since time.Time) {
+	deadline := time.Now().Add(p.restartWait)
+	for time.Now().Before(deadline) {
+		var info struct {
+			FTL struct {
+				// milliseconds
+				Uptime float64 `json:"uptime"`
+			} `json:"ftl"`
+		}
+		if err := p.call(ctx, "GET", "/api/info/ftl", nil, auth, &info); err == nil &&
+			time.Duration(info.FTL.Uptime)*time.Millisecond < time.Since(since) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
 func (p *piHole) Append(ctx context.Context, records []Record) error {
 	auth, end, err := p.session(ctx)
 	if err != nil {
@@ -148,7 +189,7 @@ func (p *piHole) Append(ctx context.Context, records []Record) error {
 			return err
 		}
 		list, item := entry(r)
-		if err := p.call(ctx, "PUT", "/api/config/dns/"+list+"/"+url.PathEscape(item), nil, auth, nil); err != nil {
+		if err := p.change(ctx, "PUT", list, item, auth); err != nil {
 			return err
 		}
 	}
@@ -172,23 +213,31 @@ func (p *piHole) Delete(ctx context.Context, records []Record) error {
 		if err != nil {
 			return err
 		}
-		lines := config.Config.DNS.Hosts
+		lines := &config.Config.DNS.Hosts
 		list := "hosts"
 		if r.Type == "CNAME" {
-			lines, list = config.Config.DNS.CNAMERecords, "cnameRecords"
+			lines, list = &config.Config.DNS.CNAMERecords, "cnameRecords"
 		}
-		for _, line := range lines {
+		for i := 0; i < len(*lines); i++ {
+			line := (*lines)[i]
 			rest, holds := without(line, r)
 			if !holds {
 				continue
 			}
-			if err := p.call(ctx, "DELETE", "/api/config/dns/"+list+"/"+url.PathEscape(line), nil, auth, nil); err != nil {
+			if err := p.change(ctx, "DELETE", list, line, auth); err != nil {
 				return err
 			}
 			if rest != "" {
-				if err := p.call(ctx, "PUT", "/api/config/dns/"+list+"/"+url.PathEscape(rest), nil, auth, nil); err != nil {
+				if err := p.change(ctx, "PUT", list, rest, auth); err != nil {
 					return err
 				}
+			}
+			// the entries as they are now, for the next record of the same one
+			if rest == "" {
+				*lines = slices.Delete(*lines, i, i+1)
+				i--
+			} else {
+				(*lines)[i] = rest
 			}
 		}
 	}
