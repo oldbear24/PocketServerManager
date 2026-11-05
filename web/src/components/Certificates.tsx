@@ -1,5 +1,13 @@
 import { Lock, LockOpen, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -339,7 +347,8 @@ function useNow() {
   return now;
 }
 
-/** A side panel on the native dialog element, which traps focus. */
+/** A side panel on the native dialog element, which traps focus, and gives
+ * it back to what opened it. */
 function Drawer({
   title,
   onClose,
@@ -352,16 +361,33 @@ function Drawer({
   actions: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  const titleId = useId();
+  // a layout effect, so it closes before the dialog leaves the page and the
+  // focus can go back
+  useLayoutEffect(() => {
     const element = ref.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (element && !element.open) {
       element.showModal?.();
     }
-    return () => element?.close?.();
+    return () => {
+      element?.close?.();
+      opener?.focus();
+    };
   }, []);
   return (
-    <dialog ref={ref} className="dialog drawer" onCancel={onClose}>
-      <h2>{title}</h2>
+    <dialog
+      ref={ref}
+      className="dialog drawer"
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        // Escape in a dialog inside it closes only that one
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <h2 id={titleId}>{title}</h2>
       <div className="drawer-body">{children}</div>
       <div className="dialog-actions">{actions}</div>
     </dialog>
@@ -452,8 +478,8 @@ function CertificateDetail({
               <Trash2 size={14} aria-hidden="true" /> {t("common.remove")}
             </Button>
           )}
-          {canRetry && cert.issuer === "acme" && (
-            <Button disabled={busy || state === "issuing"} onClick={() => void retry()}>
+          {canRetry && cert.issuer === "acme" && state !== "issuing" && needsAction(cert, now) && (
+            <Button disabled={busy} onClick={() => void retry()}>
               <RefreshCw size={14} aria-hidden="true" /> {t("cert.retry")}
             </Button>
           )}

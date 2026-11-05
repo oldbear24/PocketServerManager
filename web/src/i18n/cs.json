@@ -1189,7 +1189,8 @@
       "issuing": "Vydává se",
       "pending": "Čeká",
       "failed": "Nevydán",
-      "renewal_failed": "Obnova selhala"
+      "renewal_failed": "Obnova selhala",
+      "renewal_waiting": "Obnova čeká"
     },
     "issuer": {
       "manual": "Nahraný",

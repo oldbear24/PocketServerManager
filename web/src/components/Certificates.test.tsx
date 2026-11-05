@@ -37,6 +37,8 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  pb.authStore.clear();
   live.items = [];
 });
 
@@ -135,17 +137,6 @@ describe("the state of a certificate", () => {
   });
 });
 
-function signInAs(role: "viewer" | "operator" | "admin") {
-  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, type: "auth" }));
-  pb.authStore.save(`header.${payload}.signature`, {
-    id: "u1",
-    collectionId: "users",
-    collectionName: "users",
-    email: `${role}@example.com`,
-    role,
-  } as never);
-}
-
 function wrap(children: React.ReactNode) {
   return render(
     <MemoryRouter>
@@ -193,26 +184,24 @@ describe("the certificates table", () => {
 
   it("shows the lifetime left as a meter with its words, and what the CA said", () => {
     vi.useFakeTimers({ now, shouldAdvanceTime: true });
-    try {
-      card([cert({}), failed], false);
-      const meter = screen.getByRole("meter", { name: "Validity left" });
-      expect(meter.getAttribute("aria-valuenow")).toBe("82");
-      expect(meter.getAttribute("aria-valuetext")).toMatch(/^74 days · until /);
-      expect(screen.getByText("vps-1")).toBeTruthy();
-      expect(screen.getAllByText("Let's Encrypt")).toHaveLength(2);
-      expect(screen.getByText("blog.example.com: Connection refused (connection)")).toBeTruthy();
-      // a viewer cannot try again
-      expect(screen.queryByRole("button", { name: /Try the certificate/ })).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+    card([cert({}), failed], false);
+    const meter = screen.getByRole("meter", { name: "Validity left" });
+    expect(meter.getAttribute("aria-valuenow")).toBe("82");
+    expect(meter.getAttribute("aria-valuetext")).toMatch(/^74 days · until /);
+    expect(screen.getByText("vps-1")).toBeTruthy();
+    expect(screen.getAllByText("Let's Encrypt")).toHaveLength(2);
+    expect(screen.getByText("blog.example.com: Connection refused (connection)")).toBeTruthy();
+    // without the right to retry, there is no Retry
+    expect(screen.queryByRole("button", { name: /Try the certificate/ })).toBeNull();
   });
 
   it("tries a failed certificate again, and filters what needs action", async () => {
-    signInAs("operator");
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
     const retry = vi.spyOn(certificatesApi, "retry").mockResolvedValue({ id: "c2" });
     card([cert({}), failed], true);
 
+    // a valid certificate has nothing to try again
+    expect(screen.getAllByRole("button", { name: /Try the certificate/ })).toHaveLength(1);
     fireEvent.click(
       screen.getByRole("button", { name: "Try the certificate for blog.example.com again" }),
     );
@@ -225,17 +214,54 @@ describe("the certificates table", () => {
     expect(screen.getByText("Nothing here")).toBeTruthy();
   });
 
-  it("opens the details with the history and the chain", () => {
-    card([failed], false);
+  it("shows a renewal that waits as needing action", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    const waiting = cert({
+      renew_after: iso(now - day),
+      last_error: "Waiting for the edge of vps-1 to serve shop.example.com.",
+    });
+    expect(certificateState(waiting, now)).toBe("renewal_waiting");
+    expect(needsAction(waiting, now)).toBe(true);
+    card([waiting], true);
+    expect(screen.getByText("Renewal waiting")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Needs action \(1\)/ })).toBeTruthy();
+  });
+
+  it("opens the details with the history and the chain, named after the certificate", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    card([cert({}), failed], true);
+    const opener = screen.getByRole("button", {
+      name: "Details of the certificate for shop.example.com",
+    });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "shop.example.com" });
+    expect(within(dialog).getByText("Issued", { selector: ".timeline-title" })).toBeTruthy();
+    expect(within(dialog).getByText("Certificate chain (PEM)")).toBeTruthy();
+    expect(
+      within(dialog).getByRole("region", { name: "Certificate chain (PEM)" }).textContent,
+    ).toContain("BEGIN CERTIFICATE");
+    // a valid certificate offers no Retry here either
+    expect(within(dialog).queryByRole("button", { name: "Retry" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("keeps the details open when Escape closes the removal question", () => {
+    card([failed], true);
     fireEvent.click(
       screen.getByRole("button", { name: "Details of the certificate for blog.example.com" }),
     );
-    const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("Not issued", { selector: ".timeline-title" })).toBeTruthy();
-    expect(within(dialog).getByText("Connection refused")).toBeTruthy();
-    expect(within(dialog).getByText("by the panel, for a domain")).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    const drawer = screen.getByRole("dialog", { name: "blog.example.com" });
+    expect(within(drawer).getByText("Not issued", { selector: ".timeline-title" })).toBeTruthy();
+    expect(within(drawer).getByText("Connection refused")).toBeTruthy();
+    expect(within(drawer).getByText("by the panel, for a domain")).toBeTruthy();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove" }));
+    const question = screen.getByRole("dialog", { name: /Remove the certificate/ });
+    fireEvent(question, new Event("cancel", { cancelable: true }));
+    expect(screen.getByRole("dialog", { name: "blog.example.com" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: /Remove the certificate/ })).toBeNull();
   });
 });
 
@@ -312,11 +338,13 @@ describe("the ACME accounts in Settings", () => {
         registered_at: iso(Date.now() - day),
       },
     ];
-    vi.spyOn(certificatesApi, "setAccount").mockRejectedValue(
-      new Error(
-        "The CA did not take the account: the email domain is not allowed (invalidContact)",
-      ),
-    );
+    const set = vi
+      .spyOn(certificatesApi, "setAccount")
+      .mockRejectedValue(
+        new Error(
+          "The CA did not take the account: the email domain is not allowed (invalidContact)",
+        ),
+      );
     wrap(<AcmeAccountsCard />);
 
     const primary = screen.getByRole("region", { name: "Primary CA" });
@@ -329,5 +357,12 @@ describe("the ACME accounts in Settings", () => {
     );
     fireEvent.click(within(primary).getByRole("button", { name: "Save and register" }));
     expect(await within(primary).findByText(/invalidContact/)).toBeTruthy();
+    // no HMAC typed: the same key ID keeps the stored one
+    expect(set).toHaveBeenCalledWith("primary", {
+      directory_url: "https://acme.example.org/dir",
+      email: "admin@example.com",
+      eab_kid: "kid-1",
+      eab_hmac: "",
+    });
   });
 });

@@ -1133,7 +1133,8 @@
       "issuing": "Being issued",
       "pending": "Waiting",
       "failed": "Not issued",
-      "renewal_failed": "Renewal failed"
+      "renewal_failed": "Renewal failed",
+      "renewal_waiting": "Renewal waiting"
     },
     "issuer": {
       "manual": "Uploaded",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,8 +19,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/oldbear24/PocketServerManager/internal/acme/acmetest"
-	"github.com/oldbear24/PocketServerManager/internal/edge"
 	pcdns "github.com/oldbear24/PocketServerManager/internal/dns"
+	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
@@ -167,6 +168,12 @@ func issued(record *core.Record) bool {
 
 func failedOnce(record *core.Record) bool { return record.GetInt("attempts") >= 1 }
 
+func historyOf(record *core.Record) []map[string]any {
+	var history []map[string]any
+	_ = json.Unmarshal([]byte(record.GetString("history")), &history)
+	return history
+}
+
 func lastAttempt(t *testing.T, record *core.Record) map[string]any {
 	t.Helper()
 	var history []map[string]any
@@ -274,18 +281,21 @@ func TestANewDomainGetsATrustedCertificate(t *testing.T) {
 		t.Errorf("%d issued events", len(events))
 	}
 
-	// a second domain the certificate does not cover gets its own; removing
-	// a domain before its certificate came removes the order
-	other := a.domain("blog.example.test")
-	ordered := a.certificateFor("blog.example.test")
-	if err := a.app.Delete(other); err != nil {
-		t.Fatal(err)
+	// one that is fine is not issued again on request: each time would use
+	// up the CA's rate limits
+	if status, raw := testutil.Do(t, a.handler, testutil.Request{Method: "POST", URL: "/api/pc/certificates/" + cert.Id + "/retry", Token: a.admin}); status != http.StatusConflict {
+		t.Errorf("retrying a fine certificate: %d %s", status, raw)
 	}
-	a.panel.RunACME()
-	a.waitFor("the order of a removed domain to go, or be issued", func() bool {
-		record, err := a.app.FindRecordById(schema.Certificates, ordered.Id)
-		return err != nil || issued(record)
-	})
+}
+
+// presented counts the HTTP-01 answers the panel asked the edge for.
+func (a *acmeHarness) presented() int {
+	a.t.Helper()
+	count, err := a.app.CountRecords(schema.Commands, dbx.HashExp{"type": "acme.challenge.present", "host": a.host.Id})
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	return int(count)
 }
 
 // TestAWildcardComesThroughDNS01: an admin asks for a wildcard, whose names
@@ -357,10 +367,12 @@ func TestRenewalReplacesTheCertificateOnTheEdge(t *testing.T) {
 		t.Fatalf("renews %v before it expires", left)
 	}
 
-	// nothing is due before renew_after
+	// nothing is due before renew_after: no attempt starts
 	a.panel.RunACME()
-	if fresh, _ := a.app.FindRecordById(schema.Certificates, cert.Id); fresh.GetString("fingerprint") != first {
-		t.Fatal("renewed before it was due")
+	time.Sleep(500 * time.Millisecond)
+	fresh, _ := a.app.FindRecordById(schema.Certificates, cert.Id)
+	if a.presented() != 1 || len(historyOf(fresh)) != 1 || !fresh.GetDateTime("attempt_started").IsZero() || fresh.GetString("fingerprint") != first {
+		t.Fatalf("an attempt before it was due: %d answers, history %s", a.presented(), fresh.GetString("history"))
 	}
 
 	time.Sleep(time.Until(renew))
@@ -415,6 +427,18 @@ func TestFailuresShowWhatTheCASaid(t *testing.T) {
 	if cert.GetInt("attempts") != 0 || cert.GetString("status") != schema.CertPending {
 		t.Errorf("waiting is an attempt: %d %s", cert.GetInt("attempts"), cert.GetString("status"))
 	}
+
+	// the order of a domain removed before its certificate came goes too
+	other := a.domain("blog.example.test")
+	ordered := a.certificateFor("blog.example.test")
+	if err := a.app.Delete(other); err != nil {
+		t.Fatal(err)
+	}
+	a.panel.RunACME()
+	a.waitFor("the order of a removed domain to go", func() bool {
+		_, err := a.app.FindRecordById(schema.Certificates, ordered.Id)
+		return err != nil
+	})
 
 	a.mustSetAccount()
 	cert = a.waitCertificate(cert.Id, "to fail", failedOnce)
@@ -472,6 +496,14 @@ func TestFailuresShowWhatTheCASaid(t *testing.T) {
 	if route := a.edgeRoute(domain.GetString("hostname")); route["tls"] != "none" {
 		t.Errorf("the route: %v", route)
 	}
+
+	// a certificate removed has nothing left to alert about
+	if status, raw := testutil.Do(t, a.handler, testutil.Request{Method: "DELETE", URL: "/api/pc/certificates/" + cert.Id, Token: a.admin}); status != http.StatusNoContent {
+		t.Fatalf("remove: %d %s", status, raw)
+	}
+	if open, _ := a.app.CountRecords(schema.Alerts, dbx.HashExp{"target": cert.Id, "status": schema.AlertOpen}); open != 0 {
+		t.Errorf("%d alerts left open", open)
+	}
 }
 
 // TestAFallbackCAIssuesWhenThePrimaryOneFails: a second account at another
@@ -498,15 +530,23 @@ func TestAFallbackCAIssuesWhenThePrimaryOneFails(t *testing.T) {
 		t.Error(err)
 	}
 
-	// both failing: the error names each CA
-	if status, raw := a.setAccount(schema.ACMEFallback, broken.DirectoryURL); status != http.StatusOK {
+	// both failing, at two CAs: the error names each
+	other := startCA(t, a.dnsHarness, acmeOptions{unreachable: true})
+	if status, raw := a.setAccount(schema.ACMEFallback, other.DirectoryURL); status != http.StatusOK {
 		t.Fatalf("fallback: %d %s", status, raw)
 	}
 	a.setCertField(cert.Id, "renew_after", types.NowDateTime().String())
 	a.panel.RunACME()
 	cert = a.waitCertificate(cert.Id, "to fail", failedOnce)
-	if message := cert.GetString("last_error"); strings.Count(message, "127.0.0.1:") < 2 || cert.GetString("status") != schema.CertActive {
-		t.Errorf("%s: %q", cert.GetString("status"), message)
+	message := cert.GetString("last_error")
+	for _, ca := range []*acmetest.CA{broken, other} {
+		parsed, _ := url.Parse(ca.DirectoryURL)
+		if !strings.Contains("\n"+message, "\n"+parsed.Host+": shop.example.test: ") {
+			t.Errorf("no line of %s in %q", parsed.Host, message)
+		}
+	}
+	if cert.GetString("status") != schema.CertActive {
+		t.Errorf("a failed renewal changed the state to %s", cert.GetString("status"))
 	}
 }
 
@@ -574,9 +614,29 @@ func TestAnUploadedCertificateIsUsedAndWatched(t *testing.T) {
 		t.Errorf("%d ACME certificates for a covered domain", count)
 	}
 
+	expiring := func() []*core.Record {
+		alerts, _ := a.app.FindRecordsByFilter(schema.Alerts, "rule='certificate_expiring' && target={:id} && status='open'", "", 0, 0, dbx.Params{"id": uploaded.Id})
+		return alerts
+	}
+	a.setCertField(uploaded.Id, "not_after", types.NowDateTime().Add(10*24*time.Hour).String())
 	a.panel.MarkExpiredCertificates()
-	alerts, _ := a.app.FindRecordsByFilter(schema.Alerts, "rule='certificate_expiring' && target={:id} && status='open'", "", 0, 0, dbx.Params{"id": uploaded.Id})
-	if len(alerts) != 1 || alerts[0].GetString("severity") != schema.SeverityCritical {
-		t.Errorf("alerts: %v", alerts)
+	alerts := expiring()
+	if len(alerts) != 1 || alerts[0].GetString("severity") != schema.SeverityWarning {
+		t.Fatalf("10 days left: %v", alerts)
+	}
+	// it grows critical within a week, as the same alert
+	a.setCertField(uploaded.Id, "not_after", types.NowDateTime().Add(3*24*time.Hour).String())
+	a.panel.MarkExpiredCertificates()
+	if again := expiring(); len(again) != 1 || again[0].Id != alerts[0].Id || again[0].GetString("severity") != schema.SeverityCritical {
+		t.Errorf("3 days left: %v", again)
+	}
+
+	// once a newer one covers the name, the edge serves that, and the old
+	// one is no worry
+	newer := a.storeCertificate(selfSigned(t, "app.example.com"))
+	a.setCertField(newer.Id, "not_after", types.NowDateTime().Add(60*24*time.Hour).String())
+	a.panel.MarkExpiredCertificates()
+	if left := expiring(); len(left) != 0 {
+		t.Errorf("an alert for a certificate the edge no longer serves: %v", left)
 	}
 }

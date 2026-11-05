@@ -60,6 +60,9 @@ var acmeBackoff = []time.Duration{5 * time.Minute, 15 * time.Minute, time.Hour, 
 // noAccount: no certificate can be issued before an admin sets an account.
 const noAccount = "Add an ACME account in Settings, so that PocketCloud can get certificates."
 
+// errAccountChanged: an account was set anew while an attempt used the old one.
+var errAccountChanged = errors.New("the account changed meanwhile")
+
 // errWaiting is a reason to wait that is no failed attempt.
 type errWaiting struct{ reason string }
 
@@ -104,6 +107,11 @@ func (p *Panel) registerACME() {
 	}
 	p.App.OnRecordAfterCreateSuccess(schema.Domains).BindFunc(soon)
 	p.App.OnRecordAfterUpdateSuccess(schema.Domains).BindFunc(soon)
+	// a certificate that is gone has nothing left to alert about
+	p.App.OnRecordAfterDeleteSuccess(schema.Certificates).BindFunc(func(e *core.RecordEvent) error {
+		p.resolveCertificateAlerts(e.Record.Id, alertCertificateFailed, alertCertificateExpiring)
+		return e.Next()
+	})
 	// an edge that serves its new config can answer HTTP-01 now
 	p.Commands.OnFinish("edge.apply", func(command *core.Record) {
 		if command.GetString("status") == schema.CommandSucceeded {
@@ -197,12 +205,16 @@ func (p *Panel) handleSetACMEAccount(e *core.RequestEvent) error {
 	body.EABHMAC = strings.TrimSpace(body.EABHMAC)
 
 	existing, _ := e.App.FindFirstRecordByData(schema.ACMEAccounts, "role", role)
-	// the HMAC key is not shown again: the same key ID keeps the stored one
-	if body.EABHMAC == "" && body.EABKid != "" && existing != nil && existing.GetString("eab_kid") == body.EABKid && existing.GetString("eab_hmac") != "" {
-		plain, err := p.Box.OpenString(existing.GetString("eab_hmac"))
-		if err == nil {
-			body.EABHMAC = plain
+	// the HMAC key is not shown again: the same key ID keeps the stored one,
+	// unless a new one is typed
+	storedHMAC := ""
+	if existing != nil && existing.GetString("eab_hmac") != "" {
+		if plain, err := p.Box.OpenString(existing.GetString("eab_hmac")); err == nil {
+			storedHMAC = plain
 		}
+	}
+	if body.EABHMAC == "" && body.EABKid != "" && existing != nil && existing.GetString("eab_kid") == body.EABKid {
+		body.EABHMAC = storedHMAC
 	}
 
 	errs := validation.Errors{
@@ -222,9 +234,16 @@ func (p *Panel) handleSetACMEAccount(e *core.RequestEvent) error {
 		return e.BadRequestError("The ACME account is not valid.", err)
 	}
 
+	// the same account again is no new registration, if it is whole: one
+	// whose key cannot be opened is registered anew
 	unchanged := existing != nil && existing.GetString("uri") != "" &&
 		existing.GetString("directory_url") == body.DirectoryURL && existing.GetString("email") == body.Email &&
-		existing.GetString("eab_kid") == body.EABKid
+		existing.GetString("eab_kid") == body.EABKid && body.EABHMAC == storedHMAC
+	if unchanged {
+		if _, err := p.acmeAccount(role); err != nil {
+			unchanged = false
+		}
+	}
 	if unchanged {
 		return e.JSON(http.StatusOK, accountResponse(existing))
 	}
@@ -371,7 +390,7 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 		return e.BadRequestError("Failed to store the certificate.", err)
 	}
 
-	p.startIssue(record.Id, requesterOf(e))
+	p.startIssue(record.Id, requesterOf(e), false)
 	return e.JSON(http.StatusCreated, map[string]any{"id": record.Id, "names": names})
 }
 
@@ -385,6 +404,12 @@ func (p *Panel) handleRetryCertificate(e *core.RequestEvent) error {
 	if record.GetString("issuer") != schema.IssuerACME {
 		return e.BadRequestError("Only certificates from ACME can be tried again; upload a new one instead.", nil)
 	}
+	if !needsAttempt(record, time.Now()) {
+		// a new certificate each time would use up the CA's rate limits:
+		// Let's Encrypt issues the same names five times a week
+		return e.Error(http.StatusConflict, fmt.Sprintf("This certificate is fine; it renews after %s UTC by itself.",
+			renewTime(record).UTC().Format("2006-01-02 15:04")), nil)
+	}
 	if until, limited := dailyLimit(record, time.Now()); limited {
 		return e.Error(http.StatusTooManyRequests, fmt.Sprintf("It failed %d times in the last day; the next attempt can start at %s UTC.",
 			acmeDailyAttempts, until.UTC().Format("2006-01-02 15:04")), nil)
@@ -392,7 +417,7 @@ func (p *Panel) handleRetryCertificate(e *core.RequestEvent) error {
 	if _, busy := p.acme.issuing.Load(record.Id); busy {
 		return e.JSON(http.StatusAccepted, map[string]any{"id": record.Id, "issuing": true})
 	}
-	p.startIssue(record.Id, requesterOf(e))
+	p.startIssue(record.Id, requesterOf(e), false)
 	return e.JSON(http.StatusAccepted, map[string]any{"id": record.Id, "issuing": true})
 }
 
@@ -437,6 +462,22 @@ func dailyLimit(record *core.Record, now time.Time) (time.Time, bool) {
 	return failures[len(failures)-acmeDailyAttempts].Add(24 * time.Hour), true
 }
 
+// renewTime is when an issued certificate renews.
+func renewTime(record *core.Record) time.Time {
+	renew := record.GetDateTime("renew_after").Time()
+	if renew.IsZero() {
+		renew = renewAfter(record.GetDateTime("not_before").Time(), record.GetDateTime("not_after").Time())
+	}
+	return renew
+}
+
+// needsAttempt tells whether a certificate needs to be issued: it never
+// was, it is due to renew, or its last attempt failed or waits.
+func needsAttempt(record *core.Record, now time.Time) bool {
+	return record.GetString("key_pem") == "" || !now.Before(renewTime(record)) ||
+		record.GetInt("attempts") > 0 || record.GetString("last_error") != ""
+}
+
 // renewAfter is when a certificate renews: 30 days before it expires, or a
 // third of its lifetime before for a short one.
 func renewAfter(notBefore, notAfter time.Time) time.Time {
@@ -457,7 +498,7 @@ func (p *Panel) RunACME() {
 		return
 	}
 
-	domains, err := p.App.FindRecordsByFilter(schema.Domains, "tls!={:off}", "", 0, 0, dbx.Params{"off": schema.TLSOff})
+	domains, err := p.tlsDomains()
 	if err != nil {
 		p.Log.Error("failed to read the domains", "error", err)
 		return
@@ -483,30 +524,11 @@ func (p *Panel) RunACME() {
 			p.setFields(record, map[string]any{"attempt_started": nil})
 		}
 
-		hasKey := record.GetString("key_pem") != ""
-		names := certificateNames(record)
-		needed := !record.GetBool("auto") || slices.ContainsFunc(domains, func(d *core.Record) bool {
-			return edge.Covers(names, d.GetString("hostname"))
-		})
-		if !needed {
-			// ordered for a domain that is gone before it was issued
-			if !hasKey {
-				if err := p.App.Delete(record); err != nil {
-					p.Log.Warn("failed to remove a certificate nothing needs", "certificate", record.Id, "error", err)
-				}
-			}
+		if !neededBy(record, domains) {
+			p.dropUnneeded(record)
 			continue
 		}
-
-		due := !hasKey
-		if hasKey {
-			renew := record.GetDateTime("renew_after").Time()
-			if renew.IsZero() {
-				renew = renewAfter(record.GetDateTime("not_before").Time(), record.GetDateTime("not_after").Time())
-			}
-			due = !now.Before(renew)
-		}
-		if !due {
+		if !isDue(record, now) {
 			continue
 		}
 		if next := record.GetDateTime("next_attempt").Time(); !next.IsZero() && now.Before(next) {
@@ -520,7 +542,49 @@ func (p *Panel) RunACME() {
 			p.acmeWaiting(record, noAccount)
 			continue
 		}
-		p.startIssue(record.Id, "")
+		p.startIssue(record.Id, "", true)
+	}
+}
+
+// tlsDomains are the domains with automatic TLS.
+func (p *Panel) tlsDomains() ([]*core.Record, error) {
+	return p.App.FindRecordsByFilter(schema.Domains, "tls!={:off}", "", 0, 0, dbx.Params{"off": schema.TLSOff})
+}
+
+// neededBy tells whether a certificate is wanted: an admin asked for it, or a
+// domain with automatic TLS needs it.
+func neededBy(record *core.Record, domains []*core.Record) bool {
+	if !record.GetBool("auto") {
+		return true
+	}
+	names := certificateNames(record)
+	return slices.ContainsFunc(domains, func(d *core.Record) bool { return edge.Covers(names, d.GetString("hostname")) })
+}
+
+// isDue tells whether a certificate is to be issued now: it never was, or
+// it is due to renew.
+func isDue(record *core.Record, now time.Time) bool {
+	return record.GetString("key_pem") == "" || !now.Before(renewTime(record))
+}
+
+// dropUnneeded lets go of a certificate that was ordered for a domain that
+// is gone: an order is removed, an issued one is not renewed and has
+// nothing to alert about.
+func (p *Panel) dropUnneeded(record *core.Record) {
+	if record.GetString("key_pem") == "" {
+		if err := p.App.Delete(record); err != nil {
+			p.Log.Warn("failed to remove a certificate nothing needs", "certificate", record.Id, "error", err)
+		}
+		return
+	}
+	p.resolveCertificateAlerts(record.Id, alertCertificateFailed)
+}
+
+func (p *Panel) resolveCertificateAlerts(id string, rules ...string) {
+	for _, rule := range rules {
+		if err := events.ResolveAlert(p.App, rule, id); err != nil {
+			p.Log.Warn("failed to resolve an alert", "rule", rule, "error", err)
+		}
 	}
 }
 
@@ -572,8 +636,9 @@ func (p *Panel) orderCertificates(domains []*core.Record) {
 }
 
 // startIssue issues or renews a certificate in the background, unless that
-// is under way already.
-func (p *Panel) startIssue(id, requester string) {
+// is under way already. A scheduled attempt checks again that it is due; one
+// that someone asked for, as Retry, does not wait for the backoff.
+func (p *Panel) startIssue(id, requester string, scheduled bool) {
 	if _, busy := p.acme.issuing.LoadOrStore(id, struct{}{}); busy {
 		return
 	}
@@ -585,32 +650,56 @@ func (p *Panel) startIssue(id, requester string) {
 			return
 		}
 		defer func() { <-p.acme.slots }()
-		p.issue(id, requester)
+		p.issue(id, requester, scheduled)
 	})
 }
 
 // issue makes one attempt: the primary account, then the fallback one when
-// the primary one fails.
-func (p *Panel) issue(id, requester string) {
+// the primary one fails or cannot be used.
+func (p *Panel) issue(id, requester string, scheduled bool) {
 	record, err := p.App.FindRecordById(schema.Certificates, id)
 	if err != nil {
 		return
 	}
 	names := certificateNames(record)
 
+	// what was read to start it may have changed since
+	domains, err := p.tlsDomains()
+	if err != nil {
+		return
+	}
+	if !neededBy(record, domains) {
+		p.dropUnneeded(record)
+		return
+	}
+	now := time.Now()
+	if scheduled {
+		if next := record.GetDateTime("next_attempt").Time(); !isDue(record, now) || !next.IsZero() && now.Before(next) {
+			return
+		}
+		if _, limited := dailyLimit(record, now); limited {
+			return
+		}
+	}
+
 	accounts := []*acmeAccount{}
+	unusable := []string{}
 	for _, role := range []string{schema.ACMEPrimary, schema.ACMEFallback} {
 		account, err := p.acmeAccount(role)
 		if err != nil {
-			p.acmeFailed(record, "", err.Error(), false)
-			return
+			unusable = append(unusable, capitalize(err.Error())+": set the account again in Settings.")
+			continue
 		}
 		if account != nil {
 			accounts = append(accounts, account)
 		}
 	}
 	if len(accounts) == 0 {
-		p.acmeWaiting(record, noAccount)
+		if len(unusable) > 0 {
+			p.acmeFailed(record, "", strings.Join(unusable, "\n"), false)
+		} else {
+			p.acmeWaiting(record, noAccount)
+		}
 		return
 	}
 
@@ -626,7 +715,7 @@ func (p *Panel) issue(id, requester string) {
 	}
 	p.setFields(record, map[string]any{"attempt_started": types.NowDateTime()})
 
-	explanations := []string{}
+	explanations := unusable
 	limited := false
 	for _, account := range accounts {
 		cert, err := p.obtainWith(account, names, plan, requester)
@@ -681,8 +770,19 @@ func (p *Panel) obtainWith(account *acmeAccount, names []string, plan acmePlan, 
 	uri := account.account.URI
 	cert, err := acme.Obtain(req)
 	if account.account.URI != uri {
-		// registered again: the CA had forgotten the account
-		p.setFields(account.record, map[string]any{"uri": account.account.URI, "registered_at": types.NowDateTime()})
+		// registered again: the CA had forgotten the account; unless an
+		// admin set another one meanwhile, which keeps its own
+		err := p.update(context.Background(), account.record, func(fresh *core.Record) error {
+			if fresh.GetString("key") != account.record.GetString("key") || fresh.GetString("directory_url") != account.record.GetString("directory_url") {
+				return errAccountChanged
+			}
+			fresh.Set("uri", account.account.URI)
+			fresh.Set("registered_at", types.NowDateTime())
+			return nil
+		})
+		if err != nil && !errors.Is(err, errAccountChanged) {
+			p.Log.Warn("failed to store the account's new registration", "account", account.record.Id, "error", err)
+		}
 	}
 	return cert, err
 }
@@ -702,6 +802,11 @@ func (p *Panel) acmeIssued(record *core.Record, cert *acme.Certificate, challeng
 		return
 	}
 	renewal := record.GetString("key_pem") != ""
+	if domains, err := p.tlsDomains(); err == nil && !renewal && !neededBy(record, domains) {
+		// its domain went away while it was issued
+		p.dropUnneeded(record)
+		return
+	}
 	notAfter := parsed.notAfter.UTC()
 	err = p.update(context.Background(), record, func(fresh *core.Record) error {
 		fresh.Set("chain_pem", string(parsed.chain))
@@ -735,11 +840,7 @@ func (p *Panel) acmeIssued(record *core.Record, cert *acme.Certificate, challeng
 	events.Log(p.App, "", kind, schema.SeverityInfo,
 		fmt.Sprintf("%s the certificate for %s, valid until %s.", verb, strings.Join(names, ", "), notAfter.Format("2006-01-02")),
 		map[string]any{"certificate": record.Id, "names": strings.Join(names, ", "), "date": notAfter.Format("2006-01-02")})
-	for _, rule := range []string{alertCertificateFailed, alertCertificateExpiring} {
-		if err := events.ResolveAlert(p.App, rule, record.Id); err != nil {
-			p.Log.Warn("failed to resolve an alert", "rule", rule, "error", err)
-		}
-	}
+	p.resolveCertificateAlerts(record.Id, alertCertificateFailed, alertCertificateExpiring)
 	p.applyEdgesCovering(names, "")
 }
 
@@ -768,16 +869,16 @@ func (p *Panel) acmeFailed(record *core.Record, challenge, message string, rateL
 	}
 	p.setFields(record, fields)
 
-	names := strings.Join(certificateNames(record), ", ")
+	names := truncateText(strings.Join(certificateNames(record), ", "), 200)
 	events.Log(p.App, "", "certificate.failed", schema.SeverityWarning,
-		fmt.Sprintf("Could not get the certificate for %s: %s", names, message),
+		truncateText(fmt.Sprintf("Could not get the certificate for %s: %s", names, message), 2048),
 		map[string]any{"certificate": record.Id, "names": names, "error": message})
 	severity := schema.SeverityWarning
 	if notAfter := record.GetDateTime("not_after").Time(); record.GetString("key_pem") != "" && time.Until(notAfter) < acmeAlertCritical {
 		severity = schema.SeverityCritical
 	}
 	if err := events.RaiseAlert(p.App, alertCertificateFailed, record.Id, "", severity,
-		fmt.Sprintf("PocketCloud could not get the certificate for %s: %s", names, message)); err != nil {
+		truncateText(fmt.Sprintf("PocketCloud could not get the certificate for %s: %s", names, message), 2048)); err != nil {
 		p.Log.Warn("failed to raise an alert", "error", err)
 	}
 }
@@ -786,7 +887,7 @@ func (p *Panel) acmeFailed(record *core.Record, challenge, message string, rateL
 // expires within 14 days, as one whose renewals keep failing does, and
 // resolves it once there is a newer one.
 func (p *Panel) checkCertificateExpiry() {
-	domains, err := p.App.FindRecordsByFilter(schema.Domains, "tls!={:off}", "", 0, 0, dbx.Params{"off": schema.TLSOff})
+	domains, err := p.tlsDomains()
 	if err != nil {
 		return
 	}
@@ -796,7 +897,12 @@ func (p *Panel) checkCertificateExpiry() {
 	}
 	now := time.Now()
 	for _, cert := range certs {
-		inUse := slices.ContainsFunc(domains, func(d *core.Record) bool { return edge.Covers(cert.names, d.GetString("hostname")) })
+		// in use: the one the edge serves a domain with, as buildEdgeConfig
+		// picks it; one that a newer one replaced is not
+		inUse := slices.ContainsFunc(domains, func(d *core.Record) bool {
+			chosen := coveringCertificate(certs, d.GetString("hostname"))
+			return chosen != nil && chosen.record.Id == cert.record.Id
+		})
 		left := cert.notAfter.Sub(now)
 		if !inUse || left >= expiringWithin {
 			if err := events.ResolveAlert(p.App, alertCertificateExpiring, cert.record.Id); err != nil {
@@ -867,15 +973,15 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 
 	plan := acmePlan{hosts: map[string][]*core.Record{}, zones: map[string]acmeZone{}}
 	zoneOf := map[string]*core.Record{}
+	// how each name can be checked
+	canHTTP, canDNS := map[string]bool{}, map[string]bool{}
+	domainOf := map[string]*core.Record{}
 	wildcard, allHTTP, allPublic, allDNS := false, true, true, true
-	noEdge, noZone := "", ""
 
 	for _, name := range names {
 		base := strings.TrimPrefix(name, "*.")
 		if base != name {
 			wildcard = true
-			allHTTP = false
-			noEdge = name
 		} else {
 			for _, domain := range domains {
 				if domain.GetString("hostname") != name {
@@ -885,18 +991,15 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 				if err != nil || !hasEdgeRole(host) {
 					continue
 				}
+				domainOf[name] = domain
 				plan.hosts[name] = append(plan.hosts[name], host)
 				if host.GetString("public_ip4") == "" && host.GetString("public_ip6") == "" {
 					allPublic = false
 				}
 			}
-			if len(plan.hosts[name]) == 0 {
-				allHTTP = false
-				if noEdge == "" {
-					noEdge = name
-				}
-			}
+			canHTTP[name] = len(plan.hosts[name]) > 0
 		}
+		allHTTP = allHTTP && canHTTP[name]
 
 		zone, ok := dns.ZoneFor(base, zoneNames)
 		if ok {
@@ -907,15 +1010,24 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 				ok = false
 			}
 		}
-		if !ok {
-			allDNS = false
-			if noZone == "" {
-				noZone = name
-			}
-			continue
+		canDNS[name] = ok
+		allDNS = allDNS && ok
+		if ok {
+			zoneOf[base] = byName[zone]
 		}
-		zoneOf[base] = byName[zone]
 	}
+
+	first := func(test func(name string) bool) string {
+		for _, name := range names {
+			if test(name) {
+				return name
+			}
+		}
+		return ""
+	}
+	noWay := first(func(name string) bool { return !canHTTP[name] && !canDNS[name] })
+	cannotHTTP := first(func(name string) bool { return !canHTTP[name] })
+	cannotDNS := first(func(name string) bool { return !canDNS[name] })
 
 	switch wanted {
 	case schema.ChallengeHTTP01:
@@ -924,6 +1036,12 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 		plan.kind = schema.ChallengeDNS01
 	default:
 		switch {
+		case noWay != "" && strings.HasPrefix(noWay, "*."):
+			return plan, fmt.Errorf("a wildcard (%s) can only be checked with DNS-01, and its zone is in no connected DNS provider that PocketCloud manages", noWay)
+		case noWay != "":
+			return plan, fmt.Errorf("no edge serves %s and its zone is in no connected DNS provider that PocketCloud manages, so the CA cannot check it", noWay)
+		case !allHTTP && !allDNS:
+			return plan, fmt.Errorf("%s can only be checked with DNS-01 and %s only with HTTP-01: ask for them in separate certificates", cannotHTTP, cannotDNS)
 		case wildcard || allDNS && (!allHTTP || !allPublic):
 			plan.kind = schema.ChallengeDNS01
 		default:
@@ -933,26 +1051,29 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 
 	switch plan.kind {
 	case schema.ChallengeHTTP01:
-		if !allHTTP {
-			if strings.HasPrefix(noEdge, "*.") {
-				return plan, fmt.Errorf("a wildcard (%s) can only be checked with DNS-01, and its zone is in no connected DNS provider that PocketCloud manages", noEdge)
+		if cannotHTTP != "" {
+			if strings.HasPrefix(cannotHTTP, "*.") {
+				return plan, fmt.Errorf("a wildcard (%s) can only be checked with DNS-01", cannotHTTP)
 			}
-			if wanted == schema.ChallengeHTTP01 || allDNS {
-				return plan, fmt.Errorf("no edge serves %s, so there is nowhere to answer the CA's HTTP-01 challenge", noEdge)
-			}
-			return plan, fmt.Errorf("no edge serves %s and its zone is in no connected DNS provider that PocketCloud manages, so the CA cannot check it", noEdge)
+			return plan, fmt.Errorf("no edge serves %s, so there is nowhere to answer the CA's HTTP-01 challenge", cannotHTTP)
 		}
-		for name, hosts := range plan.hosts {
-			for _, host := range hosts {
+		for _, name := range names {
+			for _, host := range plan.hosts[name] {
 				applied := host.GetString("edge_applied_digest")
 				if !host.GetBool("stream_open") || applied == "" || applied != host.GetString("edge_digest") {
 					return plan, errWaiting{fmt.Sprintf("Waiting for the edge of %s to serve %s.", host.GetString("name"), name)}
 				}
 			}
+			// the CA would find no address, or the old one, and the failure
+			// would count; the records PocketCloud just set are checked every
+			// minute
+			if domain := domainOf[name]; domain != nil && domain.GetString("dns_status") == schema.DNSPending {
+				return plan, errWaiting{fmt.Sprintf("Waiting for the DNS records of %s to be visible.", name)}
+			}
 		}
 	case schema.ChallengeDNS01:
-		if !allDNS {
-			return plan, fmt.Errorf("%s is in no zone of a connected DNS provider that PocketCloud manages, so there is nowhere to answer the CA's DNS-01 challenge", noZone)
+		if cannotDNS != "" {
+			return plan, fmt.Errorf("%s is in no zone of a connected DNS provider that PocketCloud manages, so there is nowhere to answer the CA's DNS-01 challenge", cannotDNS)
 		}
 		opened := map[string]acmeZone{}
 		for base, zone := range zoneOf {
@@ -1000,6 +1121,7 @@ func (a *edgeAnswers) Present(domain, token, keyAuth string) error {
 			Requester: a.requester,
 		})
 		if err != nil {
+			_ = a.CleanUp(domain, token, keyAuth)
 			return err
 		}
 		queued = append(queued, command)
@@ -1011,6 +1133,8 @@ func (a *edgeAnswers) Present(domain, token, keyAuth string) error {
 			if done != nil && done.GetString("error") != "" {
 				reason = done.GetString("error")
 			}
+			// lego cleans up only after an answer that is in place
+			_ = a.CleanUp(domain, token, keyAuth)
 			return fmt.Errorf("the edge of %s could not put the answer in place: %s", hosts[i].GetString("name"), reason)
 		}
 	}

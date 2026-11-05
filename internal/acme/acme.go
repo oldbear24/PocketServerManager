@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -305,8 +306,17 @@ func Explain(err error) string {
 	if err == nil {
 		return ""
 	}
+	lines := explainTree(err)
+	// lego collects them in maps
+	slices.Sort(lines)
+	return strings.Join(slices.Compact(lines), "\n")
+}
+
+// explainTree finds the error of each name in what lego returns: the
+// resolver keeps them in a map by name; the certifier joins them, as
+// "name: error", and nests the joins.
+func explainTree(err error) []string {
 	for e := err; e != nil; e = errors.Unwrap(e) {
-		// the resolver keeps the error of each name in a map by name
 		if v := reflect.ValueOf(e); v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String {
 			lines := []string{}
 			for _, key := range v.MapKeys() {
@@ -314,20 +324,21 @@ func Explain(err error) string {
 					lines = append(lines, key.String()+": "+explainOne(inner))
 				}
 			}
-			slices.Sort(lines)
-			return strings.Join(lines, "\n")
+			return lines
 		}
-		// the certifier joins them, as "name: error"
 		if joined, ok := e.(interface{ Unwrap() []error }); ok {
 			lines := []string{}
 			for _, part := range joined.Unwrap() {
+				if _, nested := part.(interface{ Unwrap() []error }); nested {
+					lines = append(lines, explainTree(part)...)
+					continue
+				}
 				lines = append(lines, explainName(part))
 			}
-			slices.Sort(lines)
-			return strings.Join(lines, "\n")
+			return lines
 		}
 	}
-	return explainOne(err)
+	return []string{explainOne(err)}
 }
 
 // explainName explains the error of one name, which lego wraps as
@@ -344,16 +355,15 @@ func explainName(err error) string {
 	return name + ": " + explainOne(inner)
 }
 
+// legoFraming is what lego puts before the cause of an error.
+var legoFraming = regexp.MustCompile(`^(\[[^\]]*\] )?(acme: )?(error: )?(error presenting token: |error cleaning up: )?`)
+
 func explainOne(err error) string {
 	var problem *legoacme.ProblemDetails
 	if errors.As(err, &problem) {
 		return describe(problem)
 	}
-	text := err.Error()
-	for _, prefix := range []string{"acme: ", "error: "} {
-		text = strings.TrimPrefix(text, prefix)
-	}
-	return text
+	return legoFraming.ReplaceAllString(err.Error(), "")
 }
 
 // describe is a problem as a person reads it: the CA's own words, and its

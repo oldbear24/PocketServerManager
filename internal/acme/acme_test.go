@@ -245,17 +245,36 @@ func TestKeysRoundTrip(t *testing.T) {
 	}
 }
 
+// TestExplainKeepsTheNamesApart: the errors as lego 4.35 builds them, the
+// resolver's map of names and the certifier's nested joins, come out as one
+// line per name without lego's framing.
 func TestExplainKeepsTheNamesApart(t *testing.T) {
-	joined := fmt.Errorf("error: one or more domains had a problem:\n%w", errors.Join(
-		fmt.Errorf("a.example.test: %w", errors.New("acme: error presenting token: no edge serves it")),
-		fmt.Errorf("b.example.test: %w", errors.New("the zone is gone")),
-	))
-	got := acme.Explain(joined)
-	want := "a.example.test: error presenting token: no edge serves it\nb.example.test: the zone is gone"
-	if got != want {
-		t.Errorf("got %q\nwant %q", got, want)
+	// the certifier: errors.Join(errors.Join(nil, "a: e"), "b: e")
+	var certifier error
+	for _, name := range []string{"a.example.test", "b.example.test", "c.example.test"} {
+		certifier = errors.Join(certifier, fmt.Errorf("%s: %w", name, errors.New("acme: error: the CSR is bad")))
+	}
+	certifier = fmt.Errorf("error: one or more domains had a problem:\n%w", certifier)
+	want := "a.example.test: the CSR is bad\nb.example.test: the CSR is bad\nc.example.test: the CSR is bad"
+	if got := acme.Explain(certifier); got != want {
+		t.Errorf("the certifier's joins: got %q\nwant %q", got, want)
+	}
+
+	// the resolver: a map by name, its errors framed "[name] acme: ..."
+	resolver := mapError{
+		"b.example.test": fmt.Errorf("[b.example.test] acme: error presenting token: %w", errors.New("the edge of web could not put the answer in place: offline")),
+		"a.example.test": fmt.Errorf("[a.example.test] acme: error cleaning up: %w", errors.New("gone")),
+	}
+	want = "a.example.test: gone\nb.example.test: the edge of web could not put the answer in place: offline"
+	if got := acme.Explain(resolver); got != want {
+		t.Errorf("the resolver's map: got %q\nwant %q", got, want)
 	}
 	if acme.Explain(nil) != "" {
 		t.Error("nil explained")
 	}
 }
+
+// mapError is shaped like lego's resolver.obtainError.
+type mapError map[string]error
+
+func (e mapError) Error() string { return "error: one or more domains had a problem" }

@@ -60,7 +60,14 @@ export const certificatesApi = {
 
 /** How a certificate stands, as the table shows it. */
 export type CertState =
-  "valid" | "expiring" | "expired" | "issuing" | "pending" | "failed" | "renewal_failed";
+  | "valid"
+  | "expiring"
+  | "expired"
+  | "issuing"
+  | "pending"
+  | "failed"
+  | "renewal_failed"
+  | "renewal_waiting";
 
 const day = 24 * 60 * 60 * 1000;
 /** As the panel's alert: a certificate that expires within 14 days needs a look. */
@@ -87,6 +94,11 @@ export function certificateState(cert: Certificate, now = Date.now()): CertState
   if (cert.issuer === "acme" && cert.attempts > 0) {
     return "renewal_failed";
   }
+  // due, but it waits: for an account, or for the edge
+  const renew = parseDate(cert.renew_after)?.getTime();
+  if (cert.issuer === "acme" && cert.last_error && renew !== undefined && renew <= now) {
+    return "renewal_waiting";
+  }
   return end - now < expiringWithin ? "expiring" : "valid";
 }
 
@@ -98,7 +110,9 @@ export function needsAction(cert: Certificate, now = Date.now()): boolean {
     state === "expiring" ||
     state === "failed" ||
     state === "renewal_failed" ||
-    (state === "pending" && cert.last_error !== "")
+    state === "renewal_waiting" ||
+    // an order that waits, or a certificate that failed to install
+    (state !== "issuing" && cert.last_error !== "")
   );
 }
 
@@ -108,6 +122,7 @@ export function stateTone(state: CertState): Tone {
       return "ok";
     case "expiring":
     case "renewal_failed":
+    case "renewal_waiting":
       return "warn";
     case "expired":
     case "failed":

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
 
 import { errorMessage } from "../lib/api";
 import {
@@ -22,6 +23,14 @@ export function AcmeAccountsCard() {
   const accounts = useLiveList<AcmeAccount>("acme_accounts", { sort: "role" });
   const primary = accounts.items.find((account) => account.role === "primary");
   const fallback = accounts.items.find((account) => account.role === "fallback");
+  const { hash } = useLocation();
+
+  // the router does not scroll to the anchor of a link from another page
+  useEffect(() => {
+    if (hash === "#acme") {
+      document.getElementById("acme")?.scrollIntoView?.({ block: "start" });
+    }
+  }, [hash]);
 
   return (
     <Card id="acme" title={t("acme.title")} note={t("acme.note")}>
