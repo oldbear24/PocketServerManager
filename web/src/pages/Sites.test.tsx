@@ -187,7 +187,53 @@ describe("the sites page", () => {
   });
 });
 
+describe("a new site", () => {
+  it("sends its token with it, and no build for a site served as it is", async () => {
+    signInAs("operator");
+    lists.hosts = [{ id: "h1", name: "vps", roles: ["docker", "edge"], status: "online" }];
+    const create = vi.fn().mockResolvedValue({ id: "s9", name: "docs" });
+    vi.spyOn(pb, "collection").mockReturnValue({ create } as unknown as ReturnType<
+      typeof pb.collection
+    >);
+    renderAt("/sites");
+    fireEvent.click(screen.getAllByRole("button", { name: "New site" })[0]);
+    const dialog = screen.getByRole("dialog", { name: "New site" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "docs" } });
+    fireEvent.change(within(dialog).getByLabelText("Repository"), {
+      target: { value: "https://git.example.com/me/docs.git" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Access token"), { target: { value: "tok" } });
+    fireEvent.change(within(dialog).getByLabelText("Build image"), {
+      target: { value: "node:22" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Generator"), { target: { value: "none" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({
+      name: "docs",
+      host: "h1",
+      source: "git",
+      git_token: "tok",
+      generator: "none",
+      build_image: "",
+      build_cmd: "",
+    });
+  });
+});
+
 describe("the requests chart", () => {
+  it("can be read with the keyboard", () => {
+    const hours = Array.from({ length: 24 }, (_, index) => index);
+    render(<RequestBars hours={hours} from="2026-11-04T13:00:00Z" />);
+    const plot = screen.getByLabelText(/arrow keys/);
+    fireEvent.focus(plot);
+    expect(screen.getByText(/23 requests/)).toBeInTheDocument();
+    fireEvent.keyDown(plot, { key: "ArrowLeft" });
+    expect(screen.getByText(/22 requests/)).toBeInTheDocument();
+    fireEvent.keyDown(plot, { key: "Home" });
+    expect(screen.getByText(/0 requests/)).toBeInTheDocument();
+  });
+
   it("has a bar and a table row for each hour, and says what a bar holds", () => {
     const hours = Array.from({ length: 24 }, (_, index) => index * 10);
     const { container } = render(<RequestBars hours={hours} from="2026-11-04T13:00:00Z" />);

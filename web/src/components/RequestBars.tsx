@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 
 import { formatHour, formatNumber, parseDate } from "../lib/format";
@@ -17,8 +17,9 @@ function bar(x: number, h: number): string {
 
 /**
  * The requests of a site in each of the last hours, as small bars in one
- * colour; hovering or focusing a bar says its hour and count, and a table
- * holds the same numbers for screen readers.
+ * colour. Hovering a bar, or focusing the chart and moving with the arrow
+ * keys, says its hour and count below it; a table holds the same numbers for
+ * screen readers.
  */
 export function RequestBars({ hours, from }: { hours: number[]; from: string }) {
   const { t } = useTranslation();
@@ -34,39 +35,67 @@ export function RequestBars({ hours, from }: { hours: number[]; from: string }) 
       formatted: formatNumber(hours[index]),
     });
 
+  const move = (event: KeyboardEvent<HTMLDivElement>) => {
+    const last = hours.length - 1;
+    const current = active ?? last;
+    const next =
+      event.key === "ArrowLeft"
+        ? Math.max(0, current - 1)
+        : event.key === "ArrowRight"
+          ? Math.min(last, current + 1)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (next !== null) {
+      event.preventDefault();
+      setActive(next);
+    }
+  };
+
   return (
     <div className="request-bars">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        aria-hidden="true"
-        onMouseLeave={() => setActive(null)}
+      <div
+        className="request-bars-plot"
+        tabIndex={0}
+        aria-label={t("site.requestsKeys")}
+        onKeyDown={move}
+        onFocus={() => setActive((current) => current ?? hours.length - 1)}
+        onBlur={() => setActive(null)}
       >
-        {hours.map((count, index) => {
-          const x = index * (barWidth + gap);
-          const h = count > 0 ? Math.max(2, (count / max) * height) : 0;
-          return (
-            <g key={index} onMouseEnter={() => setActive(index)}>
-              {/* the whole column answers the pointer, not only the bar */}
-              <rect
-                x={x - gap / 2}
-                y={0}
-                width={barWidth + gap}
-                height={height}
-                fill="transparent"
-              />
-              {h > 0 && (
-                <path
-                  d={bar(x, h)}
-                  fill="var(--chart-1)"
-                  opacity={active === null || active === index ? 1 : 0.55}
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          onMouseLeave={() => setActive(null)}
+        >
+          {hours.map((count, index) => {
+            const x = index * (barWidth + gap);
+            const h = count > 0 ? Math.max(2, (count / max) * height) : 0;
+            return (
+              <g key={index} onMouseEnter={() => setActive(index)}>
+                {/* the whole column answers the pointer, not only the bar */}
+                <rect
+                  x={x - gap / 2}
+                  y={0}
+                  width={barWidth + gap}
+                  height={height}
+                  fill="transparent"
                 />
-              )}
-            </g>
-          );
-        })}
-      </svg>
-      <p className="request-bars-tip small muted" aria-live="polite">
+                {h > 0 && (
+                  <path
+                    d={bar(x, h)}
+                    fill="var(--chart-1)"
+                    opacity={active === null || active === index ? 1 : 0.55}
+                  />
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="request-bars-tip small muted" aria-hidden="true">
         {active !== null ? describe(active) : " "}
       </p>
       <table className="visually-hidden">

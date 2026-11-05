@@ -1369,6 +1369,10 @@
       "hsts": "HSTS",
       "compress": "Compression (gzip and zstd)",
       "spa": "Single-page app: unknown paths get index.html"
-    }
+    },
+    "notLive": "Nothing live yet",
+    "serverDegraded": "Server degraded",
+    "expired": "Expired",
+    "requestsKeys": "Requests per hour; the arrow keys move along the hours"
   }
 }

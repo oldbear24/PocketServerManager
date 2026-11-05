@@ -1435,6 +1435,10 @@
       "hsts": "HSTS",
       "compress": "Komprese (gzip a zstd)",
       "spa": "Jednostránková aplikace: neznámé cesty dostanou index.html"
-    }
+    },
+    "notLive": "Zatím nic neběží",
+    "serverDegraded": "Server s potížemi",
+    "expired": "Vypršel",
+    "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách"
   }
 }

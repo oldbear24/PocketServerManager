@@ -2219,6 +2219,19 @@ td .row-actions {
   color: var(--warn-text);
 }
 
+.site-kpis .kpi-value.err {
+  color: var(--err-text);
+}
+
+.request-bars-plot {
+  border-radius: 4px;
+}
+
+.request-bars-plot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .request-bars {
   position: relative;
 }

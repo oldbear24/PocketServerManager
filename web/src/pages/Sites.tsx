@@ -136,11 +136,31 @@ export function SitesPage() {
 function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: boolean }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const deployments = useLiveList<Deployment>("deployments", {
+  const recent = useLiveList<Deployment>("deployments", {
     filter: pb.filter("site = {:site}", { site: site.id }),
     sort: "-number",
     perPage: 30,
   });
+  // releases to go back to, however many deployments came after them
+  const onServer = useLiveList<Deployment>("deployments", {
+    filter: pb.filter("site = {:site} && on_server = true", { site: site.id }),
+    sort: "-number",
+    perPage: 60,
+  });
+  const uploads = useLiveList<Deployment>("deployments", {
+    filter: pb.filter("site = {:site} && upload != ''", { site: site.id }),
+    perPage: 1,
+  });
+  const { record: liveActive } = useLiveRecord<Deployment>(
+    "deployments",
+    site.active_deployment || undefined,
+  );
+  const deployments = {
+    items: [
+      ...recent.items,
+      ...onServer.items.filter((item) => !recent.items.some((r) => r.id === item.id)),
+    ].sort((a, b) => b.number - a.number),
+  };
   const domains = useLiveList<Domain>("domains", {
     filter: pb.filter("site = {:site}", { site: site.id }),
     sort: "hostname",
@@ -174,7 +194,9 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
     };
   }, [site.id]);
 
-  const active = deployments.items.find((item) => item.id === site.active_deployment);
+  const active =
+    deployments.items.find((item) => item.id === site.active_deployment) ??
+    (liveActive?.id === site.active_deployment ? liveActive : undefined);
   const first = domains.items[0];
   const firstRoute = first ? routes.routes.get(first.id) : undefined;
   const secure = firstRoute && ["valid", "expiring", "installing"].includes(firstRoute.tls);
@@ -238,11 +260,15 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
         title={site.name}
         titleExtra={
           <>
-            {server?.status === "online" ? (
+            {server && !site.active_deployment ? (
+              <StatusPill tone="off">{t("site.notLive")}</StatusPill>
+            ) : server?.status === "online" ? (
               <StatusPill tone="ok">{t("site.online")}</StatusPill>
-            ) : (
-              <StatusPill tone="warn">{t("site.serverOffline")}</StatusPill>
-            )}
+            ) : server?.status === "degraded" ? (
+              <StatusPill tone="warn">{t("site.serverDegraded")}</StatusPill>
+            ) : server ? (
+              <StatusPill tone="err">{t("site.serverOffline")}</StatusPill>
+            ) : null}
             {secure && (
               <StatusPill tone="ok" dot={false}>
                 HTTPS
@@ -289,7 +315,7 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
                   <Upload size={14} aria-hidden="true" />
                   {t("site.uploadZip")}
                 </Button>
-                {site.source !== "upload" || deployments.items.some((item) => item.upload) ? (
+                {site.source !== "upload" || uploads.items.length > 0 ? (
                   <Button variant="primary" disabled={busy} onClick={() => void deployAgain()}>
                     {t("site.deployAgain")}
                   </Button>
@@ -361,6 +387,7 @@ function SiteKpis({
   const days = cert
     ? Math.floor(((parseDate(cert.not_after)?.getTime() ?? now) - now) / 86_400_000)
     : null;
+  const expired = days !== null && (days < 0 || route?.tls === "expired");
 
   return (
     <div className="kpis site-kpis">
@@ -411,9 +438,9 @@ function SiteKpis({
           <span>{t("site.certificate")}</span>
         </div>
         <div
-          className={`kpi-value${days !== null && days >= 14 ? " ok" : days !== null ? " warn" : ""}`}
+          className={`kpi-value${expired ? " err" : days !== null && days >= 14 ? " ok" : days !== null ? " warn" : ""}`}
         >
-          {days !== null ? t("site.daysLeft", { count: days }) : "–"}
+          {expired ? t("site.expired") : days !== null ? t("site.daysLeft", { count: days }) : "–"}
         </div>
         <div className="kpi-note">
           {cert
@@ -945,15 +972,17 @@ function NewSiteDialog({ hosts, onClose }: { hosts: Host[]; onClose: () => void 
         repo_url: values.source === "git" ? values.repo_url.trim() : "",
         branch: values.source === "git" ? values.branch.trim() : "",
         generator: values.generator,
-        build_image: values.build_image.trim(),
-        build_cmd: values.build_cmd.trim(),
+        // "as it is" builds nothing, whatever the hidden fields still hold
+        build_image: values.generator === "none" ? "" : values.build_image.trim(),
+        build_cmd: values.generator === "none" ? "" : values.build_cmd.trim(),
         output_dir: values.output_dir.trim(),
         https_redirect: true,
         compress: true,
+        // with the site itself, so its first deployment already has it
+        ...(values.source === "git" && values.token.trim()
+          ? { git_token: values.token.trim() }
+          : {}),
       });
-      if (values.token.trim()) {
-        await sitesApi.credentials(site.id, { git_token: values.token.trim() });
-      }
       toast.success(t("site.created", { name: site.name }));
       onClose();
       navigate(`/sites/${site.id}`);
@@ -1046,15 +1075,15 @@ function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }
         repo_url: values.source === "git" ? values.repo_url.trim() : site.repo_url,
         branch: values.source === "git" ? values.branch.trim() : site.branch,
         generator: values.generator,
-        build_image: values.build_image.trim(),
-        build_cmd: values.build_cmd.trim(),
+        build_image: values.generator === "none" ? "" : values.build_image.trim(),
+        build_cmd: values.generator === "none" ? "" : values.build_cmd.trim(),
         output_dir: values.output_dir.trim(),
         keep_releases: Number(keep),
         not_found: notFound.trim(),
+        ...(values.source === "git" && values.token.trim()
+          ? { git_token: values.token.trim() }
+          : {}),
       });
-      if (values.token.trim()) {
-        await sitesApi.credentials(site.id, { git_token: values.token.trim() });
-      }
       toast.success(t("site.saved"));
       onClose();
     } catch (reason) {
