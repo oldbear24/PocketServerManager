@@ -47,6 +47,7 @@ func (d *databaseHarness) analyticsWith(compose, env string, secrets map[string]
 		d.t.Fatalf("secrets: %d %s", status, body)
 	}
 	d.waitForStatus(d.deploy(stackID, map[string]any{}).Id, schema.CommandSucceeded)
+	d.waitForInventory(d.host.Id, d.docker.Find("analytics-db-1").ID)
 	status, body := d.post("/api/pc/db-servers/link", d.operator, map[string]any{
 		"host": d.host.Id, "docker_id": d.docker.Find("analytics-db-1").ID, "admin_user": "postgres", "password": "admin-pass-1",
 	})
@@ -130,6 +131,7 @@ func TestTwoMovesDoNotClaimOneName(t *testing.T) {
 		t.Fatalf("secrets: %d %s", status, body)
 	}
 	d.waitForStatus(d.deploy(second, map[string]any{}).Id, schema.CommandSucceeded)
+	d.waitForInventory(d.host.Id, d.docker.Find("shop-db-1").ID)
 	status, body := d.post("/api/pc/db-servers/link", d.operator, map[string]any{
 		"host": d.host.Id, "docker_id": d.docker.Find("shop-db-1").ID, "admin_user": "shop", "secret_key": "DB_PASS",
 	})
@@ -453,6 +455,7 @@ func TestTheNameDbLeadsToOneServerEitherWay(t *testing.T) {
 	two := d.createServer("pg-two", "postgres")
 	stackID, first := d.analyticsWith(compose, "", map[string]string{"DB_PASS": "app-secret-7"})
 
+	d.waitForInventory(d.host.Id, d.docker.Find("analytics-reports-1").ID)
 	status, body := d.post("/api/pc/db-servers/link", d.operator, map[string]any{
 		"host": d.host.Id, "docker_id": d.docker.Find("analytics-reports-1").ID, "admin_user": "postgres", "password": "admin-pass-2",
 	})

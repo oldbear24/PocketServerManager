@@ -46,6 +46,7 @@ func (d *databaseHarness) linkedAnalytics() (stackID string, server *core.Record
 	if old == nil {
 		d.t.Fatal("the stack's database container is missing")
 	}
+	d.waitForInventory(d.host.Id, old.ID)
 	status, body = d.post("/api/pc/db-servers/link", d.operator, map[string]any{
 		"host": d.host.Id, "docker_id": old.ID, "admin_user": "shop", "secret_key": "DB_PASS",
 	})
@@ -311,6 +312,7 @@ func TestAMoveNeedsTheApplicationsOwnUser(t *testing.T) {
 	}
 	d.waitForStatus(d.deploy(stackID, map[string]any{}).Id, schema.CommandSucceeded)
 
+	d.waitForInventory(d.host.Id, d.docker.Find("analytics-db-1").ID)
 	status, body = d.post("/api/pc/db-servers/link", d.operator, map[string]any{
 		"host": d.host.Id, "docker_id": d.docker.Find("analytics-db-1").ID, "admin_user": "postgres", "secret_key": "DB_PASS",
 	})

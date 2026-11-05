@@ -19,6 +19,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/ca"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/dns"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/inventory"
@@ -68,6 +69,10 @@ type Panel struct {
 	auditKey     []byte
 
 	edgeLocks edgeLocks
+	// dnsLocks serialise the DNS work of each domain.
+	dnsLocks edgeLocks
+	// DNSChecker asks DNS servers whether records have propagated; tests set it.
+	DNSChecker atomic.Pointer[dns.Checker]
 	// ManualEdges stops the panel from sending edges their configs by itself,
 	// for tests that send edge.apply themselves.
 	ManualEdges atomic.Bool
@@ -145,6 +150,7 @@ func (p *Panel) Register() {
 	p.registerDatabases()
 	p.registerMoves()
 	p.registerEdge()
+	p.registerDNS()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -181,6 +187,7 @@ func (p *Panel) Register() {
 		p.bindTerminalRoutes(group)
 		p.bindDatabaseRoutes(group)
 		p.bindEdgeRoutes(group)
+		p.bindDNSRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 

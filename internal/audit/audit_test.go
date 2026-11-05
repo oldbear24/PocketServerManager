@@ -326,6 +326,7 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		schema.DBServers:    {"engine": schema.EngineMariaDB, "kind": schema.DBServerShared},
 		schema.DBUsers:      {"server": dbServer.Id, "name": "with_secrets"},
 		schema.Certificates: {"names": []string{"secret.example.com"}},
+		schema.DNSProviders: {"kind": "cloudflare"},
 	}
 
 	covered := 0

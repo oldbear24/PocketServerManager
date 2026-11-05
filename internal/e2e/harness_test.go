@@ -11,6 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 
@@ -173,6 +174,17 @@ func (h *harness) command(id string) *core.Record {
 }
 
 // waitFor polls until a condition holds, or fails the test.
+// waitForInventory waits for a container to be in the panel's inventory of a
+// host: the agent reports it after the deploy that created it, and routes
+// that take a container look it up there.
+func (h *harness) waitForInventory(hostID, dockerID string) {
+	h.t.Helper()
+	h.waitFor("the container in the panel's inventory", func() bool {
+		_, err := h.app.FindFirstRecordByFilter(schema.Containers, "host={:host} && docker_id={:id}", dbx.Params{"host": hostID, "id": dockerID})
+		return err == nil
+	})
+}
+
 func (h *harness) waitFor(what string, condition func() bool) {
 	h.t.Helper()
 

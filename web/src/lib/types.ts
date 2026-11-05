@@ -32,6 +32,8 @@ export type Host = RecordModel & {
   mem_bytes: number;
   ip4: string;
   ip6: string;
+  public_ip4: string;
+  public_ip6: string;
   agent_version: string;
   agent_image_digest: string;
   agent_container_id: string;

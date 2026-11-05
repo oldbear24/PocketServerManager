@@ -1,8 +1,9 @@
 import { Lock, LockOpen, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
+import { DnsPill, DomainDnsPanel } from "../components/DomainDns";
 import { useToast } from "../components/toast";
 import {
   Banner,
@@ -103,9 +104,11 @@ function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
 function RouteRow({
   route,
   onRemove,
+  onDns,
 }: {
   route: EdgeRoute;
   onRemove?: (route: EdgeRoute) => void;
+  onDns?: (route: EdgeRoute) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -120,6 +123,9 @@ function RouteRow({
         {t(`edge.kind.${route.target_kind}`)}
       </StatusPill>
       <span className={`route-tls ${tlsTone(route.tls)}`}>{tlsText(t, route)}</span>
+      {route.dns_status && (
+        <DnsPill status={route.dns_status} onClick={onDns ? () => onDns(route) : undefined} />
+      )}
       {onRemove && (
         <IconButton
           bare
@@ -179,6 +185,7 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
   const { state, error, certificates } = useEdgeState(host);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<EdgeRoute | null>(null);
+  const [dnsOf, setDnsOf] = useState<EdgeRoute | null>(null);
   const [uploading, setUploading] = useState(false);
   const [applying, setApplying] = useState(false);
 
@@ -250,11 +257,14 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
                 key={route.id}
                 route={route}
                 onRemove={canOperate ? setRemoving : undefined}
+                onDns={setDnsOf}
               />
             ))}
           </ul>
         )}
       </Card>
+
+      <PublicAddressesCard host={host} isAdmin={isAdmin} />
 
       <CertificatesCard
         host={host}
@@ -268,6 +278,17 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
         <AddDomainDialog host={host} containers={containers} onClose={() => setAdding(false)} />
       )}
       {uploading && <UploadCertificateDialog onClose={() => setUploading(false)} />}
+      {dnsOf && (
+        <ConfirmDialog
+          open
+          title={t("dns.domainTitle", { hostname: dnsOf.hostname })}
+          confirmLabel={t("common.close")}
+          onCancel={() => setDnsOf(null)}
+          onConfirm={() => setDnsOf(null)}
+        >
+          <DomainDnsPanel domainId={dnsOf.id} />
+        </ConfirmDialog>
+      )}
       <ConfirmDialog
         open={removing !== null}
         title={t("edge.removeConfirm", { hostname: removing?.hostname ?? "" })}
@@ -279,6 +300,72 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
         <p className="muted">{t("edge.removeNote")}</p>
       </ConfirmDialog>
     </div>
+  );
+}
+
+/** The public addresses that the A and AAAA records of the server's domains
+ * point at; the addresses its agent reports may be private, behind NAT. */
+function PublicAddressesCard({ host, isAdmin }: { host: Host; isAdmin: boolean }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [ip4, setIp4] = useState(host.public_ip4 ?? "");
+  const [ip6, setIp6] = useState(host.public_ip6 ?? "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setIp4(host.public_ip4 ?? "");
+    setIp6(host.public_ip6 ?? "");
+  }, [host.public_ip4, host.public_ip6]);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await pb
+        .collection("hosts")
+        .update(host.id, { public_ip4: ip4.trim(), public_ip6: ip6.trim() });
+      toast.success(t("dns.addressesSaved"));
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title={t("dns.publicAddresses")} note={t("dns.publicAddressesNote")}>
+      <form onSubmit={(event) => void save(event)} className="dialog-form">
+        <div className="form-grid">
+          <Field label="IPv4" htmlFor="public-ip4">
+            <input
+              id="public-ip4"
+              className="input mono"
+              placeholder={host.ip4 || "203.0.113.10"}
+              value={ip4}
+              disabled={!isAdmin}
+              onChange={(event) => setIp4(event.target.value)}
+            />
+          </Field>
+          <Field label="IPv6" htmlFor="public-ip6">
+            <input
+              id="public-ip6"
+              className="input mono"
+              placeholder="2001:db8::10"
+              value={ip6}
+              disabled={!isAdmin}
+              onChange={(event) => setIp6(event.target.value)}
+            />
+          </Field>
+        </div>
+        {isAdmin && (
+          <div>
+            <Button type="submit" disabled={busy}>
+              {t("common.save")}
+            </Button>
+          </div>
+        )}
+      </form>
+    </Card>
   );
 }
 

@@ -9,7 +9,10 @@
     "actions": "Akce",
     "name": "Název",
     "save": "Uložit",
-    "edit": "Upravit"
+    "edit": "Upravit",
+    "close": "Zavřít",
+    "remove": "Odebrat",
+    "loading": "Načítám…"
   },
   "nav": {
     "label": "Hlavní navigace",
@@ -609,6 +612,11 @@
     },
     "terminal": {
       "opened": "Terminál otevřel(a) {{user}}: {{target}}"
+    },
+    "dns": {
+      "failed": "DNS záznamy pro {{domain}} se nepodařilo nastavit: {{error}}",
+      "drift": "DNS záznamy pro {{domain}} byly změněny mimo PocketCloud",
+      "remove_failed": "DNS záznamy odebrané domény {{domain}} se nepodařilo odebrat: {{error}}"
     }
   },
   "alert": {
@@ -1026,5 +1034,94 @@
     "endingWarning_many": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dne, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
     "endingWarning_other": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dní, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
     "endedWarning": "Bezpečnostní opravy PHP {{version}} skončily {{date}}. Převeďte jeho weby na novější verzi."
+  },
+  "dns": {
+    "lead": "DNS poskytovatelé a jejich zóny. Domény ve spravované zóně dostanou záznamy samy.",
+    "connect": "Připojit DNS poskytovatele",
+    "connecting": "Připojuji…",
+    "connectTitle": "Připojit DNS poskytovatele",
+    "connected_one": "{{name}} je připojen, s {{count}} zónou.",
+    "connected_few": "{{name}} je připojen, se {{count}} zónami.",
+    "connected_many": "{{name}} je připojen, s {{count}} zóny.",
+    "connected_other": "{{name}} je připojen, s {{count}} zónami.",
+    "providers": "DNS poskytovatelé",
+    "noProviders": "Zatím žádný DNS poskytovatel",
+    "noProvidersText": "Bez něj je každá doména v ručním režimu: PocketCloud ukáže záznamy, které vytvoříš u svého DNS hostingu, a ověřuje je, dokud se nepropíšou.",
+    "noZones": "žádné zóny",
+    "checked": "ověřeno {{when}}",
+    "test": "Ověřit",
+    "tested": "{{name}} odpověděl.",
+    "remove": "Odebrat {{name}}",
+    "removeTitle": "Odebrat {{name}}?",
+    "removeText": "PocketCloud zapomene poskytovatele i jeho přihlašovací údaje. Záznamy, které vytvořil, u poskytovatele zůstanou.",
+    "removed": "{{name}} byl odebrán.",
+    "zones": "Zóny",
+    "zonesNote": "záznamy vytvořené panelem jsou označené a hlídané",
+    "zone": "Zóna",
+    "provider": "Poskytovatel",
+    "domains": "Domény",
+    "state": "Stav",
+    "managed": "Spravovaná",
+    "unused": "zatím nevyužito",
+    "manageZone": "PocketCloud spravuje {{zone}}",
+    "managedYes": "ano",
+    "managedNo": "ne",
+    "kind": "Poskytovatel",
+    "name": "Název",
+    "zonesField": "Zóny, oddělené čárkami",
+    "status": {
+      "unknown": "Neověřeno",
+      "ok": "Připojeno",
+      "error": "Chyba API",
+      "pending": "Čeká",
+      "drift": "Změněno mimo",
+      "manual": "Ruční",
+      "none": "Žádné"
+    },
+    "kindName": {
+      "cloudflare": "Cloudflare",
+      "hetzner": "Hetzner DNS",
+      "wedos": "WEDOS (WAPI)",
+      "manual": "Ruční"
+    },
+    "kindNote": {
+      "cloudflare": "API token s oprávněními Zone.DNS:Edit a Zone:Read pro všechny zóny, nebo jen ty, které smí PocketCloud měnit.",
+      "hetzner": "API token z Hetzner DNS Console. Vyjmenuj zóny, které smí měnit: jeho API je tu nevypíše.",
+      "wedos": "WAPI od WEDOSu odpovídá jen IP adresám na svém seznamu povolených: nejdřív tam v administraci WEDOSu přidej veřejnou adresu panelu. Vyjmenuj zóny, které smí měnit.",
+      "manual": "Bez API: PocketCloud ukáže záznamy, které vytvoříš u svého DNS hostingu, a ověřuje je, dokud se nepropíšou."
+    },
+    "field": {
+      "api_token": "API token",
+      "username": "Uživatelské jméno",
+      "password": "Heslo k WAPI"
+    },
+    "domainStatus": {
+      "ok": "DNS v pořádku",
+      "error": "Chyba DNS",
+      "pending": "DNS se šíří",
+      "drift": "DNS změněno",
+      "manual": "DNS ručně",
+      "none": "Bez DNS",
+      "unknown": "DNS neznámé"
+    },
+    "openRecords": "{{state}}: ukázat DNS záznamy",
+    "domainTitle": "DNS pro {{hostname}}",
+    "inZone": "zóna {{zone}} u {{provider}}",
+    "noZoneFor": "v žádné připojené zóně",
+    "manualText": "Vytvoř tyto záznamy u DNS hostingu domény. PocketCloud je každou minutu ověřuje, dokud je nebudou vracet všechny resolvery.",
+    "records": "DNS záznamy",
+    "recordName": "Název",
+    "recordType": "Typ",
+    "recordValue": "Hodnota",
+    "resolves": "Překládá se",
+    "resolvesYes": "všude",
+    "resolvesCount": "{{ok}}/{{count}} serverů",
+    "checkNow": "Ověřit teď",
+    "sync": "Nastavit záznamy znovu",
+    "synced": "Záznamy byly nastaveny znovu.",
+    "publicAddresses": "Veřejné adresy",
+    "publicAddressesNote": "kam míří záznamy A a AAAA domén tohoto serveru",
+    "addressesSaved": "Veřejné adresy byly uloženy.",
+    "testName": "Ověřit {{name}}"
   }
 }

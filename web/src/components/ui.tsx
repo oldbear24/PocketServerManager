@@ -357,6 +357,7 @@ export function ConfirmDialog({
   children,
   confirmLabel,
   danger,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: {
@@ -365,6 +366,8 @@ export function ConfirmDialog({
   children?: ReactNode;
   confirmLabel: string;
   danger?: boolean;
+  /** Disables the confirm button, as while its request is on its way. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -390,7 +393,11 @@ export function ConfirmDialog({
       {children}
       <div className="dialog-actions">
         <Button onClick={onCancel}>{t("common.cancel")}</Button>
-        <Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>
+        <Button
+          variant={danger ? "danger" : "primary"}
+          disabled={confirmDisabled}
+          onClick={onConfirm}
+        >
           {confirmLabel}
         </Button>
       </div>
