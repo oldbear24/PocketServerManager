@@ -50,6 +50,14 @@ func (s *Store) lock(hostID string) func() {
 func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) error {
 	defer s.lock(hostID)()
 
+	// the snapshot and the events come on separate streams, so an event
+	// about a container that appeared after the snapshot was collected can
+	// arrive first; what it stored is newer than the snapshot, and stays
+	var collected time.Time
+	if at := report.GetCollectedAt(); at.IsValid() {
+		collected = at.AsTime()
+	}
+
 	return s.App.RunInTransaction(func(tx core.App) error {
 		stacks, err := stacksByName(tx, hostID)
 		if err != nil {
@@ -63,7 +71,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		if err := removeMissing(tx, schema.Containers, hostID, "docker_id", seen); err != nil {
+		if err := removeMissing(tx, schema.Containers, hostID, "docker_id", seen, collected); err != nil {
 			return err
 		}
 
@@ -74,7 +82,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		if err := removeMissing(tx, schema.Volumes, hostID, "name", seen); err != nil {
+		if err := removeMissing(tx, schema.Volumes, hostID, "name", seen, collected); err != nil {
 			return err
 		}
 
@@ -85,7 +93,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		return removeMissing(tx, schema.Networks, hostID, "name", seen)
+		return removeMissing(tx, schema.Networks, hostID, "name", seen, collected)
 	})
 }
 
@@ -277,7 +285,10 @@ func isBlank(value any) bool {
 	return false
 }
 
-func removeMissing(app core.App, collectionName, hostID, keyField string, seen map[string]bool) error {
+// removeMissing removes what a snapshot collected at collected no longer has,
+// but not a record stored since then: an event saw it after the snapshot was
+// taken. A zero time removes everything that is missing.
+func removeMissing(app core.App, collectionName, hostID, keyField string, seen map[string]bool, collected time.Time) error {
 	records, err := app.FindRecordsByFilter(collectionName, "host={:host}", "", 0, 0, dbx.Params{"host": hostID})
 	if err != nil {
 		return err
@@ -285,6 +296,9 @@ func removeMissing(app core.App, collectionName, hostID, keyField string, seen m
 
 	for _, record := range records {
 		if seen[record.GetString(keyField)] {
+			continue
+		}
+		if !collected.IsZero() && !record.GetDateTime("updated").Time().Before(collected) {
 			continue
 		}
 		if err := app.Delete(record); err != nil {
