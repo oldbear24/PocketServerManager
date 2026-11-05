@@ -48,6 +48,11 @@ export type Host = RecordModel & {
   compose_version: string;
   cpu_percent: number;
   mem_used_bytes: number;
+  edge_digest?: string;
+  edge_applied_digest?: string;
+  edge_requests_per_s?: number;
+  edge_running?: boolean;
+  edge_error?: string;
   disk_used_bytes: number;
   disk_total_bytes: number;
   runtime: AgentRuntime | null;
@@ -220,6 +225,9 @@ export type VerifyResult = {
   last_seq: number;
   bad_seq?: number;
   reason?: string;
+  sealed: boolean;
+  unsealed?: number;
+  keyless?: [number, number][];
 };
 
 export type DiagAgent = {

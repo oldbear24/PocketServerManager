@@ -1,0 +1,173 @@
+name: PHP images
+
+# The PHP runtime images of PHP sites (images/php, #49): one per version in
+# images/php/versions.json that still has security support, for linux/amd64
+# and linux/arm64. Every day the official base image of each version is looked
+# up, and the image is rebuilt when it changed (a PHP or Debian fix); on
+# Mondays every image is rebuilt anyway, for the packages that the image adds.
+# A rebuild passes the smoke test and the vulnerability scan before it is
+# pushed and signed.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - images/php/**
+      - cmd/php-status/**
+      - go.mod
+      - go.sum
+      - .github/workflows/php.yml
+  pull_request:
+    paths:
+      - images/php/**
+      - cmd/php-status/**
+      - go.mod
+      - go.sum
+      - .github/workflows/php.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild every image, even when its base did not change since the last build
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# one run at a time, so an older build is never pushed after a newer one
+concurrency:
+  group: php-images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/oldbear24/pocketcloud-php
+
+jobs:
+  versions:
+    name: Supported versions
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.manifest.outputs.versions }}
+      debian: ${{ steps.manifest.outputs.debian }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: manifest
+        name: Read the manifest
+        run: |
+          today="$(date -u +%F)"
+          versions="$(jq -c --arg today "$today" '[.versions[] | select(.security_support_until >= $today) | .version]' images/php/versions.json)"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "debian=$(jq -r .debian images/php/versions.json)" >> "$GITHUB_OUTPUT"
+          echo "Building $versions on Debian $(jq -r .debian images/php/versions.json)"
+
+  build:
+    name: PHP ${{ matrix.version }}
+    needs: versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signatures
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.versions) }}
+    env:
+      VERSION: ${{ matrix.version }}
+      DEBIAN: ${{ needs.versions.outputs.debian }}
+      # only what is on main is published; a run on another ref only tests
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@v3
+        if: env.PUBLISH == 'true'
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Look up the base image
+        id: base
+        env:
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          base="docker.io/library/php:${VERSION}-fpm-${DEBIAN}"
+          digest="$(docker buildx imagetools inspect "$base" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "ref=$base@$digest" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+          # the base the published image was built from, from its label
+          published="$(docker buildx imagetools inspect "$IMAGE:${VERSION}-fpm" --format '{{json .Image}}' 2>/dev/null \
+            | jq -r '.["linux/amd64"].config.Labels["org.opencontainers.image.base.digest"] // empty' || true)"
+
+          # a scheduled run on a weekday, or a manual one without force, skips
+          # an image whose base did not change; a push always builds
+          rebuild=true
+          if [ "$published" = "$digest" ]; then
+            if [ "$EVENT" = schedule ] && [ "$(date -u +%u)" != 1 ]; then rebuild=false; fi
+            if [ "$EVENT" = workflow_dispatch ] && [ "$FORCE" != true ]; then rebuild=false; fi
+          fi
+          echo "rebuild=$rebuild" >> "$GITHUB_OUTPUT"
+          echo "base $base@$digest, published from ${published:-nothing}: rebuild=$rebuild"
+
+      - name: Build for the tests
+        if: steps.base.outputs.rebuild == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/php/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: pocketcloud-php:test
+          build-args: |
+            PHP_VERSION=${{ matrix.version }}
+            DEBIAN_RELEASE=${{ needs.versions.outputs.debian }}
+            BASE_IMAGE=${{ steps.base.outputs.ref }}
+            BASE_DIGEST=${{ steps.base.outputs.digest }}
+
+      - name: Smoke test (WordPress and Laravel)
+        if: steps.base.outputs.rebuild == 'true'
+        run: images/php/smoke-test.sh pocketcloud-php:test
+
+      - name: Scan for vulnerabilities
+        if: steps.base.outputs.rebuild == 'true'
+        run: |
+          # every known vulnerability for the record, and a failure for a
+          # critical one that has a fix: then the base or a package must move
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.65.0 \
+            image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed pocketcloud-php:test
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.65.0 \
+            image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 --quiet pocketcloud-php:test
+
+      - name: Build and push
+        id: push
+        if: steps.base.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/php/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ matrix.version }}-fpm
+            ${{ env.IMAGE }}:${{ matrix.version }}-fpm-${{ github.run_id }}
+          build-args: |
+            PHP_VERSION=${{ matrix.version }}
+            DEBIAN_RELEASE=${{ needs.versions.outputs.debian }}
+            BASE_IMAGE=${{ steps.base.outputs.ref }}
+            BASE_DIGEST=${{ steps.base.outputs.digest }}
+
+      - name: Sign
+        if: steps.push.outcome == 'success'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes "$IMAGE@$DIGEST"
+          echo "PHP $VERSION: \`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"

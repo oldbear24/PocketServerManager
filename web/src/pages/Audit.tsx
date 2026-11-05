@@ -152,6 +152,31 @@ export function AuditPage() {
                     {t("audit.chainBroken", { seq: verify.bad_seq })}
                   </StatusPill>
                 ))}
+              {verify?.ok && (verify.unsealed ?? 0) > 0 && (
+                <span title={t("audit.unsealedNote")}>
+                  <StatusPill tone="warn" dot={false}>
+                    {t("audit.unsealed", { count: verify.unsealed })}
+                  </StatusPill>
+                </span>
+              )}
+              {verify?.ok && (verify.keyless?.length ?? 0) > 0 && (
+                <span
+                  title={t("audit.keylessNote", {
+                    ranges: (verify.keyless ?? [])
+                      .map(([from, to]) => (from === to ? `${from}` : `${from}–${to}`))
+                      .join(", "),
+                  })}
+                >
+                  <StatusPill tone="warn" dot={false}>
+                    {t("audit.keyless", {
+                      count: (verify.keyless ?? []).reduce(
+                        (sum, [from, to]) => sum + to - from + 1,
+                        0,
+                      ),
+                    })}
+                  </StatusPill>
+                </span>
+              )}
               <Button disabled={verifying} onClick={() => void runVerify()}>
                 {t("audit.verify")}
               </Button>
@@ -279,6 +304,7 @@ function Filters({
               "cert_revoked",
               "terminal_session",
               "integrity_broken",
+              "chain_sealed",
             ]
         ).map((action) => (
           <option key={action} value={action}>

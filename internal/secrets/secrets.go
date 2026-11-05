@@ -7,7 +7,9 @@ package secrets
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -104,6 +106,15 @@ func (b *Box) OpenString(sealed string) (string, error) {
 // IsSealed reports whether a value looks like the output of Seal.
 func IsSealed(value string) bool {
 	return strings.HasPrefix(value, prefix)
+}
+
+// DeriveKey derives a key for one purpose from the master key (HKDF-SHA256), so
+// that the master key itself is only ever used to seal values.
+func DeriveKey(master []byte, purpose string) ([]byte, error) {
+	if len(master) != KeySize {
+		return nil, fmt.Errorf("master key must be %d bytes, got %d", KeySize, len(master))
+	}
+	return hkdf.Key(sha256.New, master, nil, purpose, KeySize)
 }
 
 // GenerateKey returns a new random master key.

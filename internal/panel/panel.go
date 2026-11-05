@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pocketbase/pocketbase/apis"
@@ -24,6 +26,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/streams"
+	"github.com/oldbear24/PocketServerManager/internal/version"
 	"github.com/oldbear24/PocketServerManager/plugins/diagnostics"
 )
 
@@ -35,6 +38,10 @@ type Panel struct {
 	Config *Config
 	UI     fs.FS
 	Log    *slog.Logger
+
+	// edgeImage is the edge proxy image the panel gives its edges: the one
+	// pinned in this release, another in tests (SetEdgeImage).
+	edgeImage atomic.Pointer[string]
 
 	Box       *secrets.Box
 	Audit     *audit.Writer
@@ -57,6 +64,14 @@ type Panel struct {
 	adminers        adminerSessions
 	later           laterWork
 
+	auditKeyOnce sync.Once
+	auditKey     []byte
+
+	edgeLocks edgeLocks
+	// ManualEdges stops the panel from sending edges their configs by itself,
+	// for tests that send edge.apply themselves.
+	ManualEdges atomic.Bool
+
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
 
@@ -75,9 +90,45 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Audit:    audit.New(app, schema.Audited),
 		Commands: commands.NewManager(app),
 	}
+	p.SetEdgeImage(version.EdgeRef())
 	p.Updates = newUpdateBatches(p)
 	p.Streams = streams.New(p.Commands)
+	p.Audit.SealKey = p.AuditKey
 	return p
+}
+
+// SetEdgeImage changes the edge proxy image, as a release that pins another
+// Caddy does. Edges get it with their next config (see RefreshEdges).
+func (p *Panel) SetEdgeImage(ref string) { p.edgeImage.Store(&ref) }
+
+// EdgeImage is the edge proxy image the panel gives its edges.
+func (p *Panel) EdgeImage() string { return *p.edgeImage.Load() }
+
+// AuditKey returns the key that seals the head of the audit chain, derived from
+// the master key. Commands that do not start the panel, such as migrations, load
+// the key too, so that their entries are sealed as well; without a readable key
+// it is nil and the head waits for the next start of the panel.
+func (p *Panel) AuditKey() []byte {
+	p.auditKeyOnce.Do(func() {
+		master := p.Config.MasterKey
+		if master == nil && p.Config.MasterKeyFile != "" {
+			loaded, err := secrets.LoadKeyFile(p.Config.MasterKeyFile)
+			if err != nil {
+				return
+			}
+			master = loaded
+		}
+		if master == nil {
+			return
+		}
+		key, err := secrets.DeriveKey(master, audit.SealPurpose)
+		if err != nil {
+			p.Log.Error("cannot derive the key of the audit seal", "error", err)
+			return
+		}
+		p.auditKey = key
+	})
+	return p.auditKey
 }
 
 // Register binds the panel's hooks. The components start from OnServe, so
@@ -93,6 +144,7 @@ func (p *Panel) Register() {
 	p.registerStacks()
 	p.registerDatabases()
 	p.registerMoves()
+	p.registerEdge()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -105,9 +157,16 @@ func (p *Panel) Register() {
 			return err
 		}
 
+		// entries written by commands that ran without the master key
+		if err := p.Audit.SealHead(); err != nil {
+			return fmt.Errorf("sealing the audit log: %w", err)
+		}
+
 		if err := p.startGateway(); err != nil {
 			return err
 		}
+		// a new release may give the edges another config
+		p.later.after(edgeSettle, p.RefreshEdges)
 
 		if err := p.prepareFirstRun(); err != nil {
 			return err
@@ -121,6 +180,7 @@ func (p *Panel) Register() {
 		p.bindStackRoutes(group)
 		p.bindTerminalRoutes(group)
 		p.bindDatabaseRoutes(group)
+		p.bindEdgeRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -146,6 +206,9 @@ func (p *Panel) Register() {
 		}
 		return e.Next()
 	})
+
+	// bundles are kept for a week (see the gateway's bundleTTL)
+	p.App.Cron().MustAdd("pocketcloud_diagnostic_bundles_retention", "55 3 * * *", p.PruneBundles)
 
 	p.App.Cron().MustAdd("pocketcloud_events_retention", "50 3 * * *", func() {
 		if err := events.Prune(p.App, eventRetention); err != nil {
@@ -177,6 +240,7 @@ func (p *Panel) startGateway() error {
 		Artifacts: p.artifactHandlers(),
 	}
 	p.Gateway.BindHostRemoval()
+	p.Gateway.OnEdgeStatus = p.onEdgeStatus
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)

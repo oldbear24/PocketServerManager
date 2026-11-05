@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -610,6 +611,67 @@ func TestDiagnosticsBundle(t *testing.T) {
 	if strings.Contains(text, "PRIVATE KEY") {
 		t.Error("the private key is in the bundle")
 	}
+
+	// the Agent tab downloads the bundle as an admin, with a file token
+	_, adminToken := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
+	_, operatorToken := testutil.NewUser(t, h.app, "operator@example.com", schema.RoleOperator)
+
+	fileURL := "/api/files/" + schema.DiagnosticBundles + "/" + bundle.Id + "/" + bundle.GetString("file")
+	fileToken := func(token string) string {
+		status, body := testutil.Do(t, h.handler, testutil.Request{Method: "POST", URL: "/api/files/token", Token: token})
+		var answer struct {
+			Token string `json:"token"`
+		}
+		if status != http.StatusOK || json.Unmarshal([]byte(body), &answer) != nil || answer.Token == "" {
+			t.Fatalf("file token: %d %s", status, body)
+		}
+		return answer.Token
+	}
+
+	status, downloaded := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: fileURL + "?token=" + fileToken(adminToken)})
+	if status != http.StatusOK || downloaded != string(raw) {
+		t.Errorf("an admin's download: %d, %d bytes of %d", status, len(downloaded), len(raw))
+	}
+	for name, url := range map[string]string{
+		"without a token":      fileURL,
+		"with an operator's":   fileURL + "?token=" + fileToken(operatorToken),
+		"with a made-up token": fileURL + "?token=nope",
+	} {
+		if status, _ := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: url}); status == http.StatusOK {
+			t.Errorf("the bundle downloads %s", name)
+		}
+	}
+}
+
+func TestExpiredBundlesAreRemoved(t *testing.T) {
+	h := newHarness(t)
+
+	_, host := h.enrolled("expiring")
+
+	record := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_AgentDiagnostics{AgentDiagnostics: &agentv1.AgentDiagnostics{LogLines: 10}}})
+	h.waitForStatus(record.Id, schema.CommandSucceeded)
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_AgentDiagnostics{AgentDiagnostics: &agentv1.AgentDiagnostics{LogLines: 10}}})
+	h.waitForStatus(record.Id, schema.CommandSucceeded)
+
+	bundles, err := h.app.FindRecordsByFilter(schema.DiagnosticBundles, "host={:h}", "created", 0, 0, dbx.Params{"h": host.Id})
+	if err != nil || len(bundles) != 2 {
+		t.Fatalf("%d bundles, %v", len(bundles), err)
+	}
+
+	expired := bundles[0]
+	expired.Set("expires_at", time.Now().UTC().Add(-time.Minute))
+	if err := h.app.Save(expired); err != nil {
+		t.Fatal(err)
+	}
+
+	h.panel.PruneBundles()
+
+	if _, err := h.app.FindRecordById(schema.DiagnosticBundles, expired.Id); err == nil {
+		t.Error("the expired bundle is still there")
+	}
+	if _, err := h.app.FindRecordById(schema.DiagnosticBundles, bundles[1].Id); err != nil {
+		t.Errorf("a bundle that has not expired was removed: %v", err)
+	}
 }
 
 func TestDebugLoggingFallsBackByItself(t *testing.T) {
@@ -627,6 +689,20 @@ func TestDebugLoggingFallsBackByItself(t *testing.T) {
 	h.waitFor("the level to fall back", func() bool {
 		return strings.Contains(h.host(host.Id).GetString("runtime"), `"info"`)
 	})
+
+	// without a limit, debug logging gets the default one instead of staying on
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_AgentSetLogLevel{AgentSetLogLevel: &agentv1.AgentSetLogLevel{Level: "debug"}}})
+	done := h.waitForStatus(record.Id, schema.CommandSucceeded)
+	if !strings.Contains(done.GetString("result"), `"duration_s":900`) {
+		t.Errorf("debug logging without a limit: %s", done.GetString("result"))
+	}
+
+	// info has no limit of its own
+	record = h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_AgentSetLogLevel{AgentSetLogLevel: &agentv1.AgentSetLogLevel{Level: "info"}}})
+	done = h.waitForStatus(record.Id, schema.CommandSucceeded)
+	if !strings.Contains(done.GetString("result"), `"duration_s":0`) {
+		t.Errorf("back to info: %s", done.GetString("result"))
+	}
 }
 
 func TestUpdatedRoutesNeedAdmin(t *testing.T) {
@@ -728,6 +804,21 @@ func TestInfoRoute(t *testing.T) {
 
 	status, body := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: "/api/pc/info", Token: viewerToken})
 	if status != http.StatusOK || !strings.Contains(body, `"connected":1`) || !strings.Contains(body, `"total":1`) {
+		t.Errorf("%d %s", status, body)
+	}
+}
+
+func TestPHPVersionsRoute(t *testing.T) {
+	h := newHarness(t)
+
+	_, viewerToken := testutil.NewUser(t, h.app, "viewer@example.com", schema.RoleViewer)
+
+	if status, _ := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: "/api/pc/php/versions"}); status != http.StatusUnauthorized {
+		t.Errorf("anonymous: %d", status)
+	}
+
+	status, body := testutil.Do(t, h.handler, testutil.Request{Method: "GET", URL: "/api/pc/php/versions", Token: viewerToken})
+	if status != http.StatusOK || !strings.Contains(body, `"version":"8.2"`) || !strings.Contains(body, `"security_support_until":"2026-12-31"`) || !strings.Contains(body, `"warn_days":90`) {
 		t.Errorf("%d %s", status, body)
 	}
 }

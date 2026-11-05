@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
@@ -250,4 +251,22 @@ func (p *Panel) queueSnapshot() diagnostics.QueueSnapshot {
 	}
 
 	return snapshot
+}
+
+// PruneBundles removes diagnostic bundles that have expired, with their files.
+func (p *Panel) PruneBundles() {
+	now, err := types.ParseDateTime(time.Now().UTC())
+	if err != nil {
+		return
+	}
+	records, err := p.App.FindRecordsByFilter(schema.DiagnosticBundles, "expires_at!='' && expires_at<{:now}", "", 0, 0, dbx.Params{"now": now.String()})
+	if err != nil {
+		p.Log.Error("failed to look for expired diagnostic bundles", "error", err)
+		return
+	}
+	for _, record := range records {
+		if err := p.App.Delete(record); err != nil {
+			p.Log.Error("failed to remove an expired diagnostic bundle", "bundle", record.Id, "error", err)
+		}
+	}
 }

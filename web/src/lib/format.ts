@@ -31,6 +31,18 @@ export function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(date);
 }
 
+/**
+ * A calendar day such as "2026-12-31", which names no time and no zone. It is
+ * read and shown as that day in UTC, so that west of UTC it is not the day before.
+ */
+export function formatCalendarDate(value: string | null | undefined): string {
+  const date = parseDate(value);
+  if (!date) {
+    return "–";
+  }
+  return new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeZone: "UTC" }).format(date);
+}
+
 export function formatTime(
   value: string | null | undefined,
   options: { milliseconds?: boolean } = {},

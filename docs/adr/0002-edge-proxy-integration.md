@@ -26,3 +26,17 @@ Servers with the `edge` role serve sites and exposed containers on ports 80 and 
 - Agent updates cannot interrupt traffic or a running ACME challenge.
 - The panel must always send complete configs; there are no partial route updates to get out of sync.
 - A Caddy version with a different JSON schema has to be handled by the panel's generator, so the panel release pins the edge image by digest, like the agent.
+
+## Implementation notes (#20)
+
+The shared volume of the decision is the agent's own: the agent container cannot get another mount, as the updater recreates it from its old settings and the install command only reaches new servers. So the edge mounts four directories of the agent's volume, as volume subpaths (Engine 26+) or as binds of the volume's directory on older engines, and the agent checks after creating the container that nothing else of the volume was mounted. Details are in `docs/architecture.md`, section "Edge proxy". Checked on a real Docker Engine 29.9 with Caddy 2.11.7:
+
+- Caddy creates its admin socket in a mounted directory, readable by root only, and the agent reaches it from its own container. An admin block of the config wins over `CADDY_ADMIN`, so the agent always writes its own.
+- An invalid config gets a 400 with Caddy's message and the old config keeps serving; an identical config is a no-op.
+- `--resume` survives restarts of the container, but its autosave lives in the container unless `/config` is mounted, which is why `edge/config` is.
+- With automatic HTTPS off, a server speaks TLS only with an explicit connection policy.
+- HTTP-01 answers are files under `.well-known/acme-challenge/` of the served directory.
+- A reload cuts WebSockets through `reverse_proxy` unless `stream_close_delay` is set; requests under way finish when there is no grace period.
+- Request metrics need `apps.http.metrics` and are counted per handler, so the agent counts only the handlers that answer a request.
+
+For #21: the `pocketcloud-sites` volume the architecture describes is subject to the same limit, as the agent cannot mount it either. Either job containers write it, as ADR 0004 already has builds do, or sites live under a directory of the agent's volume that the edge mounts the same way.

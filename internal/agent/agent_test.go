@@ -324,3 +324,18 @@ func TestSplitList(t *testing.T) {
 		t.Errorf("%v", got)
 	}
 }
+
+func TestALogLevelAlwaysFallsBack(t *testing.T) {
+	cases := map[int64]time.Duration{
+		0:         15 * time.Minute,
+		-5:        15 * time.Minute,
+		30:        30 * time.Second,
+		900:       15 * time.Minute,
+		7 * 86400: 24 * time.Hour,
+	}
+	for seconds, want := range cases {
+		if got := logLevelDuration(seconds); got != want {
+			t.Errorf("logLevelDuration(%d) = %s, want %s", seconds, got, want)
+		}
+	}
+}

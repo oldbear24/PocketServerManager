@@ -332,6 +332,8 @@ type Stream struct {
 	closed       chan struct{}
 	closeOnce    sync.Once
 	dispatchMu   sync.Mutex
+	// dropped is why the panel ended the stream, set before closed is closed
+	dropped error
 }
 
 // Out returns the messages to send to the agent.
@@ -339,13 +341,81 @@ func (s *Stream) Out() <-chan *agentv1.SubscribeCommandsResponse {
 	return s.out
 }
 
-// Closed is closed when the stream was replaced or overflowed.
+// Closed is closed when the stream was replaced, overflowed or dropped.
 func (s *Stream) Closed() <-chan struct{} {
 	return s.closed
 }
 
 func (s *Stream) close() {
 	s.closeOnce.Do(func() { close(s.closed) })
+}
+
+// Dropped returns why the panel ended the stream with Drop, once Closed is
+// closed; nil means it was replaced or overflowed.
+func (s *Stream) Dropped() error {
+	<-s.closed
+	return s.dropped
+}
+
+// Errors of Next besides a reason given to Drop.
+var (
+	// ErrReplaced ends a stream replaced by a newer connection of the agent, or
+	// one the agent read too slowly.
+	ErrReplaced = errors.New("replaced by a newer connection of this agent")
+	// ErrStopping ends every stream when the panel shuts down.
+	ErrStopping = errors.New("the panel is shutting down")
+)
+
+// Next waits for the next message to send to the agent. A stream that was
+// ended returns why, even with messages still buffered: what it did not send is
+// sent again after a reconnect, as long as the host exists.
+func (s *Stream) Next(ctx context.Context, stopping <-chan struct{}) (*agentv1.SubscribeCommandsResponse, error) {
+	ended := func() error {
+		if s.dropped != nil {
+			return s.dropped
+		}
+		return ErrReplaced
+	}
+
+	select {
+	case <-s.closed:
+		return nil, ended()
+	default:
+	}
+
+	select {
+	case message := <-s.out:
+		select {
+		case <-s.closed:
+			return nil, ended()
+		default:
+			return message, nil
+		}
+	case <-s.closed:
+		return nil, ended()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-stopping:
+		return nil, ErrStopping
+	}
+}
+
+// Drop ends the open stream of a host for a reason, as when the host was removed:
+// a stream is authenticated only when it opens.
+func (m *Manager) Drop(hostID string, reason error) {
+	m.mu.Lock()
+	stream := m.streams[hostID]
+	if stream != nil {
+		delete(m.streams, hostID)
+	}
+	m.mu.Unlock()
+
+	if stream != nil {
+		stream.closeOnce.Do(func() {
+			stream.dropped = reason
+			close(stream.closed)
+		})
+	}
 }
 
 func (s *Stream) send(message *agentv1.SubscribeCommandsResponse) bool {

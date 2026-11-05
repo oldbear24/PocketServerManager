@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -98,20 +99,61 @@ func (s *selfChecks) hostMount() *agentv1.SelfCheck {
 	return check("host_mount", nil, root+" is mounted read-only")
 }
 
+// edge checks the edge proxy of a server that runs one: the agent knows from
+// its own state, as the roles an admin edits later never reach the agent.
 func (s *selfChecks) edge(ctx context.Context) *agentv1.SelfCheck {
-	if s.agent.Identity == nil || !slices.Contains(s.agent.Identity.Roles, "edge") {
-		return skipped("edge", "this server has no edge role")
+	state, err := s.agent.loadEdgeState()
+	if err != nil {
+		return check("edge", err, "")
+	}
+	if state == nil {
+		return skipped("edge", "this server runs no edge proxy")
+	}
+	if state.Error != "" {
+		return check("edge", errors.New(state.Error), "")
+	}
+	if len(state.Config) == 0 {
+		return skipped("edge", "the edge proxy has no config yet")
 	}
 
-	info, err := s.agent.Docker.Inspect(ctx, "pocketcloud-edge")
+	info, err := s.agent.Docker.Inspect(ctx, edgeName)
 	if err != nil {
-		return check("edge", fmt.Errorf("the edge container does not exist yet: %w", err), "")
+		return check("edge", fmt.Errorf("the edge container is gone: %w", err), "")
 	}
 	if !info.State.Running {
 		return check("edge", fmt.Errorf("the edge container is %s", info.State.Status), "")
 	}
+	if _, status, err := s.agent.edgeRequest(ctx, "GET", "/config/", nil, edgeProbeLimit); err != nil || status != 200 {
+		if err == nil {
+			err = fmt.Errorf("status %d", status)
+		}
+		return check("edge", fmt.Errorf("the edge's admin API does not answer: %w", err), "")
+	}
 
-	return check("edge", nil, "the edge container is running")
+	detail := fmt.Sprintf("the edge serves revision %d", state.Revision)
+	if state.CaddyVersion != "" {
+		detail = fmt.Sprintf("Caddy %s serves revision %d", state.CaddyVersion, state.Revision)
+	}
+	return check("edge", nil, detail)
+}
+
+// runEdge runs the edge's check again after the edge changed, so the next
+// heartbeat says how it went.
+func (s *selfChecks) runEdge(parent context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), selfCheckTimeout)
+	defer cancel()
+
+	result := s.edge(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.latest {
+		if existing.GetName() == "edge" {
+			s.latest[i] = result
+			return
+		}
+	}
+	s.latest = append(s.latest, result)
 }
 
 func (s *selfChecks) restic(ctx context.Context) *agentv1.SelfCheck {

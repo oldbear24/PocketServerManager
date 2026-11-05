@@ -18,6 +18,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/enroll"
+	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/version"
 )
@@ -29,6 +30,16 @@ func (p *Panel) bindRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	group.POST("/enrollment-tokens", p.handleCreateEnrollmentToken).BindFunc(requireRole(schema.RoleAdmin))
 	group.POST("/hosts/{id}/update", p.handleUpdateHost).BindFunc(requireRole(schema.RoleAdmin))
 	group.POST("/hosts/update-all", p.handleUpdateAllHosts).BindFunc(requireRole(schema.RoleAdmin))
+	group.GET("/php/versions", p.handlePHPVersions)
+}
+
+// handlePHPVersions lists the PHP versions of the runtime images and where
+// each stands in its support today, so the UI can warn before one ends.
+func (p *Panel) handlePHPVersions(e *core.RequestEvent) error {
+	return e.JSON(http.StatusOK, map[string]any{
+		"warn_days": php.WarnDays,
+		"versions":  php.Statuses(time.Now(), php.WarnDays),
+	})
 }
 
 // bindPublicRoutes adds what an unauthenticated server needs for connecting: the

@@ -267,8 +267,6 @@
     "newStack": "Nový stack",
     "edgeRoutes": "Edge proxy – trasy",
     "edgeRoutesNote": "Caddy řízený agentem · certifikáty z panelu",
-    "edgeRoutesLater": "Trasy se tu objeví s weby a doménami, v milníku M3.",
-    "proxyLater": "Edge proxy, weby a jejich trasy přijdou v milníku M3.",
     "backupsLater": "Zálohovací úlohy tohoto serveru přijdou v milníku M4.",
     "openTerminal": "Terminál v {{name}}",
     "internalOnly": "jen interní síť",
@@ -276,7 +274,9 @@
     "restarts_few": "{{count}}× restart",
     "restarts_many": "{{count}}× restart",
     "restarts_other": "{{count}}× restart",
-    "load1": "Load"
+    "load1": "Load",
+    "httpRequests": "HTTP požadavky",
+    "perSecond": "{{value}} / s"
   },
   "connect": {
     "title": "Připojit nový server",
@@ -346,6 +346,16 @@
     "description": "Každá změna konfigurace – z UI, API, plánovače, agentů i administrace PocketBase – s autorem a rozdílem hodnot. Záznamy se dají jen přidávat a jsou řetězené hashem.",
     "chainOk": "Řetězec neporušen · ověřeno {{time}}",
     "chainBroken": "Řetězec porušen u záznamu {{seq}}",
+    "unsealed_one": "Poslední záznam ještě není zapečetěn",
+    "unsealed_few": "Poslední {{count}} záznamy ještě nejsou zapečetěny",
+    "unsealed_many": "Posledních {{count}} záznamů ještě není zapečetěno",
+    "unsealed_other": "Posledních {{count}} záznamů ještě není zapečetěno",
+    "unsealedNote": "Zapsal je příkaz spuštěný bez hlavního klíče. Panel je zapečetí, až se spustí s klíčem.",
+    "keyless_one": "{{count}} záznam byl zapsán bez hlavního klíče",
+    "keyless_few": "{{count}} záznamy byly zapsány bez hlavního klíče",
+    "keyless_many": "{{count}} záznamů bylo zapsáno bez hlavního klíče",
+    "keyless_other": "{{count}} záznamů bylo zapsáno bez hlavního klíče",
+    "keylessNote": "Ručí za ně jen jejich hashe, ne pečeť: záznamy {{ranges}}. Takové záznamy píšou příkazy spuštěné bez hlavního klíče, a stejně tak by je napsal někdo, kdo upravil databázi.",
     "verify": "Ověřit integritu",
     "export": "Export JSONL",
     "tab": {
@@ -401,6 +411,7 @@
       "adminer_session": "Relace Admineru",
       "payload_capture": "Zachycení obsahu",
       "integrity_broken": "Porušená integrita",
+      "chain_sealed": "Zapečetění logu",
       "terminal_session_end": "Terminál zavřen"
     },
     "verb": {
@@ -421,6 +432,7 @@
       "adminer_session": "otevřel Adminer na",
       "payload_capture": "spustil zachycení obsahu na",
       "integrity_broken": "našel porušený řetězec v",
+      "chain_sealed": "zapečetil neověřené záznamy v",
       "terminal_session_end": "zavřel(a) terminál na"
     },
     "source": {
@@ -431,7 +443,8 @@
       "agent": "Agent",
       "acme": "ACME",
       "migration": "Migrace",
-      "panel": "Systém"
+      "panel": "Systém",
+      "command": "Příkazová řádka"
     },
     "actorKind": {
       "user": "uživatel",
@@ -910,5 +923,108 @@
     "downloadDump": "Stáhnout dump databáze {{name}}",
     "credentials": "Přístup",
     "ownCredentials": "uživatele a hesla drží stack {{name}}"
+  },
+  "edge": {
+    "title": "Edge proxy",
+    "routes": "Trasy",
+    "addDomain": "Přidat doménu",
+    "addDomainTitle": "Přidat doménu na {{server}}",
+    "add": "Přidat",
+    "noRoutes": "Tento edge zatím neobsluhuje žádnou doménu.",
+    "noRole": "Tento server nemá roli edge, takže neobsluhuje weby ani domény.",
+    "agentTooOld": "Agent tohoto serveru zatím neumí spustit edge proxy: nejdřív ho aktualizujte.",
+    "kind": {
+      "container": "kontejner",
+      "redirect": "přesměrování"
+    },
+    "tls": {
+      "valid": "HTTPS do {{date}}",
+      "expiring": "HTTPS, certifikát vyprší {{date}}",
+      "expired": "Certifikát vypršel {{date}}",
+      "installing": "Instaluje se certifikát",
+      "none": "Jen HTTP: tento název nepokrývá žádný certifikát",
+      "off": "Jen HTTP"
+    },
+    "tlsShort": {
+      "valid": "HTTPS",
+      "expiring": "HTTPS, brzy vyprší",
+      "expired": "Certifikát vypršel",
+      "installing": "Instaluje se certifikát",
+      "none": "Jen HTTP",
+      "off": "Jen HTTP"
+    },
+    "state": "Stav",
+    "condition": {
+      "synced": "Obsluhuje revizi {{revision}}",
+      "applying": "Načítá se konfigurace",
+      "failed": "Poslední konfigurace selhala",
+      "waiting": "Čeká se na agenta",
+      "stopped": "Edge neodpovídá"
+    },
+    "caddyVersion": "Caddy {{version}} · řízený agentem",
+    "caddyPinned": "Caddy {{version}} · zatím neběží",
+    "applyAgain": "Použít znovu",
+    "applied": "Konfigurace byla odeslána na edge.",
+    "remove": "Odebrat",
+    "removeDomain": "Odebrat {{hostname}}",
+    "removeConfirm": "Odebrat {{hostname}}?",
+    "removeNote": "Edge ji přestane okamžitě obsluhovat.",
+    "domainAdded": "Doména {{hostname}} byla přidána. Edge ji začne obsluhovat za pár sekund.",
+    "domainRemoved": "Doména {{hostname}} byla odebrána.",
+    "hostname": "Doména",
+    "target": "Cíl",
+    "container": "Kontejner",
+    "port": "Port",
+    "noContainers": "Na tomto serveru není kontejner, který by šel zveřejnit.",
+    "redirectTo": "Přesměrovat na",
+    "permanent": "Trvalé přesměrování (308); prohlížeče si ho pamatují",
+    "https": "Obsluhovat přes HTTPS, když název pokrývá certifikát",
+    "httpsRedirect": "Přesměrovat HTTP na HTTPS",
+    "hsts": "Posílat HSTS: prohlížeče pak rok používají jen HTTPS",
+    "compress": "Komprimovat odpovědi (zstd, gzip)",
+    "certificates": "Certifikáty",
+    "certificatesNote": "Nahrané ručně, dokud se certifikáty nebudou vydávat automaticky",
+    "noCertificates": "Domény tohoto serveru nepokrývá žádný certifikát.",
+    "upload": "Nahrát certifikát",
+    "uploadTitle": "Nahrát certifikát",
+    "uploadNote": "Klíč se zašifruje hlavním klíčem a dostanou ho jen edge, jejichž domény certifikát pokrývá.",
+    "chain": "Řetězec certifikátů (PEM)",
+    "key": "Soukromý klíč (PEM)",
+    "note": "Poznámka",
+    "uploaded": "Certifikát byl nahrán.",
+    "issuer": {
+      "manual": "nahraný",
+      "acme": "ACME",
+      "internal": "interní CA"
+    },
+    "validUntil": "platný do {{date}}",
+    "expiredOn": "vypršel {{date}}",
+    "installedHere": "nainstalován zde",
+    "removeCertificate": "Odebrat certifikát",
+    "removeCertificateConfirm": "Odebrat certifikát pro {{names}}?",
+    "removeCertificateNote": "Edge budou jeho domény obsluhovat jen přes HTTP, dokud je nepokryje jiný certifikát.",
+    "certificateRemoved": "Certifikát byl odebrán.",
+    "loading": "Načítají se trasy…"
+  },
+  "php": {
+    "title": "Běhová prostředí PHP",
+    "note": "Image pro PHP weby",
+    "version": "Verze",
+    "support": "Podpora",
+    "activeUntil": "Opravy chyb do",
+    "securityUntil": "Bezpečnostní opravy do",
+    "image": "Image",
+    "state": {
+      "supported": "Podporováno",
+      "security": "Jen bezpečnostní opravy",
+      "ending": "Brzy končí",
+      "ended": "Skončilo"
+    },
+    "endingWarning_zero": "Dnes je poslední den, kdy PHP {{version}} dostává bezpečnostní opravy. Převeďte jeho weby na novější verzi.",
+    "endingWarning_one": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} den, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_few": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dny, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_many": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dne, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endingWarning_other": "PHP {{version}} dostává bezpečnostní opravy ještě {{count}} dní, do {{date}}. Do té doby převeďte jeho weby na novější verzi.",
+    "endedWarning": "Bezpečnostní opravy PHP {{version}} skončily {{date}}. Převeďte jeho weby na novější verzi."
   }
 }

@@ -156,7 +156,9 @@ func TestMetricsReachTheRangeAPI(t *testing.T) {
 		return values[web.ID].CPU > 0
 	})
 
-	if value := values[web.ID]; value.CPU != 12.5 || value.Mem != 300<<20 || value.MemLimit != 1<<30 {
+	// the fake engine has four CPUs: an eighth of the host is half a core, on the
+	// scale of docker stats
+	if value := values[web.ID]; value.CPU != 50 || value.Mem != 300<<20 || value.MemLimit != 1<<30 {
 		t.Errorf("container: %+v", value)
 	}
 

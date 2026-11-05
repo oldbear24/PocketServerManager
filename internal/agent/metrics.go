@@ -30,6 +30,7 @@ type metricsCollector struct {
 type containerSample struct {
 	cpuTotal  uint64
 	systemCPU uint64
+	cpus      int
 	netIn     uint64
 	netOut    uint64
 }
@@ -136,6 +137,10 @@ func (m *metricsCollector) containerSample(id string, stats *dockerapi.Stats) (*
 	current := containerSample{
 		cpuTotal:  stats.CPUStats.CPUUsage.TotalUsage,
 		systemCPU: stats.CPUStats.SystemCPUUsage,
+		cpus:      stats.CPUStats.OnlineCPUs,
+	}
+	if current.cpus <= 0 {
+		current.cpus = len(stats.CPUStats.CPUUsage.PercpuUsage)
 	}
 	for _, network := range stats.Networks {
 		current.netIn += network.RxBytes
@@ -167,12 +172,16 @@ func (m *metricsCollector) containerSample(id string, stats *dockerapi.Stats) (*
 	return sample, true
 }
 
-// containerCPUPercent is relative to the whole host, like the host's own value.
+// containerCPUPercent is on the scale of `docker stats` and top: 100 % is one
+// core, so a container can reach the number of cores times 100 %. The host's
+// counter covers every core, so the container's share of it is multiplied by
+// their number, as the Docker CLI does.
 func containerCPUPercent(previous, current containerSample) float64 {
 	if current.systemCPU <= previous.systemCPU || current.cpuTotal < previous.cpuTotal {
 		return 0
 	}
-	return float64(current.cpuTotal-previous.cpuTotal) / float64(current.systemCPU-previous.systemCPU) * 100
+	cpus := max(current.cpus, 1)
+	return float64(current.cpuTotal-previous.cpuTotal) / float64(current.systemCPU-previous.systemCPU) * float64(cpus) * 100
 }
 
 // containerMemory subtracts the page cache, like `docker stats` does.

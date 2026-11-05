@@ -302,6 +302,26 @@ message HeartbeatRequest {
   double clock_skew_ms = 6;
   // self_checks are the latest self-check results.
   repeated SelfCheck self_checks = 7;
+  // edge is the state of the edge proxy; absent when this server runs none.
+  EdgeStatus edge = 8;
+}
+
+// EdgeStatus is the state of a server's edge proxy, as the agent sees it.
+message EdgeStatus {
+  // digest identifies the config the edge serves: the digest of the image and
+  // the config of the last edge.apply that loaded. Empty before the first one.
+  string digest = 1;
+  // revision is the panel's revision of that config.
+  int64 revision = 2;
+  // running reports whether the edge container runs and its admin API answers.
+  bool running = 3;
+  // error is the last failure of the edge, such as ports already taken.
+  string error = 4;
+  // requests_per_s is the rate of HTTP requests the edge served since the
+  // previous heartbeat.
+  double requests_per_s = 5;
+  // caddy_version is the version of Caddy in the edge container.
+  string caddy_version = 6;
 }
 
 // HeartbeatResponse carries the panel's clock and hints for the agent.

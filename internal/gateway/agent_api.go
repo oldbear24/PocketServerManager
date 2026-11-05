@@ -111,17 +111,17 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 	}
 
 	for {
-		select {
-		case message := <-delivery.Out():
-			if err := stream.Send(message); err != nil {
-				return err
-			}
-		case <-delivery.Closed():
-			return status.Error(codes.Aborted, "replaced by a newer connection of this agent")
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-s.stopping:
-			return status.Error(codes.Unavailable, "the panel is shutting down")
+		message, err := delivery.Next(ctx, s.stopping)
+		switch {
+		case errors.Is(err, commands.ErrReplaced):
+			return status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, commands.ErrStopping):
+			return status.Error(codes.Unavailable, err.Error())
+		case err != nil:
+			return err
+		}
+		if err := stream.Send(message); err != nil {
+			return err
 		}
 	}
 }
@@ -216,6 +216,8 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 			})
 		}
 
+		applyEdgeStatus(host, req.GetEdge(), func() bool { return s.edgeAppliedRecently(host.Id) })
+
 		failed, recovered = s.applySelfChecks(host, req.GetSelfChecks())
 
 		host.Set("status", hostStatus(host, req.GetSelfChecks()))
@@ -232,6 +234,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	if s.OnHeartbeat != nil {
 		s.OnHeartbeat(hostID, req.GetLastRttMs(), req.GetClockSkewMs())
 	}
+	if s.OnEdgeStatus != nil {
+		s.OnEdgeStatus(hostID)
+	}
 	for _, check := range failed {
 		events.Log(s.App, hostID, "agent.self_check_failed", schema.SeverityWarning,
 			fmt.Sprintf("Self-check %s failed: %s", check.name, check.detail),
@@ -247,6 +252,43 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 		ServerTime:       timestamppb.New(now),
 		RenewCertificate: renew,
 	}, nil
+}
+
+// edgeStaleWindow is how long after an apply finished a heartbeat without an
+// edge may still be one the agent built before it.
+const edgeStaleWindow = time.Minute
+
+// applyEdgeStatus stores what the agent says of its edge proxy; a heartbeat
+// without one comes from a server that runs none.
+//
+// A heartbeat the agent built before an apply finished must not undo what the
+// finished apply recorded: it carries an older revision. So does one without
+// an edge, from before the first apply, or from an agent that lost its edge's
+// state; only the first can come right after an apply, so such a heartbeat is
+// taken for stale while appliedRecently says one finished a moment ago.
+func applyEdgeStatus(host *core.Record, status *agentv1.EdgeStatus, appliedRecently func() bool) {
+	older := status.GetRevision() < int64(host.GetInt("edge_applied_revision"))
+	stale := older && (status.GetDigest() != "" || appliedRecently())
+	if !stale {
+		host.Set("edge_applied_digest", status.GetDigest())
+		host.Set("edge_applied_revision", status.GetRevision())
+	}
+	host.Set("edge_running", status.GetRunning())
+	host.Set("edge_error", status.GetError())
+	host.Set("edge_requests_per_s", status.GetRequestsPerS())
+	if version := status.GetCaddyVersion(); version != "" || status == nil {
+		host.Set("edge_caddy_version", version)
+	}
+}
+
+// edgeAppliedRecently tells whether an edge.apply of the host succeeded within
+// edgeStaleWindow.
+func (s *Server) edgeAppliedRecently(hostID string) bool {
+	since := types.NowDateTime().Add(-edgeStaleWindow)
+	records, err := s.App.FindRecordsByFilter(schema.Commands,
+		"host={:h} && type='edge.apply' && status={:s} && finished_at>={:since}", "", 1, 0,
+		dbx.Params{"h": hostID, "s": schema.CommandSucceeded, "since": since.String()})
+	return err == nil && len(records) > 0
 }
 
 // hostStatus is online when everything works, degraded when the agent is alive

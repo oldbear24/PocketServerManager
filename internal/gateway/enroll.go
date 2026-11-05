@@ -244,6 +244,10 @@ func (s *Server) BindHostRemoval() {
 			s.Audit.Security(audit.ActionCertRevoked, audit.System("host removal", audit.SourcePanel), name, map[string]any{"serial": serial})
 		}
 
+		if s.Commands != nil {
+			s.Commands.Drop(e.Record.Id, status.Error(codes.PermissionDenied, "the server was removed from the panel: enroll it again to manage it"))
+		}
+
 		return e.Next()
 	})
 }

@@ -48,6 +48,14 @@ func TestAPIRules(t *testing.T) {
 
 	host := testutil.NewHost(t, app, "rules-host")
 	stack := saveRecord(t, app, schema.Stacks, map[string]any{"host": host.Id, "name": "rules-stack"})
+	edgeHost := testutil.NewHost(t, app, "rules-edge")
+	edgeHost.Set("roles", []string{schema.HostRoleEdge})
+	if err := app.Save(edgeHost); err != nil {
+		t.Fatal(err)
+	}
+	domain := func(name string) map[string]any {
+		return map[string]any{"hostname": name + ".example.com", "host": edgeHost.Id, "target_kind": schema.TargetRedirect, "redirect_to": "https://example.org"}
+	}
 	settings, err := app.FindRecordsByFilter(schema.Settings, "", "", 1, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -68,12 +76,17 @@ func TestAPIRules(t *testing.T) {
 		schema.Settings:          settings[0],
 		schema.DiagnosticBundles: saveRecord(t, app, schema.DiagnosticBundles, map[string]any{"host": host.Id}),
 		schema.InternalCA:        saveRecord(t, app, schema.InternalCA, map[string]any{"root_cert": "x"}),
+		schema.Domains:           saveRecord(t, app, schema.Domains, domain("rules")),
+		schema.Certificates:      saveRecord(t, app, schema.Certificates, map[string]any{"names": []string{"rules.example.com"}, "key_pem": "secret"}),
 	}
 
 	// bodies that would be valid, so a create can only fail because of the rule
 	bodies := map[string]string{
 		schema.Commands: fmt.Sprintf(`{"type":"container.start","host":%q,"payload":{"docker_id":"x"}}`, host.Id),
 		schema.Stacks:   fmt.Sprintf(`{"host":%q,"name":"created-%%s"}`, host.Id),
+		schema.Domains:  fmt.Sprintf(`{"hostname":"created-%%s.example.com","host":%q,"target_kind":"redirect","redirect_to":"https://example.org"}`, edgeHost.Id),
+		// certificates come in through the panel's upload route only
+		schema.Certificates: `{"names":["x.example.com"]}`,
 	}
 
 	matrix := []struct {
@@ -94,6 +107,8 @@ func TestAPIRules(t *testing.T) {
 		{schema.Settings, everyone, nobody, adminsOnly, nobody},
 		{schema.DiagnosticBundles, adminsOnly, nobody, nobody, adminsOnly},
 		{schema.InternalCA, nobody, nobody, nobody, nobody},
+		{schema.Domains, everyone, operators, operators, operators},
+		{schema.Certificates, everyone, nobody, nobody, nobody},
 	}
 
 	for _, row := range matrix {
@@ -137,10 +152,14 @@ func TestAPIRules(t *testing.T) {
 		// deleting last, on a throwaway record of the collections that allow it
 		if row.del != nobody {
 			for role, token := range tokens {
-				target := saveRecord(t, app, row.collection, map[string]any{
+				fields := map[string]any{
 					"host": host.Id, "name": "del-" + roleName(role),
 					"token_hash": "hash-" + roleName(role), "expires_at": "2030-01-01 00:00:00.000Z",
-				})
+				}
+				if row.collection == schema.Domains {
+					fields = domain("del-" + roleName(role))
+				}
+				target := saveRecord(t, app, row.collection, fields)
 				status, _ := testutil.Do(t, handler, testutil.Request{Method: "DELETE", URL: base + "/" + target.Id, Token: token})
 				if (status == http.StatusNoContent) != row.del.allows(role) {
 					t.Errorf("%s delete as %s: status %d", row.collection, roleName(role), status)

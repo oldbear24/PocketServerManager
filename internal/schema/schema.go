@@ -29,14 +29,16 @@ const (
 	DBNetworks        = "db_networks"
 	DBDumps           = "db_dumps"
 	DBMoves           = "db_moves"
+	Domains           = "domains"
+	Certificates      = "certificates"
 )
 
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"sites", "site_php", "deployments", "scheduled_tasks", "domains",
-	"dns_providers", "dns_zones", "dns_records", "acme_accounts", "certificates",
+	"sites", "site_php", "deployments", "scheduled_tasks",
+	"dns_providers", "dns_zones", "dns_records", "acme_accounts",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -105,6 +107,28 @@ const (
 	MoveFailed  = "failed"
 )
 
+// Targets of a domain on an edge.
+const (
+	TargetContainer = "container"
+	TargetRedirect  = "redirect"
+)
+
+// TLS of a domain: auto serves it over HTTPS when a certificate covers it.
+const (
+	TLSAuto = "auto"
+	TLSOff  = "off"
+)
+
+// Issuers and states of certificates.
+const (
+	IssuerManual   = "manual"
+	IssuerACME     = "acme"
+	IssuerInternal = "internal"
+
+	CertActive  = "active"
+	CertExpired = "expired"
+)
+
 // Severity of events and alerts.
 const (
 	SeverityInfo     = "info"
@@ -131,7 +155,7 @@ var Encrypted = map[string][]string{
 	"site_php":              {"secrets"},
 	"dns_providers":         {"credentials"},
 	"acme_accounts":         {"key", "eab_hmac"},
-	"certificates":          {"key_pem"},
+	Certificates:            {"key_pem"},
 	DBServers:               {"admin_password"},
 	DBUsers:                 {"password", "pending_password"},
 	DBMoves:                 {"secrets"},
@@ -166,6 +190,8 @@ var Audited = []AuditedCollection{
 		"uptime_s", "load1", "load5", "load15", "cpu_percent", "mem_used_bytes", "disk_used_bytes", "disk_total_bytes",
 		"runtime", "self_checks", "inventory_at", "capabilities", "compose_version",
 		"cert_serial", "cert_prev_serial", "cert_expires_at", "hostname",
+		"edge_digest", "edge_revision", "edge_applied_digest", "edge_applied_revision",
+		"edge_running", "edge_error", "edge_requests_per_s", "edge_caddy_version",
 	}},
 	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at"}},
 	{Name: Settings, Label: "public_url"},
@@ -175,9 +201,9 @@ var Audited = []AuditedCollection{
 	{Name: "sites", Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
 	{Name: "site_php", Label: "site"},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
-	{Name: "domains", Label: "hostname", Ignore: []string{"dns_status"}},
+	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"dns_status"}},
 	{Name: "dns_providers", Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
-	{Name: "certificates", Label: "names", Ignore: []string{"status", "attempts", "last_error"}},
+	{Name: Certificates, Label: "names", Ignore: []string{"status", "attempts", "last_error", "installed"}},
 	{Name: DBServers, Label: "name", Host: "host", Ignore: []string{
 		"status", "size_bytes", "connections", "max_connections", "version", "stats_at", "last_error", "container_ref",
 	}},

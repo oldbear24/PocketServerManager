@@ -251,14 +251,14 @@
     "newStack": "New stack",
     "edgeRoutes": "Edge proxy routes",
     "edgeRoutesNote": "Caddy run by the agent · certificates from the panel",
-    "edgeRoutesLater": "Routes appear here with sites and domains, in milestone M3.",
-    "proxyLater": "The edge proxy, sites and their routes arrive in milestone M3.",
     "backupsLater": "Backup jobs for this server arrive in milestone M4.",
     "openTerminal": "Terminal in {{name}}",
     "internalOnly": "internal network only",
     "restarts_one": "{{count}}× restarted",
     "restarts_other": "{{count}}× restarted",
-    "load1": "Load"
+    "load1": "Load",
+    "httpRequests": "HTTP requests",
+    "perSecond": "{{value}} / s"
   },
   "connect": {
     "title": "Connect a new server",
@@ -324,6 +324,12 @@
     "description": "Every configuration change, from the UI, the API, the scheduler, agents and the PocketBase dashboard, with its author and the difference in values. Entries can only be added, and they are hash-chained.",
     "chainOk": "Chain intact · verified {{time}}",
     "chainBroken": "Chain broken at entry {{seq}}",
+    "unsealed_one": "The newest entry is not sealed yet",
+    "unsealed_other": "The newest {{count}} entries are not sealed yet",
+    "unsealedNote": "Written by a command that ran without the master key. The panel seals them when it starts with the key.",
+    "keyless_one": "{{count}} entry was written without the master key",
+    "keyless_other": "{{count}} entries were written without the master key",
+    "keylessNote": "Only their hashes vouch for them, not the seal: entries {{ranges}}. Commands run without the master key write such entries, and so would someone who edited the database.",
     "verify": "Verify integrity",
     "export": "Export JSONL",
     "tab": {
@@ -379,6 +385,7 @@
       "adminer_session": "Adminer session",
       "payload_capture": "Payload capture",
       "integrity_broken": "Integrity broken",
+      "chain_sealed": "Log sealed",
       "terminal_session_end": "Terminal closed"
     },
     "verb": {
@@ -399,6 +406,7 @@
       "adminer_session": "opened Adminer on",
       "payload_capture": "started a payload capture on",
       "integrity_broken": "found a broken chain in",
+      "chain_sealed": "sealed the unproven entries of",
       "terminal_session_end": "closed a terminal on"
     },
     "source": {
@@ -409,7 +417,8 @@
       "agent": "Agent",
       "acme": "ACME",
       "migration": "Migration",
-      "panel": "System"
+      "panel": "System",
+      "command": "Command line"
     },
     "actorKind": {
       "user": "user",
@@ -870,5 +879,106 @@
     "downloadDump": "Download the dump of {{name}}",
     "credentials": "Credentials",
     "ownCredentials": "the stack {{name}} holds its users and passwords"
+  },
+  "edge": {
+    "title": "Edge proxy",
+    "routes": "Routes",
+    "addDomain": "Add domain",
+    "addDomainTitle": "Add a domain to {{server}}",
+    "add": "Add",
+    "noRoutes": "No domain is served by this edge yet.",
+    "noRole": "This server has no edge role, so it serves no sites or domains.",
+    "agentTooOld": "The agent of this server cannot run an edge proxy yet: update it first.",
+    "kind": {
+      "container": "container",
+      "redirect": "redirect"
+    },
+    "tls": {
+      "valid": "HTTPS until {{date}}",
+      "expiring": "HTTPS, the certificate expires {{date}}",
+      "expired": "The certificate expired {{date}}",
+      "installing": "Installing the certificate",
+      "none": "HTTP only: no certificate covers this name",
+      "off": "HTTP only"
+    },
+    "tlsShort": {
+      "valid": "HTTPS",
+      "expiring": "HTTPS, expiring",
+      "expired": "Certificate expired",
+      "installing": "Installing the certificate",
+      "none": "HTTP only",
+      "off": "HTTP only"
+    },
+    "state": "State",
+    "condition": {
+      "synced": "Serving revision {{revision}}",
+      "applying": "Applying the config",
+      "failed": "The last config failed",
+      "waiting": "Waiting for the agent",
+      "stopped": "The edge does not answer"
+    },
+    "caddyVersion": "Caddy {{version}} · run by the agent",
+    "caddyPinned": "Caddy {{version}} · not running yet",
+    "applyAgain": "Apply again",
+    "applied": "The config was sent to the edge.",
+    "remove": "Remove",
+    "removeDomain": "Remove {{hostname}}",
+    "removeConfirm": "Remove {{hostname}}?",
+    "removeNote": "The edge stops serving it at once.",
+    "domainAdded": "{{hostname}} was added. The edge serves it in a few seconds.",
+    "domainRemoved": "{{hostname}} was removed.",
+    "hostname": "Domain",
+    "target": "Target",
+    "container": "Container",
+    "port": "Port",
+    "noContainers": "This server has no container that can be published.",
+    "redirectTo": "Redirect to",
+    "permanent": "Permanent redirect (308); browsers remember it",
+    "https": "Serve over HTTPS when a certificate covers the name",
+    "httpsRedirect": "Redirect HTTP to HTTPS",
+    "hsts": "Send HSTS: browsers then use only HTTPS for a year",
+    "compress": "Compress responses (zstd, gzip)",
+    "certificates": "Certificates",
+    "certificatesNote": "Uploaded by hand until certificates are issued automatically",
+    "noCertificates": "No certificate covers the domains of this server.",
+    "upload": "Upload certificate",
+    "uploadTitle": "Upload a certificate",
+    "uploadNote": "The key is encrypted with the master key and goes only to the edges whose domains the certificate covers.",
+    "chain": "Certificate chain (PEM)",
+    "key": "Private key (PEM)",
+    "note": "Note",
+    "uploaded": "The certificate was uploaded.",
+    "issuer": {
+      "manual": "uploaded",
+      "acme": "ACME",
+      "internal": "internal CA"
+    },
+    "validUntil": "valid until {{date}}",
+    "expiredOn": "expired {{date}}",
+    "installedHere": "installed here",
+    "removeCertificate": "Remove certificate",
+    "removeCertificateConfirm": "Remove the certificate for {{names}}?",
+    "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
+    "certificateRemoved": "The certificate was removed.",
+    "loading": "Loading the routes…"
+  },
+  "php": {
+    "title": "PHP runtimes",
+    "note": "Images of PHP sites",
+    "version": "Version",
+    "support": "Support",
+    "activeUntil": "Bug fixes until",
+    "securityUntil": "Security fixes until",
+    "image": "Image",
+    "state": {
+      "supported": "Supported",
+      "security": "Security fixes only",
+      "ending": "Ending soon",
+      "ended": "Ended"
+    },
+    "endingWarning_zero": "Today is the last day PHP {{version}} gets security fixes. Move its sites to a newer version.",
+    "endingWarning_one": "PHP {{version}} gets security fixes for {{count}} more day, until {{date}}. Move its sites to a newer version before then.",
+    "endingWarning_other": "PHP {{version}} gets security fixes for {{count}} more days, until {{date}}. Move its sites to a newer version before then.",
+    "endedWarning": "Security fixes for PHP {{version}} ended on {{date}}. Move its sites to a newer version."
   }
 }

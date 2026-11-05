@@ -330,6 +330,56 @@ func TestRemovingAHostRevokesItsCertificate(t *testing.T) {
 	})
 }
 
+// TestRemovingAHostEndsItsCommandStream: a stream is authenticated when it
+// opens, so the revocation alone would let an open one go on receiving commands
+// until the agent's next call fails. The removal ends it at once.
+func TestRemovingAHostEndsItsCommandStream(t *testing.T) {
+	h := newHarness(t)
+
+	config := h.agentConfig("silent", h.token("silent"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := agent.Enroll(ctx, config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// a client that subscribes and then never calls again, so nothing else would notice
+	client := dialWith(t, h, identity)
+	stream, err := client.SubscribeCommands(ctx, &agentv1.SubscribeCommandsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Header(); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor("the stream to open", func() bool { return h.panel.Commands.Connected(identity.HostID) })
+
+	if err := h.app.Delete(h.host(identity.HostID)); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := make(chan error, 1)
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				ended <- err
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-ended:
+		if status.Code(err) != codes.PermissionDenied || !strings.Contains(err.Error(), "removed") {
+			t.Errorf("the stream ended with %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the command stream of a removed host is still open")
+	}
+}
+
 func TestExpiredCertificateIsRejected(t *testing.T) {
 	h := newHarness(t, func(server *gateway.Server) { server.Authority.AgentTTL = 2 * time.Second })
 

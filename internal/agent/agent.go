@@ -78,6 +78,13 @@ type Agent struct {
 	composeRelease string
 	composeAt      time.Time
 
+	// edgeMu keeps the edge's operations apart: applies, certificates, and
+	// bringing it back at start
+	edgeMu        sync.Mutex
+	edgeMetricsMu sync.Mutex
+	edgeCount     float64
+	edgeCountAt   time.Time
+
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
 }
@@ -130,6 +137,10 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.restoreCleanEnvFiles()
 	a.removeStaleAdminers(ctx)
+
+	// the edge keeps serving without the panel; one that is gone comes back
+	go a.restoreEdge(ctx)
+	go a.watchUpstreams(ctx)
 
 	a.setHealth(false)
 	defer a.setHealth(false)
@@ -373,6 +384,7 @@ func (a *Agent) heartbeat(parent context.Context, client agentv1.AgentServiceCli
 		LastRttMs:   float64(a.lastRTT.Load()) / 1000,
 		ClockSkewMs: float64(a.lastSkew.Load()) / 1000,
 		SelfChecks:  a.checks.results(),
+		Edge:        a.edgeStatus(ctx),
 	}
 
 	sent := time.Now()

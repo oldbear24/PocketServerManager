@@ -422,6 +422,8 @@ type Volume struct {
 	Name   string            `json:"Name"`
 	Driver string            `json:"Driver"`
 	Labels map[string]string `json:"Labels"`
+	// Mountpoint is the volume's directory on the host, for the local driver.
+	Mountpoint string `json:"Mountpoint"`
 }
 
 // Volumes lists every volume.
@@ -569,6 +571,9 @@ type Stats struct {
 	CPUStats struct {
 		CPUUsage struct {
 			TotalUsage uint64 `json:"total_usage"`
+			// PercpuUsage is only reported with cgroup v1; it counts the CPUs
+			// on engines that do not report OnlineCPUs.
+			PercpuUsage []uint64 `json:"percpu_usage"`
 		} `json:"cpu_usage"`
 		SystemCPUUsage uint64 `json:"system_cpu_usage"`
 		OnlineCPUs     int    `json:"online_cpus"`

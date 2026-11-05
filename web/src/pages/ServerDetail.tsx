@@ -18,6 +18,7 @@ import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import { ContainerStatePill, HostStatusPill } from "../components/status";
 import { UsageChart } from "../components/UsageChart";
+import { EdgeRoutesCard, ProxyTab } from "./EdgeProxy";
 import {
   Banner,
   Button,
@@ -141,11 +142,7 @@ export function ServerDetailPage() {
 
       {active === "overview" && <OverviewTab host={host} containers={containers.items} />}
       {active === "containers" && <ContainersCard containers={containers.items} host={host} />}
-      {active === "proxy" && (
-        <Card>
-          <EmptyState title={t("server.tab.proxy")}>{t("server.proxyLater")}</EmptyState>
-        </Card>
-      )}
+      {active === "proxy" && <ProxyTab host={host} containers={containers.items} />}
       {active === "volumes" && <VolumesTab host={host} />}
       {active === "backups" && (
         <Card>
@@ -257,7 +254,7 @@ function OverviewTab({ host, containers }: { host: Host; containers: Container[]
       <ContainersCard containers={containers} host={host} />
       <div className="columns">
         <div className="column-wide">
-          {isEdge ? <EdgeRoutesCard /> : <EventsCard host={host} />}
+          {isEdge ? <EdgeRoutesCard host={host} /> : <EventsCard host={host} />}
         </div>
         <div className="column-side">
           <DisksCard mounts={metrics.data?.mounts ?? []} />
@@ -446,20 +443,17 @@ function UsageCard({
                 .join(" ")}
             </dd>
           </div>
+          {host.roles.includes("edge") && (
+            <div>
+              <dt>{t("server.httpRequests")}</dt>
+              <dd>
+                {t("server.perSecond", { value: formatNumber(host.edge_requests_per_s ?? 0, 1) })}
+              </dd>
+            </div>
+          )}
         </dl>
       }
     />
-  );
-}
-
-/** The routes of an edge proxy arrive with sites and domains. */
-function EdgeRoutesCard() {
-  const { t } = useTranslation();
-
-  return (
-    <Card title={t("server.edgeRoutes")} note={t("server.edgeRoutesNote")}>
-      <p className="muted">{t("server.edgeRoutesLater")}</p>
-    </Card>
   );
 }
 

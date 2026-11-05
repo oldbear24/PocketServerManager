@@ -73,7 +73,7 @@ func (p *Panel) settingsRecord() (*core.Record, error) {
 // verifyAudit runs the integrity check. A broken chain raises an alert and a
 // security event, because it means that someone edited the database directly.
 func (p *Panel) verifyAudit(actor audit.Actor) (audit.VerifyResult, error) {
-	result, err := audit.Verify(p.App)
+	result, err := audit.Verify(p.App, p.AuditKey())
 	if err != nil {
 		return result, err
 	}

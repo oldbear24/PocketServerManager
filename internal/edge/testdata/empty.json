@@ -1,0 +1,55 @@
+{
+  "admin": {
+    "config": {
+      "persist": true
+    },
+    "listen": "unix//pocketcloud/run/admin.sock"
+  },
+  "apps": {
+    "http": {
+      "metrics": {},
+      "servers": {
+        "http": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            ":80"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "file_server",
+                  "root": "/pocketcloud/acme"
+                }
+              ],
+              "match": [
+                {
+                  "path": [
+                    "/.well-known/acme-challenge/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "body": "No site is configured for this address.\n",
+                  "handler": "static_response",
+                  "headers": {
+                    "Content-Type": [
+                      "text/plain; charset=utf-8"
+                    ]
+                  },
+                  "status_code": 404
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
