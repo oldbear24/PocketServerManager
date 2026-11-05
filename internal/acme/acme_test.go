@@ -278,3 +278,17 @@ func TestExplainKeepsTheNamesApart(t *testing.T) {
 type mapError map[string]error
 
 func (e mapError) Error() string { return "error: one or more domains had a problem" }
+
+// TestTheCallersClientIsLeftAlone: lego changes the transport of the client
+// it gets; the panel shares one between issuances that run at once.
+func TestTheCallersClientIsLeftAlone(t *testing.T) {
+	served := serveAnswers(t)
+	ca := acmetest.Start(t, acmetest.Options{HTTPPort: served.port})
+	transport := ca.Client.Transport
+	if _, err := acme.Register(account(t, ca), ca.Client); err != nil {
+		t.Fatal(acme.Explain(err))
+	}
+	if ca.Client.Transport != transport {
+		t.Error("the caller's client was changed")
+	}
+}

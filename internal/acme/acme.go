@@ -133,7 +133,11 @@ func newClient(account *Account, httpClient *http.Client) (*lego.Client, error) 
 	config.Certificate.KeyType = certcrypto.EC256
 	config.Certificate.Timeout = 90 * time.Second
 	if httpClient != nil {
-		config.HTTPClient = httpClient
+		// lego wraps the client's transport in place, so each client gets
+		// a copy: a shared one would be changed under the issuances that
+		// use it, and wrapped again by each new one
+		copied := *httpClient
+		config.HTTPClient = &copied
 	}
 	return lego.NewClient(config)
 }
