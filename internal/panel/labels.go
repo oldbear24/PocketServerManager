@@ -119,10 +119,23 @@ func (p *Panel) handleKeepDomain(e *core.RequestEvent) error {
 	if !removed {
 		return e.BadRequestError("The label of this domain is still there: remove it and deploy first.", nil)
 	}
-	for _, field := range labelFields {
-		domain.Set(field, nil)
+	// a deploy may have brought the label back since: the domain as it is now
+	errBack := errors.New("the label is back")
+	err = p.update(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), domain, func(fresh *core.Record) error {
+		if label, removed := fromLabel(fresh); !label {
+			return errUnchanged
+		} else if !removed {
+			return errBack
+		}
+		for _, field := range labelFields {
+			fresh.Set(field, nil)
+		}
+		return nil
+	})
+	if errors.Is(err, errBack) {
+		return e.BadRequestError("The label of this domain is still there: remove it and deploy first.", nil)
 	}
-	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), domain); err != nil {
+	if err != nil {
 		return e.BadRequestError("Failed to keep the domain.", err)
 	}
 	return e.JSON(http.StatusOK, map[string]any{"id": domain.Id})
@@ -136,7 +149,16 @@ func (p *Panel) markOrphanedLabelDomains() {
 		return
 	}
 	for _, record := range records {
-		p.setFields(record, map[string]any{"label_removed": true})
+		err := p.update(context.Background(), record, func(fresh *core.Record) error {
+			if fresh.GetString("origin") != schema.OriginLabel || fresh.GetString("stack") != "" || fresh.GetBool("label_removed") {
+				return errUnchanged
+			}
+			fresh.Set("label_removed", true)
+			return nil
+		})
+		if err != nil {
+			p.Log.Error("failed to mark a label domain", "domain", record.Id, "error", err)
+		}
 	}
 }
 
@@ -165,7 +187,7 @@ func (p *Panel) stackExposures(stack, revision *core.Record) ([]stacks.Exposure,
 	if err := yaml.Unmarshal([]byte(compose), &tree); err != nil {
 		return nil, nil, err
 	}
-	exposures, found := stacks.Exposures(project, &tree, true)
+	exposures, found := stacks.Exposures(project, &tree, nil)
 	problems := make([]labelProblem, 0, len(found))
 	for _, problem := range found {
 		problems = append(problems, labelProblem{Line: problem.Line, Message: problem.Message})
@@ -198,7 +220,16 @@ func (p *Panel) syncStackLabels(stack, revision *core.Record) {
 	}
 
 	wanted := map[string]bool{}
+	// a service whose labels are wrong keeps its domains as they are
+	held := map[string]bool{}
 	for _, exposure := range exposures {
+		if exposure.Broken {
+			held[exposure.Service] = true
+			for _, hostname := range exposure.Hostnames {
+				wanted[hostname] = true
+			}
+			continue
+		}
 		for _, hostname := range exposure.Hostnames {
 			wanted[hostname] = true
 			if problem := p.applyExposure(stack, exposure, hostname, byHostname[hostname]); problem != "" {
@@ -208,8 +239,18 @@ func (p *Panel) syncStackLabels(stack, revision *core.Record) {
 	}
 
 	for hostname, domain := range byHostname {
-		if !wanted[hostname] && !domain.GetBool("label_removed") {
-			p.setFields(domain, map[string]any{"label_removed": true})
+		if wanted[hostname] || held[domain.GetString("service")] || domain.GetBool("label_removed") {
+			continue
+		}
+		err := p.update(context.Background(), domain, func(fresh *core.Record) error {
+			if !ownedBy(fresh, stack) || fresh.GetBool("label_removed") {
+				return errUnchanged
+			}
+			fresh.Set("label_removed", true)
+			return nil
+		})
+		if err != nil {
+			p.Log.Error("failed to mark a label domain", "domain", domain.Id, "error", err)
 		}
 	}
 
@@ -240,8 +281,35 @@ func (p *Panel) applyExposure(stack *core.Record, exposure stacks.Exposure, host
 		domain.Set("target_kind", schema.TargetContainer)
 		domain.Set("hsts", false)
 		domain.Set("compress", false)
+		p.setExposure(domain, stack, exposure)
+		if err := p.App.Save(domain); err != nil {
+			return describeSaveError(hostname, err)
+		}
+		return ""
 	}
 
+	// the domain as it is stored now: it may have been kept or removed since
+	// the sync read it, and nothing else it has is written back
+	err := p.update(context.Background(), domain, func(fresh *core.Record) error {
+		if !ownedBy(fresh, stack) || !p.setExposure(fresh, stack, exposure) {
+			return errUnchanged
+		}
+		return nil
+	})
+	if err != nil {
+		return describeSaveError(hostname, err)
+	}
+	return ""
+}
+
+// ownedBy says whether a domain is still a label domain of a stack.
+func ownedBy(domain, stack *core.Record) bool {
+	return domain.GetString("origin") == schema.OriginLabel && domain.GetString("stack") == stack.Id
+}
+
+// setExposure sets what a label says on its domain, and says whether that
+// changed anything.
+func (p *Panel) setExposure(domain, stack *core.Record, exposure stacks.Exposure) bool {
 	tls := schema.TLSAuto
 	if exposure.TLS == stacks.TLSOff {
 		tls = schema.TLSOff
@@ -253,13 +321,15 @@ func (p *Panel) applyExposure(stack *core.Record, exposure stacks.Exposure, host
 	}
 
 	changed := domain.IsNew() || domain.GetString("host") != stack.GetString("host") ||
+		domain.GetString("target_kind") != schema.TargetContainer ||
 		domain.GetString("container") != exposure.Container || domain.GetInt("port") != exposure.Port ||
 		domain.GetString("tls") != tls || domain.GetString("service") != exposure.Service ||
 		domain.GetBool("label_removed") || stored != auth
 	if !changed {
-		return ""
+		return false
 	}
 	domain.Set("host", stack.GetString("host"))
+	domain.Set("target_kind", schema.TargetContainer)
 	domain.Set("container", exposure.Container)
 	domain.Set("port", exposure.Port)
 	domain.Set("tls", tls)
@@ -268,11 +338,7 @@ func (p *Panel) applyExposure(stack *core.Record, exposure stacks.Exposure, host
 	domain.Set("service", exposure.Service)
 	domain.Set("label_removed", false)
 	domain.Set("basic_auth", auth)
-
-	if err := p.App.Save(domain); err != nil {
-		return describeSaveError(hostname, err)
-	}
-	return ""
+	return true
 }
 
 // describeSaveError says in words why a domain could not be saved.
@@ -321,17 +387,30 @@ func (p *Panel) domainBasicAuth(domain *core.Record) ([]edge.BasicAuthUser, erro
 }
 
 // validateBasicAuth checks the users of a domain as they are saved, before
-// they are sealed.
-func validateBasicAuth(record *core.Record) error {
+// they are sealed, and that a domain with a password stays one the edge can
+// ask it for: a container behind HTTPS. It names the field that is wrong.
+func validateBasicAuth(record *core.Record) (string, error) {
 	text := record.GetString("basic_auth")
-	if text == "" || secrets.IsSealed(text) {
-		return nil
+	if text == "" {
+		return "", nil
 	}
+	// only the panel sets passwords, so a sealed one is the label's, or a kept
+	// label domain's: removing the domain is the way to drop it
+	const kept = " remove the domain and add it again to drop its password"
 	if record.GetString("target_kind") != schema.TargetContainer {
-		return errors.New("only a domain of a container can ask for a password")
+		if secrets.IsSealed(text) {
+			return "target_kind", errors.New("this domain asks for a password, so it stays the domain of a container:" + kept)
+		}
+		return "basic_auth", errors.New("only a domain of a container can ask for a password")
 	}
 	if record.GetString("tls") == schema.TLSOff {
-		return errors.New("a password needs HTTPS")
+		if secrets.IsSealed(text) {
+			return "tls", errors.New("this domain asks for a password, so it needs HTTPS:" + kept)
+		}
+		return "basic_auth", errors.New("a password needs HTTPS")
 	}
-	return edge.ValidBasicAuth(parseBasicAuth(text))
+	if secrets.IsSealed(text) {
+		return "", nil
+	}
+	return "basic_auth", edge.ValidBasicAuth(parseBasicAuth(text))
 }

@@ -5,6 +5,7 @@ package inventory
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"reflect"
 	"sync"
 	"time"
@@ -21,6 +22,9 @@ const (
 	labelProject = "com.docker.compose.project"
 	labelService = "com.docker.compose.service"
 	labelRole    = "pocketcloud.role"
+	// labelAuth holds the password hashes of a service's domains (see
+	// stacks.LabelAuth), which are not for everyone who may see containers
+	labelAuth = "pocketcloud.auth"
 )
 
 // Store writes inventory reports to the collections.
@@ -125,7 +129,7 @@ func stacksByName(app core.App, hostID string) (map[string]string, error) {
 }
 
 func upsertContainer(app core.App, hostID string, info *agentv1.ContainerInfo, stacks map[string]string) error {
-	labels := info.GetLabels()
+	labels := redactLabels(info.GetLabels())
 	project := labels[labelProject]
 
 	ports := make([]map[string]any, 0, len(info.GetPorts()))
@@ -163,6 +167,20 @@ func upsertContainer(app core.App, hostID string, info *agentv1.ContainerInfo, s
 
 	return upsert(app, schema.Containers, hostID, "docker_id", info.GetDockerId(), fields)
 }
+
+// redactLabels hides the values of labels that hold secrets, keeping that they
+// are there.
+func redactLabels(labels map[string]string) map[string]string {
+	if _, ok := labels[labelAuth]; !ok {
+		return labels
+	}
+	redacted := maps.Clone(labels)
+	redacted[labelAuth] = Redacted
+	return redacted
+}
+
+// Redacted stands in for the value of a label that holds secrets.
+const Redacted = "(hidden)"
 
 func upsertVolume(app core.App, hostID string, info *agentv1.VolumeInfo) error {
 	return upsert(app, schema.Volumes, hostID, "name", info.GetName(), map[string]any{

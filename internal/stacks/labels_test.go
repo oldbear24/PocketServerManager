@@ -8,7 +8,7 @@ import (
 	yaml "go.yaml.in/yaml/v4"
 )
 
-func exposures(t *testing.T, compose string, env map[string]string, checkHashes bool) ([]Exposure, []Problem) {
+func exposures(t *testing.T, compose string, env map[string]string) ([]Exposure, []Problem) {
 	t.Helper()
 	project, err := LoadResolved(context.Background(), "shop", compose, "", env)
 	if err != nil {
@@ -18,7 +18,7 @@ func exposures(t *testing.T, compose string, env map[string]string, checkHashes 
 	if err := yaml.Unmarshal([]byte(compose), &tree); err != nil {
 		t.Fatal(err)
 	}
-	return Exposures(project, &tree, checkHashes)
+	return Exposures(project, &tree, nil)
 }
 
 const bob = "bob:$$2a$$05$$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
@@ -47,7 +47,7 @@ func TestLabelsPutServicesOnDomains(t *testing.T) {
   db:
     image: postgres:17
 `
-	got, problems := exposures(t, compose, nil, true)
+	got, problems := exposures(t, compose, nil)
 	if len(problems) != 0 {
 		t.Fatalf("problems: %v", problems)
 	}
@@ -116,9 +116,15 @@ func TestWrongLabelsSayWhatIsWrongAndWhere(t *testing.T) {
       pocketcloud.tls: "off"
       pocketcloud.auth: "` + bob + `"
 `
-	got, problems := exposures(t, compose, nil, true)
-	if len(got) != 0 {
-		t.Errorf("exposed although wrong: %+v", got)
+	got, problems := exposures(t, compose, nil)
+	// a service with wrong labels keeps what it has: it is broken, not gone
+	if len(got) != 8 {
+		t.Errorf("%d services with labels: %+v", len(got), got)
+	}
+	for _, exposure := range got {
+		if !exposure.Broken {
+			t.Errorf("used although wrong: %+v", exposure)
+		}
 	}
 	want := map[string]string{
 		"noport:":   "set pocketcloud.port: the service names no port",
@@ -168,7 +174,7 @@ func TestTheEditorCannotCheckHashesFromSecrets(t *testing.T) {
 	for _, warning := range result.Warnings {
 		t.Errorf("a warning about a secret: %v", warning)
 	}
-	if _, problems := exposures(t, compose, map[string]string{"ADMIN_HASH": "secret"}, true); len(problems) != 1 {
+	if _, problems := exposures(t, compose, map[string]string{"ADMIN_HASH": "secret"}); len(problems) != 1 {
 		t.Errorf("the deploy check: %v", problems)
 	}
 	// the editor shows the label problems it can see
@@ -188,8 +194,66 @@ func TestScaledServicesAreWarnedAbout(t *testing.T) {
     labels:
       pocketcloud.domain: shop.example.com
 `
-	got, problems := exposures(t, compose, nil, true)
+	got, problems := exposures(t, compose, nil)
 	if len(got) != 1 || len(problems) != 1 || !strings.Contains(problems[0].Message, "only the first of its 3 containers") {
 		t.Errorf("%+v %v", got, problems)
+	}
+}
+
+// TestAHostnameTwiceInOneLabelIsOneDomain: naming a hostname twice in the same
+// label is no conflict with itself.
+func TestAHostnameTwiceInOneLabelIsOneDomain(t *testing.T) {
+	compose := `services:
+  web:
+    image: nginx:1
+    expose: ["80"]
+    labels:
+      pocketcloud.domain: shop.example.com, Shop.example.com., www.shop.example.com
+`
+	got, problems := exposures(t, compose, nil)
+	if len(problems) != 0 || len(got) != 1 || got[0].Broken || strings.Join(got[0].Hostnames, ",") != "shop.example.com,www.shop.example.com" {
+		t.Errorf("%+v %v", got, problems)
+	}
+}
+
+// TestTheEditorChecksWhatItCanSee: a label whose value takes a secret is
+// checked at the deploy; one written out in the file is checked as it is
+// typed, its hashes too, in either form of labels and with the services that
+// COMPOSE_PROFILES turns on.
+func TestTheEditorChecksWhatItCanSee(t *testing.T) {
+	fromSecrets := `services:
+  admin:
+    image: admin:1
+    labels:
+      - pocketcloud.domain=${ADMIN_DOMAIN}
+      - pocketcloud.port=${ADMIN_PORT}
+      - pocketcloud.auth=${ADMIN_AUTH}
+`
+	result := validate(fromSecrets, "ADMIN_PORT=${secret:admin-port}\n", "ADMIN_DOMAIN", "ADMIN_AUTH")
+	if !result.Valid || len(result.Warnings) != 0 {
+		t.Errorf("warnings about secrets: %+v", result)
+	}
+	// a plain variable is known, and checked
+	result = validate(fromSecrets, "ADMIN_PORT=web\n", "ADMIN_DOMAIN", "ADMIN_AUTH")
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0].Message, `not "web"`) {
+		t.Errorf("warnings: %+v", result.Warnings)
+	}
+
+	literal := `services:
+  admin:
+    image: admin:1
+    expose: ["3000"]
+    profiles: [tools]
+    labels:
+      pocketcloud.domain: admin.example.com
+      pocketcloud.auth: "bob:plaintext, carol:$${NOT_A_VARIABLE}"
+`
+	result = validate(literal, "COMPOSE_PROFILES=tools\n")
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0].Message, "is not a bcrypt hash") || result.Warnings[0].Line != 8 {
+		t.Errorf("warnings: %+v", result.Warnings)
+	}
+	// without its profile the service is not deployed, and not checked
+	if result = validate(literal, ""); len(result.Warnings) != 0 {
+		t.Errorf("warnings: %+v", result.Warnings)
 	}
 }

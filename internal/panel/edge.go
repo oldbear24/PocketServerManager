@@ -155,8 +155,8 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		record.Set("port", 0)
 	}
 
-	if err := validateBasicAuth(record); err != nil {
-		errs["basic_auth"] = validation.NewError("validation_invalid_basic_auth", capitalize(err.Error())+".")
+	if field, err := validateBasicAuth(record); err != nil {
+		errs[field] = validation.NewError("validation_invalid_basic_auth", capitalize(err.Error())+".")
 	}
 
 	if len(errs) > 0 {
@@ -308,6 +308,12 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			route.RedirectTo = domain.GetString("redirect_to")
 			route.RedirectPermanent = domain.GetBool("redirect_permanent")
 		default:
+			continue
+		}
+		if len(users) > 0 && route.Kind != edge.KindProxy {
+			// the edge could not ask for the password, and one such domain
+			// must not stop the edge's other routes
+			p.Log.Error("a domain with a password is left out of its edge's config: it is not the domain of a container", "domain", route.Hostname)
 			continue
 		}
 

@@ -3,6 +3,7 @@ package stacks
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,13 +45,21 @@ type Exposure struct {
 	Port      int                  `json:"port"`
 	TLS       string               `json:"tls"`
 	BasicAuth []edge.BasicAuthUser `json:"-"`
+	// Broken is set when the service has the labels but they are wrong. Its
+	// domains stay as they are until the labels are fixed: a mistake in a
+	// label does not take a service off its domains.
+	Broken bool `json:"broken,omitempty"`
 }
 
+// Placeholder says whether the value of a service's label is a stand-in for
+// one that is not known, as the editor's secrets are. Such a value is not
+// checked.
+type Placeholder func(service, label string) bool
+
 // Exposures reads the pocketcloud labels of a project's services. A service
-// whose labels are wrong is left out, and the problems say why. checkHashes
-// checks the password hashes too, which an editor without the stack's
-// secrets cannot do when they come from a secret.
-func Exposures(project *types.Project, tree *yaml.Node, checkHashes bool) ([]Exposure, []Problem) {
+// whose labels are wrong is Broken, and the problems say why. placeholder,
+// which may be nil, names the values that cannot be checked.
+func Exposures(project *types.Project, tree *yaml.Node, placeholder Placeholder) ([]Exposure, []Problem) {
 	exposures := []Exposure{}
 	problems := []Problem{}
 	claimed := map[string]string{}
@@ -77,32 +86,37 @@ func Exposures(project *types.Project, tree *yaml.Node, checkHashes bool) ([]Exp
 			continue
 		}
 
+		unknown := func(label string) bool { return placeholder != nil && placeholder(name, label) }
 		exposure := Exposure{Service: name, Container: containerName(project.Name, name, service)}
 		valid := true
 
-		for _, hostname := range strings.FieldsFunc(domains, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
-			hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-			if err := edge.ValidHostname(hostname); err != nil {
-				problems = append(problems, at(LabelDomain, err.Error()+"."))
+		if !unknown(LabelDomain) {
+			for _, hostname := range strings.FieldsFunc(domains, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+				hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+				if err := edge.ValidHostname(hostname); err != nil {
+					problems = append(problems, at(LabelDomain, err.Error()+"."))
+					valid = false
+					continue
+				}
+				if other, ok := claimed[hostname]; ok && other != name {
+					problems = append(problems, at(LabelDomain, fmt.Sprintf("%s is the domain of %s already.", hostname, other)))
+					valid = false
+					continue
+				}
+				claimed[hostname] = name
+				if !slices.Contains(exposure.Hostnames, hostname) {
+					exposure.Hostnames = append(exposure.Hostnames, hostname)
+				}
+			}
+			if len(exposure.Hostnames) == 0 && valid {
+				problems = append(problems, at(LabelDomain, LabelDomain+" names no hostname."))
 				valid = false
-				continue
 			}
-			if other, ok := claimed[hostname]; ok {
-				problems = append(problems, at(LabelDomain, fmt.Sprintf("%s is the domain of %s already.", hostname, other)))
-				valid = false
-				continue
-			}
-			claimed[hostname] = name
-			if !slices.Contains(exposure.Hostnames, hostname) {
-				exposure.Hostnames = append(exposure.Hostnames, hostname)
-			}
-		}
-		if len(exposure.Hostnames) == 0 && valid {
-			problems = append(problems, at(LabelDomain, LabelDomain+" names no hostname."))
-			valid = false
 		}
 
-		if text, ok := labels[LabelPort]; ok {
+		if text, ok := labels[LabelPort]; unknown(LabelPort) {
+			// checked at the deploy
+		} else if ok {
 			port, err := strconv.Atoi(strings.TrimSpace(text))
 			if err != nil || port < 1 || port > 65535 {
 				problems = append(problems, at(LabelPort, fmt.Sprintf("%s is a port between 1 and 65535, not %q.", LabelPort, text)))
@@ -123,12 +137,14 @@ func Exposures(project *types.Project, tree *yaml.Node, checkHashes bool) ([]Exp
 			}
 		}
 
-		switch tls := strings.ToLower(strings.TrimSpace(labels[LabelTLS])); tls {
-		case "", TLSACME:
+		switch tls := strings.ToLower(strings.TrimSpace(labels[LabelTLS])); {
+		case unknown(LabelTLS):
 			exposure.TLS = TLSACME
-		case TLSOff:
+		case tls == "" || tls == TLSACME:
+			exposure.TLS = TLSACME
+		case tls == TLSOff:
 			exposure.TLS = TLSOff
-		case TLSInternal:
+		case tls == TLSInternal:
 			problems = append(problems, at(LabelTLS, "certificates from PocketCloud's internal CA are not available yet: use acme, or off."))
 			valid = false
 		default:
@@ -137,15 +153,17 @@ func Exposures(project *types.Project, tree *yaml.Node, checkHashes bool) ([]Exp
 		}
 
 		if text, ok := labels[LabelAuth]; ok {
-			users, err := parseAuth(text)
-			if err == nil && checkHashes {
-				err = edge.ValidBasicAuth(users)
+			if !unknown(LabelAuth) {
+				users, err := parseAuth(text)
+				if err == nil {
+					err = edge.ValidBasicAuth(users)
+				}
+				if err != nil {
+					problems = append(problems, at(LabelAuth, err.Error()+"."))
+					valid = false
+				}
+				exposure.BasicAuth = users
 			}
-			if err != nil {
-				problems = append(problems, at(LabelAuth, err.Error()+"."))
-				valid = false
-			}
-			exposure.BasicAuth = users
 			if exposure.TLS == TLSOff {
 				problems = append(problems, at(LabelAuth, "a password needs HTTPS: remove pocketcloud.tls=off."))
 				valid = false
@@ -156,11 +174,59 @@ func Exposures(project *types.Project, tree *yaml.Node, checkHashes bool) ([]Exp
 			problems = append(problems, at("", fmt.Sprintf("only the first of its %d containers gets the requests of %s.", scale, strings.Join(exposure.Hostnames, ", "))))
 		}
 
-		if valid {
-			exposures = append(exposures, exposure)
-		}
+		exposure.Broken = !valid
+		exposures = append(exposures, exposure)
 	}
 	return exposures, problems
+}
+
+// rawLabel is a label's value as the file writes it, before its variables are
+// filled in: from a mapping (key: value) or a list (- key=value).
+func rawLabel(tree *yaml.Node, service, label string) (string, bool) {
+	node := document(tree)
+	for _, part := range []string{"services", service, "labels"} {
+		if node == nil {
+			return "", false
+		}
+		_, node = child(node, part)
+	}
+	if node == nil {
+		return "", false
+	}
+	if node.Kind == yaml.MappingNode {
+		if _, value := child(node, label); value != nil {
+			return value.Value, true
+		}
+		return "", false
+	}
+	for _, item := range node.Content {
+		if key, value, ok := strings.Cut(item.Value, "="); ok && strings.TrimSpace(key) == label {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+var variable = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// usesVariables says whether a value as the file writes it takes one of the
+// variables named in its interpolation; $$ is a dollar sign.
+func usesVariables(raw string, names map[string]bool) bool {
+	for _, match := range variable.FindAllStringSubmatch(strings.ReplaceAll(raw, "$$", ""), -1) {
+		if names[match[1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholdersIn makes a Placeholder of the variables whose values are not
+// known: the labels whose value takes one of them.
+func placeholdersIn(tree *yaml.Node, names map[string]bool) Placeholder {
+	return func(service, label string) bool {
+		raw, ok := rawLabel(tree, service, label)
+		return ok && usesVariables(raw, names)
+	}
 }
 
 // containerName is what Compose calls a service's first container.

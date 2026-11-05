@@ -214,6 +214,20 @@ func TestARemovedLabelWaitsForConfirmation(t *testing.T) {
 		t.Errorf("a domain by hand claims a label: %v", hand.PublicExport())
 	}
 
+	// a label with a mistake in it holds its domains as they are: it is not gone
+	broken := strings.Replace(twoNames, `expose: ["80"]`, `expose: ["80", "443"]`, 1)
+	stack := l.deploy(stackID, broken)
+	if problems := strings.Join(problemsOf(stack), "\n"); !strings.Contains(problems, "the service listens on 80 and 443") {
+		t.Errorf("problems: %s", problems)
+	}
+	for _, domain := range []*core.Record{shop, www} {
+		held, _ := l.app.FindRecordById(schema.Domains, domain.Id)
+		if held.GetBool("label_removed") || held.GetInt("port") != 80 || held.GetString("container") != "shop-web-1" {
+			t.Errorf("a broken label changed its domain: %v", held.PublicExport())
+		}
+	}
+	l.deploy(stackID, twoNames)
+
 	// the label loses a name: its domain stays, marked
 	l.deploy(stackID, labelledShop)
 	l.waitFor("www to be marked", func() bool {
@@ -356,5 +370,38 @@ func TestALabelCanAskForAPassword(t *testing.T) {
 	stack = l.deploy(stackID, broken)
 	if problems := strings.Join(problemsOf(stack), "\n"); !strings.Contains(problems, "not a bcrypt hash") {
 		t.Errorf("problems: %s", problems)
+	}
+	// and the domain keeps the password it had
+	held, _ := l.app.FindRecordById(schema.Domains, domain.Id)
+	if held.GetString("basic_auth") != domain.GetString("basic_auth") || held.GetBool("label_removed") {
+		t.Errorf("a broken label changed its domain: %v", held.PublicExport())
+	}
+
+	// kept as a domain of its own, it keeps its password, and with it stays
+	// a container behind HTTPS
+	withoutLabels := "services:\n  admin:\n    image: admin:1\n"
+	l.deploy(stackID, withoutLabels)
+	l.waitFor("the domain to be marked", func() bool {
+		record, err := l.app.FindRecordById(schema.Domains, domain.Id)
+		return err == nil && record.GetBool("label_removed")
+	})
+	_, operator := testutil.NewUser(t, l.app, "op@example.com", schema.RoleOperator)
+	if status, body := testutil.Do(t, l.handler, testutil.Request{Method: "POST", URL: "/api/pc/domains/" + domain.Id + "/keep", Token: operator}); status != http.StatusOK {
+		t.Fatalf("keep: %d %s", status, body)
+	}
+	for body, field := range map[string]string{
+		`{"target_kind":"redirect","redirect_to":"https://example.org"}`: "target_kind",
+		`{"tls":"off"}`: "tls",
+	} {
+		status, raw := testutil.Do(t, l.handler, testutil.Request{Method: "PATCH", URL: "/api/collections/domains/records/" + domain.Id, Token: operator, Body: body})
+		if status != http.StatusBadRequest || !strings.Contains(raw, `"`+field+`"`) || !strings.Contains(raw, "asks for a password") {
+			t.Errorf("%s on a domain with a password: %d %s", body, status, raw)
+		}
+	}
+	if status, body := testutil.Do(t, l.handler, testutil.Request{Method: "PATCH", URL: "/api/collections/domains/records/" + domain.Id, Token: operator, Body: `{"port":3001}`}); status != http.StatusOK {
+		t.Errorf("a kept domain with a password cannot be changed: %d %s", status, body)
+	}
+	if route := l.edgeRoute("admin.example.test"); route["password"] != true {
+		t.Errorf("the kept route: %v", route)
 	}
 }
