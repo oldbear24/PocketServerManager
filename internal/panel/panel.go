@@ -156,6 +156,7 @@ func (p *Panel) Register() {
 	p.registerDNS()
 	p.registerACME()
 	p.registerLabels()
+	p.registerSites()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -195,6 +196,7 @@ func (p *Panel) Register() {
 		p.bindDNSRoutes(group)
 		p.bindACMERoutes(group)
 		p.bindLabelRoutes(group)
+		p.bindSiteRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -257,6 +259,8 @@ func (p *Panel) startGateway() error {
 	}
 	p.Gateway.BindHostRemoval()
 	p.Gateway.OnEdgeStatus = p.onEdgeStatus
+	p.Gateway.OnRequests = p.onRequests
+	p.Gateway.Fetch = p.fetchArtifact
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)

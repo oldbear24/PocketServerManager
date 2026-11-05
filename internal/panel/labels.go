@@ -343,15 +343,20 @@ func (p *Panel) setExposure(domain, stack *core.Record, exposure stacks.Exposure
 
 // describeSaveError says in words why a domain could not be saved.
 func describeSaveError(hostname string, err error) string {
+	return hostname + ": " + saveErrorText(err)
+}
+
+// saveErrorText is why a record could not be saved, in words.
+func saveErrorText(err error) string {
 	var errs validation.Errors
 	if errors.As(err, &errs) {
 		messages := []string{}
 		for _, field := range slices.Sorted(maps.Keys(errs)) {
 			messages = append(messages, errs[field].Error())
 		}
-		return hostname + ": " + strings.Join(messages, " ")
+		return strings.Join(messages, " ")
 	}
-	return hostname + ": " + err.Error()
+	return err.Error()
 }
 
 // basicAuthText is how the users of a route are stored: user:hash lines.
