@@ -51,9 +51,8 @@ jobs:
           name: web-dist
           path: web/dist
       - run: go build ./...
-      # the end-to-end tests take about 11 minutes under the race detector, more
-      # than go test's default limit of 10
-      - run: go test -race -timeout 25m ./...
+      # the end-to-end tests run in their own jobs, below
+      - run: go test -race -timeout 25m $(go list ./... | grep -v '/internal/e2e$')
       # the golden edge configs, loaded into the pinned Caddy image itself
       - run: go test -count=1 -run TestGoldenConfigsLoadInCaddy ./internal/edge
         env:
@@ -70,6 +69,35 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # The end-to-end tests took 17 minutes under the race detector on one runner,
+  # close to the limit; three shards share them out by name, so together they
+  # run every test once.
+  e2e:
+    name: End-to-end (${{ matrix.shard }}/3)
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v6
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Run this shard's tests under the race detector
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          tests="$(go test -list '.*' ./internal/e2e | grep -E '^Test' | sort | awk -v n=3 -v s="$SHARD" 'NR % n == s % n')"
+          [ -n "$tests" ] || { echo "::error::shard $SHARD has no tests"; exit 1; }
+          echo "$tests"
+          go test -race -timeout 25m -run "^($(echo $tests | tr ' ' '|'))\$" ./internal/e2e
 
   proto:
     name: Protobuf
