@@ -769,7 +769,25 @@
     "removeNote": "Stack i jeho historie zmizí z panelu. Jeho kontejnery musí být nejdřív pryč.",
     "remove": "Odstranit stack",
     "removeConfirm": "Odstranit stack {{name}}?",
-    "hostOffline": "Server je offline: co teď spustíš, počká, až se vrátí, nejdéle hodinu."
+    "hostOffline": "Server je offline: co teď spustíš, počká, až se vrátí, nejdéle hodinu.",
+    "domains": "Domény",
+    "gettingCertificate": "Získávám certifikát",
+    "fromLabel": "z labelu pocketcloud.domain",
+    "labels": "Domény z labelů",
+    "labelsNote": "labely pocketcloud.domain při posledním nasazení",
+    "labelProblems_one": "{{count}} label nešel použít:",
+    "labelProblems_few": "{{count}} labely nešly použít:",
+    "labelProblems_many": "{{count}} labelů nešlo použít:",
+    "labelProblems_other": "{{count}} labelů nešlo použít:",
+    "removedLabelsText": "Labely těchto domén zmizely. Edge je obsluhuje, dokud je neodebereš, nebo neponecháš jako samostatné domény.",
+    "removedLabel": "label služby {{service}} zmizel",
+    "keep": "Ponechat jako doménu",
+    "keepName": "Ponechat {{hostname}} jako doménu",
+    "removeDomainName": "Odebrat {{hostname}}",
+    "kept": "{{hostname}} je teď samostatná doména.",
+    "domainRemoved": "{{hostname}} je odebraná.",
+    "removeDomainTitle": "Odebrat {{hostname}}?",
+    "removeDomainText": "Edge ji přestane obsluhovat a její DNS záznamy zmizí."
   },
   "db": {
     "title": "Databáze",
@@ -1017,7 +1035,10 @@
     "removeCertificateConfirm": "Odebrat certifikát pro {{names}}?",
     "removeCertificateNote": "Edge budou jeho domény obsluhovat jen přes HTTP, dokud je nepokryje jiný certifikát.",
     "certificateRemoved": "Certifikát byl odebrán.",
-    "loading": "Načítají se trasy…"
+    "loading": "Načítají se trasy…",
+    "password": "heslo",
+    "fromLabel": "label služby {{service}}",
+    "labelRemoved": "label služby {{service}} odebrán"
   },
   "php": {
     "title": "Běhová prostředí PHP",

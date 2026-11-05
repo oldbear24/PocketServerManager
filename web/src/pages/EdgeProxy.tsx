@@ -39,7 +39,7 @@ const systemRoles = ["agent", "updater", "edge", "job"];
  * the TLS of every route the way the edge's config does. It is read again
  * whenever a domain, a certificate or the edge's state changes.
  */
-function useEdgeState(host: Host) {
+export function useEdgeState(host: Host) {
   const domains = useLiveList<Domain>("domains", {
     filter: `host = "${host.id}"`,
     sort: "hostname",
@@ -82,7 +82,7 @@ function useEdgeState(host: Host) {
   return { state, error, certificates: certificates.items };
 }
 
-function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
+export function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
   const { t } = useTranslation();
   const tone = tlsTone(tls);
   const Icon = tls === "none" || tls === "off" ? LockOpen : Lock;
@@ -96,7 +96,7 @@ function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
   );
 }
 
-function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
+export function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
   const date = formatDate(route.certificate?.not_after);
   return t(`edge.tls.${route.tls}`, { date });
 }
@@ -123,10 +123,23 @@ function RouteRow({
         {t(`edge.kind.${route.target_kind}`)}
       </StatusPill>
       <span className={`route-tls ${tlsTone(route.tls)}`}>{tlsText(t, route)}</span>
+      {route.password && (
+        <StatusPill tone="off" dot={false}>
+          {t("edge.password")}
+        </StatusPill>
+      )}
+      {route.origin === "label" &&
+        (route.label_removed ? (
+          <StatusPill tone="warn">{t("edge.labelRemoved", { service: route.service })}</StatusPill>
+        ) : route.stack ? (
+          <Link className="pill off" to={`/stacks/${route.stack}`}>
+            {t("edge.fromLabel", { service: route.service })}
+          </Link>
+        ) : null)}
       {route.dns_status && (
         <DnsPill status={route.dns_status} onClick={onDns ? () => onDns(route) : undefined} />
       )}
-      {onRemove && (
+      {onRemove && (route.origin !== "label" || route.label_removed) && (
         <IconButton
           bare
           aria-label={t("edge.removeDomain", { hostname: route.hostname })}

@@ -54,6 +54,11 @@ const state: EdgeState = {
       compress: false,
       dns_status: "ok",
       dns_error: "",
+      origin: "",
+      stack: "",
+      service: "",
+      label_removed: false,
+      password: false,
     },
     {
       id: "d2",
@@ -66,6 +71,11 @@ const state: EdgeState = {
       compress: false,
       dns_status: "manual",
       dns_error: "",
+      origin: "",
+      stack: "",
+      service: "",
+      label_removed: false,
+      password: false,
     },
   ],
   edge: {
@@ -172,6 +182,40 @@ describe("the edge proxy tab", () => {
     });
     expect(await screen.findByText("caddy refused the config")).toBeInTheDocument();
     expect(screen.getByText("The last config failed")).toBeInTheDocument();
+  });
+});
+
+describe("domains from labels", () => {
+  const labelled = (removed: boolean): EdgeState => ({
+    ...state,
+    routes: [
+      {
+        ...state.routes[0],
+        id: "d3",
+        hostname: "shop.example.com",
+        origin: "label",
+        stack: "s1",
+        service: "web",
+        label_removed: removed,
+        password: true,
+      },
+    ],
+  });
+
+  it("links a label's domain to its stack, and offers no removal while the label is there", async () => {
+    renderTab("operator", labelled(false));
+    const link = await screen.findByRole("link", { name: "label of web" });
+    expect(link.getAttribute("href")).toBe("/stacks/s1");
+    expect(screen.getByText("password")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Remove shop.example.com/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers the removal once the label is gone", async () => {
+    renderTab("operator", labelled(true));
+    expect(await screen.findByText("label of web removed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Remove shop.example.com/ })).toBeInTheDocument();
   });
 });
 

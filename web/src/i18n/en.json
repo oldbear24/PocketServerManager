@@ -731,7 +731,23 @@
     "removeNote": "This removes the stack and its history from the panel. Its containers must be gone first.",
     "remove": "Remove stack",
     "removeConfirm": "Remove the stack {{name}}?",
-    "hostOffline": "The server is offline: what you start now waits until it is back, for up to an hour."
+    "hostOffline": "The server is offline: what you start now waits until it is back, for up to an hour.",
+    "domains": "Domains",
+    "gettingCertificate": "Getting a certificate",
+    "fromLabel": "from the pocketcloud.domain label",
+    "labels": "Domains from labels",
+    "labelsNote": "pocketcloud.domain labels at the last deploy",
+    "labelProblems_one": "{{count}} label could not be used:",
+    "labelProblems_other": "{{count}} labels could not be used:",
+    "removedLabelsText": "The labels of these domains are gone. The edge serves them until you remove them, or keep them as domains of their own.",
+    "removedLabel": "the label of {{service}} is gone",
+    "keep": "Keep as a domain",
+    "keepName": "Keep {{hostname}} as a domain",
+    "removeDomainName": "Remove {{hostname}}",
+    "kept": "{{hostname}} is a domain of its own now.",
+    "domainRemoved": "{{hostname}} is removed.",
+    "removeDomainTitle": "Remove {{hostname}}?",
+    "removeDomainText": "The edge stops serving it, and its DNS records go."
   },
   "db": {
     "title": "Databases",
@@ -973,7 +989,10 @@
     "removeCertificateConfirm": "Remove the certificate for {{names}}?",
     "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
     "certificateRemoved": "The certificate was removed.",
-    "loading": "Loading the routes…"
+    "loading": "Loading the routes…",
+    "password": "password",
+    "fromLabel": "label of {{service}}",
+    "labelRemoved": "label of {{service}} removed"
   },
   "php": {
     "title": "PHP runtimes",
