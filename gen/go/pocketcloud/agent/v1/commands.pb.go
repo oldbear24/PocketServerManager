@@ -3674,8 +3674,13 @@ type EdgeApply struct {
 	// attach_containers are the containers the routes forward to. The agent
 	// connects them to the edge's network, now and whenever they start again.
 	AttachContainers []string `protobuf:"bytes,4,rep,name=attach_containers,json=attachContainers,proto3" json:"attach_containers,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// secrets are values caddy_json refers to instead of holding them, such as
+	// the password hashes of basic authentication: the JSON string
+	// "pocketcloud-secret:<name>" stands for secrets[<name>]. The panel adds
+	// them when it delivers the command, so they are never stored with it.
+	Secrets       map[string]string `protobuf:"bytes,5,rep,name=secrets,proto3" json:"secrets,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EdgeApply) Reset() {
@@ -3732,6 +3737,13 @@ func (x *EdgeApply) GetRevision() int64 {
 func (x *EdgeApply) GetAttachContainers() []string {
 	if x != nil {
 		return x.AttachContainers
+	}
+	return nil
+}
+
+func (x *EdgeApply) GetSecrets() map[string]string {
+	if x != nil {
+		return x.Secrets
 	}
 	return nil
 }
@@ -5146,14 +5158,18 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"DbMoveItem\x12\x1a\n" +
 	"\bdatabase\x18\x01 \x01(\tR\bdatabase\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12 \n" +
-	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"\x94\x01\n" +
+	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\"\x9e\x02\n" +
 	"\tEdgeApply\x12\x1d\n" +
 	"\n" +
 	"caddy_json\x18\x01 \x01(\tR\tcaddyJson\x12\x1f\n" +
 	"\vcaddy_image\x18\x02 \x01(\tR\n" +
 	"caddyImage\x12\x1a\n" +
 	"\brevision\x18\x03 \x01(\x03R\brevision\x12+\n" +
-	"\x11attach_containers\x18\x04 \x03(\tR\x10attachContainers\"\x86\x01\n" +
+	"\x11attach_containers\x18\x04 \x03(\tR\x10attachContainers\x12L\n" +
+	"\asecrets\x18\x05 \x03(\v2,.pocketcloud.agent.v1.EdgeApply.SecretsEntryB\x04\xc0\xf3\x18\x01R\asecrets\x1a:\n" +
+	"\fSecretsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x86\x01\n" +
 	"\vCertInstall\x12%\n" +
 	"\x0ecertificate_id\x18\x01 \x01(\tR\rcertificateId\x12\x14\n" +
 	"\x05names\x18\x02 \x03(\tR\x05names\x12\x1b\n" +
@@ -5266,7 +5282,7 @@ func file_pocketcloud_agent_v1_commands_proto_rawDescGZIP() []byte {
 	return file_pocketcloud_agent_v1_commands_proto_rawDescData
 }
 
-var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 65)
+var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
 var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(*Command)(nil),                // 0: pocketcloud.agent.v1.Command
 	(*ContainerStart)(nil),         // 1: pocketcloud.agent.v1.ContainerStart
@@ -5331,12 +5347,13 @@ var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	nil,                            // 60: pocketcloud.agent.v1.SitePhpApply.EnvEntry
 	nil,                            // 61: pocketcloud.agent.v1.SitePhpApply.SecretsEntry
 	nil,                            // 62: pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	nil,                            // 63: pocketcloud.agent.v1.BackupRepository.EnvEntry
-	nil,                            // 64: pocketcloud.agent.v1.BackupRun.EnvEntry
-	(*timestamppb.Timestamp)(nil),  // 65: google.protobuf.Timestamp
+	nil,                            // 63: pocketcloud.agent.v1.EdgeApply.SecretsEntry
+	nil,                            // 64: pocketcloud.agent.v1.BackupRepository.EnvEntry
+	nil,                            // 65: pocketcloud.agent.v1.BackupRun.EnvEntry
+	(*timestamppb.Timestamp)(nil),  // 66: google.protobuf.Timestamp
 }
 var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
-	65, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
+	66, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
 	1,  // 1: pocketcloud.agent.v1.Command.container_start:type_name -> pocketcloud.agent.v1.ContainerStart
 	2,  // 2: pocketcloud.agent.v1.Command.container_stop:type_name -> pocketcloud.agent.v1.ContainerStop
 	3,  // 3: pocketcloud.agent.v1.Command.container_restart:type_name -> pocketcloud.agent.v1.ContainerRestart
@@ -5409,21 +5426,22 @@ var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
 	27, // 70: pocketcloud.agent.v1.DbServerMove.source:type_name -> pocketcloud.agent.v1.DbConnection
 	27, // 71: pocketcloud.agent.v1.DbServerMove.target:type_name -> pocketcloud.agent.v1.DbConnection
 	38, // 72: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
-	63, // 73: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	44, // 74: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 75: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	64, // 76: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	44, // 77: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 78: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 79: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 80: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 81: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	44, // 82: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	83, // [83:83] is the sub-list for method output_type
-	83, // [83:83] is the sub-list for method input_type
-	83, // [83:83] is the sub-list for extension type_name
-	83, // [83:83] is the sub-list for extension extendee
-	0,  // [0:83] is the sub-list for field type_name
+	63, // 73: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
+	64, // 74: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
+	44, // 75: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 76: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	65, // 77: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	44, // 78: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 79: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 80: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 81: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 82: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	44, // 83: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	84, // [84:84] is the sub-list for method output_type
+	84, // [84:84] is the sub-list for method input_type
+	84, // [84:84] is the sub-list for extension type_name
+	84, // [84:84] is the sub-list for extension extendee
+	0,  // [0:84] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }
@@ -5491,7 +5509,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_commands_proto_rawDesc), len(file_pocketcloud_agent_v1_commands_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   65,
+			NumMessages:   66,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

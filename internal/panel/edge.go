@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -91,6 +92,7 @@ func (p *Panel) registerEdge() {
 	})
 
 	p.Commands.RegisterEnricher("cert.install", p.enrichCertInstall)
+	p.Commands.RegisterEnricher("edge.apply", p.enrichEdgeApply)
 	p.Commands.OnFinish("edge.apply", p.edgeApplyFinished)
 	p.Commands.OnFinish("cert.install", p.certInstallFinished)
 	p.Commands.OnFinish("cert.remove", p.certRemoveFinished)
@@ -566,6 +568,38 @@ func (p *Panel) enrichCertInstall(_ *core.Record, command *agentv1.Command) erro
 	}
 	payload.ChainPem = []byte(cert.GetString("chain_pem"))
 	payload.KeyPem = []byte(key)
+	return nil
+}
+
+// enrichEdgeApply adds the password hashes the config refers to when the
+// command is delivered, so they are never stored with it: viewers read
+// commands.
+func (p *Panel) enrichEdgeApply(record *core.Record, command *agentv1.Command) error {
+	payload := command.GetEdgeApply()
+	names := edge.SecretNames(payload.GetCaddyJson())
+	if len(names) == 0 {
+		return nil
+	}
+	domains, err := p.App.FindRecordsByFilter(schema.Domains, "host={:h} && basic_auth!=''", "", 0, 0, dbx.Params{"h": record.GetString("host")})
+	if err != nil {
+		return err
+	}
+	available := map[string]string{}
+	for _, domain := range domains {
+		users, err := p.domainBasicAuth(domain)
+		if err != nil {
+			continue
+		}
+		maps.Copy(available, edge.Secrets(edge.Config{Routes: []edge.Route{{BasicAuth: users}}}))
+	}
+	payload.Secrets = map[string]string{}
+	for _, name := range names {
+		value, ok := available[name]
+		if !ok {
+			return errors.New("a password of this config was changed or removed since it was made; a newer config follows")
+		}
+		payload.Secrets[name] = value
+	}
 	return nil
 }
 

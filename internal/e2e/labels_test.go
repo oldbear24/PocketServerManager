@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -329,6 +330,26 @@ func TestALabelCanAskForAPassword(t *testing.T) {
 	if !strings.Contains(config, `"handler":"authentication"`) || !strings.Contains(config, `"username":"bob"`) {
 		t.Errorf("no password on the edge: %s", config)
 	}
+	// the command that carried it holds a reference, not the hash: anyone who
+	// may read commands could read it there
+	hash := "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
+	encoded := base64.StdEncoding.EncodeToString([]byte(hash))
+	_, viewer := testutil.NewUser(t, l.app, "viewer@example.com", schema.RoleViewer)
+	status, raw = testutil.Do(t, l.handler, testutil.Request{URL: "/api/collections/commands/records?filter=type%3D%27edge.apply%27&perPage=200", Token: viewer})
+	if status != http.StatusOK || !strings.Contains(raw, "edge.apply") {
+		t.Fatalf("commands as a viewer: %d %s", status, raw)
+	}
+	if strings.Contains(raw, "$2a$") || strings.Contains(raw, encoded) || !strings.Contains(raw, "pocketcloud-secret:") {
+		t.Errorf("the stored command shows the hash: %s", raw)
+	}
+	if strings.Contains(config, "$2a$") || strings.Contains(config, encoded) {
+		t.Errorf("the stored config holds the hash: %s", config)
+	}
+	// while the edge's Caddy was given the hash itself
+	l.waitFor("the edge's Caddy to have the hash", func() bool {
+		server := l.caddy.server()
+		return server != nil && strings.Contains(string(server.Config()), encoded)
+	})
 
 	// a hash that is not one is refused at the deploy, with the reason
 	broken := strings.Replace(compose, "$$2a$$05$$", "plain", 1)

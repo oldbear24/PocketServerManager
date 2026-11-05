@@ -601,6 +601,11 @@ message EdgeApply {
   // attach_containers are the containers the routes forward to. The agent
   // connects them to the edge's network, now and whenever they start again.
   repeated string attach_containers = 4;
+  // secrets are values caddy_json refers to instead of holding them, such as
+  // the password hashes of basic authentication: the JSON string
+  // "pocketcloud-secret:<name>" stands for secrets[<name>]. The panel adds
+  // them when it delivers the command, so they are never stored with it.
+  map<string, string> secrets = 5 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // CertInstall installs a certificate on an edge. The files are named after the

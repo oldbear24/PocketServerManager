@@ -232,11 +232,11 @@
                     "http_basic": {
                       "accounts": [
                         {
-                          "password": "JDJhJDA1JE5ubEhWSDBOLkxSc3Fnd2xvb3FrL3VQSU9XM3ZWdjdaMnM5YjVsa1NvOUtVZGJPRkpCLlRT",
+                          "password": "pocketcloud-secret:38f9840af9929a1f5ba18ce7d0ab505d",
                           "username": "alice"
                         },
                         {
-                          "password": "JDJhJDA1JDZQVk5KaXplMWtPZzhTOHBHdFNVdy5EZm12Zkd5QVp4WEVHTWxRTnlsQlVpNXo5aWFpQlJX",
+                          "password": "pocketcloud-secret:1c5ab6931394836faf6fb4c32f8b994a",
                           "username": "bob"
                         }
                       ],

@@ -51,8 +51,9 @@ type dnsHarness struct {
 	api       *fakecloudflare.API
 	resolvers *fakeResolvers
 	host      *core.Record
-	// edge is the agent of host
+	// edge is the agent of host, and caddy the fake Caddy it runs
 	edge  *runningAgent
+	caddy *fakeEdge
 	admin string
 }
 
@@ -75,7 +76,7 @@ func newDNSHarnessWith(t *testing.T, configure func(*agent.Config), zones ...str
 	if configure != nil {
 		changes = append(changes, configure)
 	}
-	edgeAgent, host, _ := h.managedEdge("dns-edge", changes...)
+	edgeAgent, host, caddy := h.managedEdge("dns-edge", changes...)
 	host = h.host(host.Id)
 	host.Set("public_ip4", "203.0.114.7")
 	host.Set("public_ip6", "2a01:4f8::7")
@@ -83,7 +84,7 @@ func newDNSHarnessWith(t *testing.T, configure func(*agent.Config), zones ...str
 		t.Fatal(err)
 	}
 	_, admin := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
-	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, edge: edgeAgent, admin: admin}
+	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, edge: edgeAgent, caddy: caddy, admin: admin}
 }
 
 func (d *dnsHarness) connect(token string) (int, map[string]any) {

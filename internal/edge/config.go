@@ -6,7 +6,9 @@
 package edge
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +90,64 @@ type BasicAuthUser struct {
 // BasicAuthRealm is what browsers show when they ask for the password.
 const BasicAuthRealm = "PocketCloud"
 
+// secretPrefix starts a JSON string that stands for a secret of the config.
+const secretPrefix = "pocketcloud-secret:"
+
+var secretRefs = regexp.MustCompile(`"` + secretPrefix + `([0-9a-f]{32})"`)
+
+// secretName names a password hash by its own digest, so that a new hash is
+// a new name and a new config.
+func secretName(hash string) string {
+	sum := sha256.Sum256([]byte(hash))
+	return hex.EncodeToString(sum[:16])
+}
+
+// SecretRef is what a config holds in place of a password hash.
+func SecretRef(hash string) string { return secretPrefix + secretName(hash) }
+
+// Secrets are the values the references of a config stand for: each user's
+// hash, base64-encoded as Caddy takes it in every Caddy 2 release.
+func Secrets(c Config) map[string]string {
+	secrets := map[string]string{}
+	for _, route := range c.Routes {
+		for _, user := range route.BasicAuth {
+			secrets[secretName(user.Hash)] = base64.StdEncoding.EncodeToString([]byte(user.Hash))
+		}
+	}
+	return secrets
+}
+
+// SecretNames are the names of the secrets a config refers to.
+func SecretNames(caddyJSON string) []string {
+	names := []string{}
+	for _, match := range secretRefs.FindAllStringSubmatch(caddyJSON, -1) {
+		if !slices.Contains(names, match[1]) {
+			names = append(names, match[1])
+		}
+	}
+	return names
+}
+
+// ResolveSecrets puts the secrets into a config where it refers to them. A
+// reference without its secret is an error: Caddy would take the reference
+// for the hash.
+func ResolveSecrets(caddyJSON string, secrets map[string]string) (string, error) {
+	var missing error
+	resolved := secretRefs.ReplaceAllStringFunc(caddyJSON, func(ref string) string {
+		name := secretRefs.FindStringSubmatch(ref)[1]
+		value, ok := secrets[name]
+		if !ok {
+			missing = fmt.Errorf("the config refers to a secret it was not given (%s)", name)
+			return ref
+		}
+		quoted, _ := json.Marshal(value)
+		return string(quoted)
+	})
+	return resolved, missing
+}
+
+var userName = regexp.MustCompile(`^[A-Za-z0-9._@+-]+$`)
+
 var bcryptHash = regexp.MustCompile(`^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}$`)
 
 // ValidBasicAuth checks the users of a route: names without colons or
@@ -95,13 +155,10 @@ var bcryptHash = regexp.MustCompile(`^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Z
 func ValidBasicAuth(users []BasicAuthUser) error {
 	seen := map[string]bool{}
 	for _, user := range users {
-		if user.Username == "" || len(user.Username) > 64 || strings.ContainsAny(user.Username, ": \t\r\n") {
-			return fmt.Errorf("%q is not a user name for basic authentication", user.Username)
-		}
-		for _, r := range user.Username {
-			if r < 0x20 || r == 0x7f {
-				return fmt.Errorf("%q is not a user name for basic authentication", user.Username)
-			}
+		// letters, digits and . _ @ + -: Caddy fills in placeholders in user
+		// names, such as {env.*} and {file.*}
+		if user.Username == "" || len(user.Username) > 64 || !userName.MatchString(user.Username) {
+			return fmt.Errorf("%q is not a user name for basic authentication: use letters, digits and . _ @ + -", user.Username)
 		}
 		if seen[user.Username] {
 			return fmt.Errorf("the user %s is there twice", user.Username)
@@ -493,8 +550,9 @@ func hostRoute(route Route, secure bool) object {
 		slices.SortFunc(users, func(a, b BasicAuthUser) int { return strings.Compare(a.Username, b.Username) })
 		accounts := make([]any, 0, len(users))
 		for _, user := range users {
-			// base64, which every Caddy 2 release takes
-			accounts = append(accounts, object{"username": user.Username, "password": base64.StdEncoding.EncodeToString([]byte(user.Hash))})
+			// a reference: the hash reaches the edge with the command, and is
+			// never stored with it
+			accounts = append(accounts, object{"username": user.Username, "password": SecretRef(user.Hash)})
 		}
 		handlers = append(handlers, object{
 			"handler": "authentication",

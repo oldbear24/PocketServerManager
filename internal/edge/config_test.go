@@ -2,6 +2,7 @@ package edge
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"os"
@@ -359,12 +360,14 @@ func TestAPasswordIsNeverAskedForOverPlainHTTP(t *testing.T) {
 func TestBasicAuthIsChecked(t *testing.T) {
 	good := "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
 	for name, users := range map[string][]BasicAuthUser{
-		"not bcrypt":   {{Username: "bob", Hash: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="}},
-		"a colon":      {{Username: "bo:b", Hash: good}},
-		"no name":      {{Username: "", Hash: good}},
-		"twice":        {{Username: "bob", Hash: good}, {Username: "bob", Hash: good}},
-		"a short hash": {{Username: "bob", Hash: good[:59]}},
-		"a control":    {{Username: "bo\x01b", Hash: good}},
+		"not bcrypt":    {{Username: "bob", Hash: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="}},
+		"a colon":       {{Username: "bo:b", Hash: good}},
+		"no name":       {{Username: "", Hash: good}},
+		"twice":         {{Username: "bob", Hash: good}, {Username: "bob", Hash: good}},
+		"a short hash":  {{Username: "bob", Hash: good[:59]}},
+		"a control":     {{Username: "bo\x01b", Hash: good}},
+		"a placeholder": {{Username: "{env.HOME}", Hash: good}},
+		"a slash":       {{Username: "a/b", Hash: good}},
 	} {
 		if err := ValidBasicAuth(users); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -373,5 +376,41 @@ func TestBasicAuthIsChecked(t *testing.T) {
 	redirect := Config{Routes: []Route{{Hostname: "r.example.com", Kind: KindRedirect, RedirectTo: "https://x.example.com", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: good}}}}}
 	if err := redirect.Validate(); err == nil {
 		t.Error("a redirect with a password was accepted")
+	}
+}
+
+// TestPasswordsAreReferencesInTheConfig: a config refers to the hashes of its
+// passwords, so the stored command holds none; the agent puts them in.
+func TestPasswordsAreReferencesInTheConfig(t *testing.T) {
+	hash := "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
+	config := Config{
+		Certificates: []Certificate{{ID: "c1"}},
+		Routes:       []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: hash}}}},
+	}
+	raw, err := Build(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(hash))
+	if strings.Contains(string(raw), hash) || strings.Contains(string(raw), encoded) {
+		t.Fatal("the hash is in the config")
+	}
+	names := SecretNames(string(raw))
+	if len(names) != 1 {
+		t.Fatalf("references: %v", names)
+	}
+	resolved, err := ResolveSecrets(string(raw), Secrets(config))
+	if err != nil || !strings.Contains(resolved, `"password": "`+encoded+`"`) || len(SecretNames(resolved)) != 0 {
+		t.Errorf("resolved: %v\n%s", err, resolved)
+	}
+	if _, err := ResolveSecrets(string(raw), map[string]string{}); err == nil {
+		t.Error("a reference without its secret was left in place")
+	}
+
+	// a new hash is a new name, so a new config
+	other := config
+	other.Routes = []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: "$2a$05$NnlHVH0N.LRsqgwlooqk/uPIOW3vVv7Z2s9b5lkSo9KUdbOFJB.TS"}}}}
+	if changed, _ := Build(other); string(changed) == string(raw) {
+		t.Error("a new password made the same config")
 	}
 }
