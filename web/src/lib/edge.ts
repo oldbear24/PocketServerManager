@@ -9,7 +9,7 @@ export type RouteTLS = "valid" | "expiring" | "expired" | "installing" | "none" 
 export type EdgeRoute = {
   id: string;
   hostname: string;
-  target_kind: "container" | "redirect";
+  target_kind: "container" | "redirect" | "site";
   target: string;
   tls: RouteTLS;
   certificate?: { id: string; names: string[]; issuer: string; not_after: string };
@@ -26,6 +26,8 @@ export type EdgeRoute = {
   label_removed: boolean;
   /** the route asks for a password */
   password: boolean;
+  /** the site a domain serves (#21) */
+  site?: string;
 };
 
 export type EdgeState = {
@@ -48,7 +50,7 @@ export type EdgeState = {
 export type Domain = RecordModel & {
   hostname: string;
   host: string;
-  target_kind: "container" | "redirect";
+  target_kind: "container" | "redirect" | "site";
   container: string;
   port: number;
   redirect_to: string;
@@ -64,6 +66,8 @@ export type Domain = RecordModel & {
   stack: string;
   service: string;
   label_removed: boolean;
+  /** the site it serves, for target_kind site */
+  site: string;
 };
 
 /** One attempt to get a certificate from ACME. */

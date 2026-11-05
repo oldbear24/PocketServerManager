@@ -2157,3 +2157,115 @@ td .row-actions {
   display: grid;
   gap: 2px;
 }
+
+/* Static sites (#21) */
+.site-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.site-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.site-chip:hover,
+.site-chip.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.site-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.site-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--off-text);
+}
+
+.site-chip .dot.ok {
+  background: var(--ok);
+}
+
+.site-kpis {
+  margin-bottom: 16px;
+}
+
+.site-kpis .kpi-value {
+  font-size: 24px;
+}
+
+.site-kpis .kpi-value.ok {
+  color: var(--ok-text);
+}
+
+.site-kpis .kpi-value.warn {
+  color: var(--warn-text);
+}
+
+.request-bars {
+  position: relative;
+}
+
+.request-bars svg {
+  display: block;
+  width: 100%;
+  height: 36px;
+}
+
+.request-bars-tip {
+  min-height: 1.4em;
+  margin: 4px 0 0;
+}
+
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.site-connect {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.site-options {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.site-options li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.break {
+  overflow-wrap: anywhere;
+}
