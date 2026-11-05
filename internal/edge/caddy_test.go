@@ -64,9 +64,13 @@ func TestGoldenConfigsLoadInCaddy(t *testing.T) {
 	}
 }
 
-// writeSelfSigned writes <dir>/<id>.crt and .key, readable by the container.
-func writeSelfSigned(t *testing.T, dir, id string) {
+// writeSelfSigned writes <dir>/<id>.crt and .key, readable by the container,
+// for names, or for <id>.example.com.
+func writeSelfSigned(t *testing.T, dir, id string, names ...string) {
 	t.Helper()
+	if len(names) == 0 {
+		names = []string{id + ".example.com"}
+	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -74,8 +78,8 @@ func writeSelfSigned(t *testing.T, dir, id string) {
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: id + ".example.com"},
-		DNSNames:     []string{id + ".example.com"},
+		Subject:      pkix.Name{CommonName: names[0]},
+		DNSNames:     names,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 	}

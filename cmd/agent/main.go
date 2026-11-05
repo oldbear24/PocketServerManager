@@ -7,6 +7,7 @@
 //	pocketcloud-agent healthcheck   exit 0 only while connected to the panel
 //	pocketcloud-agent diagnostics   print connectivity, certificate and Docker status
 //	pocketcloud-agent version       print the version
+//	pocketcloud-agent site-tool     change the sites volume, in a site's job container
 package main
 
 import (
@@ -45,6 +46,8 @@ func main() {
 		err = diagnostics(ctx, config, len(os.Args) > 2 && os.Args[2] == "--json")
 	case "version":
 		fmt.Println(version.Version)
+	case "site-tool":
+		err = agent.SiteTool(ctx, os.Args[2:], map[string]string{"GIT_TOKEN": os.Getenv("GIT_TOKEN")}, os.Stdout, os.Stderr)
 	default:
 		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics or version", command)
 	}

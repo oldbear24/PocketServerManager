@@ -153,6 +153,22 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		}
 		record.Set("container", "")
 		record.Set("port", 0)
+	case schema.TargetSite:
+		site, err := e.App.FindRecordById(schema.Sites, record.GetString("site"))
+		switch {
+		case err != nil:
+			errs["site"] = validation.NewError("validation_no_site", "Choose the site the domain serves.")
+		case site.GetString("host") != record.GetString("host"):
+			errs["site"] = validation.NewError("validation_site_elsewhere", "The site is on another server: a domain of a site is served by the site's own edge.")
+		case site.GetString("basic_auth") != "" && record.GetString("tls") == schema.TLSOff:
+			errs["tls"] = validation.NewError("validation_invalid_basic_auth", "The site asks for a password, which needs HTTPS.")
+		}
+		record.Set("container", "")
+		record.Set("port", 0)
+		record.Set("redirect_to", "")
+	}
+	if record.GetString("target_kind") != schema.TargetSite {
+		record.Set("site", "")
 	}
 
 	if field, err := validateBasicAuth(record); err != nil {
@@ -206,6 +222,10 @@ func (p *Panel) guardEdgeRole(e *core.RecordRequestEvent) error {
 		count, err := e.App.CountRecords(schema.Domains, dbx.HashExp{"host": e.Record.Id})
 		if err == nil && count > 0 {
 			return e.BadRequestError(fmt.Sprintf("%d domains are served by this server's edge: remove them or move them to another server first.", count), nil)
+		}
+		count, err = e.App.CountRecords(schema.Sites, dbx.HashExp{"host": e.Record.Id})
+		if err == nil && count > 0 {
+			return e.BadRequestError(fmt.Sprintf("%d sites are built and served on this server: remove them first.", count), nil)
 		}
 	}
 	return e.Next()
@@ -282,6 +302,7 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 
 	built := edgeConfig{domains: domains, chosen: map[string]*certificateRecord{}}
 	used := map[string]bool{}
+	siteOf := map[string]*core.Record{}
 
 	for _, domain := range domains {
 		route := edge.Route{
@@ -296,6 +317,7 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			continue
 		}
 		route.BasicAuth = users
+		httpsRedirect := domain.GetBool("https_redirect")
 		switch domain.GetString("target_kind") {
 		case schema.TargetContainer:
 			route.Kind = edge.KindProxy
@@ -307,10 +329,26 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			route.Kind = edge.KindRedirect
 			route.RedirectTo = domain.GetString("redirect_to")
 			route.RedirectPermanent = domain.GetBool("redirect_permanent")
+		case schema.TargetSite:
+			// the site says how all of its domains are served
+			site, ok := siteOf[domain.GetString("site")]
+			if !ok {
+				site, _ = app.FindRecordById(schema.Sites, domain.GetString("site"))
+				siteOf[domain.GetString("site")] = site
+			}
+			if site == nil {
+				continue
+			}
+			if err := p.siteRoute(&route, site); err != nil {
+				p.Log.Error("a domain is left out of its edge's config", "domain", route.Hostname, "error", err)
+				continue
+			}
+			users = route.BasicAuth
+			httpsRedirect = site.GetBool("https_redirect")
 		default:
 			continue
 		}
-		if len(users) > 0 && route.Kind != edge.KindProxy {
+		if len(users) > 0 && route.Kind != edge.KindProxy && route.Kind != edge.KindSite {
 			// the edge could not ask for the password, and one such domain
 			// must not stop the edge's other routes
 			p.Log.Error("a domain with a password is left out of its edge's config: it is not the domain of a container", "domain", route.Hostname)
@@ -320,7 +358,7 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 		if domain.GetString("tls") != schema.TLSOff {
 			if cert := coveringCertificate(certs, route.Hostname); cert != nil {
 				route.Certificate = cert.file
-				route.HTTPSRedirect = domain.GetBool("https_redirect")
+				route.HTTPSRedirect = httpsRedirect
 				built.chosen[domain.Id] = cert
 				if !used[cert.file] {
 					used[cert.file] = true
@@ -598,6 +636,17 @@ func (p *Panel) enrichEdgeApply(record *core.Record, command *agentv1.Command) e
 		}
 		maps.Copy(available, edge.Secrets(edge.Config{Routes: []edge.Route{{BasicAuth: users}}}))
 	}
+	siteRecords, err := p.App.FindRecordsByFilter(schema.Sites, "host={:h} && basic_auth!=''", "", 0, 0, dbx.Params{"h": record.GetString("host")})
+	if err != nil {
+		return err
+	}
+	for _, site := range siteRecords {
+		users, err := p.siteBasicAuth(site)
+		if err != nil {
+			continue
+		}
+		maps.Copy(available, edge.Secrets(edge.Config{Routes: []edge.Route{{BasicAuth: users}}}))
+	}
 	payload.Secrets = map[string]string{}
 	for _, name := range names {
 		value, ok := available[name]
@@ -752,12 +801,14 @@ type edgeRoute struct {
 	DNSStatus string `json:"dns_status"`
 	DNSError  string `json:"dns_error"`
 	// Origin is "label" for a domain a stack's label asks for (#25).
-	Origin       string          `json:"origin"`
-	Stack        string          `json:"stack"`
-	Service      string          `json:"service"`
-	LabelRemoved bool            `json:"label_removed"`
-	Password     bool            `json:"password"`
-	Domain       json.RawMessage `json:"-"`
+	Origin       string `json:"origin"`
+	Stack        string `json:"stack"`
+	Service      string `json:"service"`
+	LabelRemoved bool   `json:"label_removed"`
+	Password     bool   `json:"password"`
+	// Site is the site a domain serves (#21).
+	Site   string          `json:"site,omitempty"`
+	Domain json.RawMessage `json:"-"`
 }
 
 type edgeCertBrief struct {
@@ -805,9 +856,18 @@ func (p *Panel) handleEdgeState(e *core.RequestEvent) error {
 			LabelRemoved:  domain.GetBool("label_removed"),
 			Password:      domain.GetString("basic_auth") != "",
 		}
-		if route.TargetKind == schema.TargetContainer {
+		switch route.TargetKind {
+		case schema.TargetContainer:
 			route.Target = domain.GetString("container") + ":" + strconv.Itoa(domain.GetInt("port"))
-		} else {
+		case schema.TargetSite:
+			// the site's own settings say how it is served
+			route.Site = domain.GetString("site")
+			if site, err := p.App.FindRecordById(schema.Sites, route.Site); err == nil {
+				route.Target = site.GetString("name")
+				route.HTTPSRedirect, route.HSTS, route.Compress = site.GetBool("https_redirect"), site.GetBool("hsts"), site.GetBool("compress")
+				route.Password = site.GetString("basic_auth") != ""
+			}
+		default:
 			route.Target = domain.GetString("redirect_to")
 		}
 

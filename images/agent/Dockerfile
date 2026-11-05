@@ -1,5 +1,5 @@
 # The agent container: the static agent binary, the Docker CLI with the Compose
-# plugin (from the official image) and restic.
+# plugin (from the official image), restic, and git for the sites it clones.
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -o /out/pocketcloud-agent ./cmd/agent
 
 FROM docker:27-cli
-RUN apk add --no-cache restic ca-certificates tzdata
+RUN apk add --no-cache restic git ca-certificates tzdata
 COPY --from=build /out/pocketcloud-agent /usr/local/bin/pocketcloud-agent
 VOLUME /var/lib/pocketcloud
 LABEL org.opencontainers.image.title="pocketcloud-agent" \

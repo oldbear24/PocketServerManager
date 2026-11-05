@@ -26,6 +26,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
+	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
 
 // The edge proxy is Caddy in a container of its own, so that updating the agent
@@ -300,6 +301,8 @@ func (a *Agent) edgeMounts(ctx context.Context) ([]map[string]any, error) {
 		}
 		mounts = append(mounts, mount)
 	}
+	// the sites' releases, which the edge serves and never changes (#21)
+	mounts = append(mounts, map[string]any{"Type": "volume", "Source": sites.Volume, "Target": edge.SitesRoot, "ReadOnly": true})
 	return mounts, nil
 }
 
@@ -915,7 +918,7 @@ func (a *Agent) edgeStatus(ctx context.Context) *agentv1.EdgeStatus {
 		return status
 	}
 
-	total, err := a.edgeRequestCount(ctx)
+	total, byHost, err := a.edgeRequestCount(ctx)
 	if err != nil {
 		return status
 	}
@@ -928,53 +931,84 @@ func (a *Agent) edgeStatus(ctx context.Context) *agentv1.EdgeStatus {
 			status.RequestsPerS = (total - a.edgeCount) / elapsed
 		}
 	}
-	a.edgeCount, a.edgeCountAt = total, now
+	if !a.edgeCountAt.IsZero() {
+		status.RequestsByHost = requestsSince(a.edgeByHost, byHost)
+	}
+	a.edgeCount, a.edgeCountAt, a.edgeByHost = total, now, byHost
 	a.edgeMetricsMu.Unlock()
 
 	return status
 }
 
-// edgeRequestCount sums Caddy's request counters of the handlers that answer
-// requests, so that a request passing several handlers counts once.
-func (a *Agent) edgeRequestCount(ctx context.Context) (float64, error) {
-	body, status, err := a.edgeRequest(ctx, http.MethodGet, "/metrics", nil, edgeMetricsLimit)
-	if err != nil {
-		return 0, err
+// maxReportedHosts bounds the hostnames a heartbeat reports requests for.
+const maxReportedHosts = 1000
+
+// requestsSince is how many requests each hostname had since the previous
+// count. A counter lower than before was reset by a restart of the edge, and
+// counts from 0.
+func requestsSince(before, now map[string]float64) map[string]uint64 {
+	since := map[string]uint64{}
+	for host, count := range now {
+		if len(since) >= maxReportedHosts {
+			break
+		}
+		delta := count
+		if previous, ok := before[host]; ok && count >= previous {
+			delta = count - previous
+		}
+		if delta >= 1 {
+			since[host] = uint64(delta)
+		}
 	}
-	if status != http.StatusOK {
-		return 0, fmt.Errorf("the edge's metrics answered %d", status)
-	}
-	return countRequests(body), nil
+	return since
 }
 
-func countRequests(metrics []byte) float64 {
+// edgeRequestCount sums Caddy's request counters of the handlers that answer
+// requests, so that a request passing several handlers counts once.
+func (a *Agent) edgeRequestCount(ctx context.Context) (float64, map[string]float64, error) {
+	body, status, err := a.edgeRequest(ctx, http.MethodGet, "/metrics", nil, edgeMetricsLimit)
+	if err != nil {
+		return 0, nil, err
+	}
+	if status != http.StatusOK {
+		return 0, nil, fmt.Errorf("the edge's metrics answered %d", status)
+	}
+	total, byHost := countRequests(body)
+	return total, byHost, nil
+}
+
+// countRequests adds up the requests in Caddy's metrics, in all and per
+// hostname; a request of a name no route has counts as _other, in all only.
+func countRequests(metrics []byte) (float64, map[string]float64) {
 	var total float64
+	byHost := map[string]float64{}
 	scanner := bufio.NewScanner(bytes.NewReader(metrics))
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
-		line := scanner.Text()
-		rest, ok := strings.CutPrefix(line, "caddy_http_requests_total{")
+		rest, ok := strings.CutPrefix(scanner.Text(), "caddy_http_requests_total{")
 		if !ok {
 			continue
 		}
+		// the pinned Caddy counts a request once, under the first handler of
+		// its route (headers, encode, a site's subroute or the handler itself),
+		// so every counter adds up
 		labels, value, ok := strings.Cut(rest, "} ")
 		if !ok {
 			continue
 		}
-		answering := false
-		for _, handler := range edge.AnsweringHandlers {
-			if strings.Contains(labels, `handler="`+handler+`"`) {
-				answering = true
-			}
-		}
-		if !answering {
+		number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
 			continue
 		}
-		if number, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
-			total += number
+		total += number
+		// with per_host metrics, each hostname has its own counters
+		if _, rest, ok := strings.Cut(labels, `host="`); ok {
+			if host, _, ok := strings.Cut(rest, `"`); ok && host != "" && host != "_other" {
+				byHost[strings.ToLower(host)] += number
+			}
 		}
 	}
-	return total
+	return total, byHost
 }
 
 // usedCertFiles lists the certificate files the loaded config refers to, from

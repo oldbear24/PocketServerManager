@@ -237,6 +237,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	if s.OnEdgeStatus != nil {
 		s.OnEdgeStatus(hostID)
 	}
+	if byHost := req.GetEdge().GetRequestsByHost(); s.OnRequests != nil && len(byHost) > 0 {
+		s.OnRequests(hostID, byHost)
+	}
 	for _, check := range failed {
 		events.Log(s.App, hostID, "agent.self_check_failed", schema.SeverityWarning,
 			fmt.Sprintf("Self-check %s failed: %s", check.name, check.detail),
@@ -476,6 +479,58 @@ func (s *Server) PushMetrics(stream agentv1.AgentService_PushMetricsServer) erro
 
 // UploadArtifact stores a file sent by an agent. Diagnostics bundles end up in
 // diagnostic_bundles, with an expiry.
+// fetchChunk is the size of a FetchArtifact message.
+const fetchChunk = 1 << 20
+
+// FetchArtifact streams a file a command of the agent needs, such as the
+// upload of a site, from the offset an interrupted download got to.
+func (s *Server) FetchArtifact(req *agentv1.FetchArtifactRequest, stream agentv1.AgentService_FetchArtifactServer) error {
+	hostID := hostIDFrom(stream.Context())
+	if s.Fetch == nil {
+		return status.Error(codes.Unimplemented, "this panel has no artifacts to fetch")
+	}
+	artifact, err := s.Fetch(hostID, req.GetArtifactId())
+	if errors.Is(err, ErrNoArtifact) {
+		return status.Error(codes.PermissionDenied, "the artifact does not belong to a command of this host")
+	}
+	if err != nil {
+		return status.Errorf(codes.Internal, "the artifact cannot be read: %v", err)
+	}
+	defer artifact.Reader.Close()
+
+	offset := req.GetOffset()
+	if offset > artifact.Size {
+		return status.Error(codes.OutOfRange, "the offset is past the end of the artifact")
+	}
+	if offset > 0 {
+		if _, err := artifact.Reader.Seek(int64(offset), io.SeekStart); err != nil { //nolint:gosec // at most the size
+			return status.Errorf(codes.Internal, "the artifact cannot be read: %v", err)
+		}
+	}
+
+	buffer := make([]byte, fetchChunk)
+	first := true
+	for {
+		n, err := io.ReadFull(artifact.Reader, buffer)
+		if n > 0 || first {
+			chunk := &agentv1.FetchArtifactResponse{Data: buffer[:n]}
+			if first {
+				chunk.TotalBytes, chunk.Sha256 = artifact.Size, artifact.SHA256
+			}
+			if sendErr := stream.Send(chunk); sendErr != nil {
+				return sendErr
+			}
+			first = false
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil
+		}
+		if err != nil {
+			return status.Errorf(codes.Internal, "the artifact cannot be read: %v", err)
+		}
+	}
+}
+
 func (s *Server) UploadArtifact(stream agentv1.AgentService_UploadArtifactServer) error {
 	hostID := hostIDFrom(stream.Context())
 

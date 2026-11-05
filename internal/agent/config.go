@@ -39,6 +39,10 @@ type Config struct {
 	// ContainerName is the name of the agent's own container.
 	ContainerName string
 
+	// LocalSites, when set, is a directory that stands in for the sites
+	// volume: site deployments run there without Docker. Only tests set it.
+	LocalSites string
+
 	// HostShell allows terminals on the host itself, which need a privileged helper
 	// container. It is off unless HOST_SHELL_ENABLED=1 is set on this agent.
 	HostShell bool

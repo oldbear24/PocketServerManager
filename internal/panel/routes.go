@@ -55,6 +55,9 @@ func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 	se.Router.GET(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
 	se.Router.POST(adminerPath+"{session}/{path...}", p.handleAdminerProxy)
 
+	// a Git server pushes without an account: the site's secret signs the push
+	se.Router.POST(webhookPath+"{id}", p.handleSiteWebhook)
+
 	se.Router.GET("/api/pc/ca.pem", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "application/x-pem-file")
 		e.Response.Header().Set("Content-Disposition", `attachment; filename="pocketcloud-root-ca.pem"`)

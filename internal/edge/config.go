@@ -38,14 +38,15 @@ const (
 	KindProxy = "proxy"
 	// KindRedirect answers every request with a redirect.
 	KindRedirect = "redirect"
+	// KindSite serves the files of a static site's current release (#21).
+	KindSite = "site"
 )
+
+// SitesRoot is where the edge mounts the sites volume, read-only.
+const SitesRoot = "/srv/sites"
 
 // StreamCloseDelay is how long a WebSocket through a route survives a reload.
 const StreamCloseDelay = "24h"
-
-// AnsweringHandlers are the handlers that answer a request; the others only
-// pass it on, and Caddy counts a request once per handler it passes.
-var AnsweringHandlers = []string{"reverse_proxy", "static_response", "file_server"}
 
 // HSTSValue is the Strict-Transport-Security header of routes that ask for it:
 // a year, without includeSubDomains or preload, which are hard to take back.
@@ -55,7 +56,7 @@ const HSTSValue = "max-age=31536000"
 type Route struct {
 	// Hostname is the name the route answers to; "*.example.com" is a wildcard.
 	Hostname string `json:"hostname"`
-	// Kind is KindProxy or KindRedirect.
+	// Kind is KindProxy, KindRedirect or KindSite.
 	Kind string `json:"kind"`
 	// Upstream is "<name>:<port>" of the container, for KindProxy.
 	Upstream string `json:"upstream,omitempty"`
@@ -74,9 +75,43 @@ type Route struct {
 	// Compress encodes responses with zstd or gzip when the client accepts it.
 	Compress bool `json:"compress,omitempty"`
 	// BasicAuth asks for a user name and password before a request reaches
-	// the upstream, for KindProxy. Such a route is never served over plain
-	// HTTP: it redirects to HTTPS, or refuses until it has a certificate.
+	// the upstream or the files, for KindProxy and KindSite. Such a route is
+	// never served over plain HTTP: it redirects to HTTPS, or refuses until it
+	// has a certificate.
 	BasicAuth []BasicAuthUser `json:"basic_auth,omitempty"`
+
+	// Site is how a KindSite route serves its files.
+	Site *SiteOptions `json:"site,omitempty"`
+}
+
+// SiteOptions are how the edge serves a static site.
+type SiteOptions struct {
+	// Root is the directory served, under SitesRoot: the site's current
+	// release, a symlink switched when a release goes live.
+	Root string `json:"root"`
+	// SPA answers a path that is no file with /index.html, for single-page
+	// applications that route in the browser.
+	SPA bool `json:"spa,omitempty"`
+	// NotFound is the page sent with a 404, such as /404.html.
+	NotFound string `json:"not_found,omitempty"`
+	// Headers are added to the responses of the paths they match.
+	Headers []SiteHeader `json:"headers,omitempty"`
+	// Cache sets how long browsers may keep the files of a path.
+	Cache []CacheRule `json:"cache,omitempty"`
+}
+
+// SiteHeader is a response header for the paths that match Path: "/" plus a
+// path that may end in *, or *.ext; empty for every path.
+type SiteHeader struct {
+	Path  string `json:"path,omitempty"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// CacheRule lets browsers keep the files of Path for MaxAge seconds.
+type CacheRule struct {
+	Path   string `json:"path"`
+	MaxAge int    `json:"max_age"`
 }
 
 // BasicAuthUser may sign in to a route.
@@ -214,6 +249,10 @@ func (c Config) Validate() error {
 			if err := ValidRedirect(route.RedirectTo); err != nil {
 				return fmt.Errorf("%s: %w", host, err)
 			}
+		case KindSite:
+			if err := ValidSiteOptions(route.Site); err != nil {
+				return fmt.Errorf("%s: %w", host, err)
+			}
 		default:
 			return fmt.Errorf("%s: unknown kind of route %q", host, route.Kind)
 		}
@@ -225,8 +264,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s: redirecting to HTTPS needs a certificate", host)
 		}
 		if len(route.BasicAuth) > 0 {
-			if route.Kind != KindProxy {
-				return fmt.Errorf("%s: only a route to a container can ask for a password", host)
+			if route.Kind != KindProxy && route.Kind != KindSite {
+				return fmt.Errorf("%s: only a route to a container or a site can ask for a password", host)
 			}
 			if err := ValidBasicAuth(route.BasicAuth); err != nil {
 				return fmt.Errorf("%s: %w", host, err)
@@ -234,6 +273,44 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+var (
+	headerName = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_|~-]+$`)
+	sitePath   = regexp.MustCompile(`^(/[^\s{}]*|\*\.[A-Za-z0-9]+)$`)
+)
+
+// ValidSiteOptions checks how a site is served.
+func ValidSiteOptions(options *SiteOptions) error {
+	if options == nil {
+		return errors.New("a site route needs its options")
+	}
+	if !strings.HasPrefix(options.Root, SitesRoot+"/") || strings.Contains(options.Root, "..") || strings.ContainsAny(options.Root, "{} ") {
+		return fmt.Errorf("the site's root %q is not in %s", options.Root, SitesRoot)
+	}
+	if options.NotFound != "" && (!strings.HasPrefix(options.NotFound, "/") || strings.Contains(options.NotFound, "..") || strings.ContainsAny(options.NotFound, "{} ")) {
+		return fmt.Errorf("the 404 page %q is not a path such as /404.html", options.NotFound)
+	}
+	for _, header := range options.Headers {
+		if !headerName.MatchString(header.Name) {
+			return fmt.Errorf("%q is not a header name", header.Name)
+		}
+		if strings.ContainsAny(header.Value, "\r\n") || strings.Contains(header.Value, "{") {
+			return fmt.Errorf("the value of %s has a line break or a placeholder", header.Name)
+		}
+		if header.Path != "" && !sitePath.MatchString(header.Path) {
+			return fmt.Errorf("%q is not a path such as /assets/* or *.css", header.Path)
+		}
+	}
+	for _, rule := range options.Cache {
+		if !sitePath.MatchString(rule.Path) {
+			return fmt.Errorf("%q is not a path such as /assets/* or *.css", rule.Path)
+		}
+		if rule.MaxAge < 0 || rule.MaxAge > 31536000 {
+			return fmt.Errorf("%s: a cache time from 0 seconds to a year", rule.Path)
+		}
+	}
 	return nil
 }
 
@@ -415,12 +492,26 @@ func Build(c Config) ([]byte, error) {
 	plain = append(plain, notFound())
 	secure = append(secure, notFound())
 
+	// a site's own 404 page, for the errors its files give
+	errorRoutes := []any{}
+	for _, route := range routes {
+		if route.Kind == KindSite && route.Site.NotFound != "" {
+			errorRoutes = append(errorRoutes, siteNotFound(route))
+		}
+	}
+	withErrors := func(server object) object {
+		if len(errorRoutes) > 0 {
+			server["errors"] = object{"routes": errorRoutes}
+		}
+		return server
+	}
+
 	servers := object{
-		"http": object{
+		"http": withErrors(object{
 			"listen":          []string{":80"},
 			"automatic_https": object{"disable": true},
 			"routes":          plain,
-		},
+		}),
 	}
 
 	apps := object{}
@@ -444,19 +535,20 @@ func Build(c Config) ([]byte, error) {
 
 		// with automatic HTTPS off, a server only speaks TLS when it has a
 		// connection policy; HTTP/3 needs 443/udp published as well
-		servers["https"] = object{
+		servers["https"] = withErrors(object{
 			"listen":                  []string{":443"},
 			"automatic_https":         object{"disable": true},
 			"protocols":               []string{"h1", "h2", "h3"},
 			"tls_connection_policies": []any{object{}},
 			"routes":                  secure,
-		}
+		})
 	}
 
 	apps["http"] = object{
-		// request counts per handler, read by the agent from the admin API; no
-		// grace period, so a reload lets every request under way finish
-		"metrics": object{},
+		// request counts per handler and hostname, read by the agent from the
+		// admin API; no grace period, so a reload lets every request under way
+		// finish
+		"metrics": object{"per_host": true},
 		"servers": servers,
 	}
 
@@ -545,7 +637,7 @@ func hostRoute(route Route, secure bool) object {
 		})
 	}
 
-	if len(route.BasicAuth) > 0 && route.Kind == KindProxy {
+	if len(route.BasicAuth) > 0 && (route.Kind == KindProxy || route.Kind == KindSite) {
 		users := slices.Clone(route.BasicAuth)
 		slices.SortFunc(users, func(a, b BasicAuthUser) int { return strings.Compare(a.Username, b.Username) })
 		accounts := make([]any, 0, len(users))
@@ -564,7 +656,7 @@ func hostRoute(route Route, secure bool) object {
 		})
 	}
 
-	if route.Compress && route.Kind == KindProxy {
+	if route.Compress && (route.Kind == KindProxy || route.Kind == KindSite) {
 		handlers = append(handlers, object{
 			"handler":   "encode",
 			"encodings": object{"zstd": object{}, "gzip": object{}},
@@ -591,11 +683,97 @@ func hostRoute(route Route, secure bool) object {
 			"status_code": status,
 			"headers":     object{"Location": []string{redirectLocation(route.RedirectTo)}},
 		})
+	case KindSite:
+		handlers = append(handlers, object{"handler": "subroute", "routes": siteRoutes(route)})
 	}
 
 	return object{
 		"match":    hostMatch(route.Hostname),
 		"handle":   handlers,
+		"terminal": true,
+	}
+}
+
+// siteRoutes serve a site's files: its headers and cache rules first, then a
+// path that is no file goes to /index.html for a single-page application, and
+// the file server answers. A file's precompressed copy is sent to a browser
+// that takes it.
+func siteRoutes(route Route) []any {
+	options := route.Site
+	// the site's own 404 page answers its own errors only, not those of a
+	// site whose name its wildcard covers
+	routes := []any{object{"handle": []any{object{"handler": "vars", siteVar: options.Root}}}}
+	pathMatch := func(path string) []any {
+		if path == "" {
+			return nil
+		}
+		return []any{object{"path": []string{path}}}
+	}
+	for _, header := range options.Headers {
+		routes = append(routes, withMatch(pathMatch(header.Path), object{
+			"handle": []any{object{"handler": "headers", "response": object{"set": object{header.Name: []string{header.Value}}}}},
+		}))
+	}
+	for _, rule := range options.Cache {
+		value := "no-cache"
+		if rule.MaxAge > 0 {
+			value = "public, max-age=" + strconv.Itoa(rule.MaxAge)
+		}
+		routes = append(routes, withMatch(pathMatch(rule.Path), object{
+			"handle": []any{object{"handler": "headers", "response": object{"set": object{"Cache-Control": []string{value}}}}},
+		}))
+	}
+	if options.SPA {
+		routes = append(routes, object{
+			"match": []any{object{"file": object{
+				"root":      options.Root,
+				"try_files": []string{"{http.request.uri.path}", "/index.html"},
+			}}},
+			"handle": []any{object{"handler": "rewrite", "uri": "{http.matchers.file.relative}"}},
+		})
+	}
+	routes = append(routes, object{"handle": []any{siteFiles(options.Root, "")}})
+	return routes
+}
+
+func withMatch(match []any, route object) object {
+	if match != nil {
+		route["match"] = match
+	}
+	return route
+}
+
+// siteFiles is the file server of a site. Its root is the site's current
+// release, a symlink: switching it serves the new release from the next
+// request on.
+func siteFiles(root, status string) object {
+	server := object{
+		"handler":             "file_server",
+		"root":                root,
+		"precompressed":       object{"br": object{}, "zstd": object{}, "gzip": object{}},
+		"precompressed_order": []string{"br", "zstd", "gzip"},
+	}
+	if status != "" {
+		server["status_code"] = status
+	}
+	return server
+}
+
+// siteVar names the site whose route a request went through.
+const siteVar = "pocketcloud_site"
+
+// siteNotFound sends a site's own 404 page with the 404 of a file that is not
+// there.
+func siteNotFound(route Route) object {
+	return object{
+		"match": []any{object{"host": []string{route.Hostname}, "vars": object{siteVar: []string{route.Site.Root}}}},
+		"handle": []any{object{"handler": "subroute", "routes": []any{object{
+			"match": []any{object{"expression": "{http.error.status_code} == 404"}},
+			"handle": []any{
+				object{"handler": "rewrite", "uri": route.Site.NotFound},
+				siteFiles(route.Site.Root, "{http.error.status_code}"),
+			},
+		}}}},
 		"terminal": true,
 	}
 }

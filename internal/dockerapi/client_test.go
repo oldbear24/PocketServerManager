@@ -233,3 +233,32 @@ func TestReadMultiplexed(t *testing.T) {
 		t.Error("a frame that was cut off must be an error")
 	}
 }
+
+// TestWaitReturnsTheExitCode: a job container's end is how its job went.
+func TestWaitReturnsTheExitCode(t *testing.T) {
+	var asked string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.Method + " " + r.URL.Path + "?" + r.URL.RawQuery
+		if strings.Contains(r.URL.Path, "broken") {
+			_, _ = w.Write([]byte(`{"StatusCode":125,"Error":{"Message":"the container could not start"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"StatusCode":3}`))
+	}))
+	t.Cleanup(server.Close)
+
+	docker, err := dockerapi.New("tcp://" + strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := docker.Wait(context.Background(), "job")
+	if err != nil || code != 3 {
+		t.Errorf("code %d, %v", code, err)
+	}
+	if !strings.HasSuffix(asked, "/containers/job/wait?condition=not-running") || !strings.HasPrefix(asked, "POST ") {
+		t.Errorf("asked %s", asked)
+	}
+	if _, err := docker.Wait(context.Background(), "broken"); err == nil || !strings.Contains(err.Error(), "could not start") {
+		t.Errorf("an error: %v", err)
+	}
+}

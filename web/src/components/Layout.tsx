@@ -24,6 +24,7 @@ import { hasRole, useAuth } from "../lib/auth";
 import type { Database as DatabaseRecord } from "../lib/databases";
 import type { Role } from "../lib/pb";
 import { useLiveList } from "../lib/realtime";
+import type { Site } from "../lib/sites";
 import type { Alert, Container, Host, PanelInfo } from "../lib/types";
 import { IconButton } from "./ui";
 
@@ -112,6 +113,7 @@ export function Layout() {
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const containers = useLiveList<Container>("containers", { perPage: 1 });
   const databases = useLiveList<DatabaseRecord>("databases", { perPage: 1 });
+  const sites = useLiveList<Site>("sites", { perPage: 1 });
   const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
 
   const overview: NavItem[] = [
@@ -126,7 +128,7 @@ export function Layout() {
   ];
 
   const web: NavItem[] = [
-    { to: "/sites", label: t("nav.sites"), icon: Globe },
+    { to: "/sites", label: t("nav.sites"), icon: Globe, count: sites.total },
     { to: "/domains", label: t("nav.domains"), icon: Lock },
   ];
 

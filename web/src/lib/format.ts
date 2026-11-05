@@ -60,6 +60,15 @@ export function formatTime(
   }).format(date);
 }
 
+/** The time of day an hour starts, such as 14:00. */
+export function formatHour(date: Date): string {
+  return new Intl.DateTimeFormat(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
 export function formatDay(value: string | null | undefined): string {
   const date = parseDate(value);
   if (!date) {

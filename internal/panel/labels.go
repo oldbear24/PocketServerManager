@@ -343,15 +343,20 @@ func (p *Panel) setExposure(domain, stack *core.Record, exposure stacks.Exposure
 
 // describeSaveError says in words why a domain could not be saved.
 func describeSaveError(hostname string, err error) string {
+	return hostname + ": " + saveErrorText(err)
+}
+
+// saveErrorText is why a record could not be saved, in words.
+func saveErrorText(err error) string {
 	var errs validation.Errors
 	if errors.As(err, &errs) {
 		messages := []string{}
 		for _, field := range slices.Sorted(maps.Keys(errs)) {
 			messages = append(messages, errs[field].Error())
 		}
-		return hostname + ": " + strings.Join(messages, " ")
+		return strings.Join(messages, " ")
 	}
-	return hostname + ": " + err.Error()
+	return err.Error()
 }
 
 // basicAuthText is how the users of a route are stored: user:hash lines.
@@ -412,5 +417,20 @@ func validateBasicAuth(record *core.Record) (string, error) {
 	if secrets.IsSealed(text) {
 		return "", nil
 	}
-	return "basic_auth", edge.ValidBasicAuth(parseBasicAuth(text))
+	return "basic_auth", checkBasicAuthText(text)
+}
+
+// checkBasicAuthText checks user:hash lines as they are typed: a line without
+// a user, such as a hash alone, would leave the route without a password.
+func checkBasicAuthText(text string) error {
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.Contains(line, ":") {
+			return errors.New("each line is user:bcrypt-hash; a line has no user")
+		}
+	}
+	users := parseBasicAuth(text)
+	if len(users) == 0 {
+		return errors.New("name at least one user:bcrypt-hash")
+	}
+	return edge.ValidBasicAuth(users)
 }

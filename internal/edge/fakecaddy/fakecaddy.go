@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -40,6 +41,7 @@ type Server struct {
 	Delay time.Duration
 
 	requests float64
+	byHost   map[string]float64
 }
 
 // Start listens on a Unix socket. With an autosave path the fake resumes from it
@@ -232,13 +234,28 @@ func (s *Server) Serve(count float64) {
 	s.requests += count
 }
 
+// ServeHost counts requests a site's file server answered for a hostname, as
+// Caddy does with per_host metrics.
+func (s *Server) ServeHost(host string, count float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byHost == nil {
+		s.byHost = map[string]float64{}
+	}
+	s.byHost[host] += count
+}
+
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	requests := s.requests
+	byHost := maps.Clone(s.byHost)
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	// as Caddy 2.11 counts: once per request, under the first handler of its
+	// route, with the hostname of a route or _other
 	_, _ = fmt.Fprintf(w, "# TYPE caddy_http_requests_total counter\n")
-	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"reverse_proxy\",server=\"http\"} %g\n", requests)
-	// a request passes the headers handler too, and must not count twice
-	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",server=\"http\"} %g\n", requests)
+	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",host=\"_other\",server=\"http\"} %g\n", requests)
+	for _, host := range slices.Sorted(maps.Keys(byHost)) {
+		_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"encode\",host=%q,server=\"https\"} %g\n", host, byHost[host])
+	}
 }

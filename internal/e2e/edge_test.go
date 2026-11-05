@@ -281,11 +281,19 @@ func TestEdgeApplyStartsTheEdgeAndLoadsItsConfig(t *testing.T) {
 		}
 	}
 	mounts, _ := container.Host["Mounts"].([]any)
-	if len(mounts) != 4 {
+	if len(mounts) != 5 {
 		t.Errorf("the edge has %d mounts: %v", len(mounts), mounts)
 	}
-	for _, mount := range mounts {
-		source, _ := mount.(map[string]any)["Source"].(string)
+	for _, item := range mounts {
+		mount := item.(map[string]any)
+		if mount["Target"] == "/srv/sites" {
+			// the sites' releases, read-only
+			if mount["Type"] != "volume" || mount["Source"] != "pocketcloud-sites" || mount["ReadOnly"] != true {
+				t.Errorf("the sites volume: %v", mount)
+			}
+			continue
+		}
+		source, _ := mount["Source"].(string)
 		if !strings.HasPrefix(source, filepath.Join(running.config.StateDir, "edge")+"/") {
 			t.Errorf("the edge mounts %s, outside the agent's edge directory", source)
 		}
@@ -501,11 +509,14 @@ func TestTheEdgeMountsOnlyItsOwnDirectories(t *testing.T) {
 			}
 
 			mounts, _ := h.docker.Find("pocketcloud-edge").Host["Mounts"].([]any)
-			if len(mounts) != 4 {
+			if len(mounts) != 5 {
 				t.Fatalf("mounts: %v", mounts)
 			}
 			for _, item := range mounts {
 				mount := item.(map[string]any)
+				if mount["Target"] == "/srv/sites" {
+					continue
+				}
 				switch api {
 				case "1.47":
 					options, _ := mount["VolumeOptions"].(map[string]any)
@@ -714,7 +725,7 @@ func TestAnEdgeWithOtherMountsIsReplaced(t *testing.T) {
 	}
 	replaced := h.docker.Find("pocketcloud-edge")
 	mounts, _ := replaced.Host["Mounts"].([]any)
-	if replaced.ID == first.ID || len(mounts) != 4 {
+	if replaced.ID == first.ID || len(mounts) != 5 {
 		t.Errorf("the edge with other mounts was started as it was: %v", mounts)
 	}
 }
