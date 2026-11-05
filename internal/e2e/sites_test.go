@@ -191,12 +191,17 @@ func TestAPushToTheBranchDeploysTheSite(t *testing.T) {
 	s := newSitesHarness(t)
 	repo := newGitServer(t, map[string]string{"index.html": "one\n"})
 
+	// a private repository: the token comes with the new site, and its first
+	// deployment already has it
 	siteID := s.newSite(map[string]any{
-		"name": "blog", "source": sites.SourceGit, "repo_url": repo.url, "branch": "main",
+		"name": "blog", "source": sites.SourceGit, "repo_url": repo.url, "branch": "main", "git_token": "tok-123",
 		"generator": sites.GeneratorCustom, "build_image": "alpine:3.22",
 		"build_cmd": "mkdir -p public && cp index.html public/ && echo built >> public/index.html", "output_dir": "public",
 	})
 	first := s.deployment(siteID, 1)
+	if !repo.sawAuthorization("Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:tok-123"))) {
+		t.Error("the first clone went without the token")
+	}
 	if first.GetString("status") != schema.DeploymentSucceeded || first.GetString("trigger") != schema.TriggerCreate || first.GetString("message") != "First" || len(first.GetString("commit_sha")) != 40 {
 		t.Fatalf("the first deployment: %v", first.PublicExport())
 	}
@@ -205,9 +210,8 @@ func TestAPushToTheBranchDeploysTheSite(t *testing.T) {
 	}
 	s.waitFor("the first deployment to be the active one", func() bool { return s.site(siteID).GetString("active_deployment") == first.Id })
 
-	// a private repository: the token reaches Git, and is stored nowhere visible
-	if status, out := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/credentials", s.operator, map[string]any{"git_token": "tok-123"}); status != http.StatusOK || out["git_token_set"] != true {
-		t.Fatalf("the token: %d %v", status, out)
+	if s.site(siteID).GetBool("git_token_set") != true {
+		t.Error("the site does not say it has a token")
 	}
 
 	status, webhook := s.request(http.MethodGet, "/api/pc/sites/"+siteID+"/webhook", s.operator, nil)
@@ -290,10 +294,11 @@ func urlQuery(filter string) string {
 // fails says why, and the site goes on serving the release it served.
 func TestAFailedBuildKeepsTheCurrentReleaseOnline(t *testing.T) {
 	s := newSitesHarness(t)
-	siteID := s.newSite(map[string]any{"name": "shop", "source": sites.SourceEmpty})
+	siteID := s.newSite(map[string]any{"name": "shop", "source": sites.SourceUpload})
+	s.upload(siteID, map[string]string{"index.html": "the shop"})
 	first := s.deployment(siteID, 1)
-	if first.GetString("status") != schema.DeploymentSucceeded || !strings.Contains(s.served("shop"), "shop") {
-		t.Fatalf("the placeholder: %v %q", first.PublicExport(), s.served("shop"))
+	if first.GetString("status") != schema.DeploymentSucceeded || s.served("shop") != "the shop" {
+		t.Fatalf("the first release: %v %q", first.PublicExport(), s.served("shop"))
 	}
 	placeholder := s.served("shop")
 
@@ -340,11 +345,12 @@ func (s *sitesHarness) commandOutput(command *core.Record) string {
 func TestARollbackSwitchesAtOnce(t *testing.T) {
 	s := newSitesHarness(t)
 	siteID := s.newSite(map[string]any{
-		"name": "docs", "source": sites.SourceEmpty, "keep_releases": 2,
+		"name": "docs", "source": sites.SourceUpload, "keep_releases": 2,
 		"generator": sites.GeneratorCustom, "build_image": "alpine:3.22",
 		// each release says which deployment built it
 		"build_cmd": `mkdir -p out && basename "$(dirname "$PWD")" > out/index.html`, "output_dir": "out",
 	})
+	s.upload(siteID, map[string]string{"README.md": "the source"})
 	s.deployment(siteID, 1)
 	for n := 2; n <= 3; n++ {
 		if status, out := s.request(http.MethodPost, "/api/pc/sites/"+siteID+"/deploy", s.operator, nil); status != http.StatusOK {
@@ -355,9 +361,11 @@ func TestARollbackSwitchesAtOnce(t *testing.T) {
 	if s.served("docs") != "3" {
 		t.Fatalf("served %q", s.served("docs"))
 	}
+	// the older releases are marked once the newest one is live
+	s.waitFor("#1 to be pruned", func() bool { return !s.deployment(siteID, 1).GetBool("on_server") })
 	one, two := s.deployment(siteID, 1), s.deployment(siteID, 2)
-	if one.GetBool("on_server") || !two.GetBool("on_server") {
-		t.Errorf("on the server: #1 %v, #2 %v", one.GetBool("on_server"), two.GetBool("on_server"))
+	if !two.GetBool("on_server") {
+		t.Error("#2 is not on the server")
 	}
 
 	status, out := s.request(http.MethodPost, "/api/pc/sites/"+siteID+"/rollback", s.operator, map[string]any{"deployment": two.Id})
@@ -386,6 +394,17 @@ func TestARollbackSwitchesAtOnce(t *testing.T) {
 	}
 	if status, _ := s.request(http.MethodPost, "/api/pc/sites/"+siteID+"/rollback", s.viewer, map[string]any{"deployment": two.Id}); status != http.StatusForbidden {
 		t.Errorf("a viewer rolls back: %d", status)
+	}
+}
+
+// upload deploys a site from a ZIP of files.
+func (s *sitesHarness) upload(siteID string, files map[string]string) {
+	s.t.Helper()
+	body, contentType := zipBody(s.t, files)
+	status, out := testutil.Do(s.t, s.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/sites/" + siteID + "/upload", Token: s.operator, Body: body,
+		Headers: map[string]string{"Content-Type": contentType}})
+	if status != http.StatusOK {
+		s.t.Fatalf("upload: %d %s", status, out)
 	}
 }
 
@@ -442,6 +461,24 @@ func TestAnUploadIsDeployed(t *testing.T) {
 		t.Errorf("deploying the upload again: %v", again.PublicExport())
 	}
 
+	// an upload goes with its release, unless it is the newest one
+	if status, out := s.request(http.MethodPatch, "/api/collections/sites/records/"+siteID, s.operator, map[string]any{"keep_releases": 1}); status != http.StatusOK {
+		t.Fatalf("keep one release: %d %v", status, out)
+	}
+	body, contentType = zipBody(t, map[string]string{"index.html": "the second zip"})
+	if status, out := upload(s.operator, body, contentType); status != http.StatusOK {
+		t.Fatalf("a second upload: %d %s", status, out)
+	}
+	if third := s.deployment(siteID, 3); third.GetString("status") != schema.DeploymentSucceeded || s.served("photos") != "the second zip" {
+		t.Fatalf("the second upload: %v", third.PublicExport())
+	}
+	s.waitFor("the first upload to go with its release", func() bool {
+		return s.deployment(siteID, 1).GetString("upload") == ""
+	})
+	if s.deployment(siteID, 3).GetString("upload") == "" {
+		t.Error("the newest upload went too")
+	}
+
 	var form bytes.Buffer
 	writer := multipart.NewWriter(&form)
 	part, _ := writer.CreateFormFile("file", "notes.txt")
@@ -482,7 +519,38 @@ func TestASiteIsCheckedBeforeItIsSaved(t *testing.T) {
 	if status, _ := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/credentials", s.operator, map[string]any{"basic_auth": "bob:plaintext"}); status != http.StatusBadRequest {
 		t.Errorf("a password that is not a hash: %d", status)
 	}
+	// caddy hash-password prints the hash alone: without a user it would be no password at all
+	if status, _ := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/credentials", s.operator, map[string]any{"basic_auth": bobHash}); status != http.StatusBadRequest {
+		t.Errorf("a hash without a user: %d", status)
+	}
+
+	// a password needs HTTPS on every domain of the site
+	if status, out := s.request(http.MethodPost, "/api/collections/domains/records", s.operator, map[string]any{
+		"hostname": "kept.example.test", "host": s.host.Id, "target_kind": schema.TargetSite, "site": siteID, "tls": schema.TLSOff,
+	}); status != http.StatusOK {
+		t.Fatalf("a plain domain: %d %v", status, out)
+	}
+	if status, _ := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/credentials", s.operator, map[string]any{"basic_auth": "bob:" + bobHash}); status != http.StatusBadRequest {
+		t.Errorf("a password with a plain HTTP domain: %d", status)
+	}
+	other := s.newSite(map[string]any{"name": "private", "source": sites.SourceEmpty, "basic_auth": "bob:" + bobHash})
+	if s.site(other).GetString("basic_auth") == "" {
+		t.Fatal("the password of a new site was not kept")
+	}
+	if status, _ := s.request(http.MethodPost, "/api/collections/domains/records", s.operator, map[string]any{
+		"hostname": "private.example.test", "host": s.host.Id, "target_kind": schema.TargetSite, "site": other, "tls": schema.TLSOff,
+	}); status != http.StatusBadRequest {
+		t.Errorf("a plain domain for a site with a password: %d", status)
+	}
+
+	// the server keeps its edge role while sites are on it
+	_, admin := testutil.NewUser(t, s.app, "admin@example.com", schema.RoleAdmin)
+	if status, out := s.request(http.MethodPatch, "/api/collections/hosts/records/"+s.host.Id, admin, map[string]any{"roles": []string{schema.HostRoleDocker}}); status != http.StatusBadRequest {
+		t.Errorf("removing the edge role from a server with sites: %d %v", status, out)
+	}
 }
+
+const bobHash = "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
 
 // TestRemovingASiteRemovesItsFilesAndDomains: the server loses the site's
 // releases, and its domains go.
