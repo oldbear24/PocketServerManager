@@ -263,6 +263,58 @@ func TestADomainGetsItsRecordsAndLosesThem(t *testing.T) {
 	}
 }
 
+// TestCreatingOrDeletingASiteSetsOrRemovesItsRecords: the domain of a site in
+// a managed zone gets its A and AAAA records, and removing the site removes
+// them, leaving the zone's other records as they are.
+func TestCreatingOrDeletingASiteSetsOrRemovesItsRecords(t *testing.T) {
+	d := newDNSHarnessWith(t, func(config *agent.Config) { config.LocalSites = t.TempDir() }, "example.com")
+	if status, out := d.connect("cf-token"); status != http.StatusOK {
+		t.Fatalf("%d %v", status, out)
+	}
+	other := d.domain("www.example.com")
+	d.synced(other.Id, 2)
+
+	// a site with its placeholder page, served at a name of the zone
+	status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "POST", URL: "/api/collections/sites/records", Token: d.admin,
+		Body: fmt.Sprintf(`{"name":"blog","host":%q,"source":"empty"}`, d.host.Id)})
+	if status != http.StatusOK {
+		t.Fatalf("a new site: %d %s", status, raw)
+	}
+	var site struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(raw), &site)
+	status, raw = addDomain(t, d.harness, d.admin, fmt.Sprintf(`{"hostname":"blog.example.com","host":%q,"target_kind":"site","site":%q}`, d.host.Id, site.ID))
+	if status != http.StatusOK {
+		t.Fatalf("the site's domain: %d %s", status, raw)
+	}
+	var domain struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(raw), &domain)
+
+	d.waitFor("the site's records at Cloudflare", func() bool {
+		records := cloudflareRecords(d.api, "example.com")
+		return records["blog.example.com A"] == "203.0.114.7" && records["blog.example.com AAAA"] == "2a01:4f8::7"
+	})
+	d.synced(domain.ID, 2)
+
+	// the site goes, and its domain's records with it
+	if status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/collections/sites/records/" + site.ID, Token: d.admin}); status != http.StatusNoContent {
+		t.Fatalf("removing the site: %d %s", status, raw)
+	}
+	d.waitFor("the site's records to go", func() bool {
+		records := cloudflareRecords(d.api, "example.com")
+		_, a := records["blog.example.com A"]
+		_, aaaa := records["blog.example.com AAAA"]
+		rows, _ := d.app.FindRecordsByFilter(schema.DNSRecords, "", "", 0, 0)
+		return !a && !aaaa && len(rows) == 2
+	})
+	if records := cloudflareRecords(d.api, "example.com"); records["www.example.com A"] != "203.0.114.7" || records["www.example.com AAAA"] != "2a01:4f8::7" || len(records) != 2 {
+		t.Errorf("the zone's other records changed: %v", records)
+	}
+}
+
 // TestManualModeShowsTheRecordsAndChecksUntilTheyResolve: a domain in no
 // connected zone shows exactly the records to create, and is done once
 // they resolve.
