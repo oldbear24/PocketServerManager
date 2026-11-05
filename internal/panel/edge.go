@@ -134,6 +134,30 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		errs["host"] = validation.NewError("validation_no_edge", "The server has no edge role: give it one first.")
 	}
 
+	// a domain whose name others are an alias of keeps it
+	if !record.IsNew() {
+		if stored, err := e.App.FindRecordById(schema.Domains, record.Id); err == nil && stored.GetString("hostname") != hostname {
+			if aliases, _ := e.App.CountRecords(schema.Domains, dbx.HashExp{"dns_alias": stored.GetString("hostname")}); aliases > 0 {
+				errs["hostname"] = validation.NewError("validation_has_aliases", "Other domains are aliases of this name: remove them or point them elsewhere first.")
+			}
+		}
+	}
+
+	// an alias reaches the edge through the other name, so that name must be
+	// a domain of the same edge
+	alias := strings.ToLower(strings.TrimSpace(record.GetString("dns_alias")))
+	record.Set("dns_alias", alias)
+	if alias != "" {
+		switch target, err := e.App.FindFirstRecordByData(schema.Domains, "hostname", alias); {
+		case alias == hostname:
+			errs["dns_alias"] = validation.NewError("validation_alias_loop", "A domain cannot be an alias of itself.")
+		case err != nil || target.GetString("host") != record.GetString("host"):
+			errs["dns_alias"] = validation.NewError("validation_alias_elsewhere", "An alias points at a domain of the same server.")
+		case target.GetString("dns_alias") != "":
+			errs["dns_alias"] = validation.NewError("validation_alias_chain", "An alias points at a domain with addresses, not at another alias.")
+		}
+	}
+
 	switch record.GetString("target_kind") {
 	case schema.TargetContainer:
 		name := strings.TrimSpace(record.GetString("container"))

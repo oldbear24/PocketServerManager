@@ -53,11 +53,13 @@ func (r Record) set() RRSet {
 	return RRSet{Name: r.Name, Type: r.Type}
 }
 
-// AddressSets are the sets of a name's A and AAAA records, which PocketCloud
-// owns together: a server without an IPv6 address must not leave an old
-// AAAA record of the name pointing elsewhere.
+// AddressSets are the sets that point a name somewhere: its A, AAAA and CNAME
+// records, which PocketCloud owns together. A server without an IPv6 address
+// must not leave an old AAAA record of the name pointing elsewhere, and a name
+// that becomes an alias must lose its addresses, which a CNAME cannot have
+// next to it.
 func AddressSets(name string) []RRSet {
-	return []RRSet{{Name: name, Type: "A"}, {Name: name, Type: "AAAA"}}
+	return []RRSet{{Name: name, Type: "A"}, {Name: name, Type: "AAAA"}, {Name: name, Type: "CNAME"}}
 }
 
 // Set makes the records the only members of their sets, and of the sets in

@@ -40,9 +40,25 @@ func (p *Panel) registerDNS() {
 	p.App.OnRecordAfterUpdateSuccess(schema.Domains).BindFunc(func(e *core.RecordEvent) error {
 		// the panel's own saves of the DNS state change neither
 		if original := e.Record.Original(); original != nil &&
-			(original.GetString("hostname") != e.Record.GetString("hostname") || original.GetString("host") != e.Record.GetString("host")) {
+			(original.GetString("hostname") != e.Record.GetString("hostname") || original.GetString("host") != e.Record.GetString("host") ||
+				original.GetString("dns_alias") != e.Record.GetString("dns_alias")) {
 			id := e.Record.Id
 			p.later.after(edgeSettle, func() { p.syncDomainDNSLogged(id) })
+		}
+		return e.Next()
+	})
+	// an alias goes with the domain it is an alias of: its name would point
+	// at nothing
+	p.App.OnRecordDelete(schema.Domains).BindFunc(func(e *core.RecordEvent) error {
+		aliases, err := e.App.FindRecordsByFilter(schema.Domains, "dns_alias={:name} && host={:host}", "", 0, 0,
+			dbx.Params{"name": e.Record.GetString("hostname"), "host": e.Record.GetString("host")})
+		if err != nil {
+			return err
+		}
+		for _, alias := range aliases {
+			if err := e.App.Delete(alias); err != nil {
+				return err
+			}
 		}
 		return e.Next()
 	})
@@ -556,6 +572,16 @@ func (p *Panel) desiredDNS(domain *core.Record) domainDNS {
 		}
 	}
 
+	zone := want.ZoneName
+	if zone == "" {
+		zone = hostname
+	}
+	// an alias points at the other name, wherever that one points
+	if alias := domain.GetString("dns_alias"); alias != "" {
+		want.Records = []dns.Record{dns.CNAMERecord(hostname, zone, alias)}
+		return want
+	}
+
 	host, err := p.App.FindRecordById(schema.Hosts, domain.GetString("host"))
 	if err != nil {
 		want.Problem = "The domain's server does not exist."
@@ -565,10 +591,6 @@ func (p *Panel) desiredDNS(domain *core.Record) domainDNS {
 	if ip4 == "" && ip6 == "" {
 		want.Problem = fmt.Sprintf("Set the public IP address of %s on its server page, so its domains can point at it.", host.GetString("name"))
 		return want
-	}
-	zone := want.ZoneName
-	if zone == "" {
-		zone = hostname
 	}
 	records, err := dns.AddressRecords(hostname, zone, ip4, ip6)
 	if err != nil {

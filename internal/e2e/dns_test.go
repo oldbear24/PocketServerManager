@@ -315,6 +315,71 @@ func TestCreatingOrDeletingASiteSetsOrRemovesItsRecords(t *testing.T) {
 	}
 }
 
+// TestAnAliasGetsACNAMEAndGoesWithItsDomain: a www name that redirects to
+// its site is an alias: the zone gets a CNAME to the site's name, not
+// addresses of its own. It must point at a domain of the same server, and it
+// goes when that domain goes.
+func TestAnAliasGetsACNAMEAndGoesWithItsDomain(t *testing.T) {
+	d := newDNSHarness(t, "example.com")
+	if status, out := d.connect("cf-token"); status != http.StatusOK {
+		t.Fatalf("%d %v", status, out)
+	}
+	apex := d.domain("shop.example.com")
+	d.synced(apex.Id, 2)
+
+	newAlias := func(hostname, of string) (int, string) {
+		return addDomain(t, d.harness, d.admin, fmt.Sprintf(`{"hostname":%q,"host":%q,"target_kind":"redirect","redirect_to":"https://shop.example.com","redirect_permanent":true,"dns_alias":%q}`, hostname, d.host.Id, of))
+	}
+	for _, refused := range []struct{ hostname, of string }{
+		{"www.shop.example.com", "nowhere.example.com"},
+		{"www.shop.example.com", "www.shop.example.com"},
+	} {
+		if status, raw := newAlias(refused.hostname, refused.of); status != http.StatusBadRequest || !strings.Contains(raw, "dns_alias") {
+			t.Errorf("an alias of %s: %d %s", refused.of, status, raw)
+		}
+	}
+
+	status, raw := newAlias("www.shop.example.com", "Shop.example.com")
+	if status != http.StatusOK {
+		t.Fatalf("the alias: %d %s", status, raw)
+	}
+	var alias struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(raw), &alias)
+	d.waitFor("the alias's CNAME at Cloudflare", func() bool {
+		records := cloudflareRecords(d.api, "example.com")
+		return records["www.shop.example.com CNAME"] == "shop.example.com" || records["www.shop.example.com CNAME"] == "shop.example.com."
+	})
+	d.synced(alias.ID, 1)
+	records := cloudflareRecords(d.api, "example.com")
+	if _, a := records["www.shop.example.com A"]; a || len(records) != 3 {
+		t.Errorf("the zone: %v", records)
+	}
+
+	// the alias resolves once its CNAME does
+	d.resolvers.set("www.shop.example.com", "CNAME", "shop.example.com.")
+	d.resolvers.set("shop.example.com", "A", "203.0.114.7")
+	d.resolvers.set("shop.example.com", "AAAA", "2a01:4f8::7")
+	d.panel.CheckDNSPropagation()
+	if status := d.dnsStatus(alias.ID); status != schema.DNSOK {
+		t.Errorf("the alias's DNS: %s", status)
+	}
+
+	// the name it is an alias of keeps its name, and takes the alias with it
+	apex.Set("hostname", "store.example.com")
+	if err := d.app.Save(apex); err == nil || !strings.Contains(err.Error(), "aliases") {
+		t.Errorf("renaming the aliased domain: %v", err)
+	}
+	if status, _ := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/collections/domains/records/" + apex.Id, Token: d.admin}); status != http.StatusNoContent {
+		t.Fatalf("removing the domain: %d", status)
+	}
+	d.waitFor("both names to go", func() bool {
+		left, _ := d.app.FindRecordsByFilter(schema.Domains, "", "", 0, 0)
+		return len(left) == 0 && len(cloudflareRecords(d.api, "example.com")) == 0
+	})
+}
+
 // TestManualModeShowsTheRecordsAndChecksUntilTheyResolve: a domain in no
 // connected zone shows exactly the records to create, and is done once
 // they resolve.
