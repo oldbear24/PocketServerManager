@@ -3,12 +3,19 @@
 // Answers pocketcloud-php-status with OPcache's statistics. It must run in
 // FPM: the command-line PHP has an OPcache of its own and would see nothing.
 //
-// It answers only in FPM's status pool, which listens on a Unix socket inside
-// the container; through the site's pool on port 9000, which other containers
-// reach, it does not exist.
+// It answers only a caller that knows the path of FPM's status page, which
+// the entrypoint makes up anew at every start and which only the container
+// knows (/run/pocketcloud-php/fpm-status.conf): the same secret that guards
+// the status page itself. It does not ask fpm_get_status() which pool runs
+// it, as that call sometimes crashes the worker of PHP 8.2's status pool.
 
-$pool = function_exists('fpm_get_status') ? (fpm_get_status()['pool'] ?? '') : '';
-if (!str_ends_with($pool, '_status')) {
+$given = $_SERVER['POCKETCLOUD_STATUS_PATH'] ?? '';
+$config = @file_get_contents('/run/pocketcloud-php/fpm-status.conf');
+if (
+    !is_string($given) || $given === '' || $config === false
+    || !preg_match('/^pm\.status_path = (\S+)$/m', $config, $match)
+    || !hash_equals($match[1], $given)
+) {
     http_response_code(404);
     exit;
 }

@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -278,16 +279,19 @@ func isJSONObject(body []byte) bool {
 	return bytes.HasPrefix(body, []byte("{")) && json.Valid(body)
 }
 
-// opcacheStatus runs the script that reports OPcache's statistics. The status
-// pool takes the site pool's php_admin_value settings, so the request lifts an
-// open_basedir that would keep the script out, the files a site may have FPM
+// opcacheStatus runs the script that reports OPcache's statistics. It answers
+// only a request that carries the path of the status page, which it compares
+// with the one in the entrypoint's settings. The status pool takes the site
+// pool's php_admin_value settings, so the request lifts an open_basedir that
+// would keep the script and the settings out, the files a site may have FPM
 // run before and after every script, and a restriction of OPcache's functions
 // to the site's own files.
 func opcacheStatus(ctx context.Context, s settings, script string) (version string, opcache json.RawMessage, err error) {
 	params := requestParams("/"+path.Base(script), script, "")
 	params["DOCUMENT_ROOT"] = path.Dir(script)
+	params["POCKETCLOUD_STATUS_PATH"] = s.StatusPath
 	params["PHP_ADMIN_VALUE"] = strings.Join([]string{
-		"open_basedir=" + path.Dir(script),
+		"open_basedir=" + path.Dir(script) + ":" + path.Dir(defaultConfig),
 		"auto_prepend_file=",
 		"auto_append_file=",
 		"opcache.restrict_api=",
@@ -329,15 +333,27 @@ func checkPing(ctx context.Context, s settings) error {
 	return nil
 }
 
+// request asks FPM once more when its worker dropped the connection before
+// it answered, as a worker that crashed is replaced at once. Every request
+// here only reads.
 func request(ctx context.Context, s settings, params map[string]string) (*fcgiResponse, error) {
 	network, address := dialTarget(s.Listen)
 
 	response, err := fcgiGet(ctx, network, address, params)
+	if err != nil && dropped(err) && ctx.Err() == nil {
+		response, err = fcgiGet(ctx, network, address, params)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("asking FPM at %s: %w", s.Listen, err)
 	}
 
 	return response, nil
+}
+
+// dropped tells whether the server closed or reset the connection before it
+// ended its response.
+func dropped(err error) bool {
+	return errors.Is(err, errClosedEarly) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 // requestParams are the CGI variables of a GET request, as a web server sends them.

@@ -45,6 +45,10 @@ const (
 	maxStderr = 64 << 10
 )
 
+// errClosedEarly is a connection that ended before the response did, as when
+// the worker that answered it crashed.
+var errClosedEarly = errors.New("the server closed the connection before it ended the response")
+
 // fcgiResponse is a responder's answer: a CGI response and its error stream.
 type fcgiResponse struct {
 	Status int
@@ -212,7 +216,7 @@ func readResponse(r io.Reader) (stdout, stderr []byte, err error) {
 	for {
 		if _, err := io.ReadFull(reader, header); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, nil, errors.New("the server closed the connection before it ended the response")
+				return nil, nil, errClosedEarly
 			}
 			return nil, nil, err
 		}

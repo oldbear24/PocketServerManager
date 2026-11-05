@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -416,5 +417,40 @@ func TestRealFPMTakesLargeParameters(t *testing.T) {
 		if response.Status != http.StatusNotFound {
 			t.Fatalf("%d bytes: status %d", size, response.Status)
 		}
+	}
+}
+
+// dropFirst closes the first connection it accepts at once, as FPM does when
+// the worker that took it crashes, and hands on the others.
+type dropFirst struct {
+	net.Listener
+	dropped atomic.Bool
+}
+
+func (l *dropFirst) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil || l.dropped.Swap(true) {
+			return conn, err
+		}
+		_ = conn.Close()
+	}
+}
+
+func TestAsksAgainWhenAWorkerDropsTheConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() { _ = fcgi.Serve(&dropFirst{Listener: listener}, http.HandlerFunc(echo)) }()
+
+	s := settings{Listen: listener.Addr().String()}
+	response, err := request(context.Background(), s, requestParams("/x", "/x", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != http.StatusAccepted {
+		t.Fatalf("status %d", response.Status)
 	}
 }

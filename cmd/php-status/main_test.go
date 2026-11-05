@@ -65,7 +65,12 @@ func fakeFPM(t *testing.T, broken ...string) http.Handler {
 				http.Error(w, "", http.StatusInternalServerError)
 				return
 			}
-			if !strings.Contains(env["PHP_ADMIN_VALUE"], "open_basedir=/usr/local/lib/pocketcloud-php") {
+			// the script answers only who knows the status page's path
+			if env["POCKETCLOUD_STATUS_PATH"] != testStatusPath {
+				http.Error(w, "", http.StatusNotFound)
+				return
+			}
+			if !strings.Contains(env["PHP_ADMIN_VALUE"], "open_basedir=/usr/local/lib/pocketcloud-php:/run/pocketcloud-php") {
 				http.Error(w, "open_basedir restriction in effect", http.StatusInternalServerError)
 				return
 			}
