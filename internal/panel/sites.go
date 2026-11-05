@@ -60,6 +60,8 @@ func (p *Panel) registerSites() {
 	// operators may set a site's secrets with its create or update all the same
 	p.App.OnRecordCreateRequest(schema.Sites).BindFunc(p.takeSiteSecrets)
 	p.App.OnRecordUpdateRequest(schema.Sites).BindFunc(p.takeSiteSecrets)
+	p.App.OnRecordCreateRequest(schema.Sites).BindFunc(p.keepSiteBookkeeping)
+	p.App.OnRecordUpdateRequest(schema.Sites).BindFunc(p.keepSiteBookkeeping)
 	p.App.OnRecordCreate(schema.Sites).BindFunc(p.siteDefaults)
 	p.App.OnRecordValidate(schema.Sites).BindFunc(p.validateSite)
 	p.App.OnRecordAfterCreateSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
@@ -133,6 +135,23 @@ func (p *Panel) takeSiteSecrets(e *core.RecordRequestEvent) error {
 			e.Record.Set("basic_auth", strings.TrimSpace(*body.BasicAuth))
 		}
 	}
+	return e.Next()
+}
+
+// keepSiteBookkeeping keeps what the panel records about a site out of the
+// records API: which deployment is live is the panel's to say. An update
+// keeps it as it is stored now, not as the request read it, which a
+// deployment may have changed since.
+func (p *Panel) keepSiteBookkeeping(e *core.RecordRequestEvent) error {
+	if e.Record.IsNew() {
+		e.Record.Set("active_deployment", "")
+		return e.Next()
+	}
+	stored, err := e.App.FindRecordById(schema.Sites, e.Record.Id)
+	if err != nil {
+		return e.NotFoundError("The site does not exist.", err)
+	}
+	e.Record.Set("active_deployment", stored.Get("active_deployment"))
 	return e.Next()
 }
 
@@ -562,8 +581,14 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 			fields["message"] = truncate(result.Message, 1000)
 		}
 	}
-	p.setFields(deployment, fields)
-	p.setFields(site, map[string]any{"active_deployment": deployment.Id})
+	// the deployment is live and the site's active one at once, so nothing
+	// sees one without the other
+	if err := p.setFieldsTogether(
+		fieldChange{deployment, fields},
+		fieldChange{site, map[string]any{"active_deployment": deployment.Id}},
+	); err != nil {
+		p.Log.Error("failed to record a live deployment", "site", site.GetString("name"), "deployment", deployment.Id, "error", err)
+	}
 	if len(result.Releases) > 0 {
 		p.markReleasesOnServer(site, result.Releases)
 	}

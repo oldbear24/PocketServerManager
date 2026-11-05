@@ -302,8 +302,11 @@ func TestAFailedBuildKeepsTheCurrentReleaseOnline(t *testing.T) {
 	}
 	placeholder := s.served("shop")
 
+	// right after the deployment: the edit keeps the live deployment as it
+	// is stored, and cannot change it itself
 	if status, out := s.request(http.MethodPatch, "/api/collections/sites/records/"+siteID, s.operator, map[string]any{
 		"generator": sites.GeneratorCustom, "build_image": "alpine:3.22", "build_cmd": "echo the template is broken >&2; exit 7",
+		"active_deployment": "",
 	}); status != http.StatusOK {
 		t.Fatalf("changing the build: %d %v", status, out)
 	}
@@ -314,8 +317,8 @@ func TestAFailedBuildKeepsTheCurrentReleaseOnline(t *testing.T) {
 	if failed.GetString("status") != schema.DeploymentFailed || !strings.Contains(failed.GetString("error"), "exit code 7") {
 		t.Errorf("the failed deployment: %v", failed.PublicExport())
 	}
-	if s.served("shop") != placeholder || s.site(siteID).GetString("active_deployment") != first.Id {
-		t.Error("a failed build changed what the site serves")
+	if served, active := s.served("shop"), s.site(siteID).GetString("active_deployment"); served != placeholder || active != first.Id {
+		t.Errorf("a failed build changed what the site serves: %q, active deployment %q (the first is %s)", served, active, first.Id)
 	}
 	if _, err := os.Stat(sites.BuildDir(s.sites, "shop", 2)); !os.IsNotExist(err) {
 		t.Errorf("the failed build left its directory: %v", err)
@@ -325,9 +328,11 @@ func TestAFailedBuildKeepsTheCurrentReleaseOnline(t *testing.T) {
 	if output := s.commandOutput(command); !strings.Contains(output, "the template is broken") || !strings.Contains(output, "still serves the release") {
 		t.Errorf("the build log: %s", output)
 	}
-	if events, _ := s.app.FindRecordsByFilter(schema.Events, "kind='site.deploy_failed'", "", 0, 0); len(events) != 1 {
-		t.Errorf("events: %d", len(events))
-	}
+	// the event is logged once the deployment is marked failed
+	s.waitFor("the failure's event", func() bool {
+		events, _ := s.app.FindRecordsByFilter(schema.Events, "kind='site.deploy_failed'", "", 0, 0)
+		return len(events) == 1
+	})
 }
 
 // commandOutput is the log a command stored.

@@ -55,6 +55,41 @@ func (p *Panel) setFields(record *core.Record, fields map[string]any) {
 	}
 }
 
+// fieldChange is a few fields of a record to store with setFieldsTogether.
+type fieldChange struct {
+	record *core.Record
+	fields map[string]any
+}
+
+// setFieldsTogether stores fields of several records in one transaction, each
+// onto the record as it is stored now, as setFields does.
+func (p *Panel) setFieldsTogether(changes ...fieldChange) error {
+	saved := make([]*core.Record, len(changes))
+	err := p.App.RunInTransaction(func(tx core.App) error {
+		for i, change := range changes {
+			fresh, err := tx.FindRecordById(change.record.Collection().Id, change.record.Id)
+			if err != nil {
+				return err
+			}
+			for name, value := range change.fields {
+				fresh.Set(name, value)
+			}
+			if err := tx.Save(fresh); err != nil {
+				return err
+			}
+			saved[i] = fresh
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i, change := range changes {
+		change.record.Load(saved[i].FieldsData())
+	}
+	return nil
+}
+
 // saveChanges saves what changed on a record since it was read onto the record
 // as it is stored now (see update). Callbacks and routes read a record, change a
 // field or two and save it; the rest of what they read may be out of date by
