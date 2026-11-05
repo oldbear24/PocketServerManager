@@ -450,11 +450,20 @@ func (p *Panel) applyEdge(hostID string, force bool, requester string) (*core.Re
 		if err != nil {
 			return nil, err
 		}
-		// a config the edge refused is not sent again by itself, until the agent
-		// reconnects; one that never reached the agent is
-		if len(finished) > 0 && commandDigest(finished[0]) == digest && finished[0].GetString("status") != schema.CommandSucceeded &&
-			failedOnTheEdge(finished[0], host) {
-			return nil, nil
+		if len(finished) > 0 && commandDigest(finished[0]) == digest {
+			latest := finished[0]
+			switch {
+			// an apply of this config that succeeded after the last heartbeat is
+			// recorded on the host a moment later; only a heartbeat since then
+			// can say the edge serves something else
+			case latest.GetString("status") == schema.CommandSucceeded &&
+				!latest.GetDateTime("finished_at").Time().Before(host.GetDateTime("last_seen").Time()):
+				return nil, nil
+			// a config the edge refused is not sent again by itself, until the
+			// agent reconnects; one that never reached the agent is
+			case latest.GetString("status") != schema.CommandSucceeded && failedOnTheEdge(latest, host):
+				return nil, nil
+			}
 		}
 	}
 

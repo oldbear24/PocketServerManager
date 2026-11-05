@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/tools/types"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -488,5 +489,57 @@ func TestANewlyPinnedCaddyReachesTheEdges(t *testing.T) {
 	h.waitInSync(host.Id)
 	if h.host(host.Id).GetString("edge_applied_digest") == before {
 		t.Error("the edge still reports the config of the old image")
+	}
+}
+
+// TestAnApplyThatJustSucceededIsNotSentAgain: between an apply's success and
+// the host recording it, a refresh finds no open command and nothing applied.
+// It sends the config again only if a heartbeat since then says the edge
+// serves something else.
+func TestAnApplyThatJustSucceededIsNotSentAgain(t *testing.T) {
+	h := newHarness(t)
+	host := testutil.NewHost(t, h.app, "racing-edge")
+	host.Set("roles", []string{schema.HostRoleDocker, schema.HostRoleEdge})
+	host.Set("last_seen", types.NowDateTime().Add(-time.Minute))
+	// a config was wanted before, so the refresh at the panel's start looks at it
+	host.Set("edge_digest", "an older config")
+	if err := h.app.Save(host); err != nil {
+		t.Fatal(err)
+	}
+
+	h.panel.RefreshEdges()
+	if applies := h.edgeApplies(host.Id); applies != 1 {
+		t.Fatalf("%d applies", applies)
+	}
+
+	// the agent ran it; the host has not recorded it yet
+	command, err := h.app.FindFirstRecordByFilter(schema.Commands, "host={:h} && type='edge.apply'", dbx.Params{"h": host.Id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{schema.CommandDispatched, schema.CommandRunning, schema.CommandSucceeded} {
+		command.Set("status", status)
+		if status == schema.CommandSucceeded {
+			command.Set("finished_at", types.NowDateTime())
+		}
+		if err := h.app.Save(command); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.panel.RefreshEdges()
+	if applies := h.edgeApplies(host.Id); applies != 1 {
+		t.Fatalf("the config that just succeeded was sent again: %d applies", applies)
+	}
+
+	// a heartbeat after it says the edge serves nothing: the edge gets it again
+	host = h.host(host.Id)
+	host.Set("last_seen", types.NowDateTime().Add(time.Second))
+	if err := h.app.Save(host); err != nil {
+		t.Fatal(err)
+	}
+	h.panel.RefreshEdges()
+	if applies := h.edgeApplies(host.Id); applies != 2 {
+		t.Fatalf("an edge that lost its config did not get it again: %d applies", applies)
 	}
 }

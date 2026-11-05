@@ -24,7 +24,7 @@ func TestAStaleHeartbeatDoesNotUndoAnApply(t *testing.T) {
 	host.Set("edge_applied_digest", "new")
 	host.Set("edge_applied_revision", 5)
 
-	applyEdgeStatus(host, &agentv1.EdgeStatus{Digest: "old", Revision: 4, Running: true})
+	applyEdgeStatus(host, &agentv1.EdgeStatus{Digest: "old", Revision: 4, Running: true}, never)
 	if host.GetString("edge_applied_digest") != "new" || host.GetInt("edge_applied_revision") != 5 {
 		t.Errorf("a stale heartbeat undid the apply: %s %d", host.GetString("edge_applied_digest"), host.GetInt("edge_applied_revision"))
 	}
@@ -32,14 +32,23 @@ func TestAStaleHeartbeatDoesNotUndoAnApply(t *testing.T) {
 		t.Error("the rest of a stale heartbeat was dropped")
 	}
 
-	applyEdgeStatus(host, &agentv1.EdgeStatus{Digest: "newer", Revision: 6})
+	applyEdgeStatus(host, &agentv1.EdgeStatus{Digest: "newer", Revision: 6}, never)
 	if host.GetString("edge_applied_digest") != "newer" {
 		t.Error("a newer heartbeat was ignored")
 	}
 
-	// a server whose edge was removed reports none
-	applyEdgeStatus(host, nil)
+	// a heartbeat from before the first apply reports no edge; right after an
+	// apply it is stale too
+	applyEdgeStatus(host, nil, func() bool { return true })
+	if host.GetString("edge_applied_digest") != "newer" || host.GetInt("edge_applied_revision") != 6 {
+		t.Errorf("a heartbeat from before the apply undid it: %q %d", host.GetString("edge_applied_digest"), host.GetInt("edge_applied_revision"))
+	}
+
+	// a server whose edge was removed, or lost, reports none long after
+	applyEdgeStatus(host, nil, never)
 	if host.GetString("edge_applied_digest") != "" || host.GetInt("edge_applied_revision") != 0 {
 		t.Error("a removed edge still counts as applied")
 	}
 }
+
+func never() bool { return false }
