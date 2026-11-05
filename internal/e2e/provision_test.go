@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	mdns "github.com/miekg/dns"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
@@ -43,7 +45,7 @@ func newProvisionHarness(t *testing.T, zones ...string) *provisionHarness {
 	dir := t.TempDir()
 	a := newACMEHarness(t, acmeOptions{configure: func(config *agent.Config) { config.LocalSites = dir }}, zones...)
 	a.mustSetAccount()
-	a.panel.SetProvisionTick(100 * time.Millisecond)
+	a.panel.SetProvisionTiming(100*time.Millisecond, 2*time.Second, 100*time.Millisecond)
 	_, operator := testutil.NewUser(t, a.app, "op@example.com", schema.RoleOperator)
 	_, viewer := testutil.NewUser(t, a.app, "viewer@example.com", schema.RoleViewer)
 	h := &provisionHarness{acmeHarness: a, operator: operator, viewer: viewer, sites: dir}
@@ -88,8 +90,13 @@ func (h *provisionHarness) propagateFromCloudflare(zone string) {
 // provision asks for a new site, as the wizard does.
 func (h *provisionHarness) provision(site map[string]any, hostname string, www bool) (int, map[string]any) {
 	h.t.Helper()
+	return h.provisionWith(site, hostname, www, "auto")
+}
+
+func (h *provisionHarness) provisionWith(site map[string]any, hostname string, www bool, challenge string) (int, map[string]any) {
+	h.t.Helper()
 	site["host"] = h.host.Id
-	body, _ := json.Marshal(map[string]any{"site": site, "hostname": hostname, "www": www, "challenge": "auto"})
+	body, _ := json.Marshal(map[string]any{"site": site, "hostname": hostname, "www": www, "challenge": challenge})
 	status, raw := testutil.Do(h.t, h.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/sites/provision", Token: h.operator, Body: string(body)})
 	var out map[string]any
 	_ = json.Unmarshal([]byte(raw), &out)
@@ -442,6 +449,154 @@ func TestANewSiteFromAZipIsDeployedByItsSetup(t *testing.T) {
 	}
 	if _, err := h.app.FindFirstRecordByData(schema.Sites, "name", "nozip"); err == nil {
 		t.Error("the site was created without its ZIP")
+	}
+}
+
+// retry asks for a paused setup's step again.
+func (h *provisionHarness) retry(parent string) (int, string) {
+	return testutil.Do(h.t, h.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/provisions/" + parent + "/retry", Token: h.operator})
+}
+
+// waitPaused waits until a setup is paused at its last step, which failed.
+func (h *provisionHarness) waitPaused(parent, step string) map[string]any {
+	h.t.Helper()
+	var last map[string]any
+	h.waitLong("the setup to pause at "+step, func() bool {
+		steps := h.steps(parent)
+		last = steps[len(steps)-1]
+		return last["type"] == step && last["status"] == schema.CommandFailed && jsonMap(h.command(parent).Get("progress"))["paused"] == last["id"]
+	})
+	return last
+}
+
+// TestARetriedCertificateStepAsksTheCAAgain: a certificate the CA refused
+// pauses the setup; once the cause is gone, Retry asks the CA again and the
+// setup goes on, instead of failing at once on what the first attempt said.
+func TestARetriedCertificateStepAsksTheCAAgain(t *testing.T) {
+	h := newProvisionHarness(t, "example.com")
+	if status, out := h.connect("cf-token"); status != http.StatusOK {
+		t.Fatalf("%d %v", status, out)
+	}
+	h.propagateFromCloudflare("example.com")
+	h.panel.SetACMEPropagation(2*time.Second, 50*time.Millisecond)
+	// the zone's name servers do not answer the challenge at first
+	var blind atomic.Bool
+	blind.Store(true)
+	h.ca.DNS.Lookup(func(name string, qtype uint16) []string {
+		if qtype != mdns.TypeTXT || blind.Load() {
+			return nil
+		}
+		values := []string{}
+		for _, record := range h.api.Records("example.com") {
+			if record.Type == "TXT" && strings.EqualFold(record.Name+".", name) {
+				values = append(values, strings.Trim(record.Content, `"`))
+			}
+		}
+		return values
+	})
+
+	status, out := h.provisionWith(map[string]any{"name": "certs", "source": "empty"}, "certs.example.com", false, "dns-01")
+	if status != http.StatusCreated {
+		t.Fatalf("the new site: %d %v", status, out)
+	}
+	parent := out["provision"].(string)
+	failed := h.waitPaused(parent, "site.certificate")
+	if !strings.Contains(fmt.Sprint(failed["error"]), "propagation") {
+		t.Errorf("the failed step: %v", failed)
+	}
+
+	blind.Store(false)
+	if status, raw := h.retry(parent); status != http.StatusNoContent {
+		t.Fatalf("retry: %d %s", status, raw)
+	}
+	setup := h.waitSetup(parent, schema.CommandSucceeded, schema.CommandFailed)
+	if got := stepTypes(h.steps(parent)); setup.GetString("status") != schema.CommandSucceeded ||
+		!strings.HasSuffix(got, "site.certificate:failed site.certificate:succeeded site.check:succeeded") {
+		t.Fatalf("the setup: %s; steps %s", setup.GetString("status"), got)
+	}
+}
+
+// TestTwoRetriesStartOneStep: two Retries at once start the failed step
+// once; a Retry of a setup that has ended starts nothing.
+func TestTwoRetriesStartOneStep(t *testing.T) {
+	h := newProvisionHarness(t)
+	h.resolvers.set("twice.example.org", "A", "203.0.114.7")
+	h.resolvers.set("twice.example.org", "AAAA", "2a01:4f8::7")
+	h.mu.Lock()
+	h.answers = func(string) (int, string, error) { return http.StatusBadGateway, "", nil }
+	h.mu.Unlock()
+	status, out := h.provision(map[string]any{"name": "twice", "source": "empty"}, "twice.example.org", false)
+	if status != http.StatusCreated {
+		t.Fatalf("the new site: %d %v", status, out)
+	}
+	parent := out["provision"].(string)
+	h.waitPaused(parent, "site.check")
+
+	answers := make(chan int, 2)
+	for range 2 {
+		go func() {
+			status, _ := h.retry(parent)
+			answers <- status
+		}()
+	}
+	first, second := <-answers, <-answers
+	if first+second != http.StatusNoContent+http.StatusBadRequest {
+		t.Errorf("two retries answered %d and %d", first, second)
+	}
+	steps := h.steps(parent)
+	if checks := strings.Count(stepTypes(steps), "site.check:"); checks != 2 {
+		t.Errorf("%d checks: %s", checks, stepTypes(steps))
+	}
+
+	// the retried check fails too; the setup is cancelled; Retry is refused
+	h.waitPaused(parent, "site.check")
+	if status, raw := testutil.Do(t, h.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/commands/" + parent + "/cancel", Token: h.operator}); status != http.StatusNoContent {
+		t.Fatalf("cancel: %d %s", status, raw)
+	}
+	if status, raw := h.retry(parent); status != http.StatusBadRequest || !strings.Contains(raw, "ended") {
+		t.Errorf("a retry of an ended setup: %d %s", status, raw)
+	}
+}
+
+// TestAStepThatCannotStartPausesTheSetup: a site whose source became an
+// upload while its setup waited has nothing to deploy; the setup pauses
+// with the reason, and Retry starts the step once there is something.
+func TestAStepThatCannotStartPausesTheSetup(t *testing.T) {
+	h := newProvisionHarness(t)
+	status, out := h.provision(map[string]any{"name": "switched", "source": "empty"}, "switched.example.org", false)
+	if status != http.StatusCreated {
+		t.Fatalf("the new site: %d %v", status, out)
+	}
+	parent, siteID := out["provision"].(string), out["site"].(string)
+	h.waitLong("the setup to wait for the records", func() bool {
+		steps := h.steps(parent)
+		return len(steps) == 3 && steps[2]["status"] == schema.CommandRunning
+	})
+	if status, raw := testutil.Do(t, h.handler, testutil.Request{Method: http.MethodPatch, URL: "/api/collections/sites/records/" + siteID, Token: h.operator,
+		Body: `{"source":"upload"}`}); status != http.StatusOK {
+		t.Fatalf("switching the source: %d %s", status, raw)
+	}
+	h.resolvers.set("switched.example.org", "A", "203.0.114.7")
+	h.resolvers.set("switched.example.org", "AAAA", "2a01:4f8::7")
+	h.waitLong("the setup to pause before its deployment", func() bool {
+		return jsonMap(h.command(parent).Get("progress"))["paused"] == "start:site.deploy"
+	})
+	if progress := jsonMap(h.command(parent).Get("progress")); !strings.Contains(fmt.Sprint(progress["message"]), "upload") {
+		t.Errorf("the reason: %v", progress)
+	}
+	if status, raw := h.retry(parent); status != http.StatusBadRequest || !strings.Contains(raw, "upload") {
+		t.Errorf("a retry with nothing to deploy: %d %s", status, raw)
+	}
+
+	if status, raw := testutil.Do(t, h.handler, testutil.Request{Method: http.MethodPatch, URL: "/api/collections/sites/records/" + siteID, Token: h.operator,
+		Body: `{"source":"empty"}`}); status != http.StatusOK {
+		t.Fatalf("switching back: %d %s", status, raw)
+	}
+	if status, raw := h.retry(parent); status != http.StatusNoContent {
+		t.Fatalf("retry: %d %s", status, raw)
+	}
+	if setup := h.waitSetup(parent, schema.CommandSucceeded, schema.CommandFailed); setup.GetString("status") != schema.CommandSucceeded {
+		t.Fatalf("the setup: %v; steps %s", setup.PublicExport(), stepTypes(h.steps(parent)))
 	}
 }
 

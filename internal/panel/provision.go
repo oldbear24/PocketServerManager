@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -54,21 +56,28 @@ const (
 	provisionPause = 24 * time.Hour
 	// provisionFor is how long a flow may take in all.
 	provisionFor = 7 * 24 * time.Hour
-	// checkAttempts is how often the availability check asks, a few seconds
-	// apart, before it fails: a new route and certificate can take a moment.
-	checkAttempts = 20
+	// heldBack is the next attempt of a certificate a flow orders with its
+	// domains: the ACME manager leaves it to the flow's certificate step.
+	heldBack = provisionFor
 )
 
 // provisionState is the work of the flows under way.
 type provisionState struct {
 	// tick is how soon a waiting step looks again.
 	tick time.Duration
+	// checkFor is how long the availability check keeps asking, every
+	// checkEvery, before it fails: a new route and certificate can take a
+	// moment.
+	checkFor   time.Duration
+	checkEvery time.Duration
 	// locks keeps one flow from being advanced twice at once.
 	locks keyedLocks
+	// pending holds the flows with a look scheduled: one at a time each.
+	pending sync.Map
 	// noFirstDeploy holds the sites a flow creates: their first deployment is
 	// one of its steps, not something the new site starts by itself.
 	noFirstDeploy sync.Map
-	// checked is when each flow last asked about its propagation.
+	// checked is when each step last asked: the resolvers, or the site.
 	checked sync.Map
 	// siteCheck asks a site's server for it; tests replace it.
 	siteCheck func(ctx context.Context, url, address string) (siteAnswer, error)
@@ -90,8 +99,23 @@ func (l *keyedLocks) of(key string) *sync.Mutex {
 	return lock.(*sync.Mutex)
 }
 
-// SetProvisionTick sets how soon a waiting step of a new site looks again.
-func (p *Panel) SetProvisionTick(tick time.Duration) { p.provision.tick = tick }
+// SetProvisionTiming sets how soon a waiting step of a new site looks again,
+// and how long and how often the availability check asks.
+func (p *Panel) SetProvisionTiming(tick, checkFor, checkEvery time.Duration) {
+	p.provision.tick, p.provision.checkFor, p.provision.checkEvery = tick, checkFor, checkEvery
+}
+
+// scheduleAdvance looks at a flow again after the tick, unless a look is
+// scheduled already, so that a flow has one chain of looks.
+func (p *Panel) scheduleAdvance(parentID string) {
+	if _, scheduled := p.provision.pending.LoadOrStore(parentID, true); scheduled {
+		return
+	}
+	p.later.after(p.provision.tick, func() {
+		p.provision.pending.Delete(parentID)
+		p.advanceProvision(parentID)
+	})
+}
 
 // SetSiteCheck replaces how the availability check asks a site's server.
 func (p *Panel) SetSiteCheck(check func(ctx context.Context, url, address string) (status int, location string, err error)) {
@@ -104,6 +128,9 @@ func (p *Panel) SetSiteCheck(check func(ctx context.Context, url, address string
 func (p *Panel) registerProvision() {
 	if p.provision.tick == 0 {
 		p.provision.tick = 3 * time.Second
+	}
+	if p.provision.checkFor == 0 {
+		p.provision.checkFor, p.provision.checkEvery = time.Minute, 3*time.Second
 	}
 	if p.provision.siteCheck == nil {
 		p.provision.siteCheck = askSite
@@ -140,7 +167,8 @@ func (p *Panel) registerProvision() {
 
 func (p *Panel) bindProvisionRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	operators := requireRole(schema.RoleOperator, schema.RoleAdmin)
-	group.POST("/sites/provision", p.handleProvision).BindFunc(operators)
+	// a site from an upload sends its ZIP with it
+	group.POST("/sites/provision", p.handleProvision).BindFunc(operators).Bind(apis.BodyLimit(maxSiteUpload + 1<<20))
 	group.POST("/provisions/{id}/retry", p.handleProvisionRetry).BindFunc(operators)
 	group.GET("/dns/preview", p.handleDNSPreview).BindFunc(operators)
 }
@@ -261,7 +289,7 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 	parent, err := p.Commands.Begin(ctx, commands.Options{
 		Host:        host.Id,
 		Type:        "site.provision",
-		Label:       fmt.Sprintf("%s at %s", site.GetString("name"), hostname),
+		Label:       truncate(fmt.Sprintf("%s at %s", site.GetString("name"), hostname), 255),
 		RequestedBy: userID,
 		Requester:   label,
 	}, map[string]any{
@@ -338,7 +366,9 @@ func (p *Panel) advanceProvisions() {
 func (p *Panel) advanceProvision(parentID string) {
 	lock := p.provision.locks.of(parentID)
 	if !lock.TryLock() {
-		// another call is at it; it looks again on its own
+		// another call is at it, which may not look again, as a Retry does
+		// not: one more look comes after the tick
+		p.scheduleAdvance(parentID)
 		return
 	}
 	defer lock.Unlock()
@@ -357,6 +387,9 @@ func (p *Panel) advanceProvision(parentID string) {
 
 		switch status {
 		case schema.CommandSucceeded:
+			if strings.HasPrefix(pausedOf(parent), "start:") {
+				return // the next step could not start: it waits for Retry
+			}
 			index := slices.Index(provisionSteps, last.GetString("type"))
 			if index == len(provisionSteps)-1 {
 				payload := payloadOf(parent)
@@ -366,7 +399,8 @@ func (p *Panel) advanceProvision(parentID string) {
 				return
 			}
 			if err := p.startProvisionStep(parent, provisionSteps[index+1]); err != nil {
-				p.Log.Error("failed to start a step of a new site", "command", parentID, "step", provisionSteps[index+1], "error", err)
+				p.Log.Warn("a step of a new site could not start", "command", parentID, "step", provisionSteps[index+1], "error", err)
+				p.pauseStart(parent, provisionSteps[index+1], err)
 				return
 			}
 			continue
@@ -378,7 +412,7 @@ func (p *Panel) advanceProvision(parentID string) {
 			if fresh, err := p.App.FindRecordById(schema.Commands, last.Id); err == nil && fresh.GetString("status") == schema.CommandSucceeded {
 				continue
 			}
-			p.later.after(p.provision.tick, func() { p.advanceProvision(parentID) })
+			p.scheduleAdvance(parentID)
 			return
 		default:
 			p.pauseProvision(parent, last)
@@ -401,7 +435,7 @@ func (p *Panel) startProvisionStep(parent *core.Record, step string) error {
 	case "site.dns":
 		return p.createProvisionDomains(parent, command)
 	case "site.certificate":
-		p.orderProvisionCertificate(parent, true)
+		return p.startProvisionCertificate(parent, command)
 	}
 	return nil
 }
@@ -452,14 +486,32 @@ func (p *Panel) createProvisionDomains(parent, step *core.Record) error {
 	actor := audit.System("new site setup", audit.SourcePanel)
 	actor.Command = parent.Id
 	ctx := audit.WithActor(context.Background(), actor)
+
+	// the ACME manager waits meanwhile: it would order a certificate for
+	// each domain, or drop the order before a domain needs it
+	p.acme.planning.Lock()
+	defer p.acme.planning.Unlock()
+	// one certificate covers both names, issued in the certificate step
+	p.orderProvisionCertificate(parent)
+
 	created := []string{}
+	failed := func(message string) error {
+		// what was created so far goes when the setup ends
+		_ = p.Commands.Report(step.Id, map[string]any{"step": "dns", "created": created}, time.Time{})
+		return p.Commands.Settle(step.Id, schema.CommandFailed, message, nil)
+	}
 	for _, name := range []string{payload.Hostname, payload.WWW} {
 		if name == "" {
 			continue
 		}
 		if existing, err := p.App.FindFirstRecordByData(schema.Domains, "hostname", name); err == nil {
 			if existing.GetString("host") != site.GetString("host") {
-				return p.Commands.Settle(step.Id, schema.CommandFailed, fmt.Sprintf("%s is a domain of another server.", name), nil)
+				return failed(fmt.Sprintf("%s is a domain of another server.", name))
+			}
+			// from an earlier attempt: its records are set again, as what
+			// failed may be fixed by now
+			if err := p.syncDomainDNS(ctx, existing.Id, true); err != nil {
+				p.Log.Warn("failed to set a new site's records again", "domain", name, "error", err)
 			}
 			continue
 		}
@@ -477,13 +529,10 @@ func (p *Panel) createProvisionDomains(parent, step *core.Record) error {
 			domain.Set("dns_alias", payload.Hostname)
 		}
 		if err := p.App.SaveWithContext(ctx, domain); err != nil {
-			return p.Commands.Settle(step.Id, schema.CommandFailed, fmt.Sprintf("%s cannot be added: %v", name, err), nil)
+			return failed(fmt.Sprintf("%s cannot be added: %v", name, err))
 		}
 		created = append(created, domain.Id)
 	}
-	// one certificate covers both names; ordered now, the ACME manager does
-	// not order one for each
-	p.orderProvisionCertificate(parent, false)
 	return p.Commands.Report(step.Id, map[string]any{"step": "dns", "message": "Setting the records", "created": created}, time.Time{})
 }
 
@@ -512,6 +561,10 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 		records = append(records, recordsOf(want, domain.GetString("hostname"))...)
 		switch domain.GetString("dns_status") {
 		case schema.DNSError:
+			// an error from before the step is what the step sets right
+			if domain.GetDateTime("updated").Time().Before(step.GetDateTime("started_at").Time()) {
+				return
+			}
 			_ = p.Commands.Settle(step.Id, schema.CommandFailed, domain.GetString("dns_error"), nil)
 			return
 		case schema.DNSPending, schema.DNSOK, schema.DNSManual:
@@ -599,45 +652,84 @@ func (p *Panel) startProvisionDeploy(parent *core.Record) error {
 		Trigger: schema.TriggerCreate, RequestedBy: parent.GetString("requested_by"),
 		Requester: parent.GetString("requested_label"), Parent: parent.Id,
 	}
-	// an upload sent with the new site waits, recorded, for this step
+	// an upload sent with the new site waits, recorded, for this step,
+	// unless a newer deployment came first: then that one's source is used
 	held, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s} && command='' && status={:q}", "number", 1, 0,
 		dbx.Params{"s": site.Id, "q": schema.DeploymentQueued})
 	if err == nil && len(held) == 1 {
-		return p.sendDeployment(context.Background(), site, held[0], request)
+		newer, _ := p.App.CountRecords(schema.Deployments, dbx.And(dbx.HashExp{"site": site.Id}, dbx.NewExp("number > {:n}", dbx.Params{"n": held[0].GetInt("number")})))
+		if newer == 0 && held[0].GetString("upload") != "" {
+			return p.sendDeployment(context.Background(), site, held[0], request)
+		}
+		p.setFields(held[0], map[string]any{"status": schema.DeploymentFailed, "error": "A newer deployment came first.", "finished_at": time.Now().UTC()})
 	}
 	_, err = p.startDeployment(context.Background(), site, request)
 	return err
 }
 
-// orderProvisionCertificate orders one certificate for the flow's names,
-// unless one covers them, and starts its issue when now is set.
-func (p *Panel) orderProvisionCertificate(parent *core.Record, now bool) {
-	payload := payloadOf(parent)
+// provisionNames are the names of a flow's certificate.
+func provisionNames(payload provisionPayload) []string {
 	names := []string{payload.Hostname}
 	if payload.WWW != "" {
 		names = append(names, payload.WWW)
 	}
+	return names
+}
+
+// orderProvisionCertificate orders one certificate for the flow's names,
+// unless one covers them, held back until the certificate step. It is called
+// under the ACME manager's planning lock.
+func (p *Panel) orderProvisionCertificate(parent *core.Record) {
+	payload := payloadOf(parent)
+	names := provisionNames(payload)
+	if p.provisionCertificate(names) != nil {
+		return
+	}
+	collection, err := p.App.FindCachedCollectionByNameOrId(schema.Certificates)
+	if err != nil {
+		return
+	}
+	cert := core.NewRecord(collection)
+	cert.Set("names", names)
+	cert.Set("issuer", schema.IssuerACME)
+	cert.Set("status", schema.CertPending)
+	cert.Set("challenge", payload.Challenge)
+	// renewed while a domain needs it, and dropped when none does
+	cert.Set("auto", true)
+	cert.Set("next_attempt", time.Now().Add(heldBack).UTC())
+	if err := p.App.Save(cert); err != nil {
+		p.Log.Error("failed to order a new site's certificate", "names", names, "error", err)
+	}
+}
+
+// startProvisionCertificate starts an attempt at the flow's certificate, as
+// the step's own: what an earlier attempt said is not this step's outcome.
+func (p *Panel) startProvisionCertificate(parent, step *core.Record) error {
+	payload := payloadOf(parent)
+	names := provisionNames(payload)
+	if p.installedCovering(names, parent.GetString("host")) != nil {
+		return nil // the step sees it is done
+	}
 	cert := p.provisionCertificate(names)
 	if cert == nil {
-		collection, err := p.App.FindCachedCollectionByNameOrId(schema.Certificates)
-		if err != nil {
-			return
-		}
-		cert = core.NewRecord(collection)
-		cert.Set("names", names)
-		cert.Set("issuer", schema.IssuerACME)
-		cert.Set("status", schema.CertPending)
-		cert.Set("challenge", payload.Challenge)
-		// renewed while a domain needs it, and dropped when none does
-		cert.Set("auto", true)
-		if err := p.App.Save(cert); err != nil {
-			p.Log.Error("failed to order a new site's certificate", "names", names, "error", err)
-			return
+		p.acme.planning.Lock()
+		p.orderProvisionCertificate(parent)
+		p.acme.planning.Unlock()
+		if cert = p.provisionCertificate(names); cert == nil {
+			return p.Commands.Settle(step.Id, schema.CommandFailed, "No certificate could be ordered for "+strings.Join(names, " and ")+".", nil)
 		}
 	}
-	if now && cert.GetString("issuer") == schema.IssuerACME && cert.GetString("key_pem") == "" {
-		p.startIssue(cert.Id, parent.GetString("requested_label"), false)
+	if cert.GetString("issuer") != schema.IssuerACME || cert.GetString("key_pem") != "" {
+		return nil // issued: it waits for the edge
 	}
+	if until, limited := dailyLimit(cert, time.Now()); limited {
+		return p.Commands.Settle(step.Id, schema.CommandFailed,
+			fmt.Sprintf("The CA's daily limit for these names is reached: retry after %s.", until.UTC().Format(time.RFC1123)), map[string]any{"certificate": cert.Id})
+	}
+	p.setFields(cert, map[string]any{"status": schema.CertPending, "last_error": "", "next_attempt": nil})
+	_ = p.Commands.Report(step.Id, map[string]any{"step": "certificate", "message": "Asking the CA", "certificate": cert.Id}, time.Time{})
+	p.startIssue(cert.Id, parent.GetString("requested_label"), false)
+	return nil
 }
 
 // provisionCertificate is a certificate that covers all the names: one that
@@ -662,27 +754,46 @@ func (p *Panel) provisionCertificate(names []string) *core.Record {
 	return found
 }
 
+// installedCovering is a valid certificate for all the names that the
+// server's edge has, whichever it is: the edge picks one per name itself.
+func (p *Panel) installedCovering(names []string, hostID string) *core.Record {
+	records, err := p.App.FindAllRecords(schema.Certificates)
+	if err != nil {
+		return nil
+	}
+	for _, record := range records {
+		covered := certificateNames(record)
+		if record.GetString("key_pem") != "" && time.Now().Before(record.GetDateTime("not_after").Time()) &&
+			installedOf(record)[hostID] != "" &&
+			!slices.ContainsFunc(names, func(name string) bool { return !edge.Covers(covered, name) }) {
+			return record
+		}
+	}
+	return nil
+}
+
 // workOnCertificate settles the certificate step once a certificate for the
-// names is on the site's edge, or fails it with what the CA said.
+// names is on the site's edge, or fails it with what the CA said of the
+// step's own attempt.
 func (p *Panel) workOnCertificate(parent, step *core.Record, payload provisionPayload) {
-	names := []string{payload.Hostname}
-	if payload.WWW != "" {
-		names = append(names, payload.WWW)
-	}
-	cert := p.provisionCertificate(names)
-	if cert == nil {
-		p.orderProvisionCertificate(parent, true)
-		return
-	}
-	issued := cert.GetString("key_pem") != "" && time.Now().Before(cert.GetDateTime("not_after").Time())
-	if issued && installedOf(cert)[parent.GetString("host")] != "" {
+	names := provisionNames(payload)
+	if cert := p.installedCovering(names, parent.GetString("host")); cert != nil {
 		_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", map[string]any{
 			"certificate": cert.Id, "names": certificateNames(cert), "issuer": cert.GetString("issuer_name"),
 			"not_after": cert.GetDateTime("not_after").String(),
 		})
 		return
 	}
-	if !issued && cert.GetString("status") == schema.CertFailed {
+	cert := p.provisionCertificate(names)
+	if cert == nil {
+		_ = p.Commands.Settle(step.Id, schema.CommandFailed, "The certificate for these names is gone.", nil)
+		return
+	}
+	issued := cert.GetString("key_pem") != "" && time.Now().Before(cert.GetDateTime("not_after").Time())
+	// the step started its attempt by setting the order pending: a failure
+	// now is that attempt's
+	if !issued && cert.GetString("status") == schema.CertFailed &&
+		!cert.GetDateTime("updated").Time().Before(step.GetDateTime("started_at").Time()) {
 		message := cert.GetString("last_error")
 		if message == "" {
 			message = "The certificate could not be issued."
@@ -693,7 +804,7 @@ func (p *Panel) workOnCertificate(parent, step *core.Record, payload provisionPa
 	text := "Waiting for the certificate"
 	if issued {
 		text = "Installing the certificate on the server"
-	} else if reason := cert.GetString("last_error"); reason != "" {
+	} else if reason := cert.GetString("last_error"); reason != "" && cert.GetString("status") != schema.CertFailed {
 		text = reason
 	}
 	_ = p.Commands.Report(step.Id, map[string]any{"step": "certificate", "message": text, "certificate": cert.Id}, time.Time{})
@@ -711,6 +822,11 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 	if address == "" {
 		address = host.GetString("public_ip6")
 	}
+	// asked every checkEvery, whatever woke the flow
+	if last, ok := p.provision.checked.Load(step.Id); ok && time.Since(last.(time.Time)) < p.provision.checkEvery {
+		return
+	}
+	p.provision.checked.Store(step.Id, time.Now())
 	var progress struct {
 		Attempts int `json:"attempts"`
 	}
@@ -746,11 +862,13 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 		if payload.WWW != "" {
 			result["www"] = map[string]any{"status": wwwAnswer.Status, "location": wwwAnswer.Location}
 		}
+		p.provision.checked.Delete(step.Id)
 		_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", result)
 		return
 	}
 	progress.Attempts++
-	if progress.Attempts >= checkAttempts {
+	if time.Since(step.GetDateTime("started_at").Time()) >= p.provision.checkFor {
+		p.provision.checked.Delete(step.Id)
 		_ = p.Commands.Settle(step.Id, schema.CommandFailed, problem, nil)
 		return
 	}
@@ -760,22 +878,85 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 // pauseProvision holds a flow whose step failed: Retry runs the step again,
 // and without one the flow gives up after a day.
 func (p *Panel) pauseProvision(parent, step *core.Record) {
+	p.pause(parent, step.Id, step.GetString("type"), step.GetString("error"))
+}
+
+// pauseStart holds a flow whose next step could not even start, such as a
+// deployment whose upload is gone: Retry starts it.
+func (p *Panel) pauseStart(parent *core.Record, step string, err error) {
+	p.pause(parent, "start:"+step, step, capitalize(err.Error()))
+}
+
+// pause records what a flow waits for: the step to retry, by its command or
+// as start:<type> for one that never started.
+func (p *Panel) pause(parent *core.Record, paused, step, reason string) {
+	if pausedOf(parent) == paused {
+		return
+	}
+	payload := payloadOf(parent)
+	_ = p.Commands.Report(parent.Id, map[string]any{
+		"step": step, "message": fmt.Sprintf("%s: %s", step, reason), "paused": paused,
+	}, time.Now().Add(provisionPause))
+	events.Log(p.App, parent.GetString("host"), "site.provision_failed", schema.SeverityWarning,
+		fmt.Sprintf("Setting up %s stopped at %s: retry the step or cancel.", payload.Hostname, step),
+		map[string]any{"site": payload.Site, "command": parent.Id})
+}
+
+// pausedOf is what a paused flow waits to retry, or nothing.
+func pausedOf(parent *core.Record) string {
 	var progress struct {
 		Paused string `json:"paused"`
 	}
 	raw, _ := json.Marshal(parent.Get("progress"))
 	_ = json.Unmarshal(raw, &progress)
-	if progress.Paused == step.Id {
-		return
+	return progress.Paused
+}
+
+// errNoRetry says why a flow has no step to retry.
+type errNoRetry struct{ reason string }
+
+func (e errNoRetry) Error() string { return e.reason }
+
+// retryProvision runs a paused flow's step again, under the flow's lock: what
+// was read before may have changed, by another Retry or by the end of the flow.
+func (p *Panel) retryProvision(parentID string) error {
+	lock := p.provision.locks.of(parentID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	parent, err := p.App.FindRecordById(schema.Commands, parentID)
+	if err != nil {
+		return err
 	}
-	payload := payloadOf(parent)
-	message := fmt.Sprintf("%s: %s", step.GetString("type"), step.GetString("error"))
-	_ = p.Commands.Report(parent.Id, map[string]any{
-		"step": step.GetString("type"), "message": message, "paused": step.Id,
-	}, time.Now().Add(provisionPause))
-	events.Log(p.App, parent.GetString("host"), "site.provision_failed", schema.SeverityWarning,
-		fmt.Sprintf("Setting up %s stopped at %s: retry the step or cancel.", payload.Hostname, step.GetString("type")),
-		map[string]any{"site": payload.Site, "command": parent.Id})
+	if parent.GetString("status") != schema.CommandRunning {
+		return errNoRetry{"This setup has ended."}
+	}
+	paused := pausedOf(parent)
+	step := ""
+	if after, ok := strings.CutPrefix(paused, "start:"); ok {
+		step = after
+	} else {
+		steps := p.stepsOf(parentID)
+		if len(steps) == 0 {
+			return errNoRetry{"This setup has no step to retry."}
+		}
+		last := steps[len(steps)-1]
+		if paused == "" || paused != last.Id {
+			return errNoRetry{"No step of this setup has failed."}
+		}
+		step = last.GetString("type")
+	}
+	if err := p.Commands.Report(parentID, map[string]any{"step": step, "message": "Retrying", "paused": ""}, time.Now().Add(provisionFor)); err != nil {
+		return err
+	}
+	if err := p.startProvisionStep(parent, step); err != nil {
+		fresh, _ := p.App.FindRecordById(schema.Commands, parentID)
+		if fresh != nil {
+			p.pauseStart(fresh, step, err)
+		}
+		return errNoRetry{capitalize(err.Error()) + "."}
+	}
+	return nil
 }
 
 // handleProvisionRetry runs a flow's failed step again.
@@ -784,28 +965,11 @@ func (p *Panel) handleProvisionRetry(e *core.RequestEvent) error {
 	if err != nil || parent.GetString("type") != "site.provision" {
 		return e.NotFoundError("The new site's setup does not exist.", err)
 	}
-	if parent.GetString("status") != schema.CommandRunning {
-		return e.BadRequestError("This setup has ended.", nil)
-	}
-	steps := p.stepsOf(parent.Id)
-	if len(steps) == 0 {
-		return e.BadRequestError("This setup has no step to retry.", nil)
-	}
-	last := steps[len(steps)-1]
-	switch last.GetString("status") {
-	case schema.CommandFailed, schema.CommandTimedOut, schema.CommandCancelled:
-	default:
-		return e.BadRequestError("No step of this setup has failed.", nil)
-	}
-
-	lock := p.provision.locks.of(parent.Id)
-	lock.Lock()
-	err = p.startProvisionStep(parent, last.GetString("type"))
-	if err == nil {
-		err = p.Commands.Report(parent.Id, map[string]any{"step": last.GetString("type"), "message": "Retrying"}, time.Now().Add(provisionFor))
-	}
-	lock.Unlock()
-	if err != nil {
+	var refused errNoRetry
+	switch err := p.retryProvision(parent.Id); {
+	case errors.As(err, &refused):
+		return e.BadRequestError(refused.reason, nil)
+	case err != nil:
 		return e.InternalServerError("Failed to retry the step.", err)
 	}
 	p.later.after(0, func() { p.advanceProvision(parent.Id) })
@@ -817,6 +981,10 @@ func (p *Panel) handleProvisionRetry(e *core.RequestEvent) error {
 // still under way is cancelled, and a deployment that never left waits no
 // more.
 func (p *Panel) abandonProvision(parentID string) {
+	// a Retry under way finishes first, and none starts a step after
+	lock := p.provision.locks.of(parentID)
+	lock.Lock()
+	defer lock.Unlock()
 	parent, err := p.App.FindRecordById(schema.Commands, parentID)
 	if err != nil {
 		return
@@ -842,7 +1010,9 @@ func (p *Panel) abandonProvision(parentID string) {
 		if !created[domain.Id] {
 			continue
 		}
-		if err := p.App.Delete(domain); err != nil {
+		actor := audit.System("new site setup", audit.SourcePanel)
+		actor.Command = parentID
+		if err := p.App.DeleteWithContext(audit.WithActor(context.Background(), actor), domain); err != nil {
 			p.Log.Warn("failed to remove a new site's domain", "domain", domain.GetString("hostname"), "error", err)
 			continue
 		}
@@ -854,7 +1024,7 @@ func (p *Panel) abandonProvision(parentID string) {
 			p.setFields(deployment, map[string]any{"status": schema.DeploymentFailed, "error": "The new site's setup ended before it was deployed."})
 		}
 	}
-	message := fmt.Sprintf("Setting up %s ended: %s", payload.Hostname, parent.GetString("error"))
+	message := fmt.Sprintf("Setting up %s ended: %s", payload.Hostname, strings.TrimSuffix(parent.GetString("error"), ".")+".")
 	if len(removed) > 0 {
 		message += fmt.Sprintf(" Removed %s, with its DNS records; the site %s stays.", strings.Join(removed, " and "), payload.SiteName)
 	}

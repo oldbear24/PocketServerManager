@@ -648,6 +648,10 @@ func (p *Panel) markReleasesOnServer(site *core.Record, releases []int) {
 		if slices.Contains(releases, deployment.GetInt("number")) {
 			continue
 		}
+		// one a new site's setup holds for its deploy step has not run yet
+		if deployment.GetString("command") == "" && deployment.GetString("status") == schema.DeploymentQueued {
+			continue
+		}
 		fields := map[string]any{}
 		if deployment.GetBool("on_server") {
 			fields["on_server"] = false
