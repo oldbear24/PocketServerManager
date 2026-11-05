@@ -209,7 +209,22 @@ New site provisioning (one parent command):
 
 If the zone is not at a connected provider, the wizard shows the records to create at the registrar and polls until they resolve.
 
-Site releases live on the `pocketcloud-sites` volume shared by the agent and the edge container (`<site>/releases/<n>` with a `current` symlink); builds run in job containers on the target host ([ADR 0004](adr/0004-site-build-location.md)); rollback switches the symlink without rebuilding.
+### Static sites
+
+A site lives on one edge server (#21). Its releases are on the `pocketcloud-sites` volume: `<site>/releases/<n>`, one directory per deployment that succeeded, and `<site>/current`, a symlink to the release the edge serves. The edge mounts the volume read-only at `/srv/sites`; the agent's own container does not mount it, and changes it through job containers.
+
+- **Sources** – a Git branch over HTTPS (with an access token for a private repository), a ZIP upload, or a placeholder page that says the site has no content yet. A site from Git or with the placeholder is deployed when it is made.
+- **Deployment** (`site.deploy`, one command per deployment, in order per site):
+  1. `pocketcloud-agent site-tool source` runs in a job container from the agent's own image, with the volume mounted. It makes `<site>/.build/<n>/src` and fills it: a shallow `git clone` of the branch with its submodules (the token goes to Git in its environment, never on a command line or into the log), the upload fetched from the panel with `FetchArtifact` and checked by digest (unpacked from inside its folder when it holds one; symlinks and paths that leave it are refused), or the placeholder.
+  2. It picks the build: the site's own image, command and output, or what the files say: Hugo (`hugo --minify` in `ghcr.io/gohugoio/hugo:v0.152.2`), MkDocs (`mkdocs build` in `squidfunk/mkdocs-material:9.6.14`), Astro and npm projects with a build script (`npm ci`, or `npm install` without a lock file, then `npm run build`, in `node:22.20.0-alpine3.22`), or none, serving the files as they are.
+  3. The build runs in a job container from that image, as root in the container but with only the capabilities package managers need (file ownership, setuid and setgid, kill), no new privileges, at most 4096 processes, 1 CPU and 2 GiB unless the site says otherwise, and only its own source mounted, through a volume subpath. Its output is the deployment's log.
+  4. `site-tool release` moves the output (`dist`, `build`, `out`, `public`, `_site` or `site` with an index.html, unless the site names one) into `releases/<n>` without `.git` or symlinks, adds gzip copies of the files that compress, renames a new symlink over `current`, keeps the newest releases (5 by default) and the one served, and removes the build directory.
+  A deployment that fails anywhere removes what it left and keeps the served release; the panel records the error and an event.
+- **Rollback** (`site.rollback`) renames `current` to a release still on the server, without a build; the panel offers it only for those. On the edge it is a single rename, so the next request gets the older release.
+- **Webhooks** – `POST /api/pc/hooks/sites/{id}` takes a push without an account: GitHub and Gitea or Forgejo sign the body with the site's secret (`X-Hub-Signature-256`, `X-Gitea-Signature`), and GitLab sends the secret (`X-Gitlab-Token`). A push to the site's branch deploys it, with the commit and its message; anything else is answered 202 and ignored.
+- **Serving** – a domain with the site as its target gets a route that serves `/srv/sites/<site>/current`, with the site's options for all of its domains: HTTPS redirect, HSTS, compression (the release's gzip copies, or zstd and gzip on the fly), a fallback to `/index.html` for single-page applications, its own 404 page, response headers and cache times per path, and basic auth. Switching a release needs no reload of Caddy.
+- **Requests** – Caddy counts requests per hostname (`per_host` metrics), each heartbeat reports what each hostname had since the previous one, and the panel keeps them per hour for two days in the metrics database, for the site's chart of the last 24 hours.
+- **Removal** – removing a site removes its domains, its deployments with their uploads, and with `site.remove` its directory on the server.
 
 LAN-only names use DNS rewrites (AdGuard Home, Pi-hole) and certificates from the internal CA.
 
