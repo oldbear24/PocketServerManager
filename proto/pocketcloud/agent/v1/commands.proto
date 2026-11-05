@@ -143,6 +143,9 @@ message Command {
     AgentDiagnostics agent_diagnostics = 233;
     // agent_set_log_level changes the log level for a limited time.
     AgentSetLogLevel agent_set_log_level = 234;
+
+    // dns_rewrite reads or changes the local DNS records of AdGuard Home or Pi-hole.
+    DnsRewrite dns_rewrite = 240;
   }
 }
 
@@ -787,4 +790,50 @@ message AgentSetLogLevel {
   // duration_s is when the level falls back to info: 15 minutes when it is
   // zero, and at most a day.
   int32 duration_s = 2;
+}
+
+// DnsRewriteOp is what a DnsRewrite does.
+enum DnsRewriteOp {
+  // DNS_REWRITE_OP_UNSPECIFIED is refused.
+  DNS_REWRITE_OP_UNSPECIFIED = 0;
+  // DNS_REWRITE_OP_LIST returns the records, as the result's `records`.
+  DNS_REWRITE_OP_LIST = 1;
+  // DNS_REWRITE_OP_APPEND adds the records.
+  DNS_REWRITE_OP_APPEND = 2;
+  // DNS_REWRITE_OP_DELETE removes the records.
+  DNS_REWRITE_OP_DELETE = 3;
+}
+
+// DnsRewrite reads or changes the local DNS records of a DNS server on the
+// agent's network, which the panel usually cannot reach: the DNS rewrites of
+// AdGuard Home, or the local DNS records of Pi-hole v6. The panel adds the
+// server's address and credentials when it delivers the command, so they are
+// never stored with it.
+message DnsRewrite {
+  // provider_id is the id of the `dns_providers` record.
+  string provider_id = 1;
+  // kind is adguard or pihole.
+  string kind = 2;
+  // url is the address of the server's web interface, as the agent reaches it.
+  string url = 3;
+  // username of AdGuard Home's web interface; Pi-hole has none.
+  string username = 4;
+  // password of the web interface.
+  string password = 5 [(pocketcloud.options.v1.sensitive) = true];
+  // op is what to do.
+  DnsRewriteOp op = 6;
+  // records are the records to add or remove.
+  repeated DnsRewriteRecord records = 7;
+  // zone limits a list to the names in it, such as lan.
+  string zone = 8;
+}
+
+// DnsRewriteRecord is one local DNS record.
+message DnsRewriteRecord {
+  // name is the absolute name, such as wiki.lan.
+  string name = 1;
+  // type is A, AAAA or CNAME.
+  string type = 2;
+  // value is the address, or the target of a CNAME without its final dot.
+  string value = 3;
 }

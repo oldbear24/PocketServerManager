@@ -293,14 +293,17 @@ func (p *Panel) certificates(app core.App) ([]certificateRecord, error) {
 	return out, nil
 }
 
-// coveringCertificate picks the certificate for a name: one that has not
+// coveringCertificate picks the certificate for a domain: one that has not
 // expired, the one that lasts longest; an expired one only when there is no
-// other, as a sudden switch to plain HTTP breaks sites that ask for HTTPS.
-func coveringCertificate(certs []certificateRecord, hostname string) *certificateRecord {
+// other, as a sudden switch to plain HTTP breaks sites that ask for HTTPS. A
+// domain with internal TLS takes a certificate of the internal CA, and any
+// other domain one that is not.
+func coveringCertificate(certs []certificateRecord, domain *core.Record) *certificateRecord {
+	hostname := domain.GetString("hostname")
 	var best *certificateRecord
 	for i := range certs {
 		cert := &certs[i]
-		if !edge.Covers(cert.names, hostname) {
+		if !edge.Covers(cert.names, hostname) || !suits(cert.record, domain) {
 			continue
 		}
 		if best == nil || cert.notAfter.After(best.notAfter) {
@@ -308,6 +311,12 @@ func coveringCertificate(certs []certificateRecord, hostname string) *certificat
 		}
 	}
 	return best
+}
+
+// suits tells whether a certificate is of the kind a domain's TLS asks for:
+// one of the internal CA for internal TLS, any other for automatic TLS.
+func suits(cert, domain *core.Record) bool {
+	return (cert.GetString("issuer") == schema.IssuerInternal) == (domain.GetString("tls") == schema.TLSInternal)
 }
 
 // edgeConfig is everything an edge serves, built from its domains.
@@ -386,7 +395,7 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 		}
 
 		if domain.GetString("tls") != schema.TLSOff {
-			if cert := coveringCertificate(certs, route.Hostname); cert != nil {
+			if cert := coveringCertificate(certs, domain); cert != nil {
 				route.Certificate = cert.file
 				route.HTTPSRedirect = httpsRedirect
 				built.chosen[domain.Id] = cert

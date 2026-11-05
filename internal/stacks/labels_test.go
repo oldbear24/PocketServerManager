@@ -46,15 +46,24 @@ func TestLabelsPutServicesOnDomains(t *testing.T) {
       pocketcloud.auth: "` + bob + `"
   db:
     image: postgres:17
+  wiki:
+    image: wiki:1
+    expose: ["3000"]
+    labels:
+      pocketcloud.domain: wiki.lan
+      pocketcloud.tls: Internal
 `
 	got, problems := exposures(t, compose, nil)
 	if len(problems) != 0 {
 		t.Fatalf("problems: %v", problems)
 	}
-	if len(got) != 3 {
+	if len(got) != 4 {
 		t.Fatalf("%d exposures: %+v", len(got), got)
 	}
-	admin, api, web := got[0], got[1], got[2]
+	admin, api, web, wiki := got[0], got[1], got[2], got[3]
+	if wiki.TLS != TLSInternal || strings.Join(wiki.Hostnames, ",") != "wiki.lan" {
+		t.Errorf("wiki: %+v", wiki)
+	}
 	if web.Container != "shop-web-1" || web.Port != 80 || web.TLS != TLSACME || strings.Join(web.Hostnames, ",") != "shop.example.com,www.shop.example.com" {
 		t.Errorf("web: %+v", web)
 	}
@@ -87,12 +96,12 @@ func TestWrongLabelsSayWhatIsWrongAndWhere(t *testing.T) {
     expose: ["80"]
     labels:
       pocketcloud.domain: not_a_name
-  internal:
+  badtls:
     image: e:1
     expose: ["80"]
     labels:
       pocketcloud.domain: e.example.com
-      pocketcloud.tls: internal
+      pocketcloud.tls: letsencrypt
   badauth:
     image: f:1
     expose: ["80"]
@@ -131,7 +140,7 @@ func TestWrongLabelsSayWhatIsWrongAndWhere(t *testing.T) {
 		"twoports:": "the service listens on 80 and 443",
 		"badport:":  `not "http"`,
 		"badname:":  "not_a_name is not a fully qualified hostname",
-		"internal:": "internal CA are not available yet",
+		"badtls:":   `pocketcloud.tls is acme, internal or off, not "letsencrypt"`,
 		"badauth:":  "is not a bcrypt hash",
 		"twice:":    "a.example.com is the domain of noport already",
 		"lonely:":   "does nothing without pocketcloud.domain",

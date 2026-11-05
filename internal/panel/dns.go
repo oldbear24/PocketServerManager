@@ -87,7 +87,9 @@ func (p *Panel) registerDNS() {
 	p.App.OnRecordUpdate(schema.Hosts).BindFunc(func(e *core.RecordEvent) error {
 		stored, err := e.App.FindRecordById(schema.Hosts, e.Record.Id)
 		moved := err == nil && (stored.GetString("public_ip4") != e.Record.GetString("public_ip4") ||
-			stored.GetString("public_ip6") != e.Record.GetString("public_ip6"))
+			stored.GetString("public_ip6") != e.Record.GetString("public_ip6") ||
+			// the addresses on its network, for the zones of a LAN
+			stored.GetString("ip4") != e.Record.GetString("ip4") || stored.GetString("ip6") != e.Record.GetString("ip6"))
 		if err := e.Next(); err != nil {
 			return err
 		}
@@ -98,6 +100,7 @@ func (p *Panel) registerDNS() {
 		return nil
 	})
 	p.App.OnRecordValidate(schema.Hosts).BindFunc(p.validatePublicAddresses)
+	p.Commands.RegisterEnricher("dns.rewrite", p.enrichDNSRewrite)
 
 	p.App.Cron().MustAdd("pocketcloud_dns_propagation", "* * * * *", p.CheckDNSPropagation)
 	p.App.Cron().MustAdd("pocketcloud_dns_drift", "*/15 * * * *", p.CheckDNSDrift)
@@ -178,6 +181,13 @@ func (p *Panel) openProvider(provider *core.Record) (dns.Driver, dns.Provider, e
 	if driver.Manual {
 		return driver, nil, dns.ErrManual
 	}
+	if driver.Agent {
+		run, err := p.rewriter(provider, driver)
+		if err != nil {
+			return driver, nil, err
+		}
+		return driver, dns.OpenRewrites(run), nil
+	}
 	credentials, err := p.credentialsOf(provider)
 	if err != nil {
 		return driver, nil, err
@@ -192,6 +202,8 @@ type providerBody struct {
 	Credentials map[string]string `json:"credentials"`
 	// Zones are named by hand for a kind whose API cannot list them.
 	Zones []string `json:"zones"`
+	// Host is the server whose agent reaches a DNS server of a LAN.
+	Host *string `json:"host"`
 }
 
 func (p *Panel) handleConnectProvider(e *core.RequestEvent) error {
@@ -213,6 +225,15 @@ func (p *Panel) handleConnectProvider(e *core.RequestEvent) error {
 	if err := driver.CheckCredentials(body.Credentials); err != nil {
 		return e.BadRequestError("Credentials: "+err.Error()+".", nil)
 	}
+	host := ""
+	if driver.Agent {
+		if body.Host != nil {
+			host = *body.Host
+		}
+		if err := p.checkLANProvider(body.Credentials, host); err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+	}
 	if driver.ListsZones {
 		// its API lists them
 		body.Zones = nil
@@ -220,7 +241,7 @@ func (p *Panel) handleConnectProvider(e *core.RequestEvent) error {
 		return e.BadRequestError(driver.Label+" cannot list its zones: name at least one.", nil)
 	}
 	for i, name := range body.Zones {
-		zone, err := p.checkZoneName(name, "")
+		zone, err := p.checkZoneName(name, "", driver.Agent)
 		if err != nil {
 			return e.BadRequestError(err.Error(), nil)
 		}
@@ -237,6 +258,7 @@ func (p *Panel) handleConnectProvider(e *core.RequestEvent) error {
 	provider := core.NewRecord(collection)
 	provider.Set("name", body.Name)
 	provider.Set("kind", body.Kind)
+	provider.Set("host", host)
 	provider.Set("status", schema.DNSUnknown)
 	if len(body.Credentials) > 0 {
 		raw, _ := json.Marshal(body.Credentials)
@@ -274,8 +296,24 @@ func (p *Panel) handleChangeProvider(e *core.RequestEvent) error {
 	if name := strings.TrimSpace(body.Name); name != "" {
 		provider.Set("name", name)
 	}
+	driver, _ := dns.Lookup(provider.GetString("kind"))
+	if driver.Agent && (body.Host != nil || body.Credentials != nil) {
+		host := provider.GetString("host")
+		if body.Host != nil {
+			host = *body.Host
+		}
+		credentials := body.Credentials
+		if credentials == nil {
+			if credentials, err = p.credentialsOf(provider); err != nil {
+				return e.InternalServerError("", err)
+			}
+		}
+		if err := p.checkLANProvider(credentials, host); err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+		provider.Set("host", host)
+	}
 	if body.Credentials != nil {
-		driver, _ := dns.Lookup(provider.GetString("kind"))
 		if err := driver.CheckCredentials(body.Credentials); err != nil {
 			return e.BadRequestError("Credentials: "+err.Error()+".", nil)
 		}
@@ -388,9 +426,17 @@ func (p *Panel) testProvider(ctx context.Context, provider *core.Record) {
 
 // checkZoneName says whether a zone name can be added for a provider: a name
 // such as example.com that no other provider holds.
-func (p *Panel) checkZoneName(name, providerID string) (string, error) {
+func (p *Panel) checkZoneName(name, providerID string, lan bool) (string, error) {
 	name = dns.NormalizeZone(name)
-	if edge.ValidHostname(name) != nil || strings.HasPrefix(name, "*") || !strings.Contains(name, ".") {
+	valid := edge.ValidHostname(name) == nil
+	if lan && !strings.Contains(name, ".") {
+		// a LAN has zones of one label, such as lan or home
+		valid = edge.ValidHostname(name+".x") == nil
+	}
+	if !valid || strings.HasPrefix(name, "*") || !lan && !strings.Contains(name, ".") {
+		if lan {
+			return "", fmt.Errorf("%q is not a zone such as lan or home.arpa", name)
+		}
 		return "", fmt.Errorf("%q is not a zone such as example.com", name)
 	}
 	if existing, err := p.App.FindFirstRecordByData(schema.DNSZones, "name", name); err == nil && existing.GetString("provider") != providerID {
@@ -400,7 +446,7 @@ func (p *Panel) checkZoneName(name, providerID string) (string, error) {
 }
 
 func (p *Panel) addZone(provider *core.Record, name string) (*core.Record, error) {
-	name, err := p.checkZoneName(name, provider.Id)
+	name, err := p.checkZoneName(name, provider.Id, lanDriver(provider))
 	if err != nil {
 		return nil, err
 	}
@@ -546,6 +592,9 @@ type domainDNS struct {
 	Manual bool
 	// Problem is why no records can be built, such as a missing address.
 	Problem string
+	// LAN is true for a zone of a DNS server of a LAN: it answers what it
+	// took at once, and the world never sees it.
+	LAN bool
 }
 
 func (p *Panel) desiredDNS(domain *core.Record) domainDNS {
@@ -586,6 +635,23 @@ func (p *Panel) desiredDNS(domain *core.Record) domainDNS {
 	host, err := p.App.FindRecordById(schema.Hosts, domain.GetString("host"))
 	if err != nil {
 		want.Problem = "The domain's server does not exist."
+		return want
+	}
+	if !want.Manual && lanDriver(want.Provider) {
+		// a name of the LAN points at the server's address on its network,
+		// as its agent reports it
+		ip4, ip6 := host.GetString("ip4"), host.GetString("ip6")
+		if ip4 == "" && ip6 == "" {
+			want.Problem = fmt.Sprintf("The address of %s on its network is not known yet: its agent reports it once it connects.", host.GetString("name"))
+			return want
+		}
+		records, err := dns.LANAddressRecords(hostname, zone, ip4, ip6)
+		if err != nil {
+			want.Problem = err.Error()
+			return want
+		}
+		want.LAN = true
+		want.Records = records
 		return want
 	}
 	ip4, ip6 := host.GetString("public_ip4"), host.GetString("public_ip6")
@@ -720,6 +786,15 @@ func (p *Panel) syncDomainDNS(ctx context.Context, id string, force bool) error 
 	}
 	if staleErr != nil {
 		return p.domainDNSFailed(domain, zoneID, fmt.Errorf("the new records are set, but old ones could not be removed: %w", staleErr))
+	}
+	if want.LAN {
+		// the server that took them answers them: nothing propagates
+		now := types.NowDateTime()
+		for _, row := range rows {
+			p.setFields(row, map[string]any{"status": schema.DNSOK, "last_check": now})
+		}
+		p.setFields(domain, map[string]any{"zone": zoneID, "dns_status": schema.DNSOK, "dns_error": ""})
+		return nil
 	}
 	p.setFields(domain, map[string]any{"zone": zoneID, "dns_status": schema.DNSPending, "dns_error": ""})
 	return nil
@@ -964,6 +1039,11 @@ func (p *Panel) checkZoneDrift(ctx context.Context, zone *core.Record) {
 	if err != nil {
 		return
 	}
+	// each look at a DNS server of a LAN is a command of its agent: one an
+	// hour keeps the history readable
+	if lanDriver(provider) && time.Since(zone.GetDateTime("last_check").Time()) < time.Hour-time.Minute {
+		return
+	}
 	driver, client, err := p.openProvider(provider)
 	if err != nil {
 		return
@@ -1048,11 +1128,13 @@ func (p *Panel) handleDomainDNS(e *core.RequestEvent) error {
 		"manual":  want.Manual,
 		"problem": want.Problem,
 		"records": fullRecords(domain.GetString("hostname"), want.Records),
+		// a DNS server of a LAN answers what it took: there is no propagation
+		"lan": want.LAN,
 	}
 	if want.Provider != nil {
 		response["provider"] = map[string]any{"id": want.Provider.Id, "name": want.Provider.GetString("name"), "kind": want.Provider.GetString("kind")}
 	}
-	if e.Request.URL.Query().Get("check") == "1" {
+	if e.Request.URL.Query().Get("check") == "1" && !want.LAN {
 		ctx, cancel := context.WithTimeout(e.Request.Context(), dnsTimeout)
 		defer cancel()
 		response["propagation"] = p.checkDomainPropagation(ctx, domain)

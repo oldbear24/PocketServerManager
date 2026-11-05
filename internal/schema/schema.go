@@ -138,10 +138,13 @@ const (
 	TriggerUpload = "upload"
 )
 
-// TLS of a domain: auto serves it over HTTPS when a certificate covers it.
+// TLS of a domain: auto serves it over HTTPS with a certificate that is not
+// from the internal CA, from ACME unless one was uploaded; internal, with one
+// from the internal CA, for a LAN name (#26).
 const (
-	TLSAuto = "auto"
-	TLSOff  = "off"
+	TLSAuto     = "auto"
+	TLSOff      = "off"
+	TLSInternal = "internal"
 )
 
 // OriginLabel marks a domain that the pocketcloud.domain label of a stack's
@@ -209,7 +212,7 @@ const (
 // too, so a new collection cannot be added without its secrets being covered.
 var Encrypted = map[string][]string{
 	Stacks:                  {"secrets"},
-	InternalCA:              {"root_key", "agent_intermediate_key", "server_key"},
+	InternalCA:              {"root_key", "agent_intermediate_key", "server_key", "lan_intermediate_key"},
 	"notification_channels": {"config"},
 	Sites:                   {"webhook_secret", "basic_auth", "git_token"},
 	"site_php":              {"secrets"},

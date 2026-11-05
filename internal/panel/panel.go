@@ -47,6 +47,9 @@ type Panel struct {
 	Box       *secrets.Box
 	Audit     *audit.Writer
 	Authority *ca.Authority
+	// authority is the same CA, for the work that may start before the
+	// gateway: certificates for LAN names
+	authority atomic.Pointer[ca.Authority]
 	Commands  *commands.Manager
 	Gateway   *gateway.Server
 	Updates   *updateBatches
@@ -201,6 +204,7 @@ func (p *Panel) Register() {
 		p.bindLabelRoutes(group)
 		p.bindSiteRoutes(group)
 		p.bindProvisionRoutes(group)
+		p.bindLANRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		p.Commands.BindRoutes(group)
@@ -248,6 +252,7 @@ func (p *Panel) startGateway() error {
 		return fmt.Errorf("the internal CA: %w", err)
 	}
 	p.Authority = authority
+	p.authority.Store(authority)
 
 	if err := p.openMetrics(); err != nil {
 		return err
