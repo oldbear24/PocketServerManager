@@ -78,7 +78,7 @@ export function SitesPage() {
   const host = hosts.items.find((item) => item.id === site?.host);
 
   return (
-    <div className="page">
+    <>
       <nav className="site-chips" aria-label={t("site.list")}>
         {sites.items.map((item) => (
           <Link
@@ -129,7 +129,7 @@ export function SitesPage() {
           onClose={() => setCreating(false)}
         />
       )}
-    </div>
+    </>
   );
 }
 

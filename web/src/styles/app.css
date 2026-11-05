@@ -2163,7 +2163,6 @@ td .row-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 16px;
 }
 
 .site-chip {
@@ -2201,10 +2200,6 @@ td .row-actions {
 
 .site-chip .dot.ok {
   background: var(--ok);
-}
-
-.site-kpis {
-  margin-bottom: 16px;
 }
 
 .site-kpis .kpi-value {
