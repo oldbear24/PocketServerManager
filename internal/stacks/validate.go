@@ -153,6 +153,10 @@ func Validate(ctx context.Context, name, compose, env string, secretKeys []strin
 	result.Valid = true
 	result.Services = slices.Sorted(maps.Keys(project.Services))
 	result.Warnings = warningsOf(project, &tree)
+	// the secrets are placeholders here, so the hashes of passwords are
+	// checked at the deploy
+	_, labelProblems := Exposures(project, &tree, false)
+	result.Warnings = append(result.Warnings, labelProblems...)
 
 	return result
 }
