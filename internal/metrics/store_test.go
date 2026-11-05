@@ -554,12 +554,20 @@ func TestRequestsAreCountedPerHourAndHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := store.Requests("h1", []string{"blog.example.com", "www.blog.example.com"}, 4)
+	got, err := store.Requests("h1", []string{"blog.example.com", "www.blog.example.com"}, nil, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []int64{0, 6, 0, 7}; !slices.Equal(got, want) {
 		t.Errorf("requests %v, want %v", got, want)
+	}
+	// a wildcard domain counts the names one label below it, but not a name
+	// that a domain of its own serves
+	if err := store.AddRequests("h1", map[string]uint64{"a.wild.example.com": 4, "b.a.wild.example.com": 9, "tame.wild.example.com": 20}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.Requests("h1", []string{"*.wild.example.com"}, []string{"Tame.wild.example.com"}, 4); !slices.Equal(got, []int64{0, 0, 0, 4}) {
+		t.Errorf("the wildcard's requests: %v", got)
 	}
 
 	// kept for two days

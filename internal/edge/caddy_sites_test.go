@@ -46,7 +46,10 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 	put("blog/releases/1/assets/app.css.gz", gz.String())
 	put("blog/releases/2/index.html", "two")
 	put("app/releases/1/index.html", "spa")
-	for _, site := range []string{"blog", "app"} {
+	put("wild/releases/1/index.html", "wild")
+	put("wild/releases/1/404.html", "the wildcard's 404")
+	put("tame/releases/1/index.html", "tame")
+	for _, site := range []string{"blog", "app", "wild", "tame"} {
 		if err := os.Symlink("releases/1", filepath.Join(root, site, "current")); err != nil {
 			t.Fatal(err)
 		}
@@ -61,6 +64,9 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 			Headers:  []SiteHeader{{Name: "X-Frame-Options", Value: "DENY"}},
 			Cache:    []CacheRule{{Path: "/assets/*", MaxAge: 3600}},
 		}},
+		// a site under another's wildcard gets none of the wildcard's 404 page
+		{Hostname: "*.wild.test", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/wild/current", NotFound: "/404.html"}},
+		{Hostname: "tame.wild.test", Kind: KindSite, Site: &SiteOptions{Root: "/srv/sites/tame/current"}},
 		{Hostname: "app.example.test", Kind: KindSite, Certificate: "certapp", HTTPSRedirect: true, Site: &SiteOptions{Root: "/srv/sites/app/current", SPA: true}, BasicAuth: []BasicAuthUser{
 			{Username: "carol", Hash: "$2a$05$cdSx43KWUy4Imu5KZU9RrOmFF/YsG/lIIWlXA8QAYE1NcKuKSOyte"},
 		}},
@@ -103,7 +109,7 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 		Transport:     &http.Transport{DisableCompression: true, Proxy: nil},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	get := func(host, path string, headers ...string) (*http.Response, string) {
+	get := func(host, path string, headers ...string) (int, http.Header, string) {
 		t.Helper()
 		request, _ := http.NewRequest(http.MethodGet, address+path, nil)
 		request.Host = host
@@ -116,7 +122,7 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 		}
 		defer response.Body.Close()
 		body, _ := io.ReadAll(response.Body)
-		return response, string(body)
+		return response.StatusCode, response.Header, string(body)
 	}
 	for start := time.Now(); ; time.Sleep(100 * time.Millisecond) {
 		request, _ := http.NewRequest(http.MethodGet, address+"/", nil)
@@ -131,27 +137,33 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 		}
 	}
 
-	if response, body := get("blog.example.test", "/"); response.StatusCode != 200 || body != "one" || response.Header.Get("X-Frame-Options") != "DENY" {
-		t.Errorf("the home page: %d %q %v", response.StatusCode, body, response.Header)
+	if status, header, body := get("blog.example.test", "/"); status != 200 || body != "one" || header.Get("X-Frame-Options") != "DENY" {
+		t.Errorf("the home page: %d %q %v", status, body, header)
 	}
-	if response, body := get("blog.example.test", "/about/"); response.StatusCode != 200 || body != "about" {
-		t.Errorf("a directory: %d %q", response.StatusCode, body)
+	if status, _, body := get("blog.example.test", "/about/"); status != 200 || body != "about" {
+		t.Errorf("a directory: %d %q", status, body)
 	}
-	response, body := get("blog.example.test", "/assets/app.css", "Accept-Encoding", "gzip")
-	if response.StatusCode != 200 || response.Header.Get("Content-Encoding") != "gzip" || body != gz.String() || response.Header.Get("Cache-Control") != "public, max-age=3600" {
-		t.Errorf("the stylesheet: %d %v (%d bytes)", response.StatusCode, response.Header, len(body))
+	status, header, body := get("blog.example.test", "/assets/app.css", "Accept-Encoding", "gzip")
+	if status != 200 || header.Get("Content-Encoding") != "gzip" || body != gz.String() || header.Get("Cache-Control") != "public, max-age=3600" {
+		t.Errorf("the stylesheet: %d %v (%d bytes)", status, header, len(body))
 	}
-	if response, body := get("blog.example.test", "/assets/app.css"); response.Header.Get("Content-Encoding") != "" || body != css {
-		t.Errorf("the stylesheet without gzip: %v (%d bytes)", response.Header, len(body))
+	if _, header, body := get("blog.example.test", "/assets/app.css"); header.Get("Content-Encoding") != "" || body != css {
+		t.Errorf("the stylesheet without gzip: %v (%d bytes)", header, len(body))
 	}
-	if response, body := get("blog.example.test", "/missing"); response.StatusCode != 404 || body != "not here" {
-		t.Errorf("a missing page: %d %q", response.StatusCode, body)
+	if status, _, body := get("blog.example.test", "/missing"); status != 404 || body != "not here" {
+		t.Errorf("a missing page: %d %q", status, body)
+	}
+	if status, _, body := get("any.wild.test", "/missing"); status != 404 || body != "the wildcard's 404" {
+		t.Errorf("the wildcard's missing page: %d %q", status, body)
+	}
+	if status, _, body := get("tame.wild.test", "/missing"); status != 404 || strings.Contains(body, "wildcard") {
+		t.Errorf("a site under the wildcard got its 404 page: %d %q", status, body)
 	}
 
 	// a password, over HTTPS only, and a path that is no file answered by the
 	// application
-	if response, _ := get("app.example.test", "/deep/link"); response.StatusCode != 308 {
-		t.Errorf("a password over plain HTTP: %d", response.StatusCode)
+	if status, _, _ := get("app.example.test", "/deep/link"); status != 308 {
+		t.Errorf("a password over plain HTTP: %d", status)
 	}
 	secure := &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{ServerName: "app.example.test", InsecureSkipVerify: true}}} //nolint:gosec // a certificate of the test's own
 	asApp := func(user, password string) (int, string) {
@@ -183,7 +195,7 @@ func TestSitesAreServedByCaddy(t *testing.T) {
 	if err := os.Rename(next, filepath.Join(root, "blog", "current")); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := get("blog.example.test", "/"); body != "two" {
+	if _, _, body := get("blog.example.test", "/"); body != "two" {
 		t.Errorf("after the switch: %q", body)
 	}
 }

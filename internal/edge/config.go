@@ -700,7 +700,9 @@ func hostRoute(route Route, secure bool) object {
 // that takes it.
 func siteRoutes(route Route) []any {
 	options := route.Site
-	routes := []any{}
+	// the site's own 404 page answers its own errors only, not those of a
+	// site whose name its wildcard covers
+	routes := []any{object{"handle": []any{object{"handler": "vars", siteVar: options.Root}}}}
 	pathMatch := func(path string) []any {
 		if path == "" {
 			return nil
@@ -757,11 +759,14 @@ func siteFiles(root, status string) object {
 	return server
 }
 
+// siteVar names the site whose route a request went through.
+const siteVar = "pocketcloud_site"
+
 // siteNotFound sends a site's own 404 page with the 404 of a file that is not
 // there.
 func siteNotFound(route Route) object {
 	return object{
-		"match": hostMatch(route.Hostname),
+		"match": []any{object{"host": []string{route.Hostname}, "vars": object{siteVar: []string{route.Site.Root}}}},
 		"handle": []any{object{"handler": "subroute", "routes": []any{object{
 			"match": []any{object{"expression": "{http.error.status_code} == 404"}},
 			"handle": []any{

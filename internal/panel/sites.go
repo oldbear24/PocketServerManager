@@ -838,9 +838,19 @@ func (p *Panel) handleSiteRequests(e *core.RequestEvent) error {
 	for _, domain := range domains {
 		names = append(names, domain.GetString("hostname"))
 	}
+	// names under a wildcard of the site that the edge serves for something else
+	others, err := e.App.FindRecordsByFilter(schema.Domains, "host={:h} && site!={:s}", "", 0, 0,
+		dbx.Params{"h": site.GetString("host"), "s": site.Id})
+	if err != nil {
+		return e.InternalServerError("Failed to read the server's domains.", err)
+	}
+	exact := []string{}
+	for _, domain := range others {
+		exact = append(exact, domain.GetString("hostname"))
+	}
 	counts := make([]int64, requestHours)
 	if p.Metrics != nil {
-		if counts, err = p.Metrics.Requests(site.GetString("host"), names, requestHours); err != nil {
+		if counts, err = p.Metrics.Requests(site.GetString("host"), names, exact, requestHours); err != nil {
 			return e.InternalServerError("Failed to read the requests.", err)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -585,8 +586,10 @@ func (s *Store) AddRequests(hostID string, counts map[string]uint64) error {
 }
 
 // Requests are the requests of hostnames served by a host's edge in each of the
-// last hours, oldest first; the last is the hour under way.
-func (s *Store) Requests(hostID string, names []string, hours int) ([]int64, error) {
+// last hours, oldest first; the last is the hour under way. A wildcard such as
+// *.example.com counts the names one label below it, but not those in exact,
+// which the edge sends to routes of their own.
+func (s *Store) Requests(hostID string, names, exact []string, hours int) ([]int64, error) {
 	counts := make([]int64, hours)
 	if len(names) == 0 || hours <= 0 {
 		return counts, nil
@@ -594,26 +597,40 @@ func (s *Store) Requests(hostID string, names []string, hours int) ([]int64, err
 	current := s.Now().Truncate(time.Hour)
 	first := current.Add(-time.Duration(hours-1) * time.Hour).Unix()
 
-	args := []any{hostID, first}
-	placeholders := make([]string, len(names))
-	for i, name := range names {
-		placeholders[i] = "?"
-		args = append(args, strings.ToLower(name))
-	}
-	rows, err := s.db.Query(`SELECT hour, SUM(count) FROM requests WHERE host = ? AND hour >= ? AND name IN (`+
-		strings.Join(placeholders, ", ")+`) GROUP BY hour`, args...)
+	rows, err := s.db.Query(`SELECT name, hour, count FROM requests WHERE host = ? AND hour >= ?`, hostID, first)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
+		var name string
 		var hour, count int64
-		if err := rows.Scan(&hour, &count); err != nil {
+		if err := rows.Scan(&name, &hour, &count); err != nil {
 			return nil, err
+		}
+		if !matchesAny(names, exact, name) {
+			continue
 		}
 		if index := (hour - first) / 3600; index >= 0 && index < int64(hours) {
 			counts[index] += count
 		}
 	}
 	return counts, rows.Err()
+}
+
+// matchesAny says whether a hostname is one of names, or one label below a
+// wildcard of them and not one of exact.
+func matchesAny(names, exact []string, hostname string) bool {
+	for _, name := range names {
+		name = strings.ToLower(name)
+		if name == hostname {
+			return true
+		}
+		if suffix, ok := strings.CutPrefix(name, "*"); ok && !slices.ContainsFunc(exact, func(other string) bool { return strings.EqualFold(other, hostname) }) {
+			if label, found := strings.CutSuffix(hostname, suffix); found && label != "" && !strings.Contains(label, ".") {
+				return true
+			}
+		}
+	}
+	return false
 }

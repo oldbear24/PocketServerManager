@@ -57,7 +57,12 @@
                   {
                     "host": [
                       "blog.example.com"
-                    ]
+                    ],
+                    "vars": {
+                      "pocketcloud_site": [
+                        "/srv/sites/blog/current"
+                      ]
+                    }
                   }
                 ],
                 "terminal": true
@@ -354,7 +359,12 @@
                   {
                     "host": [
                       "blog.example.com"
-                    ]
+                    ],
+                    "vars": {
+                      "pocketcloud_site": [
+                        "/srv/sites/blog/current"
+                      ]
+                    }
                   }
                 ],
                 "terminal": true
@@ -501,6 +511,14 @@
                 {
                   "handler": "subroute",
                   "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "vars",
+                          "pocketcloud_site": "/srv/sites/blog/current"
+                        }
+                      ]
+                    },
                     {
                       "handle": [
                         {
