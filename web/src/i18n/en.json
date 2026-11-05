@@ -969,7 +969,7 @@
     "hsts": "Send HSTS: browsers then use only HTTPS for a year",
     "compress": "Compress responses (zstd, gzip)",
     "certificates": "Certificates",
-    "certificatesNote": "Uploaded by hand until certificates are issued automatically",
+    "certificatesNote": "From ACME, or uploaded by hand",
     "noCertificates": "No certificate covers the domains of this server.",
     "upload": "Upload certificate",
     "uploadTitle": "Upload a certificate",

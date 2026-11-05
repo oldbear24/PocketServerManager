@@ -1015,7 +1015,7 @@
     "hsts": "Posílat HSTS: prohlížeče pak rok používají jen HTTPS",
     "compress": "Komprimovat odpovědi (zstd, gzip)",
     "certificates": "Certifikáty",
-    "certificatesNote": "Nahrané ručně, dokud se certifikáty nebudou vydávat automaticky",
+    "certificatesNote": "Z ACME, nebo nahrané ručně",
     "noCertificates": "Domény tohoto serveru nepokrývá žádný certifikát.",
     "upload": "Nahrát certifikát",
     "uploadTitle": "Nahrát certifikát",
