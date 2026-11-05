@@ -994,7 +994,12 @@
     "loading": "Loading the routes…",
     "password": "password",
     "fromLabel": "label of {{service}}",
-    "labelRemoved": "label of {{service}} removed"
+    "labelRemoved": "label of {{service}} removed",
+    "certificateFrom": "Certificate",
+    "tlsAcme": "ACME",
+    "tlsInternal": "Internal CA",
+    "tlsAcmeHint": "A publicly trusted certificate: the CA checks that the name points at this server.",
+    "tlsInternalHint": "For a LAN name, such as wiki.lan: issued at once, and trusted by the devices that have the root certificate of the internal CA."
   },
   "php": {
     "title": "PHP runtimes",
@@ -1060,18 +1065,23 @@
       "cloudflare": "Cloudflare",
       "hetzner": "Hetzner DNS",
       "wedos": "WEDOS (WAPI)",
-      "manual": "Manual"
+      "manual": "Manual",
+      "adguard": "AdGuard Home",
+      "pihole": "Pi-hole"
     },
     "kindNote": {
       "cloudflare": "An API token with the Zone.DNS:Edit and Zone:Read permissions, for all zones or the ones PocketCloud may change.",
       "hetzner": "An API token of the Hetzner DNS Console. Name the zones it may change: its API does not list them here.",
       "wedos": "WEDOS's WAPI answers only the IP addresses on its allow-list: add the panel's public address in the WEDOS administration first. Name the zones it may change.",
-      "manual": "No API: PocketCloud shows the records to create at your DNS host and checks until they resolve."
+      "manual": "No API: PocketCloud shows the records to create at your DNS host and checks until they resolve.",
+      "adguard": "PocketCloud sets DNS rewrites in AdGuard Home through the agent of a server on the same network, with the address, username and password of its web interface. Name the zones it answers for, such as lan or home.arpa.",
+      "pihole": "Pi-hole v6. PocketCloud sets its local DNS records through the agent of a server on the same network, with the address and password of its web interface; an app password works once webserver.api.app_sudo is on. Name the zones it answers for, such as lan or home.arpa."
     },
     "field": {
       "api_token": "API token",
       "username": "User name",
-      "password": "WAPI password"
+      "password": "Password",
+      "url": "Address of the web interface"
     },
     "domainStatus": {
       "ok": "DNS ok",
@@ -1100,7 +1110,18 @@
     "publicAddresses": "Public addresses",
     "publicAddressesNote": "what the A and AAAA records of this server's domains point at",
     "addressesSaved": "The public addresses were saved.",
-    "testName": "Test {{name}}"
+    "testName": "Test {{name}}",
+    "server": "Server whose agent reaches it",
+    "serverHint": "A server on the same network: PocketCloud reads and changes the records through its agent.",
+    "chooseServer": "Choose a server",
+    "serverOffline": "offline",
+    "throughAgent": "through the agent of {{server}}",
+    "lanAnswered": "{{provider}} answers these records itself as soon as it takes them: nothing has to propagate.",
+    "fieldOf": {
+      "wedos": {
+        "password": "WAPI password"
+      }
+    }
   },
   "cert": {
     "title": "Certificates",
@@ -1196,7 +1217,9 @@
     "renewalPolicy_one": "30 days ahead · at most {{count}} failed attempt a day",
     "renewalPolicy_other": "30 days ahead · at most {{count}} failed attempts a day",
     "alerts": "Alerts",
-    "alertsPolicy": "in the panel, 14 days before a certificate expires, and when one fails"
+    "alertsPolicy": "in the panel, 14 days before a certificate expires, and when one fails",
+    "issuerAcme": "ACME",
+    "internalNote": "The internal CA signs at once, without checking the names. Browsers trust it on the devices that have its root certificate, and refuse a wildcard right under a top-level name, such as *.lan."
   },
   "acme": {
     "title": "Certificates (ACME)",
@@ -1462,5 +1485,57 @@
     "files_one": "{{formatted}} file",
     "files_other": "{{formatted}} files",
     "endedCleanup": "The domains it created were removed, with their DNS records; the site stays."
+  },
+  "ca": {
+    "title": "Internal CA",
+    "summary": "{{subject}} · valid until {{date}}. It signs the certificates of the agents ({{agents}}) and of LAN names ({{lan}}).",
+    "download": "Download the root certificate",
+    "downloadPemLabel": "Download the root certificate as PEM",
+    "agents": "Agent certificates",
+    "install": "How to install it",
+    "warning": "A device that trusts this root trusts every certificate the panel signs, for any name: install it only on your own devices, and keep the panel and its master key safe.",
+    "fingerprint": "SHA-256 fingerprint",
+    "fingerprintNote": "Compare it with the SHA-256 fingerprint the device shows before you trust it.",
+    "device": "Device",
+    "platform": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux",
+      "ios": "iPhone and iPad",
+      "android": "Android",
+      "firefox": "Firefox"
+    },
+    "command": "Command",
+    "after": "Then the LAN names with certificates of the internal CA open over HTTPS without a warning.",
+    "steps": {
+      "windows": {
+        "1": "Open pocketcloud-root-ca.crt and choose Install Certificate.",
+        "2": "Choose Local Machine, then Place all certificates in the following store, and Browse to Trusted Root Certification Authorities.",
+        "3": "Finish, and confirm the security warning.",
+        "4": "Restart the browser. Chrome and Edge use the certificates of Windows."
+      },
+      "macos": {
+        "1": "Open pocketcloud-root-ca.crt: Keychain Access adds it to your keychain.",
+        "2": "Double-click PocketCloud Root CA, open Trust, and set When using this certificate to Always Trust.",
+        "3": "Close the window and confirm with your password. Safari and Chrome use it from then on."
+      },
+      "linux": {
+        "1": "Copy the certificate into the system's list and update it, as the commands below do.",
+        "2": "Chrome and Chromium keep their own list: import it in Settings → Privacy and security → Security → Manage certificates, or with certutil."
+      },
+      "ios": {
+        "1": "Open the address of the root certificate in Safari, and allow the profile to download.",
+        "2": "In Settings → General → VPN & Device Management, open PocketCloud Root CA and install it.",
+        "3": "In Settings → General → About → Certificate Trust Settings, turn on full trust for PocketCloud Root CA."
+      },
+      "android": {
+        "1": "Download pocketcloud-root-ca.crt, then open Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → CA certificate, and choose the file. The names of the menus differ between makers.",
+        "2": "Chrome trusts it then; other apps only when they choose to trust the certificates users install."
+      },
+      "firefox": {
+        "1": "Firefox keeps its own list on every system: in Settings → Privacy & Security → Certificates → View Certificates → Authorities, import pocketcloud-root-ca.pem.",
+        "2": "Tick Trust this CA to identify websites. On Windows and macOS, Firefox can use the system's list instead, with security.enterprise_roots.enabled in about:config."
+      }
+    }
   }
 }

@@ -77,7 +77,7 @@ describe("connecting a DNS provider", () => {
       ],
     });
     const onClose = vi.fn();
-    wrap(<ConnectDialog onClose={onClose} />);
+    wrap(<ConnectDialog hosts={[]} onClose={onClose} />);
 
     const token = await screen.findByLabelText("API token");
     expect(token).toHaveAttribute("type", "password");
@@ -101,7 +101,7 @@ describe("connecting a DNS provider", () => {
     const connect = vi
       .spyOn(dnsApi, "connect")
       .mockRejectedValue(new Error("WEDOS cannot list its zones: name at least one."));
-    wrap(<ConnectDialog onClose={vi.fn()} />);
+    wrap(<ConnectDialog hosts={[]} onClose={vi.fn()} />);
 
     fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "wedos" } });
     expect(screen.getByText(/allow-list/)).toBeInTheDocument();
@@ -117,10 +117,69 @@ describe("connecting a DNS provider", () => {
   });
 });
 
+describe("connecting a DNS server of the LAN", () => {
+  it("reaches AdGuard Home through the agent of the server chosen, with zones of one label", async () => {
+    vi.spyOn(dnsApi, "kinds").mockResolvedValue([
+      ...kinds,
+      {
+        kind: "adguard",
+        label: "AdGuard Home",
+        fields: [
+          { name: "url", secret: false },
+          { name: "username", secret: false, optional: true },
+          { name: "password", secret: true, optional: true },
+        ],
+        lists_zones: false,
+        manual: false,
+        agent: true,
+      },
+    ]);
+    const connect = vi.spyOn(dnsApi, "connect").mockResolvedValue({
+      provider: { id: "p1", name: "Home", kind: "adguard", status: "ok" } as never,
+      zones: [{ id: "z1", name: "lan" } as never],
+    });
+    const hosts = [
+      { id: "h1", name: "pve-01", status: "online" },
+      { id: "h2", name: "nas", status: "offline" },
+    ] as never;
+    wrap(<ConnectDialog hosts={hosts} onClose={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "adguard" } });
+    expect(
+      screen.getByText(/through the agent of a server on the same network/),
+    ).toBeInTheDocument();
+    const confirm = screen.getAllByRole("button", { name: "Connect a DNS provider" }).at(-1)!;
+    // no server, no way to reach it
+    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("option", { name: "nas (offline)" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Server whose agent reaches it"), {
+      target: { value: "h1" },
+    });
+    const url = screen.getByLabelText("Address of the web interface");
+    expect(url).toHaveAttribute("placeholder", "http://192.168.1.2:3000");
+    fireEvent.change(url, { target: { value: "http://192.168.1.2:3000" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "secret" } });
+    const zones = screen.getByLabelText("Zones, separated by commas");
+    expect(zones).toHaveAttribute("placeholder", "lan, home.arpa");
+    fireEvent.change(zones, { target: { value: "lan" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Home" } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(connect).toHaveBeenCalled());
+    expect(connect.mock.calls[0][0]).toEqual({
+      name: "Home",
+      kind: "adguard",
+      credentials: { url: "http://192.168.1.2:3000", password: "secret" },
+      host: "h1",
+      zones: ["lan"],
+    });
+  });
+});
+
 describe("switching kinds", () => {
   it("takes the manual kind, which asks for no credentials", async () => {
     vi.spyOn(dnsApi, "kinds").mockResolvedValue(kinds);
-    wrap(<ConnectDialog onClose={vi.fn()} />);
+    wrap(<ConnectDialog hosts={[]} onClose={vi.fn()} />);
     fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "manual" } });
     expect(screen.getByLabelText("Zones, separated by commas")).toBeInTheDocument();
     expect(screen.queryByLabelText("API token")).not.toBeInTheDocument();
@@ -132,7 +191,7 @@ describe("switching kinds", () => {
       provider: { id: "p1", name: "Cloudflare", kind: "cloudflare", status: "ok" } as never,
       zones: [],
     });
-    wrap(<ConnectDialog onClose={vi.fn()} />);
+    wrap(<ConnectDialog hosts={[]} onClose={vi.fn()} />);
     fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "wedos" } });
     fireEvent.change(screen.getByLabelText("Zones, separated by commas"), {
       target: { value: "example.cz" },

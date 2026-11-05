@@ -55,7 +55,8 @@ export type Domain = RecordModel & {
   port: number;
   redirect_to: string;
   redirect_permanent: boolean;
-  tls: "auto" | "off";
+  /** internal: a certificate of the internal CA, for a LAN name (#26) */
+  tls: "auto" | "off" | "internal";
   https_redirect: boolean;
   hsts: boolean;
   compress: boolean;
