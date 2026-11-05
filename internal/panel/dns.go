@@ -629,6 +629,7 @@ func (p *Panel) desiredDNS(domain *core.Record) domainDNS {
 	// an alias points at the other name, wherever that one points
 	if alias := domain.GetString("dns_alias"); alias != "" {
 		want.Records = []dns.Record{dns.CNAMERecord(hostname, zone, alias)}
+		want.LAN = !want.Manual && lanDriver(want.Provider)
 		return want
 	}
 

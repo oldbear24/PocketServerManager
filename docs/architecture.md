@@ -220,6 +220,8 @@ The wizard (`/sites/new`, #24) sends the site, its name on the web, whether `www
 5. `site.certificate` – the step asks the CA itself, past what an earlier attempt said but not past the CA's daily limit, and ends once a valid certificate for both names is on the edge, whichever certificate the edge picked.
 6. `site.check` – an HTTPS request at the server's public address with the site's name, as a visitor's once the name resolves there, with the system's roots; it must not answer an error (401 counts, a site may have a password), and the `www` name must redirect to it. It asks every 3 seconds for a minute.
 
+A name in a zone of a DNS server of the LAN (#26), such as `wiki.lan` at AdGuard Home, is set up the same way with three differences: its domains have internal TLS, so the certificate comes from the internal CA at once and no ACME account is needed; propagation ends as soon as the DNS server took the records; and the check asks the server's address on its network, trusting only the internal CA's root.
+
 A step that fails pauses the setup for up to a day, and so does a step that cannot even start, such as a deployment of a site whose source became an upload meanwhile: Retry (`POST /api/pc/provisions/{id}/retry`) runs it again as a new command, once even when asked twice at once, and the history keeps the failed one. A setup that is cancelled, or not retried in time, cancels the step under way and removes the domains it created, and with them their DNS records; the site stays, to be deployed or removed. Setups go on after a panel restart.
 
 ### Static sites

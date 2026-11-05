@@ -1484,7 +1484,9 @@
     "taken_other": "{{names}} are domains already.",
     "files_one": "{{formatted}} file",
     "files_other": "{{formatted}} files",
-    "endedCleanup": "The domains it created were removed, with their DNS records; the site stays."
+    "endedCleanup": "The domains it created were removed, with their DNS records; the site stays.",
+    "internalNote": "For a LAN name: the internal CA signs the certificate at once, and the devices that have its root certificate trust it.",
+    "lanAnswered": "{{provider}} answers the names at once: nothing has to propagate."
   },
   "ca": {
     "title": "Internal CA",

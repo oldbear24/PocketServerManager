@@ -203,6 +203,30 @@ describe("the new-site wizard", () => {
     expect(await screen.findByText("A custom build needs a command.")).toBeInTheDocument();
   });
 
+  it("takes the certificate of a LAN name from the internal CA", async () => {
+    signInAs("operator");
+    lists.hosts = [edge];
+    vi.spyOn(provisionApi, "preview").mockResolvedValue({
+      hostname: "wiki.lan",
+      zone: "lan",
+      provider: "AdGuard",
+      kind: "adguard",
+      mode: "automatic",
+      lan: true,
+      records: [{ type: "A", name: "wiki.lan", value: "192.168.1.10", ttl: 300 }],
+      taken: [],
+    });
+    renderAt("/sites/new");
+    // no ACME account is needed for it
+    expect(screen.getByLabelText("Certificate authority")).toHaveValue("No ACME account yet");
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "wiki.lan" } });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Certificate authority")).toHaveValue("Internal CA"),
+    );
+    expect(screen.queryByLabelText("Validation (ACME challenge)")).toBeNull();
+    expect(screen.getByText(/the internal CA signs the certificate at once/)).toBeInTheDocument();
+  });
+
   it("says when the name is taken, and starts nothing", async () => {
     signInAs("operator");
     lists.hosts = [edge];

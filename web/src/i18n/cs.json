@@ -1554,7 +1554,9 @@
     "files_few": "{{formatted}} soubory",
     "files_many": "{{formatted}} souboru",
     "files_other": "{{formatted}} souborů",
-    "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává."
+    "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává.",
+    "internalNote": "Pro jméno v LAN: certifikát hned podepíše interní CA a důvěřují mu zařízení, která mají její kořenový certifikát.",
+    "lanAnswered": "{{provider}} na jména odpovídá hned: nic se nemusí šířit."
   },
   "ca": {
     "title": "Interní CA",

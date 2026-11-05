@@ -109,6 +109,8 @@ export type DnsPreview = {
   /** names that are domains already */
   taken: string[];
   problem?: string;
+  /** a zone of a DNS server of the LAN: the certificate comes from the internal CA (#26) */
+  lan?: boolean;
 };
 
 /** What the wizard sends for a new site (#24). */

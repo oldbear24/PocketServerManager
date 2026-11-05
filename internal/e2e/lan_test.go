@@ -306,3 +306,71 @@ func TestALANNameResolvesThroughTheDNSServerOfItsNetwork(t *testing.T) {
 		t.Errorf("a wrong password: %d %s %q", status, state, message)
 	}
 }
+
+// TestANewSiteOnALANNameIsSetUpWithTheInternalCA: a new site whose name is in
+// a zone of AdGuard Home gets its records there through the agent, goes on at
+// once without waiting for public resolvers, takes one certificate of the
+// internal CA for both names without asking ACME, and is checked at the
+// server's address on its network.
+func TestANewSiteOnALANNameIsSetUpWithTheInternalCA(t *testing.T) {
+	h := newProvisionHarness(t)
+	adguard := rewritetest.NewAdGuard(t, "admin", "adguard-secret")
+	status, out := h.lanDNS("Home", "adguard", map[string]string{"url": adguard.URL, "username": "admin", "password": "adguard-secret"}, "lan")
+	if state, message := providerStatus(out); status != http.StatusOK || state != schema.DNSOK {
+		t.Fatalf("connecting AdGuard Home: %d %s %s", status, state, message)
+	}
+	var addr string
+	h.waitFor("the agent to report its address", func() bool {
+		addr = h.harness.host(h.host.Id).GetString("ip4")
+		return addr != ""
+	})
+
+	// the wizard says where the certificate comes from
+	status, raw := testutil.Do(t, h.handler, testutil.Request{URL: "/api/pc/dns/preview?hostname=wiki.lan&www=true&host=" + h.host.Id, Token: h.operator})
+	if status != http.StatusOK || !strings.Contains(raw, `"lan":true`) || !strings.Contains(raw, `"value":"`+addr+`"`) {
+		t.Fatalf("the preview: %d %s", status, raw)
+	}
+
+	status, out = h.provision(map[string]any{"name": "wiki", "source": "empty"}, "wiki.lan", true)
+	if status != http.StatusCreated {
+		t.Fatalf("the new site: %d %v", status, out)
+	}
+	parent := out["provision"].(string)
+	setup := h.waitSetup(parent, schema.CommandSucceeded, schema.CommandFailed)
+	steps := h.steps(parent)
+	if setup.GetString("status") != schema.CommandSucceeded {
+		t.Fatalf("the setup: %v; steps %s", setup.PublicExport(), stepTypes(steps))
+	}
+	for _, step := range steps {
+		if step["type"] == "site.propagation" {
+			if result, _ := step["result"].(map[string]any); result["lan"] != "Home" {
+				t.Errorf("the propagation step: %v", result)
+			}
+		}
+	}
+
+	got := map[string]string{}
+	for _, rw := range adguard.Rewrites() {
+		got[rw.Domain] = rw.Answer
+	}
+	if got["wiki.lan"] != addr || got["www.wiki.lan"] != "wiki.lan" {
+		t.Errorf("the rewrites: %v", got)
+	}
+	for _, name := range []string{"wiki.lan", "www.wiki.lan"} {
+		domain, err := h.app.FindFirstRecordByData(schema.Domains, "hostname", name)
+		if err != nil || domain.GetString("tls") != schema.TLSInternal {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	cert := h.internalCertificate("wiki.lan", "www.wiki.lan")
+	h.verifyOnEdge(h.served("wiki.lan", cert), h.root(), "www.wiki.lan")
+	if count, _ := h.app.CountRecords(schema.Certificates, dbx.HashExp{"issuer": schema.IssuerACME}); count != 0 {
+		t.Errorf("%d certificates were asked of ACME", count)
+	}
+	h.mu.Lock()
+	checks := strings.Join(h.checks, "; ")
+	h.mu.Unlock()
+	if !strings.Contains(checks, "https://wiki.lan/ @ "+addr) {
+		t.Errorf("the checks: %s", checks)
+	}
+}
