@@ -33,9 +33,10 @@ func within(dir, name string) (string, error) {
 	return path, nil
 }
 
-// Prepare makes the directories of a deployment, empty.
+// Prepare makes the directories of a deployment, with an empty source
+// directory. An upload already in the build directory stays.
 func Prepare(root, site string, n int) error {
-	if err := os.RemoveAll(BuildDir(root, site, n)); err != nil {
+	if err := os.RemoveAll(SourceDir(root, site, n)); err != nil {
 		return err
 	}
 	for _, dir := range []string{filepath.Join(Dir(root, site), "releases"), SourceDir(root, site, n)} {
