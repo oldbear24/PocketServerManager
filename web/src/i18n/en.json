@@ -1404,7 +1404,6 @@
     "automatic": "The zone {{zone}} is at {{provider}}: PocketCloud sets the DNS records.",
     "manualZone": "No connected provider manages {{zone}}: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",
     "manual": "No connected zone holds this name: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",
-    "taken": "{{names}} is a domain already.",
     "certificateTitle": "4 · Certificate",
     "challenge": "Validation (ACME challenge)",
     "noAccount": "No ACME account yet",
@@ -1455,8 +1454,13 @@
     "cancel": "Cancel the setup",
     "cancelled": "The setup was cancelled",
     "live": "The site is live:",
-    "ended": "The setup ended: {{error}} The domains it created were removed, with their DNS records; the site stays.",
+    "ended": "The setup ended: {{error}}.",
     "openSite": "Open the site's page",
-    "history": "Every step is a command in the command history, so Audit & activity shows the setup too."
+    "history": "Every step is a command in the command history, so Audit & activity shows the setup too.",
+    "taken_one": "{{names}} is a domain already.",
+    "taken_other": "{{names}} are domains already.",
+    "files_one": "{{formatted}} file",
+    "files_other": "{{formatted}} files",
+    "endedCleanup": "The domains it created were removed, with their DNS records; the site stays."
   }
 }

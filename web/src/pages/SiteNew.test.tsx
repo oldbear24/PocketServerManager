@@ -162,6 +162,47 @@ describe("the new-site wizard", () => {
     expect(start.mock.calls[0][1]).toBeUndefined();
   });
 
+  it("moves the source with the arrow keys, and builds nothing for a placeholder", async () => {
+    signInAs("operator");
+    lists.hosts = [edge];
+    vi.spyOn(provisionApi, "preview").mockResolvedValue({
+      hostname: "soon.example.org",
+      zone: "",
+      provider: "",
+      kind: "",
+      mode: "manual",
+      records: [{ type: "A", name: "soon.example.org", value: "203.0.114.24", ttl: 300 }],
+      taken: [],
+    });
+    const start = vi.spyOn(provisionApi, "start").mockRejectedValue({
+      response: { data: { build_cmd: { message: "A custom build needs a command." } } },
+    });
+    renderAt("/sites/new");
+    fireEvent.change(screen.getByLabelText("Generator"), { target: { value: "custom" } });
+    const git = screen.getByRole("radio", { name: /Git/ });
+    expect(git).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(git, { key: "ArrowRight" });
+    fireEvent.keyDown(screen.getByRole("radio", { name: /ZIP upload/ }), { key: "ArrowRight" });
+    const placeholder = screen.getByRole("radio", { name: /Placeholder/ });
+    expect(placeholder).toHaveAttribute("aria-checked", "true");
+    expect(placeholder).toHaveFocus();
+    expect(screen.queryByLabelText("Generator")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "soon.example.org" } });
+    expect(await screen.findByText(/make these records at your registrar/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create and deploy" }));
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    expect(start.mock.calls[0][0].site).toMatchObject({
+      source: "empty",
+      generator: "auto",
+      build_image: "",
+      build_cmd: "",
+      output_dir: "",
+    });
+    // an error of a field that is not shown still says why
+    expect(await screen.findByText("A custom build needs a command.")).toBeInTheDocument();
+  });
+
   it("says when the name is taken, and starts nothing", async () => {
     signInAs("operator");
     lists.hosts = [edge];
@@ -222,6 +263,7 @@ describe("the new-site wizard", () => {
     expect(screen.getByText("A + CNAME (Cloudflare API)")).toBeInTheDocument();
     expect(screen.getByText("1.1.1.1 · 8.8.8.8 · the zone's name servers")).toBeInTheDocument();
     expect(screen.getByText("mkdocs · 6 s")).toBeInTheDocument();
+    expect(screen.getByText("site.deploy · 41 files · 1.1 MB")).toBeInTheDocument();
     expect(screen.getByText("acme: too many certificates")).toBeInTheDocument();
     // the summary takes the form's place
     expect(screen.getByText("docs.example.com · www.docs.example.com")).toBeInTheDocument();

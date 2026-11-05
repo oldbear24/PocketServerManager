@@ -1,5 +1,5 @@
 import { Check, Circle, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -9,7 +9,7 @@ import { Banner, Button, Card, Field, ProgressBar, StatusPill, Table } from "../
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import { directoryId, type AcmeAccount, type Challenge } from "../lib/certificates";
-import { formatBytes, formatDuration, parseDate } from "../lib/format";
+import { formatBytes, formatDuration, formatNumber, parseDate } from "../lib/format";
 import { useLiveList, useLiveRecord } from "../lib/realtime";
 import { provisionApi, type DnsPreview, type PreviewRecord, type SiteSource } from "../lib/sites";
 import type { Command, Host } from "../lib/types";
@@ -116,6 +116,7 @@ function SiteForm({
   const preview = useDnsPreview(name_, server, withWww);
   const primary = accounts.find((account) => account.role === "primary");
 
+  const builds = values.source !== "empty" && values.generator !== "none";
   const start = async () => {
     setBusy(true);
     setErrors({});
@@ -126,11 +127,12 @@ function SiteForm({
         source: values.source,
         repo_url: values.source === "git" ? values.repo_url.trim() : "",
         branch: values.source === "git" ? values.branch.trim() : "",
-        generator: values.generator,
-        // "as it is" builds nothing, whatever the hidden fields still hold
-        build_image: values.generator === "none" ? "" : values.build_image.trim(),
-        build_cmd: values.generator === "none" ? "" : values.build_cmd.trim(),
-        output_dir: values.output_dir.trim(),
+        // a placeholder is built by nobody: the hidden fields go back to their
+        // defaults, as does what "as it is" does not build
+        generator: values.source === "empty" ? "auto" : values.generator,
+        build_image: builds ? values.build_image.trim() : "",
+        build_cmd: builds ? values.build_cmd.trim() : "",
+        output_dir: values.source === "empty" ? "" : values.output_dir.trim(),
         https_redirect: true,
         compress: true,
         ...(values.source === "git" && values.token.trim()
@@ -150,6 +152,22 @@ function SiteForm({
     }
   };
 
+  // errors of fields the form does not show now still say why
+  const shown = new Set(["hostname", "host", "name", "file"]);
+  if (values.source !== "empty") {
+    for (const field of ["generator", "build_image", "build_cmd", "output_dir"]) {
+      shown.add(field);
+    }
+  }
+  if (values.source === "git") {
+    for (const field of ["repo_url", "branch", "git_token"]) {
+      shown.add(field);
+    }
+  }
+  const unshown = Object.entries(errors)
+    .filter(([field]) => !shown.has(field))
+    .map(([, message]) => message);
+
   const ready =
     canAct &&
     !busy &&
@@ -162,35 +180,34 @@ function SiteForm({
   return (
     <>
       <Card title={t("siteNew.typeTitle")}>
-        <div className="choice-grid" role="radiogroup" aria-label={t("siteNew.typeTitle")}>
-          <button type="button" className="choice active" role="radio" aria-checked="true">
-            <span className="choice-title">{t("siteNew.static")}</span>
-            <span className="choice-note">{t("siteNew.staticNote")}</span>
-          </button>
-          <button type="button" className="choice" role="radio" aria-checked="false" disabled>
-            <span className="choice-title">{t("siteNew.php")}</span>
-            <span className="choice-note">{t("siteNew.phpLater")}</span>
-          </button>
-        </div>
+        <ChoiceGroup
+          label={t("siteNew.typeTitle")}
+          value="static"
+          onChange={() => {}}
+          options={[
+            { value: "static", title: t("siteNew.static"), note: t("siteNew.staticNote") },
+            {
+              value: "php",
+              title: t("siteNew.php"),
+              note: t("siteNew.phpLater"),
+              disabled: true,
+            },
+          ]}
+        />
       </Card>
 
       <Card title={t("siteNew.sourceTitle")}>
         <div className="dialog-form">
-          <div className="choice-grid three" role="radiogroup" aria-label={t("site.source")}>
-            {(["git", "upload", "empty"] as SiteSource[]).map((source) => (
-              <button
-                key={source}
-                type="button"
-                role="radio"
-                aria-checked={values.source === source}
-                className={`choice${values.source === source ? " active" : ""}`}
-                onClick={() => set({ source })}
-              >
-                <span className="choice-title">{t(`site.sourceKind.${source}`)}</span>
-                <span className="choice-note">{t(`siteNew.sourceNote.${source}`)}</span>
-              </button>
-            ))}
-          </div>
+          <ChoiceGroup
+            label={t("site.source")}
+            value={values.source}
+            onChange={(source) => set({ source: source as SiteSource })}
+            options={(["git", "upload", "empty"] as SiteSource[]).map((source) => ({
+              value: source,
+              title: t(`site.sourceKind.${source}`),
+              note: t(`siteNew.sourceNote.${source}`),
+            }))}
+          />
           {values.source === "upload" && (
             <Field label={t("siteNew.zip")} htmlFor="new-site-zip" error={errors.file}>
               <input
@@ -256,17 +273,18 @@ function SiteForm({
           {preview.data && preview.data.records.length > 0 && !preview.data.problem && (
             <RecordsTable records={preview.data.records} label={t("siteNew.records")} />
           )}
-          <label className="check-line">
-            <input
-              type="checkbox"
-              checked={www}
-              disabled={name_.startsWith("www.")}
-              onChange={(event) => setWww(event.target.checked)}
-            />
-            <span>
-              {t("siteNew.www", { hostname: name_ ? `www.${name_}` : "www.docs.example.com" })}
-            </span>
-          </label>
+          {!name_.startsWith("www.") && (
+            <label className="check-line">
+              <input
+                type="checkbox"
+                checked={www}
+                onChange={(event) => setWww(event.target.checked)}
+              />
+              <span>
+                {t("siteNew.www", { hostname: name_ ? `www.${name_}` : "www.docs.example.com" })}
+              </span>
+            </label>
+          )}
         </div>
       </Card>
 
@@ -311,7 +329,7 @@ function SiteForm({
         </div>
       </Card>
 
-      {(errors.form || errors.site) && <Banner tone="err">{errors.form || errors.site}</Banner>}
+      {unshown.length > 0 && <Banner tone="err">{unshown.join(" ")}</Banner>}
       <div className="button-row">
         <Button variant="primary" disabled={!ready} onClick={() => void start()}>
           {busy ? t("siteNew.starting") : t("siteNew.start")}
@@ -321,6 +339,69 @@ function SiteForm({
         </Link>
       </div>
     </>
+  );
+}
+
+type Choice = { value: string; title: string; note: string; disabled?: boolean };
+
+/** A row of cards to pick one from, as radio buttons: the chosen one takes
+ * the focus, and the arrow keys move the choice. */
+function ChoiceGroup({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Choice[];
+  onChange: (value: string) => void;
+}) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const enabled = options.flatMap((option, index) => (option.disabled ? [] : [index]));
+  const move = (from: number, step: number) => {
+    const position = enabled.indexOf(from);
+    const next = enabled[(position + step + enabled.length) % enabled.length];
+    onChange(options[next].value);
+    refs.current[next]?.focus();
+  };
+  return (
+    <div
+      className={`choice-grid${options.length > 2 ? " three" : ""}`}
+      role="radiogroup"
+      aria-label={label}
+    >
+      {options.map((option, index) => {
+        const checked = option.value === value;
+        return (
+          <button
+            key={option.value}
+            ref={(element) => {
+              refs.current[index] = element;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            tabIndex={checked ? 0 : -1}
+            disabled={option.disabled}
+            className={`choice${checked ? " active" : ""}`}
+            onClick={() => onChange(option.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                event.preventDefault();
+                move(index, 1);
+              } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                event.preventDefault();
+                move(index, -1);
+              }
+            }}
+          >
+            <span className="choice-title">{option.title}</span>
+            <span className="choice-note">{option.note}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -371,7 +452,11 @@ function ZoneBanner({ preview, error }: { preview: DnsPreview | null; error: str
     return <Banner tone="err">{preview.problem}</Banner>;
   }
   if (preview.taken.length > 0) {
-    return <Banner tone="err">{t("siteNew.taken", { names: preview.taken.join(", ") })}</Banner>;
+    return (
+      <Banner tone="err">
+        {t("siteNew.taken", { count: preview.taken.length, names: preview.taken.join(", ") })}
+      </Banner>
+    );
   }
   if (preview.mode === "automatic") {
     return (
@@ -515,6 +600,10 @@ function Timeline({
   const ended =
     parent &&
     (parent.status === "failed" || parent.status === "cancelled" || parent.status === "timed_out");
+  const startFailed = Boolean(
+    parent?.status === "running" &&
+    (parent.progress as { paused?: string } | null)?.paused?.startsWith("start:"),
+  );
   const paused = Boolean(
     parent?.status === "running" && (parent.progress as { paused?: string } | null)?.paused,
   );
@@ -572,7 +661,7 @@ function Timeline({
                   <div className="timeline-title">
                     <span>{t(`siteNew.step.${row}`)}</span>
                     <span className="visually-hidden">{t(`siteNew.state.${state}`)}</span>
-                    {step && <StepTime step={step} state={state} />}
+                    {step && state !== "waiting" && <StepTime step={step} state={state} />}
                   </div>
                   <div className="timeline-detail mono">
                     {step ? stepDetail(row, step, t) : t(`siteNew.plan.${row}`)}
@@ -605,7 +694,30 @@ function Timeline({
             </span>
           </Banner>
         )}
-        {ended && <Banner tone="err">{t("siteNew.ended", { error: parent?.error ?? "" })}</Banner>}
+        {ended && (
+          <Banner tone="err">
+            <span>
+              {t("siteNew.ended", { error: (parent?.error ?? "").replace(/\.$/, "") })}{" "}
+              {t("siteNew.endedCleanup")}
+            </span>
+          </Banner>
+        )}
+        {startFailed && (
+          <Banner tone="err">
+            <span>
+              {(parent?.progress as { message?: string } | null)?.message}{" "}
+              {canAct && (
+                <Button
+                  size="small"
+                  disabled={busy}
+                  onClick={() => void act(() => provisionApi.retry(setup), t("siteNew.retrying"))}
+                >
+                  {t("siteNew.retry")}
+                </Button>
+              )}
+            </span>
+          </Banner>
+        )}
         <div className="button-row">
           {payload.site && (finished || ended) && (
             <Button onClick={() => navigate(`/sites/${payload.site}`)}>
@@ -701,20 +813,27 @@ function stepDetail(row: Row, step: Command, t: Translate): string {
         ...((result.resolvers as string[]) ?? []).map((r) => r.replace(/:53$/, "")),
         t("siteNew.authoritative"),
       ].join(" · ");
-    case "build":
+    case "build": {
+      // the agent's own words while it fetches and builds; the release is
+      // the next row's
+      const stage = step.progress?.step ?? "";
       if (step.status !== "succeeded") {
-        return progress || t("siteNew.plan.build");
+        return stage === "source" || stage === "build" ? progress : t("siteNew.plan.build");
       }
       return [String(result.generator ?? ""), formatDuration(Number(result.build_ms ?? 0) / 1000)]
         .filter(Boolean)
         .join(" · ");
+    }
     case "release":
       if (step.status !== "succeeded") {
         return progress && step.progress?.step === "release" ? progress : t("siteNew.plan.release");
       }
       return [
         "site.deploy",
-        t("site.files", { count: Number(result.files ?? 0) }),
+        t("siteNew.files", {
+          count: Number(result.files ?? 0),
+          formatted: formatNumber(Number(result.files ?? 0)),
+        }),
         formatBytes(Number(result.size_bytes ?? 0)),
       ].join(" · ");
     case "site.certificate":

@@ -1470,7 +1470,6 @@
     "automatic": "Zóna {{zone}} je u poskytovatele {{provider}}: DNS záznamy nastavíme automaticky.",
     "manualZone": "Zónu {{zone}} nespravuje žádný připojený poskytovatel: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
     "manual": "Tento název nepatří do žádné připojené zóny: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
-    "taken": "{{names}} už je doménou.",
     "certificateTitle": "4 · Certifikát",
     "challenge": "Ověření (ACME challenge)",
     "noAccount": "Zatím žádný účet ACME",
@@ -1482,7 +1481,7 @@
     "summaryTitle": "Nový web",
     "requestedBy": "Zadal",
     "progress": "Průběh",
-    "stepOf": "Krok {{step}} z {{total}}",
+    "stepOf": "Krok {{step}} ze {{total}}",
     "done": "Hotovo",
     "step": {
       "site": {
@@ -1521,8 +1520,17 @@
     "cancel": "Zrušit nastavení",
     "cancelled": "Nastavení bylo zrušeno",
     "live": "Web je dostupný:",
-    "ended": "Nastavení skončilo: {{error}} Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává.",
+    "ended": "Nastavení skončilo: {{error}}.",
     "openSite": "Otevřít stránku webu",
-    "history": "Každý krok je záznam v historii příkazů, takže nastavení uvidíš i v Auditu a aktivitě."
+    "history": "Každý krok je záznam v historii příkazů, takže nastavení uvidíš i v Auditu a aktivitě.",
+    "taken_one": "{{names}} už je doménou.",
+    "taken_few": "{{names}} už jsou doménami.",
+    "taken_many": "{{names}} už jsou doménami.",
+    "taken_other": "{{names}} už jsou doménami.",
+    "files_one": "{{formatted}} soubor",
+    "files_few": "{{formatted}} soubory",
+    "files_many": "{{formatted}} souboru",
+    "files_other": "{{formatted}} souborů",
+    "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává."
   }
 }
