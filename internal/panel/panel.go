@@ -75,6 +75,8 @@ type Panel struct {
 	DNSChecker atomic.Pointer[dns.Checker]
 	// acme is the ACME work: certificates from a CA (#23).
 	acme acmeState
+	// provision runs the setups of new sites (#24)
+	provision provisionState
 	// ManualEdges stops the panel from sending edges their configs by itself,
 	// for tests that send edge.apply themselves.
 	ManualEdges atomic.Bool
@@ -157,6 +159,7 @@ func (p *Panel) Register() {
 	p.registerACME()
 	p.registerLabels()
 	p.registerSites()
+	p.registerProvision()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -197,6 +200,9 @@ func (p *Panel) Register() {
 		p.bindACMERoutes(group)
 		p.bindLabelRoutes(group)
 		p.bindSiteRoutes(group)
+		p.bindProvisionRoutes(group)
+		// setups of new sites that a restart interrupted go on
+		p.later.after(edgeSettle, p.resumeProvisions)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
