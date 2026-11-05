@@ -680,7 +680,12 @@ func (a *Agent) applyEdge(ctx context.Context, payload *agentv1.EdgeApply, repor
 		return nil, fmt.Errorf("refusing the edge image %q: it is not pinned by digest", image)
 	}
 
-	config, err := withAdmin(payload.GetCaddyJson())
+	// the password hashes come with the command, outside the config's JSON
+	caddyJSON, err := edge.ResolveSecrets(payload.GetCaddyJson(), payload.GetSecrets())
+	if err != nil {
+		return nil, err
+	}
+	config, err := withAdmin(caddyJSON)
 	if err != nil {
 		return nil, err
 	}

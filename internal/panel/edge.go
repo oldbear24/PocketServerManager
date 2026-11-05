@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -91,6 +92,7 @@ func (p *Panel) registerEdge() {
 	})
 
 	p.Commands.RegisterEnricher("cert.install", p.enrichCertInstall)
+	p.Commands.RegisterEnricher("edge.apply", p.enrichEdgeApply)
 	p.Commands.OnFinish("edge.apply", p.edgeApplyFinished)
 	p.Commands.OnFinish("cert.install", p.certInstallFinished)
 	p.Commands.OnFinish("cert.remove", p.certRemoveFinished)
@@ -151,6 +153,10 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		}
 		record.Set("container", "")
 		record.Set("port", 0)
+	}
+
+	if field, err := validateBasicAuth(record); err != nil {
+		errs[field] = validation.NewError("validation_invalid_basic_auth", capitalize(err.Error())+".")
 	}
 
 	if len(errs) > 0 {
@@ -283,6 +289,13 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			HSTS:     domain.GetBool("hsts"),
 			Compress: domain.GetBool("compress"),
 		}
+		users, err := p.domainBasicAuth(domain)
+		if err != nil {
+			// served without its password it would be open to everyone
+			p.Log.Error("a domain is left out of its edge's config", "domain", route.Hostname, "error", err)
+			continue
+		}
+		route.BasicAuth = users
 		switch domain.GetString("target_kind") {
 		case schema.TargetContainer:
 			route.Kind = edge.KindProxy
@@ -295,6 +308,12 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			route.RedirectTo = domain.GetString("redirect_to")
 			route.RedirectPermanent = domain.GetBool("redirect_permanent")
 		default:
+			continue
+		}
+		if len(users) > 0 && route.Kind != edge.KindProxy {
+			// the edge could not ask for the password, and one such domain
+			// must not stop the edge's other routes
+			p.Log.Error("a domain with a password is left out of its edge's config: it is not the domain of a container", "domain", route.Hostname)
 			continue
 		}
 
@@ -558,6 +577,38 @@ func (p *Panel) enrichCertInstall(_ *core.Record, command *agentv1.Command) erro
 	return nil
 }
 
+// enrichEdgeApply adds the password hashes the config refers to when the
+// command is delivered, so they are never stored with it: viewers read
+// commands.
+func (p *Panel) enrichEdgeApply(record *core.Record, command *agentv1.Command) error {
+	payload := command.GetEdgeApply()
+	names := edge.SecretNames(payload.GetCaddyJson())
+	if len(names) == 0 {
+		return nil
+	}
+	domains, err := p.App.FindRecordsByFilter(schema.Domains, "host={:h} && basic_auth!=''", "", 0, 0, dbx.Params{"h": record.GetString("host")})
+	if err != nil {
+		return err
+	}
+	available := map[string]string{}
+	for _, domain := range domains {
+		users, err := p.domainBasicAuth(domain)
+		if err != nil {
+			continue
+		}
+		maps.Copy(available, edge.Secrets(edge.Config{Routes: []edge.Route{{BasicAuth: users}}}))
+	}
+	payload.Secrets = map[string]string{}
+	for _, name := range names {
+		value, ok := available[name]
+		if !ok {
+			return errors.New("a password of this config was changed or removed since it was made; a newer config follows")
+		}
+		payload.Secrets[name] = value
+	}
+	return nil
+}
+
 func (p *Panel) edgeApplyFinished(command *core.Record) {
 	host, err := p.App.FindRecordById(schema.Hosts, command.GetString("host"))
 	if err != nil {
@@ -698,9 +749,15 @@ type edgeRoute struct {
 	HSTS          bool           `json:"hsts"`
 	Compress      bool           `json:"compress"`
 	// DNSStatus and DNSError are the state of the domain's DNS records (#22).
-	DNSStatus string          `json:"dns_status"`
-	DNSError  string          `json:"dns_error"`
-	Domain    json.RawMessage `json:"-"`
+	DNSStatus string `json:"dns_status"`
+	DNSError  string `json:"dns_error"`
+	// Origin is "label" for a domain a stack's label asks for (#25).
+	Origin       string          `json:"origin"`
+	Stack        string          `json:"stack"`
+	Service      string          `json:"service"`
+	LabelRemoved bool            `json:"label_removed"`
+	Password     bool            `json:"password"`
+	Domain       json.RawMessage `json:"-"`
 }
 
 type edgeCertBrief struct {
@@ -742,6 +799,11 @@ func (p *Panel) handleEdgeState(e *core.RequestEvent) error {
 			Compress:      domain.GetBool("compress"),
 			DNSStatus:     domain.GetString("dns_status"),
 			DNSError:      domain.GetString("dns_error"),
+			Origin:        domain.GetString("origin"),
+			Stack:         domain.GetString("stack"),
+			Service:       domain.GetString("service"),
+			LabelRemoved:  domain.GetBool("label_removed"),
+			Password:      domain.GetString("basic_auth") != "",
 		}
 		if route.TargetKind == schema.TargetContainer {
 			route.Target = domain.GetString("container") + ":" + strconv.Itoa(domain.GetInt("port"))

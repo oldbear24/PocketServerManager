@@ -87,13 +87,6 @@ func Environment(plainEnv string, secrets map[string]string) (map[string]string,
 // variable turns on. extends within the file is followed; what lies outside the
 // file is not.
 func LoadResolved(ctx context.Context, name, compose, override string, environment map[string]string) (*types.Project, error) {
-	profiles := []string{}
-	for _, profile := range strings.Split(environment["COMPOSE_PROFILES"], ",") {
-		if profile = strings.TrimSpace(profile); profile != "" {
-			profiles = append(profiles, profile)
-		}
-	}
-
 	files := []types.ConfigFile{{Filename: FileCompose, Content: []byte(compose)}}
 	if override != "" {
 		files = append(files, types.ConfigFile{Filename: "compose.pocketcloud.yaml", Content: []byte(override)})
@@ -106,8 +99,31 @@ func LoadResolved(ctx context.Context, name, compose, override string, environme
 		options.SetProjectName(name, true)
 		options.ResolvePaths = false
 		options.SkipInclude = true
-		options.Profiles = profiles
+		options.Profiles = profilesOf(environment)
 	})
+}
+
+// profilesOf are the profiles that COMPOSE_PROFILES turns on.
+func profilesOf(environment map[string]string) []string {
+	profiles := []string{}
+	for _, profile := range strings.Split(environment["COMPOSE_PROFILES"], ",") {
+		if profile = strings.TrimSpace(profile); profile != "" {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles
+}
+
+// referencingSecrets are the variables of an env file whose values take a
+// panel secret.
+func referencingSecrets(env string) []string {
+	keys := []string{}
+	for _, line := range strings.Split(env, "\n") {
+		if key, value, found := strings.Cut(line, "="); found && SecretReference.MatchString(value) {
+			keys = append(keys, strings.TrimPrefix(strings.TrimSpace(key), "export "))
+		}
+	}
+	return keys
 }
 
 func Validate(ctx context.Context, name, compose, env string, secretKeys []string) Result {
@@ -125,8 +141,14 @@ func Validate(ctx context.Context, name, compose, env string, secretKeys []strin
 		return result
 	}
 
+	// the values of secrets are stand-ins here
+	unknown := map[string]bool{}
 	for _, key := range secretKeys {
 		environment[key] = "secret"
+		unknown[key] = true
+	}
+	for _, key := range referencingSecrets(env) {
+		unknown[key] = true
 	}
 
 	if strings.TrimSpace(compose) == "" {
@@ -144,6 +166,7 @@ func Validate(ctx context.Context, name, compose, env string, secretKeys []strin
 		// what is outside of the file cannot be checked from here; the agent does that
 		options.SkipInclude = true
 		options.SkipExtends = true
+		options.Profiles = profilesOf(environment)
 	})
 	if err != nil {
 		result.Errors = append(result.Errors, loaderProblem(err, &tree))
@@ -153,6 +176,9 @@ func Validate(ctx context.Context, name, compose, env string, secretKeys []strin
 	result.Valid = true
 	result.Services = slices.Sorted(maps.Keys(project.Services))
 	result.Warnings = warningsOf(project, &tree)
+	// a label that takes a secret is checked at the deploy
+	_, labelProblems := Exposures(project, &tree, placeholdersIn(&tree, unknown))
+	result.Warnings = append(result.Warnings, labelProblems...)
 
 	return result
 }

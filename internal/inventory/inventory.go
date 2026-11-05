@@ -5,6 +5,7 @@ package inventory
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"reflect"
 	"sync"
 	"time"
@@ -21,6 +22,9 @@ const (
 	labelProject = "com.docker.compose.project"
 	labelService = "com.docker.compose.service"
 	labelRole    = "pocketcloud.role"
+	// labelAuth holds the password hashes of a service's domains (see
+	// stacks.LabelAuth), which are not for everyone who may see containers
+	labelAuth = "pocketcloud.auth"
 )
 
 // Store writes inventory reports to the collections.
@@ -46,6 +50,14 @@ func (s *Store) lock(hostID string) func() {
 func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) error {
 	defer s.lock(hostID)()
 
+	// the snapshot and the events come on separate streams, so an event
+	// about a container that appeared after the snapshot was collected can
+	// arrive first; what it stored is newer than the snapshot, and stays
+	var collected time.Time
+	if at := report.GetCollectedAt(); at.IsValid() {
+		collected = at.AsTime()
+	}
+
 	return s.App.RunInTransaction(func(tx core.App) error {
 		stacks, err := stacksByName(tx, hostID)
 		if err != nil {
@@ -59,7 +71,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		if err := removeMissing(tx, schema.Containers, hostID, "docker_id", seen); err != nil {
+		if err := removeMissing(tx, schema.Containers, hostID, "docker_id", seen, collected); err != nil {
 			return err
 		}
 
@@ -70,7 +82,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		if err := removeMissing(tx, schema.Volumes, hostID, "name", seen); err != nil {
+		if err := removeMissing(tx, schema.Volumes, hostID, "name", seen, collected); err != nil {
 			return err
 		}
 
@@ -81,7 +93,7 @@ func (s *Store) Sync(hostID string, report *agentv1.ReportInventoryRequest) erro
 				return err
 			}
 		}
-		return removeMissing(tx, schema.Networks, hostID, "name", seen)
+		return removeMissing(tx, schema.Networks, hostID, "name", seen, collected)
 	})
 }
 
@@ -125,7 +137,7 @@ func stacksByName(app core.App, hostID string) (map[string]string, error) {
 }
 
 func upsertContainer(app core.App, hostID string, info *agentv1.ContainerInfo, stacks map[string]string) error {
-	labels := info.GetLabels()
+	labels := redactLabels(info.GetLabels())
 	project := labels[labelProject]
 
 	ports := make([]map[string]any, 0, len(info.GetPorts()))
@@ -163,6 +175,20 @@ func upsertContainer(app core.App, hostID string, info *agentv1.ContainerInfo, s
 
 	return upsert(app, schema.Containers, hostID, "docker_id", info.GetDockerId(), fields)
 }
+
+// redactLabels hides the values of labels that hold secrets, keeping that they
+// are there.
+func redactLabels(labels map[string]string) map[string]string {
+	if _, ok := labels[labelAuth]; !ok {
+		return labels
+	}
+	redacted := maps.Clone(labels)
+	redacted[labelAuth] = Redacted
+	return redacted
+}
+
+// Redacted stands in for the value of a label that holds secrets.
+const Redacted = "(hidden)"
 
 func upsertVolume(app core.App, hostID string, info *agentv1.VolumeInfo) error {
 	return upsert(app, schema.Volumes, hostID, "name", info.GetName(), map[string]any{
@@ -259,7 +285,10 @@ func isBlank(value any) bool {
 	return false
 }
 
-func removeMissing(app core.App, collectionName, hostID, keyField string, seen map[string]bool) error {
+// removeMissing removes what a snapshot collected at collected no longer has,
+// but not a record stored since then: an event saw it after the snapshot was
+// taken. A zero time removes everything that is missing.
+func removeMissing(app core.App, collectionName, hostID, keyField string, seen map[string]bool, collected time.Time) error {
 	records, err := app.FindRecordsByFilter(collectionName, "host={:host}", "", 0, 0, dbx.Params{"host": hostID})
 	if err != nil {
 		return err
@@ -267,6 +296,9 @@ func removeMissing(app core.App, collectionName, hostID, keyField string, seen m
 
 	for _, record := range records {
 		if seen[record.GetString(keyField)] {
+			continue
+		}
+		if !collected.IsZero() && !record.GetDateTime("updated").Time().Before(collected) {
 			continue
 		}
 		if err := app.Delete(record); err != nil {

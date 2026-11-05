@@ -731,7 +731,24 @@
     "removeNote": "This removes the stack and its history from the panel. Its containers must be gone first.",
     "remove": "Remove stack",
     "removeConfirm": "Remove the stack {{name}}?",
-    "hostOffline": "The server is offline: what you start now waits until it is back, for up to an hour."
+    "hostOffline": "The server is offline: what you start now waits until it is back, for up to an hour.",
+    "domains": "Domains",
+    "gettingCertificate": "Getting a certificate",
+    "certificateFailed": "No certificate yet: see Domains",
+    "fromLabel": "from the pocketcloud.domain label",
+    "labels": "Domains from labels",
+    "labelsNote": "pocketcloud.domain labels at the last deploy",
+    "labelProblems_one": "{{count}} problem with the labels:",
+    "labelProblems_other": "{{count}} problems with the labels:",
+    "removedLabelsText": "The labels of these domains are gone. The edge serves them until you remove them, or keep them as domains of their own.",
+    "removedLabel": "the label of {{service}} is gone",
+    "keep": "Keep as a domain",
+    "keepName": "Keep as a domain: {{hostname}}",
+    "removeDomainName": "Remove {{hostname}}",
+    "kept": "{{hostname}} is a domain of its own now.",
+    "domainRemoved": "{{hostname}} is removed.",
+    "removeDomainTitle": "Remove {{hostname}}?",
+    "removeDomainText": "The edge stops serving it, and its DNS records go."
   },
   "db": {
     "title": "Databases",
@@ -952,7 +969,7 @@
     "hsts": "Send HSTS: browsers then use only HTTPS for a year",
     "compress": "Compress responses (zstd, gzip)",
     "certificates": "Certificates",
-    "certificatesNote": "Uploaded by hand until certificates are issued automatically",
+    "certificatesNote": "From ACME, or uploaded by hand",
     "noCertificates": "No certificate covers the domains of this server.",
     "upload": "Upload certificate",
     "uploadTitle": "Upload a certificate",
@@ -973,7 +990,10 @@
     "removeCertificateConfirm": "Remove the certificate for {{names}}?",
     "removeCertificateNote": "Edges serve its domains over plain HTTP until another certificate covers them.",
     "certificateRemoved": "The certificate was removed.",
-    "loading": "Loading the routes…"
+    "loading": "Loading the routes…",
+    "password": "password",
+    "fromLabel": "label of {{service}}",
+    "labelRemoved": "label of {{service}} removed"
   },
   "php": {
     "title": "PHP runtimes",

@@ -298,6 +298,15 @@ func TestUnauditedCollectionsAreSkipped(t *testing.T) {
 	}
 }
 
+// secretValue is a secret in the form its field takes.
+func secretValue(collection, field, secret string) string {
+	if collection == schema.Domains && field == "basic_auth" {
+		// the user name, as the hash's characters are bcrypt's own
+		return secret + ":$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
+	}
+	return secret
+}
+
 // TestNoSecretInAuditLog goes over every existing collection with encrypted
 // fields: creating, updating and deleting a record must not leak its secrets.
 func TestNoSecretInAuditLog(t *testing.T) {
@@ -321,8 +330,19 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// a domain is served by an edge
+	edgeHost := testutil.NewHost(t, env.app, "secret-edge")
+	edgeHost.Set("roles", []string{schema.HostRoleDocker, schema.HostRoleEdge})
+	if err := env.app.Save(edgeHost); err != nil {
+		t.Fatal(err)
+	}
+
 	// what a collection needs besides a host and a name
 	required := map[string]map[string]any{
+		schema.Domains: {
+			"host": edgeHost.Id, "hostname": "secret.example.com", "target_kind": schema.TargetContainer,
+			"container": "web", "port": 80, "tls": schema.TLSAuto,
+		},
 		schema.DBServers:    {"engine": schema.EngineMariaDB, "kind": schema.DBServerShared},
 		schema.DBUsers:      {"server": dbServer.Id, "name": "with_secrets"},
 		schema.Certificates: {"names": []string{"secret.example.com"}},
@@ -349,14 +369,14 @@ func TestNoSecretInAuditLog(t *testing.T) {
 			record.Set(field, value)
 		}
 		for _, field := range fields {
-			record.Set(field, secret+"-create")
+			record.Set(field, secretValue(name, field, secret+"-create"))
 		}
 		if err := env.app.Save(record); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 
 		for _, field := range fields {
-			record.Set(field, secret+"-update")
+			record.Set(field, secretValue(name, field, secret+"-update"))
 		}
 		if err := env.app.Save(record); err != nil {
 			t.Fatalf("%s: %v", name, err)

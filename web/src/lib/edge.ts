@@ -18,6 +18,14 @@ export type EdgeRoute = {
   compress: boolean;
   dns_status: DnsStatus;
   dns_error: string;
+  /** label: the pocketcloud.domain label of a stack's service asks for it (#25) */
+  origin: "" | "label";
+  stack: string;
+  service: string;
+  /** the label is gone: the domain waits for someone to remove or keep it */
+  label_removed: boolean;
+  /** the route asks for a password */
+  password: boolean;
 };
 
 export type EdgeState = {
@@ -52,6 +60,10 @@ export type Domain = RecordModel & {
   zone: string;
   dns_status: DnsStatus;
   dns_error: string;
+  origin: "" | "label";
+  stack: string;
+  service: string;
+  label_removed: boolean;
 };
 
 /** One attempt to get a certificate from ACME. */
@@ -97,6 +109,10 @@ export const edgeApi = {
   upload: (body: { chain_pem: string; key_pem: string; note: string }) =>
     pb.send<{ id: string }>("/api/pc/certificates", { method: "POST", body }),
   removeCertificate: (id: string) => pb.send(`/api/pc/certificates/${id}`, { method: "DELETE" }),
+  /** keeps the domain of a label that is gone as a domain of its own */
+  keepDomain: (id: string) =>
+    pb.send<{ id: string }>(`/api/pc/domains/${id}/keep`, { method: "POST" }),
+  removeDomain: (id: string) => pb.collection("domains").delete(id),
 };
 
 /** The tone of a route's lock in the design: green when valid, blue while it is put in place. */

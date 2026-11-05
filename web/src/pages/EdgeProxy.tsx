@@ -39,7 +39,7 @@ const systemRoles = ["agent", "updater", "edge", "job"];
  * the TLS of every route the way the edge's config does. It is read again
  * whenever a domain, a certificate or the edge's state changes.
  */
-function useEdgeState(host: Host) {
+export function useEdgeState(host: Host) {
   const domains = useLiveList<Domain>("domains", {
     filter: `host = "${host.id}"`,
     sort: "hostname",
@@ -82,7 +82,7 @@ function useEdgeState(host: Host) {
   return { state, error, certificates: certificates.items };
 }
 
-function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
+export function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
   const { t } = useTranslation();
   const tone = tlsTone(tls);
   const Icon = tls === "none" || tls === "off" ? LockOpen : Lock;
@@ -96,7 +96,7 @@ function RouteLock({ tls }: { tls: EdgeRoute["tls"] }) {
   );
 }
 
-function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
+export function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
   const date = formatDate(route.certificate?.not_after);
   return t(`edge.tls.${route.tls}`, { date });
 }
@@ -104,10 +104,15 @@ function tlsText(t: ReturnType<typeof useTranslation>["t"], route: EdgeRoute) {
 function RouteRow({
   route,
   onRemove,
+  onKeep,
+  keeping = false,
   onDns,
 }: {
   route: EdgeRoute;
   onRemove?: (route: EdgeRoute) => void;
+  /** keeps the domain of a label that is gone as a domain of its own */
+  onKeep?: (route: EdgeRoute) => void;
+  keeping?: boolean;
   onDns?: (route: EdgeRoute) => void;
 }) {
   const { t } = useTranslation();
@@ -123,10 +128,38 @@ function RouteRow({
         {t(`edge.kind.${route.target_kind}`)}
       </StatusPill>
       <span className={`route-tls ${tlsTone(route.tls)}`}>{tlsText(t, route)}</span>
+      {route.password && (
+        <StatusPill tone="off" dot={false}>
+          {t("edge.password")}
+        </StatusPill>
+      )}
+      {route.origin === "label" &&
+        (route.stack ? (
+          <Link
+            className={`pill ${route.label_removed ? "warn" : "off"}`}
+            to={`/stacks/${route.stack}`}
+          >
+            {t(route.label_removed ? "edge.labelRemoved" : "edge.fromLabel", {
+              service: route.service,
+            })}
+          </Link>
+        ) : route.label_removed ? (
+          <StatusPill tone="warn">{t("edge.labelRemoved", { service: route.service })}</StatusPill>
+        ) : null)}
       {route.dns_status && (
         <DnsPill status={route.dns_status} onClick={onDns ? () => onDns(route) : undefined} />
       )}
-      {onRemove && (
+      {onKeep && route.origin === "label" && route.label_removed && (
+        <Button
+          size="small"
+          disabled={keeping}
+          onClick={() => onKeep(route)}
+          aria-label={t("stack.keepName", { hostname: route.hostname })}
+        >
+          {t("stack.keep")}
+        </Button>
+      )}
+      {onRemove && (route.origin !== "label" || route.label_removed) && (
         <IconButton
           bare
           aria-label={t("edge.removeDomain", { hostname: route.hostname })}
@@ -185,6 +218,8 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
   const { state, error, certificates } = useEdgeState(host);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<EdgeRoute | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [keeping, setKeeping] = useState("");
   const [dnsOf, setDnsOf] = useState<EdgeRoute | null>(null);
   const [uploading, setUploading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -204,13 +239,28 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
     if (!removing) {
       return;
     }
+    setRemoveBusy(true);
     try {
       await pb.collection("domains").delete(removing.id);
       toast.success(t("edge.domainRemoved", { hostname: removing.hostname }));
     } catch (reason) {
       toast.error(reason);
+    } finally {
+      setRemoveBusy(false);
     }
     setRemoving(null);
+  };
+
+  const keepDomain = async (route: EdgeRoute) => {
+    setKeeping(route.id);
+    try {
+      await edgeApi.keepDomain(route.id);
+      toast.success(t("stack.kept", { hostname: route.hostname }));
+    } catch (reason) {
+      toast.error(reason);
+    } finally {
+      setKeeping("");
+    }
   };
 
   const applyAgain = async () => {
@@ -257,6 +307,8 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
                 key={route.id}
                 route={route}
                 onRemove={canOperate ? setRemoving : undefined}
+                onKeep={canOperate ? (route) => void keepDomain(route) : undefined}
+                keeping={keeping === route.id}
                 onDns={setDnsOf}
               />
             ))}
@@ -293,6 +345,7 @@ export function ProxyTab({ host, containers }: { host: Host; containers: Contain
         open={removing !== null}
         title={t("edge.removeConfirm", { hostname: removing?.hostname ?? "" })}
         confirmLabel={t("edge.remove")}
+        confirmDisabled={removeBusy}
         danger
         onCancel={() => setRemoving(null)}
         onConfirm={() => void removeDomain()}

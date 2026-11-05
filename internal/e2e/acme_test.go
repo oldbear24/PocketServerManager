@@ -19,6 +19,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/oldbear24/PocketServerManager/internal/acme/acmetest"
+	"github.com/oldbear24/PocketServerManager/internal/agent"
 	pcdns "github.com/oldbear24/PocketServerManager/internal/dns"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -36,13 +37,24 @@ type acmeHarness struct {
 }
 
 type acmeOptions struct {
+	// compose gives the edge agent the stand-in for docker compose
+	compose  bool
 	validity time.Duration
 	// unreachable: nothing answers where the CA fetches HTTP-01 answers
 	unreachable bool
 }
 
 func newACMEHarness(t *testing.T, opts acmeOptions, zones ...string) *acmeHarness {
-	d := newDNSHarness(t, zones...)
+	var configure func(*agent.Config)
+	if opts.compose {
+		t.Setenv("FAKE_COMPOSE_LOG", filepath.Join(t.TempDir(), "compose.log"))
+		cli, root := fakeCLI(t), fakeHostRoot(t)
+		configure = func(config *agent.Config) {
+			config.DockerCLI = cli
+			config.HostRoot = root
+		}
+	}
+	d := newDNSHarnessWith(t, configure, zones...)
 	ca := startCA(t, d, opts)
 
 	d.panel.SetACMEHTTPClient(ca.Client)

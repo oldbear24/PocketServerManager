@@ -48,6 +48,27 @@
               "match": [
                 {
                   "host": [
+                    "admin.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
                     "app.example.com"
                   ]
                 }
@@ -131,6 +152,31 @@
             {
               "handle": [
                 {
+                  "body": "This site asks for a password, so it is served over HTTPS only, once it has its certificate.\n",
+                  "handler": "static_response",
+                  "headers": {
+                    "Content-Type": [
+                      "text/plain; charset=utf-8"
+                    ],
+                    "Retry-After": [
+                      "300"
+                    ]
+                  },
+                  "status_code": 503
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "private.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
                   "handler": "static_response",
                   "headers": {
                     "Location": [
@@ -178,6 +224,48 @@
             "h3"
           ],
           "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "authentication",
+                  "providers": {
+                    "http_basic": {
+                      "accounts": [
+                        {
+                          "password": "pocketcloud-secret:38f9840af9929a1f5ba18ce7d0ab505d",
+                          "username": "alice"
+                        },
+                        {
+                          "password": "pocketcloud-secret:1c5ab6931394836faf6fb4c32f8b994a",
+                          "username": "bob"
+                        }
+                      ],
+                      "hash": {
+                        "algorithm": "bcrypt"
+                      },
+                      "realm": "PocketCloud"
+                    }
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "stream_close_delay": "24h",
+                  "upstreams": [
+                    {
+                      "dial": "admin:9000"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.com"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
             {
               "handle": [
                 {
@@ -278,6 +366,27 @@
                 {
                   "host": [
                     "plain.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "http://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "private.example.org"
                   ]
                 }
               ],

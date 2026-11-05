@@ -2,6 +2,7 @@ package edge
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"os"
@@ -22,6 +23,13 @@ var golden = map[string]Config{
 			{Hostname: "app.example.com", Kind: KindProxy, Upstream: "web-app-1:8080", Certificate: "certapp", HTTPSRedirect: true, HSTS: true, Compress: true},
 			{Hostname: "*.example.com", Kind: KindProxy, Upstream: "catchall:80", Certificate: "certwild", HTTPSRedirect: true},
 			{Hostname: "plain.example.org", Kind: KindProxy, Upstream: "plain:3000", Compress: true},
+			{Hostname: "admin.example.com", Kind: KindProxy, Upstream: "admin:9000", Certificate: "certapp", BasicAuth: []BasicAuthUser{
+				{Username: "bob", Hash: "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"},
+				{Username: "alice", Hash: "$2a$05$NnlHVH0N.LRsqgwlooqk/uPIOW3vVv7Z2s9b5lkSo9KUdbOFJB.TS"},
+			}},
+			{Hostname: "private.example.org", Kind: KindProxy, Upstream: "private:80", BasicAuth: []BasicAuthUser{
+				{Username: "carol", Hash: "$2a$05$cdSx43KWUy4Imu5KZU9RrOmFF/YsG/lIIWlXA8QAYE1NcKuKSOyte"},
+			}},
 			{Hostname: "example.com", Kind: KindRedirect, RedirectTo: "https://www.example.com", RedirectPermanent: true, Certificate: "certapp"},
 			{Hostname: "old.example.org", Kind: KindRedirect, RedirectTo: "https://new.example.org/landing"},
 		},
@@ -300,5 +308,109 @@ func TestRedirectTargets(t *testing.T) {
 		if got := RedirectsToItself("loop.example.com", target); got != loops {
 			t.Errorf("RedirectsToItself(%q) = %v", target, got)
 		}
+	}
+}
+
+// TestAPasswordIsNeverAskedForOverPlainHTTP: a route with basic
+// authentication answers plain HTTP with a redirect once it has a
+// certificate, and refuses before; over HTTPS the password is checked before
+// the upstream sees the request.
+func TestAPasswordIsNeverAskedForOverPlainHTTP(t *testing.T) {
+	users := []BasicAuthUser{{Username: "bob", Hash: "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"}}
+	raw, err := Build(Config{
+		Certificates: []Certificate{{ID: "c1"}},
+		Routes: []Route{
+			{Hostname: "with.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", BasicAuth: users},
+			{Hostname: "without.example.com", Kind: KindProxy, Upstream: "b:80", BasicAuth: users},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		t.Fatal(err)
+	}
+	raw = compact.Bytes()
+	text := string(raw)
+	var config struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]json.RawMessage `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	var plainCompact bytes.Buffer
+	_ = json.Compact(&plainCompact, config.Apps.HTTP.Servers["http"])
+	plain := plainCompact.String()
+	if !strings.Contains(text, `"authentication"`) || !strings.Contains(text, `"realm":"PocketCloud"`) {
+		t.Errorf("no authentication handler: %s", text)
+	}
+	if !strings.Contains(plain, "This site asks for a password, so it is served over HTTPS only") || !strings.Contains(plain, "https://{http.request.host}") {
+		t.Error("a route without a certificate is not refused over plain HTTP")
+	}
+	if strings.Contains(plain, `"dial":"b:80"`) || strings.Contains(plain, `"dial":"a:80"`) {
+		t.Errorf("a route with a password is proxied over plain HTTP: %s", plain)
+	}
+}
+
+func TestBasicAuthIsChecked(t *testing.T) {
+	good := "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
+	for name, users := range map[string][]BasicAuthUser{
+		"not bcrypt":    {{Username: "bob", Hash: "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="}},
+		"a colon":       {{Username: "bo:b", Hash: good}},
+		"no name":       {{Username: "", Hash: good}},
+		"twice":         {{Username: "bob", Hash: good}, {Username: "bob", Hash: good}},
+		"a short hash":  {{Username: "bob", Hash: good[:59]}},
+		"a control":     {{Username: "bo\x01b", Hash: good}},
+		"a placeholder": {{Username: "{env.HOME}", Hash: good}},
+		"a slash":       {{Username: "a/b", Hash: good}},
+	} {
+		if err := ValidBasicAuth(users); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	redirect := Config{Routes: []Route{{Hostname: "r.example.com", Kind: KindRedirect, RedirectTo: "https://x.example.com", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: good}}}}}
+	if err := redirect.Validate(); err == nil {
+		t.Error("a redirect with a password was accepted")
+	}
+}
+
+// TestPasswordsAreReferencesInTheConfig: a config refers to the hashes of its
+// passwords, so the stored command holds none; the agent puts them in.
+func TestPasswordsAreReferencesInTheConfig(t *testing.T) {
+	hash := "$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
+	config := Config{
+		Certificates: []Certificate{{ID: "c1"}},
+		Routes:       []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: hash}}}},
+	}
+	raw, err := Build(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(hash))
+	if strings.Contains(string(raw), hash) || strings.Contains(string(raw), encoded) {
+		t.Fatal("the hash is in the config")
+	}
+	names := SecretNames(string(raw))
+	if len(names) != 1 {
+		t.Fatalf("references: %v", names)
+	}
+	resolved, err := ResolveSecrets(string(raw), Secrets(config))
+	if err != nil || !strings.Contains(resolved, `"password": "`+encoded+`"`) || len(SecretNames(resolved)) != 0 {
+		t.Errorf("resolved: %v\n%s", err, resolved)
+	}
+	if _, err := ResolveSecrets(string(raw), map[string]string{}); err == nil {
+		t.Error("a reference without its secret was left in place")
+	}
+
+	// a new hash is a new name, so a new config
+	other := config
+	other.Routes = []Route{{Hostname: "a.example.com", Kind: KindProxy, Upstream: "a:80", Certificate: "c1", BasicAuth: []BasicAuthUser{{Username: "bob", Hash: "$2a$05$NnlHVH0N.LRsqgwlooqk/uPIOW3vVv7Z2s9b5lkSo9KUdbOFJB.TS"}}}}
+	if changed, _ := Build(other); string(changed) == string(raw) {
+		t.Error("a new password made the same config")
 	}
 }

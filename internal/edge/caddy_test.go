@@ -33,9 +33,20 @@ func TestGoldenConfigsLoadInCaddy(t *testing.T) {
 		}
 	}
 
-	testdata, err := filepath.Abs("testdata")
-	if err != nil {
-		t.Fatal(err)
+	// the golden configs as the edge loads them: with the secrets they refer to
+	testdata := t.TempDir()
+	for name, config := range golden {
+		built, err := Build(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := ResolveSecrets(string(built), Secrets(config))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(testdata, name+".json"), []byte(resolved), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for name := range golden {

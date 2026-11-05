@@ -122,6 +122,10 @@ const (
 	TLSOff  = "off"
 )
 
+// OriginLabel marks a domain that the pocketcloud.domain label of a stack's
+// service asks for (#25); a domain without an origin was added by hand.
+const OriginLabel = "label"
+
 // DNS states. A provider and a zone are ok once their API answered; a
 // domain's records are pending until the provider took them, ok once every
 // resolver answers them, drift when someone changed them outside PocketCloud,
@@ -188,6 +192,7 @@ var Encrypted = map[string][]string{
 	"sites":                 {"webhook_secret", "basic_auth"},
 	"site_php":              {"secrets"},
 	DNSProviders:            {"credentials"},
+	Domains:                 {"basic_auth"},
 	ACMEAccounts:            {"key", "eab_hmac"},
 	Certificates:            {"key_pem"},
 	DBServers:               {"admin_password"},
@@ -227,7 +232,7 @@ var Audited = []AuditedCollection{
 		"edge_digest", "edge_revision", "edge_applied_digest", "edge_applied_revision",
 		"edge_running", "edge_error", "edge_requests_per_s", "edge_caddy_version",
 	}},
-	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at"}},
+	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at", "label_problems", "labels_at"}},
 	{Name: Settings, Label: "public_url"},
 	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
 	{Name: "alert_rules", Label: "kind"},
@@ -235,7 +240,7 @@ var Audited = []AuditedCollection{
 	{Name: "sites", Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
 	{Name: "site_php", Label: "site"},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
-	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error"}},
+	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error", "label_removed"}},
 	{Name: DNSProviders, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: DNSZones, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: Certificates, Label: "names", Ignore: []string{

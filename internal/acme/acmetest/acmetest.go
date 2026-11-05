@@ -130,20 +130,34 @@ type DNSServer struct {
 	lookup func(name string, qtype uint16) []string
 }
 
+// listenBoth listens on one port for UDP and TCP. A free UDP port may be taken
+// for TCP, by a listener or a connection, so it tries a few.
+func listenBoth() (net.PacketConn, net.Listener, error) {
+	var last error
+	for range 20 {
+		packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			return nil, nil, err
+		}
+		port := packet.LocalAddr().(*net.UDPAddr).Port
+		listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err == nil {
+			return packet, listener, nil
+		}
+		_ = packet.Close()
+		last = err
+	}
+	return nil, nil, last
+}
+
 // StartDNS runs a DNS server until the test ends. Every name answers A with
 // 127.0.0.1 unless the test gives it another address.
 func StartDNS(t testing.TB) *DNSServer {
 	t.Helper()
 	s := &DNSServer{a: map[string]string{}, txt: map[string][]string{}}
 
-	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	packet, listener, err := listenBoth()
 	if err != nil {
-		t.Fatal(err)
-	}
-	port := packet.LocalAddr().(*net.UDPAddr).Port
-	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	if err != nil {
-		_ = packet.Close()
 		t.Fatal(err)
 	}
 	s.Addr = listener.Addr().String()

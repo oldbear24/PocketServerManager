@@ -125,16 +125,19 @@ func (h *harness) edgeAgent(name string) (*runningAgent, *core.Record, *fakeEdge
 }
 
 // managedEdge starts an edge agent whose edge the panel manages.
-func (h *harness) managedEdge(name string) (*runningAgent, *core.Record, *fakeEdge) {
+func (h *harness) managedEdge(name string, configure ...func(*agent.Config)) (*runningAgent, *core.Record, *fakeEdge) {
 	h.t.Helper()
-	return h.startEdgeAgent(name)
+	return h.startEdgeAgent(name, configure...)
 }
 
-func (h *harness) startEdgeAgent(name string) (*runningAgent, *core.Record, *fakeEdge) {
+func (h *harness) startEdgeAgent(name string, configure ...func(*agent.Config)) (*runningAgent, *core.Record, *fakeEdge) {
 	h.t.Helper()
 
 	config := h.agentConfig(name, h.token(name, schema.HostRoleDocker, schema.HostRoleEdge))
 	config.StateDir = shortStateDir(h.t)
+	for _, change := range configure {
+		change(&config)
+	}
 
 	fake := h.fakeEdge(config.StateDir)
 

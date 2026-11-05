@@ -75,7 +75,7 @@ func (p *Panel) registerStacks() {
 // guardNewStack keeps what only the panel may set out of a new stack made through
 // the REST API. Secrets have their own way in.
 func (p *Panel) guardNewStack(e *core.RecordRequestEvent) error {
-	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source"} {
+	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source", "label_problems", "labels_at"} {
 		e.Record.Set(field, nil)
 	}
 	e.Record.Set("status", stackDraft)
@@ -102,7 +102,7 @@ func (p *Panel) guardStackUpdate(e *core.RecordRequestEvent) error {
 		return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: change the stack once that is done.", stored.GetString("name"), move.GetString("target_name")), nil)
 	}
 
-	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source", "status"} {
+	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source", "status", "label_problems", "labels_at"} {
 		e.Record.Set(field, stored.Get(field))
 	}
 
@@ -329,6 +329,15 @@ func (p *Panel) stackDeployFinished(record *core.Record) {
 	if err := p.App.Save(revision); err != nil {
 		p.Log.Error("failed to mark a revision as deployed", "revision", revision.Id, "error", err)
 	}
+
+	// the domains its labels ask for
+	p.later.after(0, func() {
+		fresh, err := p.App.FindRecordById(schema.Stacks, stack.Id)
+		if err != nil || fresh.GetInt("deployed_revision") != payload.Revision {
+			return
+		}
+		p.syncStackLabels(fresh, revision)
+	})
 }
 
 // stackStateAfter stores what a successful stop or down leaves behind.

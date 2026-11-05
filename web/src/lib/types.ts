@@ -136,6 +136,9 @@ export type Stack = RecordModel & {
   deployed_at: string;
   status: string;
   source: string;
+  /** what was wrong with the labels at the last deploy (#25) */
+  label_problems: { line?: number; message: string }[] | null;
+  labels_at: string;
 };
 
 export type StackRevision = RecordModel & {

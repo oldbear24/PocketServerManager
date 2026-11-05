@@ -769,7 +769,26 @@
     "removeNote": "Stack i jeho historie zmizí z panelu. Jeho kontejnery musí být nejdřív pryč.",
     "remove": "Odstranit stack",
     "removeConfirm": "Odstranit stack {{name}}?",
-    "hostOffline": "Server je offline: co teď spustíš, počká, až se vrátí, nejdéle hodinu."
+    "hostOffline": "Server je offline: co teď spustíš, počká, až se vrátí, nejdéle hodinu.",
+    "domains": "Domény",
+    "gettingCertificate": "Získávám certifikát",
+    "certificateFailed": "Certifikát zatím není: viz Domény",
+    "fromLabel": "z labelu pocketcloud.domain",
+    "labels": "Domény z labelů",
+    "labelsNote": "labely pocketcloud.domain při posledním nasazení",
+    "labelProblems_one": "{{count}} problém s labely:",
+    "labelProblems_few": "{{count}} problémy s labely:",
+    "labelProblems_many": "{{count}} problému s labely:",
+    "labelProblems_other": "{{count}} problémů s labely:",
+    "removedLabelsText": "Labely těchto domén zmizely. Edge je obsluhuje, dokud je neodebereš, nebo neponecháš jako samostatné domény.",
+    "removedLabel": "label služby {{service}} zmizel",
+    "keep": "Ponechat jako doménu",
+    "keepName": "Ponechat jako doménu: {{hostname}}",
+    "removeDomainName": "Odebrat {{hostname}}",
+    "kept": "{{hostname}} je teď samostatná doména.",
+    "domainRemoved": "{{hostname}} je odebraná.",
+    "removeDomainTitle": "Odebrat {{hostname}}?",
+    "removeDomainText": "Edge ji přestane obsluhovat a její DNS záznamy zmizí."
   },
   "db": {
     "title": "Databáze",
@@ -996,7 +1015,7 @@
     "hsts": "Posílat HSTS: prohlížeče pak rok používají jen HTTPS",
     "compress": "Komprimovat odpovědi (zstd, gzip)",
     "certificates": "Certifikáty",
-    "certificatesNote": "Nahrané ručně, dokud se certifikáty nebudou vydávat automaticky",
+    "certificatesNote": "Z ACME, nebo nahrané ručně",
     "noCertificates": "Domény tohoto serveru nepokrývá žádný certifikát.",
     "upload": "Nahrát certifikát",
     "uploadTitle": "Nahrát certifikát",
@@ -1017,7 +1036,10 @@
     "removeCertificateConfirm": "Odebrat certifikát pro {{names}}?",
     "removeCertificateNote": "Edge budou jeho domény obsluhovat jen přes HTTP, dokud je nepokryje jiný certifikát.",
     "certificateRemoved": "Certifikát byl odebrán.",
-    "loading": "Načítají se trasy…"
+    "loading": "Načítají se trasy…",
+    "password": "heslo",
+    "fromLabel": "label služby {{service}}",
+    "labelRemoved": "label služby {{service}} odebrán"
   },
   "php": {
     "title": "Běhová prostředí PHP",

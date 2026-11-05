@@ -154,6 +154,31 @@ Servers with the `edge` role run Caddy in its own container (`pocketcloud-edge`)
 - **Certificates** – besides those from ACME (see *Certificates* below), admins upload a chain and its key (`POST /api/pc/certificates`): they must belong together, name hostnames and not have expired. The key is sealed and hidden from the API, and reaches an agent only inside the `cert.install` it needs, filled in at delivery. The files on an edge are named after the record and the leaf's fingerprint, so a renewal is a new config; `cert.remove` refuses files a config still uses, as Caddy would not start again without them.
 - **Server page** – every route with the TLS state it is served with (valid until a date, expiring within 14 days, expired, being installed, or HTTP only), the edge's state and its requests per second.
 
+### Domains from Compose labels
+
+A service is published with a label in its `compose.yaml`, not with a separate reverse-proxy setup (#25):
+
+```yaml
+services:
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-v2
+    labels:
+      pocketcloud.domain: umami.example.com, www.umami.example.com
+      pocketcloud.port: "3000"          # needed unless the service names one port in expose or ports
+      pocketcloud.tls: acme             # the default; off keeps it on plain HTTP
+      pocketcloud.auth: "bob:$$2y$$05$$…" # optional: user:bcrypt-hash, separated by commas
+```
+
+- **Deploy** – after every deploy that succeeds, the panel reads the labels of the deployed revision, with its variables and secrets, and makes the stack's *label domains* what they say: a domain of the stack's server for each hostname, to the service's first container (`<stack>-<service>-1`, or its `container_name`) and port. From there a label domain is a domain like any other: its DNS records (#22), its certificate (#23) and its route on the edge follow, and the edge attaches the container to the `pocketcloud-edge` network. The same labels again change nothing.
+- **What is wrong** – a label that cannot be used is reported on the stack page with its line, and in the editor as a warning while it is typed: a missing or ambiguous port, a hostname that is not one, a hostname that another service or domain has already (a label never takes a domain added by hand, or another stack's), a password that is not a bcrypt hash. The editor checks the services that `COMPOSE_PROFILES` turns on; a label whose value comes from a secret is checked at the deploy, when the secret is known. `pocketcloud.tls=internal` waits for the internal CA's certificates for LAN names (#26).
+- **A label with a mistake** – holds its service's domains as they are until it is fixed: a mistake does not take a service off its domains, and does not count as a removed label.
+- **Removing a label** – removes nothing by itself: the domain stays and the edge keeps serving it, marked on the stack page and the Proxy tab, until an operator removes it, or keeps it as a domain of its own (on either page). A removed stack leaves its label domains the same way. A label domain cannot be changed or removed through the domains API while its label is there: the label is changed in the Compose file and deployed.
+- **Passwords** – `pocketcloud.auth` puts HTTP basic authentication in front of the service. The hashes are bcrypt's (`htpasswd -nB user`, `caddy hash-password`; a `$` is written `$$` in a Compose file) and user names are letters, digits and `. _ @ + -`. A route that asks for a password is never served over plain HTTP: it redirects to HTTPS, and answers 503 until it has its certificate.
+  - The hashes are sealed with the master key in `domains.basic_auth`, and the API never shows them.
+  - The edge config that `edge.apply` stores names each password by a reference (`pocketcloud-secret:<id>`). The panel fills the hashes into the command's sensitive `secrets` field when it delivers it, so they are never stored with the command, and the agent puts them into the config just before Caddy loads it.
+  - The inventory stores a container's labels with the value of `pocketcloud.auth` hidden.
+  - A domain kept with a password keeps it, and so stays the domain of a container behind HTTPS; removing the domain drops the password.
+
 ### DNS providers and zones
 
 The panel keeps a domain's A and AAAA records itself, through the provider's API (#22, [ADR 0001](adr/0001-acme-and-dns-libraries.md)); no agent takes part. `internal/dns` puts the providers behind one interface:

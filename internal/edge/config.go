@@ -6,11 +6,15 @@
 package edge
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,6 +73,102 @@ type Route struct {
 	HSTS bool `json:"hsts,omitempty"`
 	// Compress encodes responses with zstd or gzip when the client accepts it.
 	Compress bool `json:"compress,omitempty"`
+	// BasicAuth asks for a user name and password before a request reaches
+	// the upstream, for KindProxy. Such a route is never served over plain
+	// HTTP: it redirects to HTTPS, or refuses until it has a certificate.
+	BasicAuth []BasicAuthUser `json:"basic_auth,omitempty"`
+}
+
+// BasicAuthUser may sign in to a route.
+type BasicAuthUser struct {
+	Username string `json:"username"`
+	// Hash is the password's bcrypt hash, as htpasswd -B or caddy
+	// hash-password make it: $2a$, $2b$ or $2y$.
+	Hash string `json:"hash"`
+}
+
+// BasicAuthRealm is what browsers show when they ask for the password.
+const BasicAuthRealm = "PocketCloud"
+
+// secretPrefix starts a JSON string that stands for a secret of the config.
+const secretPrefix = "pocketcloud-secret:"
+
+var secretRefs = regexp.MustCompile(`"` + secretPrefix + `([0-9a-f]{32})"`)
+
+// secretName names a password hash by its own digest, so that a new hash is
+// a new name and a new config.
+func secretName(hash string) string {
+	sum := sha256.Sum256([]byte(hash))
+	return hex.EncodeToString(sum[:16])
+}
+
+// SecretRef is what a config holds in place of a password hash.
+func SecretRef(hash string) string { return secretPrefix + secretName(hash) }
+
+// Secrets are the values the references of a config stand for: each user's
+// hash, base64-encoded as Caddy takes it in every Caddy 2 release.
+func Secrets(c Config) map[string]string {
+	secrets := map[string]string{}
+	for _, route := range c.Routes {
+		for _, user := range route.BasicAuth {
+			secrets[secretName(user.Hash)] = base64.StdEncoding.EncodeToString([]byte(user.Hash))
+		}
+	}
+	return secrets
+}
+
+// SecretNames are the names of the secrets a config refers to.
+func SecretNames(caddyJSON string) []string {
+	names := []string{}
+	for _, match := range secretRefs.FindAllStringSubmatch(caddyJSON, -1) {
+		if !slices.Contains(names, match[1]) {
+			names = append(names, match[1])
+		}
+	}
+	return names
+}
+
+// ResolveSecrets puts the secrets into a config where it refers to them. A
+// reference without its secret is an error: Caddy would take the reference
+// for the hash.
+func ResolveSecrets(caddyJSON string, secrets map[string]string) (string, error) {
+	var missing error
+	resolved := secretRefs.ReplaceAllStringFunc(caddyJSON, func(ref string) string {
+		name := secretRefs.FindStringSubmatch(ref)[1]
+		value, ok := secrets[name]
+		if !ok {
+			missing = fmt.Errorf("the config refers to a secret it was not given (%s)", name)
+			return ref
+		}
+		quoted, _ := json.Marshal(value)
+		return string(quoted)
+	})
+	return resolved, missing
+}
+
+var userName = regexp.MustCompile(`^[A-Za-z0-9._@+-]+$`)
+
+var bcryptHash = regexp.MustCompile(`^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}$`)
+
+// ValidBasicAuth checks the users of a route: names without colons or
+// control characters, each once, and a bcrypt hash for each.
+func ValidBasicAuth(users []BasicAuthUser) error {
+	seen := map[string]bool{}
+	for _, user := range users {
+		// letters, digits and . _ @ + -: Caddy fills in placeholders in user
+		// names, such as {env.*} and {file.*}
+		if user.Username == "" || len(user.Username) > 64 || !userName.MatchString(user.Username) {
+			return fmt.Errorf("%q is not a user name for basic authentication: use letters, digits and . _ @ + -", user.Username)
+		}
+		if seen[user.Username] {
+			return fmt.Errorf("the user %s is there twice", user.Username)
+		}
+		seen[user.Username] = true
+		if !bcryptHash.MatchString(user.Hash) {
+			return fmt.Errorf("the password of %s is not a bcrypt hash: make one with htpasswd -nB %s, or caddy hash-password", user.Username, user.Username)
+		}
+	}
+	return nil
 }
 
 // Certificate is one certificate installed on the edge.
@@ -123,6 +223,14 @@ func (c Config) Validate() error {
 		}
 		if route.HTTPSRedirect && route.Certificate == "" {
 			return fmt.Errorf("%s: redirecting to HTTPS needs a certificate", host)
+		}
+		if len(route.BasicAuth) > 0 {
+			if route.Kind != KindProxy {
+				return fmt.Errorf("%s: only a route to a container can ask for a password", host)
+			}
+			if err := ValidBasicAuth(route.BasicAuth); err != nil {
+				return fmt.Errorf("%s: %w", host, err)
+			}
 		}
 	}
 
@@ -293,9 +401,13 @@ func Build(c Config) ([]byte, error) {
 			// name; without this the wildcard's route would answer it on 443
 			secure = append(secure, httpOnly(route.Hostname))
 		}
-		if route.HTTPSRedirect {
+		switch {
+		// a password never crosses the network in the clear
+		case route.HTTPSRedirect || len(route.BasicAuth) > 0 && route.Certificate != "":
 			plain = append(plain, httpsRedirect(route.Hostname))
-		} else {
+		case len(route.BasicAuth) > 0:
+			plain = append(plain, needsHTTPS(route.Hostname))
+		default:
 			plain = append(plain, hostRoute(route, false))
 		}
 	}
@@ -397,6 +509,21 @@ func httpOnly(hostname string) object {
 	}
 }
 
+// needsHTTPS answers plain HTTP requests for a route with a password that has
+// no certificate yet.
+func needsHTTPS(hostname string) object {
+	return object{
+		"match": hostMatch(hostname),
+		"handle": []any{object{
+			"handler":     "static_response",
+			"status_code": 503,
+			"headers":     object{"Content-Type": []string{"text/plain; charset=utf-8"}, "Retry-After": []string{"300"}},
+			"body":        "This site asks for a password, so it is served over HTTPS only, once it has its certificate.\n",
+		}},
+		"terminal": true,
+	}
+}
+
 func notFound() object {
 	return object{
 		"handle": []any{object{
@@ -415,6 +542,25 @@ func hostRoute(route Route, secure bool) object {
 		handlers = append(handlers, object{
 			"handler":  "headers",
 			"response": object{"set": object{"Strict-Transport-Security": []string{HSTSValue}}},
+		})
+	}
+
+	if len(route.BasicAuth) > 0 && route.Kind == KindProxy {
+		users := slices.Clone(route.BasicAuth)
+		slices.SortFunc(users, func(a, b BasicAuthUser) int { return strings.Compare(a.Username, b.Username) })
+		accounts := make([]any, 0, len(users))
+		for _, user := range users {
+			// a reference: the hash reaches the edge with the command, and is
+			// never stored with it
+			accounts = append(accounts, object{"username": user.Username, "password": SecretRef(user.Hash)})
+		}
+		handlers = append(handlers, object{
+			"handler": "authentication",
+			"providers": object{"http_basic": object{
+				"accounts": accounts,
+				"hash":     object{"algorithm": "bcrypt"},
+				"realm":    BasicAuthRealm,
+			}},
 		})
 	}
 

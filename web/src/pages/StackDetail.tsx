@@ -6,6 +6,12 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { CommandOutput } from "../components/CommandOutput";
 import { PageHead } from "../components/Layout";
 import { LogViewer } from "../components/LogViewer";
+import {
+  LabelDomainsCard,
+  ServiceDomains,
+  useDomainRoutes,
+  type DomainRoutes,
+} from "../components/StackDomains";
 import { CommandStatusPill, ContainerStatePill } from "../components/status";
 import { useToast } from "../components/toast";
 import {
@@ -41,6 +47,7 @@ import {
   type StackProblem,
   type StackValidation,
 } from "../lib/stacks";
+import type { Domain } from "../lib/edge";
 import type { Command, Container, Host, Stack, StackRevision } from "../lib/types";
 
 const CodeEditor = lazy(() => import("../components/CodeEditor"));
@@ -64,7 +71,17 @@ function RevisionDiff({ before, after }: { before: string; after: string }) {
   );
 }
 
-function ServiceCards({ host, containers }: { host: string; containers: Container[] }) {
+function ServiceCards({
+  host,
+  containers,
+  domains,
+  routes,
+}: {
+  host: string;
+  containers: Container[];
+  domains: Domain[];
+  routes: DomainRoutes;
+}) {
   const { t } = useTranslation();
   const now = useNow(30000);
   const values = useContainerValues(host).data ?? {};
@@ -112,6 +129,12 @@ function ServiceCards({ host, containers }: { host: string; containers: Containe
                 </span>
               )}
             </div>
+            <ServiceDomains
+              domains={domains.filter(
+                (domain) => domain.service === container.service && !domain.label_removed,
+              )}
+              routes={routes}
+            />
           </div>
         );
       })}
@@ -348,6 +371,16 @@ export function StackDetailPage() {
     sort: "service,name",
     enabled: Boolean(stack),
   });
+
+  const domains = useLiveList<Domain>("domains", {
+    filter: pb.filter("stack = {:stack}", { stack: id }),
+    sort: "hostname",
+  });
+  const routes = useDomainRoutes(
+    stack?.host,
+    [host?.edge_digest, host?.edge_applied_digest].join("|"),
+    domains.items,
+  );
 
   const lastCommand = useLiveList<Command>("commands", {
     filter: stack
@@ -612,7 +645,13 @@ export function StackDetailPage() {
         }
       />
 
-      <ServiceCards host={stack.host} containers={containers.items} />
+      <ServiceCards
+        host={stack.host}
+        containers={containers.items}
+        domains={domains.items}
+        routes={routes}
+      />
+      <LabelDomainsCard stack={stack} domains={domains.items} canAct={canAct} />
 
       {watching && (
         <CommandOutput
