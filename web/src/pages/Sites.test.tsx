@@ -98,6 +98,7 @@ function renderAt(path: string) {
           <Routes>
             <Route path="/sites" element={<SitesPage />} />
             <Route path="/sites/:id" element={<SitesPage />} />
+            <Route path="/sites/new" element={<p>the wizard</p>} />
           </Routes>
         </ToastProvider>
       </AuthProvider>
@@ -123,12 +124,12 @@ afterEach(() => {
 });
 
 describe("the sites page", () => {
-  it("offers a new site when there is none", () => {
+  it("offers a new site when there is none, in the wizard", () => {
     signInAs("operator");
     renderAt("/sites");
     expect(screen.getByText("No sites yet")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "New site" })[0]);
-    expect(screen.getByRole("dialog", { name: "New site" })).toBeInTheDocument();
+    expect(screen.getByText("the wizard")).toBeInTheDocument();
   });
 
   it("shows a site's deployments, and rolls back to one on the server", async () => {
@@ -184,40 +185,6 @@ describe("the sites page", () => {
     for (const box of screen.getAllByRole("checkbox")) {
       expect((box as HTMLInputElement).disabled).toBe(true);
     }
-  });
-});
-
-describe("a new site", () => {
-  it("sends its token with it, and no build for a site served as it is", async () => {
-    signInAs("operator");
-    lists.hosts = [{ id: "h1", name: "vps", roles: ["docker", "edge"], status: "online" }];
-    const create = vi.fn().mockResolvedValue({ id: "s9", name: "docs" });
-    vi.spyOn(pb, "collection").mockReturnValue({ create } as unknown as ReturnType<
-      typeof pb.collection
-    >);
-    renderAt("/sites");
-    fireEvent.click(screen.getAllByRole("button", { name: "New site" })[0]);
-    const dialog = screen.getByRole("dialog", { name: "New site" });
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "docs" } });
-    fireEvent.change(within(dialog).getByLabelText("Repository"), {
-      target: { value: "https://git.example.com/me/docs.git" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Access token"), { target: { value: "tok" } });
-    fireEvent.change(within(dialog).getByLabelText("Build image"), {
-      target: { value: "node:22" },
-    });
-    fireEvent.change(within(dialog).getByLabelText("Generator"), { target: { value: "none" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(create).toHaveBeenCalled());
-    expect(create.mock.calls[0][0]).toMatchObject({
-      name: "docs",
-      host: "h1",
-      source: "git",
-      git_token: "tok",
-      generator: "none",
-      build_image: "",
-      build_cmd: "",
-    });
   });
 });
 

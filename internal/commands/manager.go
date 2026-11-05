@@ -220,18 +220,12 @@ func (m *Manager) prepare(app core.App, record *core.Record) error {
 	commandType := record.GetString("type")
 
 	spec, ok := Specs[commandType]
+	panelRun := false
 	if !ok {
-		return fmt.Errorf("unknown command type %q", commandType)
-	}
-
-	raw, err := json.Marshal(record.Get("payload"))
-	if err != nil {
-		return err
-	}
-
-	command, err := Build(commandType, raw)
-	if err != nil {
-		return err
+		if spec, ok = PanelSpecs[commandType]; !ok {
+			return fmt.Errorf("unknown command type %q", commandType)
+		}
+		panelRun = true
 	}
 
 	timeout := spec.Timeout
@@ -242,8 +236,18 @@ func (m *Manager) prepare(app core.App, record *core.Record) error {
 		record.Set("timeout_s", int(timeout.Seconds()))
 	}
 
-	if spec.Resource != nil {
-		record.Set("resource", spec.Resource(command))
+	if !panelRun {
+		raw, err := json.Marshal(record.Get("payload"))
+		if err != nil {
+			return err
+		}
+		command, err := Build(commandType, raw)
+		if err != nil {
+			return err
+		}
+		if spec.Resource != nil {
+			record.Set("resource", spec.Resource(command))
+		}
 	}
 
 	if record.Id == "" {
@@ -254,6 +258,13 @@ func (m *Manager) prepare(app core.App, record *core.Record) error {
 	}
 
 	record.Set("status", schema.CommandQueued)
+	if panelRun {
+		// the panel works on it from the start, until its own timeout
+		now := time.Now().UTC()
+		record.Set("status", schema.CommandRunning)
+		record.Set("started_at", now)
+		record.Set("expires_at", now.Add(time.Duration(record.GetInt("timeout_s"))*time.Second))
+	}
 
 	if hostID := record.GetString("host"); hostID != "" {
 		host, err := app.FindRecordById(schema.Hosts, hostID)
@@ -322,6 +333,82 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error
 	}
 
 	return record, nil
+}
+
+// Begin starts a command the panel runs itself (see PanelSpecs). It is running
+// from the start and stays so until Settle, or its timeout.
+func (m *Manager) Begin(ctx context.Context, opts Options, payload map[string]any) (*core.Record, error) {
+	if !PanelRun(opts.Type) {
+		return nil, fmt.Errorf("%s is not run by the panel", opts.Type)
+	}
+	collection, err := m.app.FindCachedCollectionByNameOrId(schema.Commands)
+	if err != nil {
+		return nil, err
+	}
+	record := core.NewRecord(collection)
+	record.Id = opts.ID
+	record.Set("host", opts.Host)
+	record.Set("type", opts.Type)
+	record.Set("label", opts.Label)
+	record.Set("payload", payload)
+	record.Set("requested_by", opts.RequestedBy)
+	record.Set("requested_label", opts.Requester)
+	record.Set("parent", opts.Parent)
+	record.Set("correlation_id", opts.Correlation)
+	if opts.Timeout > 0 {
+		record.Set("timeout_s", int(opts.Timeout.Seconds()))
+	}
+	if err := m.app.SaveWithContext(ctx, record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// ErrPanelRun is returned when something other than the panel tries to settle
+// a command the panel runs itself.
+var ErrPanelRun = errors.New("the panel runs this command itself")
+
+// Settle ends a command the panel runs itself, as an agent's final report
+// ends the others: its finishers run, and so does the settling of its parent.
+// A command that has already ended is left as it is.
+func (m *Manager) Settle(id, status, message string, result map[string]any) error {
+	if !isFinal(status) {
+		return fmt.Errorf("%s is not a final state", status)
+	}
+	record, err := m.app.FindRecordById(schema.Commands, id)
+	if err != nil {
+		return err
+	}
+	if !PanelRun(record.GetString("type")) {
+		return fmt.Errorf("%s is run by an agent", record.GetString("type"))
+	}
+	if isFinal(record.GetString("status")) {
+		return nil
+	}
+	m.finish(record, status, message, result)
+	return nil
+}
+
+// Report stores the progress of a command the panel runs itself, and moves
+// its deadline when until is not zero, as a flow does that waits for someone.
+func (m *Manager) Report(id string, progress map[string]any, until time.Time) error {
+	record, err := m.app.FindRecordById(schema.Commands, id)
+	if err != nil {
+		return err
+	}
+	if !PanelRun(record.GetString("type")) {
+		return fmt.Errorf("%s is run by an agent", record.GetString("type"))
+	}
+	if isFinal(record.GetString("status")) {
+		return nil
+	}
+	if progress != nil {
+		record.Set("progress", progress)
+	}
+	if !until.IsZero() {
+		record.Set("expires_at", until.UTC())
+	}
+	return m.app.Save(record)
 }
 
 // Stream is the delivery channel to one connected agent.
@@ -609,6 +696,9 @@ func (m *Manager) replay(stream *Stream) {
 	}
 
 	for _, record := range records {
+		if PanelRun(record.GetString("type")) {
+			continue // the panel's own, never an agent's
+		}
 		command, err := m.build(record)
 		if err != nil {
 			m.finish(record, schema.CommandFailed, err.Error(), nil)
@@ -661,7 +751,7 @@ func (m *Manager) build(record *core.Record) (*agentv1.Command, error) {
 // settle applies a final state the agent reported when it reconnected.
 func (m *Manager) settle(hostID string, finished *agentv1.FinishedCommand) {
 	record, err := m.app.FindRecordById(schema.Commands, finished.GetCommandId())
-	if err != nil || record.GetString("host") != hostID || isFinal(record.GetString("status")) {
+	if err != nil || record.GetString("host") != hostID || isFinal(record.GetString("status")) || PanelRun(record.GetString("type")) {
 		return
 	}
 
@@ -700,6 +790,9 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 	}
 	if record.GetString("host") != hostID {
 		return false, ErrWrongHost
+	}
+	if PanelRun(record.GetString("type")) {
+		return false, ErrPanelRun
 	}
 
 	status := record.GetString("status")
@@ -803,6 +896,9 @@ func (m *Manager) finishParent(record *core.Record) {
 	if err != nil || isFinal(parent.GetString("status")) {
 		return
 	}
+	if PanelRun(parent.GetString("type")) {
+		return // its flow settles it, step by step
+	}
 
 	children, err := m.app.FindRecordsByFilter(schema.Commands, "parent={:parent}", "", 0, 0, dbx.Params{"parent": parentID})
 	if err != nil {
@@ -843,7 +939,7 @@ func (m *Manager) Cancel(id, reason string) error {
 
 	m.finish(record, schema.CommandCancelled, reason, nil)
 
-	if status != schema.CommandQueued {
+	if status != schema.CommandQueued && !PanelRun(record.GetString("type")) {
 		m.tellAgentToStop(record, reason)
 	}
 
@@ -893,14 +989,18 @@ func (m *Manager) Reap() {
 	for _, record := range records {
 		status := record.GetString("status")
 
+		panelRun := PanelRun(record.GetString("type"))
 		message := "The agent did not finish the command in time."
-		if status == schema.CommandQueued {
+		switch {
+		case panelRun:
+			message = "It did not finish in time."
+		case status == schema.CommandQueued:
 			message = "The server stayed offline, so the command was never delivered."
 		}
 
 		m.finish(record, schema.CommandTimedOut, message, nil)
 
-		if status != schema.CommandQueued {
+		if status != schema.CommandQueued && !panelRun {
 			m.tellAgentToStop(record, message)
 		}
 

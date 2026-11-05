@@ -135,10 +135,17 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusBadRequest, 9207, "bad request")
 			return
 		}
+		rec.Name = a.fullName(parts[1], rec.Name)
+		// as Cloudflare does: a CNAME stands alone at its name
+		for _, other := range a.records[parts[1]] {
+			if other.Name == rec.Name && (other.Type == "CNAME" || rec.Type == "CNAME") && other.Type != "TXT" && rec.Type != "TXT" {
+				fail(http.StatusBadRequest, 81053, "An A, AAAA, or CNAME record with that host already exists.")
+				return
+			}
+		}
 		a.next++
 		rec.ID = "rec" + strconv.Itoa(a.next)
 		rec.ZoneID = parts[1]
-		rec.Name = a.fullName(parts[1], rec.Name)
 		a.records[parts[1]] = append(a.records[parts[1]], rec)
 		a.result(w, rec, nil)
 	case len(parts) == 4 && parts[0] == "zones" && parts[2] == "dns_records" && (r.Method == http.MethodPut || r.Method == http.MethodPatch):

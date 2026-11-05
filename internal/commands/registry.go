@@ -200,6 +200,27 @@ var Specs = map[string]Spec{
 	"agent.set_log_level":      {Timeout: time.Minute, Role: schema.RoleAdmin},
 }
 
+// PanelSpecs lists the command types the panel runs itself, such as the steps
+// of a new site's provisioning (#24): each step is a command, so the command
+// history shows it, but none has an agent payload. They start as running, are
+// never sent to an agent, and the panel settles them with Manager.Settle. A
+// parent of this kind is settled by the flow that runs it, not by its
+// children. None can be requested through the API.
+var PanelSpecs = map[string]Spec{
+	"site.provision":   {Timeout: 7 * 24 * time.Hour},
+	"site.create":      {Timeout: time.Minute},
+	"site.dns":         {Timeout: 10 * time.Minute},
+	"site.propagation": {Timeout: 48 * time.Hour},
+	"site.certificate": {Timeout: 2 * time.Hour},
+	"site.check":       {Timeout: 10 * time.Minute},
+}
+
+// PanelRun tells whether the panel runs a command type itself.
+func PanelRun(commandType string) bool {
+	_, ok := PanelSpecs[commandType]
+	return ok
+}
+
 // fieldName returns the oneof field of a command type: dots become underscores.
 func fieldName(commandType string) protoreflect.Name {
 	return protoreflect.Name(strings.ReplaceAll(commandType, ".", "_"))

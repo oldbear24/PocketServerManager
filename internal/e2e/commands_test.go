@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -411,6 +412,75 @@ func TestUnsupportedCommandFailsAtOnce(t *testing.T) {
 	if !strings.Contains(failed.GetString("error"), "does not support") {
 		t.Errorf("error: %s", failed.GetString("error"))
 	}
+}
+
+// TestThePanelRunsItsOwnSteps: a step the panel runs itself is running from the
+// start, is never sent to an agent, not even after a reconnect, cannot be
+// settled by one, and ends when the panel settles it. A parent of the kind
+// waits for its flow, not for its children; it times out like any command.
+func TestThePanelRunsItsOwnSteps(t *testing.T) {
+	h := newHarness(t)
+	running, host := h.enrolled("steps")
+	ctx := context.Background()
+
+	parent, err := h.panel.Commands.Begin(ctx, commands.Options{Host: host.Id, Type: "site.provision", Requester: "test"}, map[string]any{"site": "blog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := h.panel.Commands.Begin(ctx, commands.Options{Host: host.Id, Type: "site.create", Parent: parent.Id, Correlation: parent.Id}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.GetString("status") != schema.CommandRunning || step.GetString("correlation_id") != parent.Id || step.GetDateTime("expires_at").IsZero() {
+		t.Fatalf("a new step: %v", step.PublicExport())
+	}
+	if _, err := h.panel.Commands.Begin(ctx, commands.Options{Host: host.Id, Type: "image.pull"}, nil); err == nil {
+		t.Error("an agent's command was begun by the panel")
+	}
+
+	// an agent cannot settle it
+	if _, err := h.panel.Commands.Update(host.Id, &agentv1.ReportCommandUpdateRequest{
+		CommandId: step.Id, Sequence: 1, State: agentv1.CommandState_COMMAND_STATE_SUCCEEDED,
+	}); !errors.Is(err, commands.ErrPanelRun) {
+		t.Errorf("an agent's report: %v", err)
+	}
+
+	// a reconnect replays what agents run, never these
+	if err := running.stop(); err != nil {
+		t.Fatal(err)
+	}
+	second := h.start(running.config)
+	h.waitFor("the agent to connect again", func() bool { return h.panel.Commands.Connected(host.Id) })
+	h.panel.Commands.Kick(host.Id)
+	for _, id := range []string{parent.Id, step.Id} {
+		if record := h.command(id); record.GetInt("attempts") != 0 || record.GetString("status") != schema.CommandRunning {
+			t.Errorf("a panel step reached the agent: %v", record.PublicExport())
+		}
+	}
+
+	// the panel settles the step; the parent goes on
+	if err := h.panel.Commands.Settle(step.Id, schema.CommandSucceeded, "", map[string]any{"site": "blog"}); err != nil {
+		t.Fatal(err)
+	}
+	if record := h.command(step.Id); record.GetString("status") != schema.CommandSucceeded {
+		t.Errorf("the settled step: %v", record.PublicExport())
+	}
+	if record := h.command(parent.Id); record.GetString("status") != schema.CommandRunning {
+		t.Errorf("the parent was settled by its only child: %v", record.PublicExport())
+	}
+	if err := h.panel.Commands.Settle(step.Id, schema.CommandFailed, "late", nil); err != nil || h.command(step.Id).GetString("status") != schema.CommandSucceeded {
+		t.Errorf("a settled step was settled again: %v", err)
+	}
+
+	// a flow that waits moves its deadline; one past it times out
+	if err := h.panel.Commands.Report(parent.Id, map[string]any{"step": "site.create"}, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	h.panel.Commands.Reap()
+	if record := h.command(parent.Id); record.GetString("status") != schema.CommandTimedOut || record.GetString("error") != "It did not finish in time." {
+		t.Errorf("the parent past its deadline: %v", record.PublicExport())
+	}
+	_ = second.stop()
 }
 
 func TestCancellingACommand(t *testing.T) {

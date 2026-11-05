@@ -42,6 +42,8 @@ type acmeOptions struct {
 	validity time.Duration
 	// unreachable: nothing answers where the CA fetches HTTP-01 answers
 	unreachable bool
+	// configure changes the edge agent's config further
+	configure func(*agent.Config)
 }
 
 func newACMEHarness(t *testing.T, opts acmeOptions, zones ...string) *acmeHarness {
@@ -52,6 +54,15 @@ func newACMEHarness(t *testing.T, opts acmeOptions, zones ...string) *acmeHarnes
 		configure = func(config *agent.Config) {
 			config.DockerCLI = cli
 			config.HostRoot = root
+		}
+	}
+	if opts.configure != nil {
+		first := configure
+		configure = func(config *agent.Config) {
+			if first != nil {
+				first(config)
+			}
+			opts.configure(config)
 		}
 	}
 	d := newDNSHarnessWith(t, configure, zones...)

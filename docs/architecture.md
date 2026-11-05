@@ -111,6 +111,7 @@ Fields holding secrets carry the `sensitive` option from `proto/pocketcloud/opti
 - Queued commands for an offline host expire after `command_queue_ttl_s`; dispatched and running ones time out per command type. No command stays open forever.
 - The panel's own fields of a command (status, attempts, results) cannot be set through the API, and the state machine holds for every save, superusers included.
 - Multi-step flows (new site, restore) are a parent command with children sharing a correlation id, which drives the progress timelines in the UI.
+- **Commands the panel runs itself** (`commands.PanelSpecs`), such as the steps of a new site, are commands too, so the history shows them, but have no agent payload. They start as running with their own timeout, are never dispatched nor replayed to an agent, an agent's report on one is refused, and the panel settles them (`Manager.Settle`; `Manager.Report` stores progress and moves the deadline). A parent of this kind is settled by its flow, not when its children have ended. None can be created through the API.
 
 ## Compose stacks
 
@@ -207,7 +208,16 @@ New site provisioning (one parent command):
 
 <img src="diagrams/new-site.png" width="1076" alt="New site provisioning sequence: DNS records, deploy, certificate, availability check">
 
-If the zone is not at a connected provider, the wizard shows the records to create at the registrar and polls until they resolve.
+The wizard (`/sites/new`, #24) sends the site, its name on the web, whether `www` goes with it and the certificate's challenge to `POST /api/pc/sites/provision`; while the name is typed, `GET /api/pc/dns/preview` says which zone holds it, whether the records are set at a connected provider or by hand, and which records they are. The panel creates the site and runs the rest as one parent command, `site.provision`, with a child command per step, one after the other:
+
+1. `site.create` – the site, on its server. It does not start the first deployment a new site starts by itself; a ZIP sent with it is recorded and held until its step.
+2. `site.dns` – its domain, and for `www` an alias domain that redirects to it permanently (308, which keeps the method, where the design said 301) with a CNAME to its name; the records at the zone's provider, or in manual mode the records to make at the registrar. One certificate is ordered for both names, under the ACME manager's planning lock, so it orders none per domain; the order waits for the certificate step. A domain left from an earlier attempt has its records set again.
+3. `site.propagation` – until the public resolvers and the zone's name servers answer the records: every few seconds at first, then once a minute after five minutes, for up to 48 hours, as records made by hand can take a while.
+4. `site.deploy` – the first deployment, the agent's own command; the timeline shows its build and its release from its progress.
+5. `site.certificate` – the step asks the CA itself, past what an earlier attempt said but not past the CA's daily limit, and ends once a valid certificate for both names is on the edge, whichever certificate the edge picked.
+6. `site.check` – an HTTPS request at the server's public address with the site's name, as a visitor's once the name resolves there, with the system's roots; it must not answer an error (401 counts, a site may have a password), and the `www` name must redirect to it. It asks every 3 seconds for a minute.
+
+A step that fails pauses the setup for up to a day, and so does a step that cannot even start, such as a deployment of a site whose source became an upload meanwhile: Retry (`POST /api/pc/provisions/{id}/retry`) runs it again as a new command, once even when asked twice at once, and the history keeps the failed one. A setup that is cancelled, or not retried in time, cancels the step under way and removes the domains it created, and with them their DNS records; the site stays, to be deployed or removed. Setups go on after a panel restart.
 
 ### Static sites
 

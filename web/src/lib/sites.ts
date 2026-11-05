@@ -94,6 +94,67 @@ export const sitesApi = {
   requests: (id: string) => pb.send<SiteRequests>(`/api/pc/sites/${id}/requests`, {}),
 };
 
+/** A record a new site's names need, as the wizard shows it. */
+export type PreviewRecord = { type: string; name: string; value: string; ttl: number };
+
+/** What a new site's names need: the zone that holds them and its records. */
+export type DnsPreview = {
+  hostname: string;
+  zone: string;
+  /** the connected provider's name, empty when the records are made by hand */
+  provider: string;
+  kind: string;
+  mode: "automatic" | "manual";
+  records: PreviewRecord[];
+  /** names that are domains already */
+  taken: string[];
+  problem?: string;
+};
+
+/** What the wizard sends for a new site (#24). */
+export type ProvisionBody = {
+  site: Record<string, unknown>;
+  hostname: string;
+  www: boolean;
+  challenge: "auto" | "http-01" | "dns-01";
+};
+
+/** The steps of a new site's setup, in order: each is a command. */
+export const provisionSteps = [
+  "site.create",
+  "site.dns",
+  "site.propagation",
+  "site.deploy",
+  "site.certificate",
+  "site.check",
+] as const;
+
+export const provisionApi = {
+  /** creates the site and starts its setup; a site from an upload sends its ZIP */
+  start: (body: ProvisionBody, file?: File) => {
+    if (file) {
+      const form = new FormData();
+      form.append("data", JSON.stringify(body));
+      form.append("file", file);
+      return pb.send<{ provision: string; site: string }>("/api/pc/sites/provision", {
+        method: "POST",
+        body: form,
+      });
+    }
+    return pb.send<{ provision: string; site: string }>("/api/pc/sites/provision", {
+      method: "POST",
+      body,
+    });
+  },
+  retry: (id: string) => pb.send<void>(`/api/pc/provisions/${id}/retry`, { method: "POST" }),
+  cancel: (id: string) => pb.send<void>(`/api/pc/commands/${id}/cancel`, { method: "POST" }),
+  preview: (hostname: string, host: string, www: boolean) =>
+    pb.send<DnsPreview>("/api/pc/dns/preview", {
+      query: { hostname, host, www: String(www) },
+      requestKey: "dns-preview",
+    }),
+};
+
 /** The first seven characters of a commit, as Git shows it. */
 export function shortCommit(sha: string): string {
   return sha.slice(0, 7);

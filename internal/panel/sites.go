@@ -66,6 +66,10 @@ func (p *Panel) registerSites() {
 	p.App.OnRecordValidate(schema.Sites).BindFunc(p.validateSite)
 	p.App.OnRecordAfterCreateSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
 		site := e.Record
+		// a new site's setup deploys it as one of its steps
+		if _, setup := p.provision.noFirstDeploy.LoadAndDelete(site.Id); setup {
+			return e.Next()
+		}
 		if source := site.GetString("source"); source == sites.SourceGit || source == sites.SourceEmpty {
 			p.later.after(0, func() {
 				if _, err := p.startDeployment(context.Background(), site, deploymentRequest{Trigger: schema.TriggerCreate, Requester: "panel"}); err != nil {
@@ -372,6 +376,12 @@ type deploymentRequest struct {
 	Push        sites.Push
 	RequestedBy string
 	Requester   string
+	// Parent is the command of a flow the deployment is a step of, such as a
+	// new site's provisioning.
+	Parent string
+	// Hold records the deployment without sending it: the flow sends it with
+	// sendDeployment when its turn comes.
+	Hold bool
 }
 
 // startDeployment records a deployment and sends it to the site's server.
@@ -425,13 +435,37 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 	if artifact == "" && request.Upload != nil {
 		artifact = deployment.Id
 	}
+	if request.Hold {
+		return deployment, nil
+	}
+	return deployment, p.sendDeploymentLocked(ctx, site, deployment, artifact, request)
+}
 
+// sendDeployment sends a deployment that was held, as a step of its flow.
+func (p *Panel) sendDeployment(ctx context.Context, site, deployment *core.Record, request deploymentRequest) error {
+	lock := p.edgeLocks.of("site:" + site.Id)
+	lock.Lock()
+	defer lock.Unlock()
+	artifact := ""
+	if deployment.GetString("upload") != "" {
+		artifact = deployment.Id
+	}
+	return p.sendDeploymentLocked(ctx, site, deployment, artifact, request)
+}
+
+// sendDeploymentLocked sends a recorded deployment to the site's server, under
+// the site's lock.
+func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core.Record, artifact string, request deploymentRequest) error {
+	number := deployment.GetInt("number")
+	source := deployment.GetString("source")
 	memory := int64(site.GetInt("build_memory_mb")) << 20
 	command, err := p.Commands.Create(ctx, commands.Options{
 		Host:        site.GetString("host"),
 		Label:       fmt.Sprintf("%s #%d", site.GetString("name"), number),
 		RequestedBy: request.RequestedBy,
 		Requester:   request.Requester,
+		Parent:      request.Parent,
+		Correlation: request.Parent,
 		Command: &agentv1.Command{Payload: &agentv1.Command_SiteDeploy{SiteDeploy: &agentv1.SiteDeploy{
 			Site:          site.GetString("name"),
 			Deployment:    int32(number), //nolint:gosec // a counter
@@ -450,10 +484,10 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 	})
 	if err != nil {
 		p.setFields(deployment, map[string]any{"status": schema.DeploymentFailed, "error": truncate(err.Error(), 4096), "finished_at": types.NowDateTime()})
-		return deployment, err
+		return err
 	}
 	p.setFields(deployment, map[string]any{"command": command.Id})
-	return deployment, nil
+	return nil
 }
 
 var errNoUpload = errors.New("this site is deployed from an upload: upload a ZIP first")
@@ -612,6 +646,10 @@ func (p *Panel) markReleasesOnServer(site *core.Record, releases []int) {
 	}
 	for _, deployment := range deployments {
 		if slices.Contains(releases, deployment.GetInt("number")) {
+			continue
+		}
+		// one a new site's setup holds for its deploy step has not run yet
+		if deployment.GetString("command") == "" && deployment.GetString("status") == schema.DeploymentQueued {
 			continue
 		}
 		fields := map[string]any{}

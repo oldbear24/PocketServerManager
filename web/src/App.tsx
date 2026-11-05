@@ -20,6 +20,7 @@ import { OverviewPage } from "./pages/Overview";
 import { ServerDetailPage } from "./pages/ServerDetail";
 import { ServersPage } from "./pages/Servers";
 import { SettingsPage } from "./pages/Settings";
+import { SiteNewPage } from "./pages/SiteNew";
 import { SitesPage } from "./pages/Sites";
 import { StackDetailPage } from "./pages/StackDetail";
 import { StacksPage } from "./pages/Stacks";
@@ -79,6 +80,7 @@ export function AppRoutes() {
         <Route path="databases" element={<DatabasesPage />} />
         <Route path="backups" element={<ComingLater feature="backups" milestone="M4" />} />
         <Route path="sites" element={<SitesPage />} />
+        <Route path="sites/new" element={<SiteNewPage />} />
         <Route path="sites/:id" element={<SitesPage />} />
         <Route path="domains" element={<DomainsPage />} />
         <Route
