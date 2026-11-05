@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -529,5 +530,49 @@ func BenchmarkHostRange(b *testing.B) {
 		if _, err := store.HostRange("host", Windows["1h"]); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestRequestsAreCountedPerHourAndHostname: the requests of a site's
+// hostnames add up per hour, for its chart of the last day.
+func TestRequestsAreCountedPerHourAndHostname(t *testing.T) {
+	store, _ := open(t)
+	clock := start.Truncate(time.Hour).Add(10 * time.Minute)
+	store.Now = func() time.Time { return clock }
+
+	for _, counts := range []map[string]uint64{{"blog.example.com": 3, "www.blog.example.com": 1}, {"Blog.example.com": 2, "other.example.com": 50}} {
+		if err := store.AddRequests("h1", counts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock = clock.Add(2 * time.Hour)
+	if err := store.AddRequests("h1", map[string]uint64{"blog.example.com": 7}); err != nil {
+		t.Fatal(err)
+	}
+	// another server's edge serves a name of the same spelling
+	if err := store.AddRequests("h2", map[string]uint64{"blog.example.com": 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Requests("h1", []string{"blog.example.com", "www.blog.example.com"}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{0, 6, 0, 7}; !slices.Equal(got, want) {
+		t.Errorf("requests %v, want %v", got, want)
+	}
+
+	// kept for two days
+	clock = clock.Add(KeepRequests + time.Hour)
+	if err := store.Rollup(); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&left)
+	if left != 0 {
+		t.Errorf("%d counts are past their retention", left)
+	}
+	if err := store.DeleteHost("h2"); err != nil {
+		t.Fatal(err)
 	}
 }

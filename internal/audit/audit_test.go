@@ -300,7 +300,7 @@ func TestUnauditedCollectionsAreSkipped(t *testing.T) {
 
 // secretValue is a secret in the form its field takes.
 func secretValue(collection, field, secret string) string {
-	if collection == schema.Domains && field == "basic_auth" {
+	if (collection == schema.Domains || collection == schema.Sites) && field == "basic_auth" {
 		// the user name, as the hash's characters are bcrypt's own
 		return secret + ":$2a$05$6PVNJize1kOg8S8pGtSUw.DfmvfGyAZxXEGMlQNylBUi5z9iaiBRW"
 	}
@@ -348,6 +348,7 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		schema.Certificates: {"names": []string{"secret.example.com"}},
 		schema.ACMEAccounts: {"role": schema.ACMEPrimary, "directory_url": "https://acme.example.com/dir"},
 		schema.DNSProviders: {"kind": "cloudflare"},
+		schema.Sites:        {"host": edgeHost.Id, "source": "empty"},
 	}
 
 	covered := 0

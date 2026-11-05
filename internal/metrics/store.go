@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,7 +68,17 @@ CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value INTEGER NOT NULL
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS requests (
+	host  TEXT NOT NULL,
+	name  TEXT NOT NULL,
+	hour  INTEGER NOT NULL,
+	count INTEGER NOT NULL,
+	PRIMARY KEY (host, name, hour)
+) WITHOUT ROWID;
 `
+
+// KeepRequests is how long the hourly request counts of hostnames are kept.
+const KeepRequests = 48 * time.Hour
 
 // CPU and load are stored in hundredths, as integers: a REAL always takes 8 bytes.
 const hundredths = 100
@@ -277,6 +288,10 @@ func (s *Store) Rollup() error {
 		}
 	}
 
+	if _, err := tx.Exec(`DELETE FROM requests WHERE hour < ?`, now.Add(-KeepRequests).Unix()); err != nil {
+		return err
+	}
+
 	// containers come and go; their series end with their last sample
 	result, err := tx.Exec(`DELETE FROM series WHERE NOT EXISTS (SELECT 1 FROM samples WHERE samples.series = series.id)`)
 	if err != nil {
@@ -347,6 +362,9 @@ func (s *Store) DeleteHost(hostID string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM series WHERE host = ?`, hostID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM requests WHERE host = ?`, hostID); err != nil {
 		return err
 	}
 
@@ -533,4 +551,69 @@ func (s *Store) Mounts(hostID string) ([]Mount, error) {
 	}
 
 	return mounts, rows.Err()
+}
+
+// AddRequests adds the requests an edge served for each hostname to the
+// counts of the current hour.
+func (s *Store) AddRequests(hostID string, counts map[string]uint64) error {
+	if len(counts) == 0 {
+		return nil
+	}
+	hour := s.Now().Truncate(time.Hour).Unix()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // a no-op after the commit
+
+	for name, count := range counts {
+		if count > math.MaxInt64 {
+			count = math.MaxInt64
+		}
+		_, err := tx.Exec(`INSERT INTO requests (host, name, hour, count) VALUES (?, ?, ?, ?)
+			ON CONFLICT (host, name, hour) DO UPDATE SET count = count + excluded.count`,
+			hostID, strings.ToLower(name), hour, int64(count))
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Requests are the requests of hostnames served by a host's edge in each of the
+// last hours, oldest first; the last is the hour under way.
+func (s *Store) Requests(hostID string, names []string, hours int) ([]int64, error) {
+	counts := make([]int64, hours)
+	if len(names) == 0 || hours <= 0 {
+		return counts, nil
+	}
+	current := s.Now().Truncate(time.Hour)
+	first := current.Add(-time.Duration(hours-1) * time.Hour).Unix()
+
+	args := []any{hostID, first}
+	placeholders := make([]string, len(names))
+	for i, name := range names {
+		placeholders[i] = "?"
+		args = append(args, strings.ToLower(name))
+	}
+	rows, err := s.db.Query(`SELECT hour, SUM(count) FROM requests WHERE host = ? AND hour >= ? AND name IN (`+
+		strings.Join(placeholders, ", ")+`) GROUP BY hour`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hour, count int64
+		if err := rows.Scan(&hour, &count); err != nil {
+			return nil, err
+		}
+		if index := (hour - first) / 3600; index >= 0 && index < int64(hours) {
+			counts[index] += count
+		}
+	}
+	return counts, rows.Err()
 }

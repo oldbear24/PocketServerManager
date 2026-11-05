@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -52,6 +53,9 @@ type Server struct {
 	Streams StreamBroker
 	// Artifacts takes uploads by their kind; diagnostics bundles are built in.
 	Artifacts map[string]ArtifactHandler
+	// Fetch opens a file an agent downloads with FetchArtifact. Nil refuses
+	// every download.
+	Fetch FetchHandler
 
 	// ExtraOptions adds server options, such as the diagnostics plugin's stats
 	// handler. UnaryInterceptors and StreamInterceptors run before authentication.
@@ -68,6 +72,9 @@ type Server struct {
 	OnHeartbeat func(hostID string, rttMS, skewMS float64)
 	// OnEdgeStatus is told that a heartbeat stored the state of a host's edge.
 	OnEdgeStatus func(hostID string)
+	// OnRequests is told how many requests each hostname of a host's edge had
+	// since its previous heartbeat.
+	OnRequests func(hostID string, byHost map[string]uint64)
 	// OnStopping is called when the gateway begins to shut down.
 	OnStopping func()
 
@@ -92,6 +99,21 @@ type Server struct {
 // ArtifactHandler stores a file an agent uploaded for a command. It receives the
 // path of the file, which is removed afterwards, and returns the id of what it made.
 type ArtifactHandler func(command *core.Record, fileName, path string, size uint64) (string, error)
+
+// FetchHandler opens an artifact for the agent of hostID, which must have a
+// command that needs it; ErrNoArtifact when it has none.
+type FetchHandler func(hostID, artifactID string) (*Artifact, error)
+
+// Artifact is a file an agent downloads.
+type Artifact struct {
+	Reader io.ReadSeekCloser
+	Size   uint64
+	// SHA256 is the hex digest of the whole file.
+	SHA256 string
+}
+
+// ErrNoArtifact is a download the agent may not have.
+var ErrNoArtifact = errors.New("no such artifact for this server")
 
 // MetricsSink stores metric batches.
 type MetricsSink interface {

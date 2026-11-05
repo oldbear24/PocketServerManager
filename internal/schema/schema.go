@@ -35,13 +35,15 @@ const (
 	DNSZones          = "dns_zones"
 	DNSRecords        = "dns_records"
 	ACMEAccounts      = "acme_accounts"
+	Sites             = "sites"
+	Deployments       = "deployments"
 )
 
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"sites", "site_php", "deployments", "scheduled_tasks",
+	"site_php", "scheduled_tasks",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -114,6 +116,26 @@ const (
 const (
 	TargetContainer = "container"
 	TargetRedirect  = "redirect"
+	TargetSite      = "site"
+)
+
+// Types of a site; PHP comes with #24.
+const SiteStatic = "static"
+
+// States of a site's deployment.
+const (
+	DeploymentQueued    = "queued"
+	DeploymentBuilding  = "building"
+	DeploymentSucceeded = "succeeded"
+	DeploymentFailed    = "failed"
+)
+
+// What started a deployment.
+const (
+	TriggerCreate = "create"
+	TriggerManual = "manual"
+	TriggerPush   = "push"
+	TriggerUpload = "upload"
 )
 
 // TLS of a domain: auto serves it over HTTPS when a certificate covers it.
@@ -189,7 +211,7 @@ var Encrypted = map[string][]string{
 	Stacks:                  {"secrets"},
 	InternalCA:              {"root_key", "agent_intermediate_key", "server_key"},
 	"notification_channels": {"config"},
-	"sites":                 {"webhook_secret", "basic_auth"},
+	Sites:                   {"webhook_secret", "basic_auth", "git_token"},
 	"site_php":              {"secrets"},
 	DNSProviders:            {"credentials"},
 	Domains:                 {"basic_auth"},
@@ -237,7 +259,7 @@ var Audited = []AuditedCollection{
 	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
 	{Name: "alert_rules", Label: "kind"},
 	{Name: "notification_channels", Label: "kind"},
-	{Name: "sites", Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
+	{Name: Sites, Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
 	{Name: "site_php", Label: "site"},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
 	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error", "label_removed"}},
