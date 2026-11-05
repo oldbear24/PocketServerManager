@@ -42,7 +42,7 @@ Live diagnostics (connection stats, message trace, queue latencies) are kept in 
 |---|---|---|
 | `stacks` | Compose project on a host | `host`, `name`, `compose_yaml`, `env`, `secrets` 🔒, `secret_keys`, `current_revision` (the latest saved), `deployed_revision` and `deployed_at` (what runs), `source` (empty when made in the panel, `import` for a project imported from the host, `db_server` for the own stack of a shared database server), `status` (draft / deploying / deployed / failed / stopped / down / imported), `label_problems` (json: what was wrong with the `pocketcloud.*` labels at the last deploy, with lines), `labels_at` |
 | `stack_revisions` | History of compose files | `stack`, `number`, `compose_yaml`, `env`, `env_keys[]`, `author`, `deployed_at`, `note` |
-| `containers` | Inventory snapshot from the agent | `host`, `stack`, `project`, `service`, `docker_id`, `name`, `image`, `state`, `status_text`, `health`, `system_role`, `restart_count`, `ports`, `labels`, `started_at` |
+| `containers` | Inventory snapshot from the agent | `host`, `stack`, `project`, `service`, `docker_id`, `name`, `image`, `state`, `status_text`, `health`, `system_role`, `restart_count`, `ports`, `labels` (the value of `pocketcloud.auth` hidden), `started_at` |
 | `volumes` | Inventory | `host`, `name`, `driver`, `size_bytes`, `labels` |
 | `networks` | Inventory | `host`, `name`, `docker_id`, `driver`, `labels` |
 
