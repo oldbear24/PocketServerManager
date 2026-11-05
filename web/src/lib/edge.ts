@@ -54,18 +54,40 @@ export type Domain = RecordModel & {
   dns_error: string;
 };
 
+/** One attempt to get a certificate from ACME. */
+export type CertificateAttempt = {
+  at: string;
+  ok: boolean;
+  renewal?: boolean;
+  challenge?: string;
+  account?: string;
+  error?: string;
+  not_after?: string;
+};
+
 export type Certificate = RecordModel & {
   names: string[];
   issuer: "manual" | "acme" | "internal";
   not_before: string;
   not_after: string;
-  status: "active" | "expired";
+  /** pending and failed: from ACME, before it was first issued */
+  status: "active" | "expired" | "pending" | "failed";
+  chain_pem: string;
   fingerprint: string;
   subject: string;
   issuer_name: string;
   installed: Record<string, string> | null;
   note: string;
   last_error: string;
+  challenge: "" | "auto" | "http-01" | "dns-01";
+  /** ordered by the panel for a domain no certificate covered */
+  auto: boolean;
+  renew_after: string;
+  /** failed attempts in a row */
+  attempts: number;
+  next_attempt: string;
+  attempt_started: string;
+  history: CertificateAttempt[] | null;
 };
 
 export const edgeApi = {

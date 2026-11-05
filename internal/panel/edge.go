@@ -95,7 +95,7 @@ func (p *Panel) registerEdge() {
 	p.Commands.OnFinish("cert.install", p.certInstallFinished)
 	p.Commands.OnFinish("cert.remove", p.certRemoveFinished)
 
-	p.App.Cron().MustAdd("pocketcloud_certificates_expiry", "7 * * * *", p.markExpiredCertificates)
+	p.App.Cron().MustAdd("pocketcloud_certificates_expiry", "7 * * * *", p.MarkExpiredCertificates)
 }
 
 func (p *Panel) bindEdgeRoutes(group *router.RouterGroup[*core.RequestEvent]) {
@@ -670,9 +670,10 @@ func (p *Panel) onEdgeStatus(hostID string) {
 	}
 }
 
-// markExpiredCertificates keeps the state of certificates up to date for the
-// pages; an edge keeps serving an expired one until there is another.
-func (p *Panel) markExpiredCertificates() {
+// MarkExpiredCertificates keeps the state of certificates up to date for the
+// pages, and raises the alerts of those about to expire; an edge keeps
+// serving an expired one until there is another. It runs every hour.
+func (p *Panel) MarkExpiredCertificates() {
 	now := types.NowDateTime()
 	records, err := p.App.FindRecordsByFilter(schema.Certificates, "status!='expired' && not_after!='' && not_after<{:now}", "", 0, 0, dbx.Params{"now": now.String()})
 	if err != nil {
@@ -682,6 +683,7 @@ func (p *Panel) markExpiredCertificates() {
 	for _, record := range records {
 		p.setFields(record, map[string]any{"status": schema.CertExpired})
 	}
+	p.checkCertificateExpiry()
 }
 
 // edgeRoute is one route of an edge as the server page shows it.

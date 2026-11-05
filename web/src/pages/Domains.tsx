@@ -1,7 +1,12 @@
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { FilePlus2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import {
+  AcmeSummaryCard,
+  CertificatesCard,
+  RequestCertificateDialog,
+} from "../components/Certificates";
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import {
@@ -17,12 +22,15 @@ import {
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import type { AcmeAccount } from "../lib/certificates";
 import { dnsApi, dnsTone, type DnsKind, type DnsProvider, type DnsZone } from "../lib/dns";
-import type { Domain } from "../lib/edge";
+import type { Certificate, Domain } from "../lib/edge";
 import { formatRelative } from "../lib/format";
 import { useLiveList } from "../lib/realtime";
+import type { Host } from "../lib/types";
 
-/** Domains & TLS: the DNS providers and their zones (#22). */
+/** Domains & TLS: the DNS providers and their zones (#22), and the
+ * certificates the edges serve (#23). */
 export function DomainsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -30,7 +38,11 @@ export function DomainsPage() {
   const providers = useLiveList<DnsProvider>("dns_providers", { sort: "name" });
   const zones = useLiveList<DnsZone>("dns_zones", { sort: "name" });
   const domains = useLiveList<Domain>("domains", { sort: "hostname" });
+  const certificates = useLiveList<Certificate>("certificates", { sort: "not_after,created" });
+  const accounts = useLiveList<AcmeAccount>("acme_accounts", { sort: "role" });
+  const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const [connecting, setConnecting] = useState(false);
+  const [requesting, setRequesting] = useState(false);
 
   return (
     <>
@@ -40,9 +52,14 @@ export function DomainsPage() {
         description={t("dns.lead")}
         actions={
           isAdmin && (
-            <Button variant="primary" onClick={() => setConnecting(true)}>
-              <Plus size={15} aria-hidden="true" /> {t("dns.connect")}
-            </Button>
+            <>
+              <Button onClick={() => setConnecting(true)}>
+                <Plus size={15} aria-hidden="true" /> {t("dns.connect")}
+              </Button>
+              <Button variant="primary" onClick={() => setRequesting(true)}>
+                <FilePlus2 size={15} aria-hidden="true" /> {t("cert.request")}
+              </Button>
+            </>
           )
         }
       />
@@ -57,14 +74,37 @@ export function DomainsPage() {
           loading={providers.loading}
         />
       )}
-      <ZonesCard
-        providers={providers.items}
-        zones={zones.items}
-        domains={domains.items}
-        isAdmin={isAdmin}
-      />
+      {certificates.error ? (
+        <Banner tone="err">{errorMessage(certificates.error)}</Banner>
+      ) : (
+        <CertificatesCard
+          certificates={certificates.items}
+          hosts={hosts.items}
+          zones={zones.items}
+          providers={providers.items}
+          accounts={accounts.items}
+          canRetry={hasRole(user, "operator")}
+          isAdmin={isAdmin}
+          loading={certificates.loading}
+          onRequest={() => setRequesting(true)}
+        />
+      )}
+      <div className="columns">
+        <div className="column-wide">
+          <ZonesCard
+            providers={providers.items}
+            zones={zones.items}
+            domains={domains.items}
+            isAdmin={isAdmin}
+          />
+        </div>
+        <div className="column-side">
+          <AcmeSummaryCard accounts={accounts.items} isAdmin={isAdmin} />
+        </div>
+      </div>
 
       {connecting && <ConnectDialog onClose={() => setConnecting(false)} />}
+      {requesting && <RequestCertificateDialog onClose={() => setRequesting(false)} />}
     </>
   );
 }

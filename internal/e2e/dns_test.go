@@ -50,7 +50,9 @@ type dnsHarness struct {
 	api       *fakecloudflare.API
 	resolvers *fakeResolvers
 	host      *core.Record
-	admin     string
+	// edge is the agent of host
+	edge  *runningAgent
+	admin string
 }
 
 func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
@@ -63,7 +65,7 @@ func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
 	resolvers := &fakeResolvers{answers: map[string][]string{}}
 	h.panel.SetDNSChecker(resolvers.checker())
 
-	_, host, _ := h.managedEdge("dns-edge")
+	agent, host, _ := h.managedEdge("dns-edge")
 	host = h.host(host.Id)
 	host.Set("public_ip4", "203.0.114.7")
 	host.Set("public_ip6", "2a01:4f8::7")
@@ -71,7 +73,7 @@ func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
 		t.Fatal(err)
 	}
 	_, admin := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
-	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, admin: admin}
+	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, edge: agent, admin: admin}
 }
 
 func (d *dnsHarness) connect(token string) (int, map[string]any) {

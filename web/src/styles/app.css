@@ -590,6 +590,8 @@ code,
 /* Tables scroll inside their own container on small screens */
 .table-scroll {
   overflow-x: auto;
+  /* the containing block of visually hidden headers, which it clips */
+  position: relative;
 }
 
 .table {
@@ -1997,4 +1999,132 @@ textarea.input {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* Certificates (#23) */
+.card-pad {
+  padding: 16px 18px;
+}
+
+.pre-line {
+  white-space: pre-line;
+}
+
+.cert-names {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 220px;
+}
+
+.cert-names > div {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cert-lock {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.cert-lock.ok {
+  color: var(--ok-text);
+}
+
+.cert-lock.warn {
+  color: var(--warn-text);
+}
+
+.cert-lock.err {
+  color: var(--err-text);
+}
+
+.cert-error {
+  max-width: 48ch;
+  white-space: pre-line;
+}
+
+.cert-validity {
+  display: grid;
+  gap: 5px;
+  min-width: 150px;
+}
+
+.cert-fingerprint {
+  overflow-wrap: anywhere;
+}
+
+.row-actions.start {
+  justify-content: flex-start;
+}
+
+td .row-actions {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+/* A dialog as a side panel: the details of a record. */
+.dialog.drawer {
+  margin: 0 0 0 auto;
+  height: 100dvh;
+  max-height: 100dvh;
+  width: min(560px, 100vw);
+  border-radius: 0;
+  border-width: 0 0 0 1px;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog.drawer:not([open]) {
+  display: none;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.drawer-heading {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.drawer details summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.acme-accounts {
+  display: grid;
+  gap: 20px;
+}
+
+.acme-account {
+  display: grid;
+  gap: 8px;
+}
+
+.acme-account + .acme-account {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.acme-account-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.acme-account-head h3 {
+  font-size: 14px;
+  font-weight: 600;
 }

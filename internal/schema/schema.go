@@ -34,6 +34,7 @@ const (
 	DNSProviders      = "dns_providers"
 	DNSZones          = "dns_zones"
 	DNSRecords        = "dns_records"
+	ACMEAccounts      = "acme_accounts"
 )
 
 // Reserved names of collections that land with later features. They are listed
@@ -41,7 +42,6 @@ const (
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
 	"sites", "site_php", "deployments", "scheduled_tasks",
-	"acme_accounts",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -144,6 +144,23 @@ const (
 
 	CertActive  = "active"
 	CertExpired = "expired"
+	// an ACME certificate before its first issuance, and after that failed
+	CertPending = "pending"
+	CertFailed  = "failed"
+)
+
+// ACME accounts: the primary one issues, the fallback one when the primary
+// one fails; and the challenges an ACME certificate can be checked with.
+const (
+	ACMEPrimary  = "primary"
+	ACMEFallback = "fallback"
+
+	ACMEOK    = "ok"
+	ACMEError = "error"
+
+	ChallengeAuto   = "auto"
+	ChallengeHTTP01 = "http-01"
+	ChallengeDNS01  = "dns-01"
 )
 
 // Severity of events and alerts.
@@ -171,7 +188,7 @@ var Encrypted = map[string][]string{
 	"sites":                 {"webhook_secret", "basic_auth"},
 	"site_php":              {"secrets"},
 	DNSProviders:            {"credentials"},
-	"acme_accounts":         {"key", "eab_hmac"},
+	ACMEAccounts:            {"key", "eab_hmac"},
 	Certificates:            {"key_pem"},
 	DBServers:               {"admin_password"},
 	DBUsers:                 {"password", "pending_password"},
@@ -221,7 +238,10 @@ var Audited = []AuditedCollection{
 	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error"}},
 	{Name: DNSProviders, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: DNSZones, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
-	{Name: Certificates, Label: "names", Ignore: []string{"status", "attempts", "last_error", "installed"}},
+	{Name: Certificates, Label: "names", Ignore: []string{
+		"status", "attempts", "last_error", "installed", "renew_after", "next_attempt", "attempt_started", "history",
+	}},
+	{Name: ACMEAccounts, Label: "directory_url", Ignore: []string{"status", "last_error", "uri", "registered_at"}},
 	{Name: DBServers, Label: "name", Host: "host", Ignore: []string{
 		"status", "size_bytes", "connections", "max_connections", "version", "stats_at", "last_error", "container_ref",
 	}},

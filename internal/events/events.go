@@ -37,7 +37,8 @@ func Log(app core.App, host, kind, severity, message string, data map[string]any
 }
 
 // RaiseAlert opens an alert for a rule and target, or refreshes the open one, so
-// that a problem that lasts never produces more than one alert.
+// that a problem that lasts never produces more than one alert. The open one
+// takes the new message and severity.
 func RaiseAlert(app core.App, rule, target, host, severity, message string) error {
 	now := types.NowDateTime()
 
@@ -48,6 +49,8 @@ func RaiseAlert(app core.App, rule, target, host, severity, message string) erro
 	if len(open) > 0 {
 		open[0].Set("last_seen", now)
 		open[0].Set("message", message)
+		// a problem that grows, as a certificate closer to its expiry
+		open[0].Set("severity", severity)
 		return app.Save(open[0])
 	}
 

@@ -22,11 +22,13 @@ func (e *RevertError) Error() string {
 // revertible lists collections restored by this generic revert. Stacks are not
 // among them: they revert by deploying an older revision as a new one. Nor are
 // certificates: a certificate brought back has no key and claims files that
-// are gone from the edges; it is uploaded again instead.
+// are gone from the edges; it is uploaded again instead. Nor are ACME
+// accounts: one brought back has no key, or the key of another account, and
+// no registration at its CA; it is set again in Settings.
 func revertible(collection string) bool {
 	for _, c := range schema.Audited {
 		if c.Name == collection {
-			return collection != schema.Stacks && collection != schema.Certificates
+			return collection != schema.Stacks && collection != schema.Certificates && collection != schema.ACMEAccounts
 		}
 	}
 	return false

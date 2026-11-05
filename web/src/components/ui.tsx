@@ -2,6 +2,7 @@ import { Check, Copy, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -373,6 +374,7 @@ export function ConfirmDialog({
 }) {
   const { t } = useTranslation();
   const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const element = dialog.current;
@@ -388,8 +390,8 @@ export function ConfirmDialog({
   }, [open]);
 
   return (
-    <dialog ref={dialog} className="dialog" onCancel={onCancel}>
-      <h2>{title}</h2>
+    <dialog ref={dialog} className="dialog" aria-labelledby={titleId} onCancel={onCancel}>
+      <h2 id={titleId}>{title}</h2>
       {children}
       <div className="dialog-actions">
         <Button onClick={onCancel}>{t("common.cancel")}</Button>

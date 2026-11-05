@@ -720,8 +720,33 @@ func (a *Agent) applyEdge(ctx context.Context, payload *agentv1.EdgeApply, repor
 	if err := a.saveEdgeState(state); err != nil {
 		return nil, fmt.Errorf("the config is active, but the agent could not store it: %w", err)
 	}
+	a.removeReplacedCertFiles()
 
 	return map[string]any{"revision": state.Revision, "digest": state.Digest, "caddy_version": state.CaddyVersion}, nil
+}
+
+// removeReplacedCertFiles removes the older versions of the certificates the
+// loaded config uses. A renewed certificate is installed while the config in
+// use still refers to its old files, which can go once the new config is
+// loaded.
+func (a *Agent) removeReplacedCertFiles() {
+	used, err := a.usedCertFiles()
+	if err != nil {
+		a.Log.Warn("failed to read which certificate files the edge uses", "error", err)
+		return
+	}
+	current := map[string]string{}
+	for name := range used {
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".crt"), ".key")
+		if i := strings.LastIndex(base, "-"); i > 0 && isCertFile(base, base[:i]) {
+			current[base[:i]] = base
+		}
+	}
+	for id, keep := range current {
+		if _, _, err := a.removeCertFiles(id, keep); err != nil {
+			a.Log.Warn("failed to remove older certificate files", "certificate", id, "error", err)
+		}
+	}
 }
 
 // edgeCaddyVersion reads the Caddy version from the edge container's environment,

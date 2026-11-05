@@ -73,6 +73,8 @@ type Panel struct {
 	dnsLocks edgeLocks
 	// DNSChecker asks DNS servers whether records have propagated; tests set it.
 	DNSChecker atomic.Pointer[dns.Checker]
+	// acme is the ACME work: certificates from a CA (#23).
+	acme acmeState
 	// ManualEdges stops the panel from sending edges their configs by itself,
 	// for tests that send edge.apply themselves.
 	ManualEdges atomic.Bool
@@ -96,6 +98,7 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Commands: commands.NewManager(app),
 	}
 	p.SetEdgeImage(version.EdgeRef())
+	p.acme.init()
 	p.Updates = newUpdateBatches(p)
 	p.Streams = streams.New(p.Commands)
 	p.Audit.SealKey = p.AuditKey
@@ -151,6 +154,7 @@ func (p *Panel) Register() {
 	p.registerMoves()
 	p.registerEdge()
 	p.registerDNS()
+	p.registerACME()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -188,6 +192,7 @@ func (p *Panel) Register() {
 		p.bindDatabaseRoutes(group)
 		p.bindEdgeRoutes(group)
 		p.bindDNSRoutes(group)
+		p.bindACMERoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -199,6 +204,8 @@ func (p *Panel) Register() {
 	})
 
 	p.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		// issuances under way stop waiting for answers
+		p.stopACME()
 		p.later.stop()
 		p.Streams.Close()
 		if p.Gateway != nil {
