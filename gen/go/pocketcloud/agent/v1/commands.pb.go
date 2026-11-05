@@ -2124,7 +2124,7 @@ func (x *ExecStop) GetSessionId() string {
 }
 
 // SiteDeploy builds a site in a job container and activates the new release.
-// Not implemented before milestone M3.
+// A release that fails to build leaves the one the edge serves as it is.
 type SiteDeploy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// site is the site name, used for paths and container names.
@@ -2150,7 +2150,16 @@ type SiteDeploy struct {
 	// release_hook is run after the build (PHP sites).
 	ReleaseHook string `protobuf:"bytes,11,opt,name=release_hook,json=releaseHook,proto3" json:"release_hook,omitempty"`
 	// keep_releases is the number of old releases to keep.
-	KeepReleases  int32 `protobuf:"varint,12,opt,name=keep_releases,json=keepReleases,proto3" json:"keep_releases,omitempty"`
+	KeepReleases int32 `protobuf:"varint,12,opt,name=keep_releases,json=keepReleases,proto3" json:"keep_releases,omitempty"`
+	// source is git, upload or empty: where the release comes from.
+	Source string `protobuf:"bytes,13,opt,name=source,proto3" json:"source,omitempty"`
+	// generator is how the source is built: auto looks at its files; none
+	// serves it as it is; custom runs build_cmd in build_image.
+	Generator string `protobuf:"bytes,14,opt,name=generator,proto3" json:"generator,omitempty"`
+	// cpu_limit is the build's CPU limit, e.g. 1.5; 0 for the default.
+	CpuLimit float64 `protobuf:"fixed64,15,opt,name=cpu_limit,json=cpuLimit,proto3" json:"cpu_limit,omitempty"`
+	// mem_limit_bytes is the build's memory limit; 0 for the default.
+	MemLimitBytes int64 `protobuf:"varint,16,opt,name=mem_limit_bytes,json=memLimitBytes,proto3" json:"mem_limit_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2265,6 +2274,34 @@ func (x *SiteDeploy) GetReleaseHook() string {
 func (x *SiteDeploy) GetKeepReleases() int32 {
 	if x != nil {
 		return x.KeepReleases
+	}
+	return 0
+}
+
+func (x *SiteDeploy) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *SiteDeploy) GetGenerator() string {
+	if x != nil {
+		return x.Generator
+	}
+	return ""
+}
+
+func (x *SiteDeploy) GetCpuLimit() float64 {
+	if x != nil {
+		return x.CpuLimit
+	}
+	return 0
+}
+
+func (x *SiteDeploy) GetMemLimitBytes() int64 {
+	if x != nil {
+		return x.MemLimitBytes
 	}
 	return 0
 }
@@ -5012,7 +5049,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\")\n" +
 	"\bExecStop\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xff\x02\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xfa\x03\n" +
 	"\n" +
 	"SiteDeploy\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x1e\n" +
@@ -5032,7 +5069,11 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\fshared_paths\x18\n" +
 	" \x03(\tR\vsharedPaths\x12!\n" +
 	"\frelease_hook\x18\v \x01(\tR\vreleaseHook\x12#\n" +
-	"\rkeep_releases\x18\f \x01(\x05R\fkeepReleases\"B\n" +
+	"\rkeep_releases\x18\f \x01(\x05R\fkeepReleases\x12\x16\n" +
+	"\x06source\x18\r \x01(\tR\x06source\x12\x1c\n" +
+	"\tgenerator\x18\x0e \x01(\tR\tgenerator\x12\x1b\n" +
+	"\tcpu_limit\x18\x0f \x01(\x01R\bcpuLimit\x12&\n" +
+	"\x0fmem_limit_bytes\x18\x10 \x01(\x03R\rmemLimitBytes\"B\n" +
 	"\fSiteRollback\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x1e\n" +
 	"\n" +

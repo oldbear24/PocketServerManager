@@ -223,6 +223,7 @@ type ContainerState struct {
 	Restarting bool      `json:"Restarting"`
 	Pid        int       `json:"Pid"`
 	ExitCode   int       `json:"ExitCode"`
+	OOMKilled  bool      `json:"OOMKilled"`
 	Error      string    `json:"Error"`
 	StartedAt  time.Time `json:"StartedAt"`
 	FinishedAt time.Time `json:"FinishedAt"`
@@ -284,6 +285,24 @@ func timeoutQuery(seconds int) url.Values {
 		return nil
 	}
 	return url.Values{"t": {strconv.Itoa(seconds)}}
+}
+
+// Wait blocks until a container is no longer running and returns its exit
+// code. ctx bounds the wait.
+func (c *Client) Wait(ctx context.Context, id string) (int, error) {
+	var result struct {
+		StatusCode int `json:"StatusCode"`
+		Error      *struct {
+			Message string `json:"Message"`
+		} `json:"Error"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/containers/"+id+"/wait", url.Values{"condition": {"not-running"}}, nil, &result); err != nil {
+		return -1, err
+	}
+	if result.Error != nil && result.Error.Message != "" {
+		return result.StatusCode, errors.New(result.Error.Message)
+	}
+	return result.StatusCode, nil
 }
 
 // Remove removes a container.

@@ -321,7 +321,7 @@ message ExecStop {
 }
 
 // SiteDeploy builds a site in a job container and activates the new release.
-// Not implemented before milestone M3.
+// A release that fails to build leaves the one the edge serves as it is.
 message SiteDeploy {
   // site is the site name, used for paths and container names.
   string site = 1;
@@ -347,6 +347,15 @@ message SiteDeploy {
   string release_hook = 11;
   // keep_releases is the number of old releases to keep.
   int32 keep_releases = 12;
+  // source is git, upload or empty: where the release comes from.
+  string source = 13;
+  // generator is how the source is built: auto looks at its files; none
+  // serves it as it is; custom runs build_cmd in build_image.
+  string generator = 14;
+  // cpu_limit is the build's CPU limit, e.g. 1.5; 0 for the default.
+  double cpu_limit = 15;
+  // mem_limit_bytes is the build's memory limit; 0 for the default.
+  int64 mem_limit_bytes = 16;
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.
