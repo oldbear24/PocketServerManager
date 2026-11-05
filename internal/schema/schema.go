@@ -237,6 +237,9 @@ type AuditedCollection struct {
 	// Revision is the number field that counts the revisions of a record, if any.
 	// An entry of a save that moves it says from which revision to which.
 	Revision string
+	// Redact lists fields that may be read but are made from a secret: the
+	// audit only says that they changed, as it does for the secret.
+	Redact []string
 }
 
 // Audited lists the configuration collections covered by the change audit.
@@ -259,7 +262,7 @@ var Audited = []AuditedCollection{
 	{Name: "api_tokens", Label: "name", Ignore: []string{"last_used_at", "last_used_ip"}},
 	{Name: "alert_rules", Label: "kind"},
 	{Name: "notification_channels", Label: "kind"},
-	{Name: Sites, Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
+	{Name: Sites, Label: "name", Host: "host", Ignore: []string{"active_deployment"}, Redact: []string{"basic_auth_users"}},
 	{Name: "site_php", Label: "site"},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
 	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error", "label_removed"}},
@@ -283,4 +286,15 @@ var Audited = []AuditedCollection{
 // IsEncrypted reports whether a field holds a secret.
 func IsEncrypted(collection, field string) bool {
 	return slices.Contains(Encrypted[collection], field)
+}
+
+// IsRedacted reports whether the audit keeps a field's values out, as those
+// of a secret.
+func IsRedacted(collection, field string) bool {
+	for _, audited := range Audited {
+		if audited.Name == collection {
+			return slices.Contains(audited.Redact, field)
+		}
+	}
+	return false
 }

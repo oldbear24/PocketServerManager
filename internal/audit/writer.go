@@ -492,7 +492,7 @@ func isSecretField(collection string, field core.Field) bool {
 	if _, ok := field.(*core.PasswordField); ok {
 		return true
 	}
-	return field.GetHidden() || schema.IsEncrypted(collection, field.GetName())
+	return field.GetHidden() || schema.IsEncrypted(collection, field.GetName()) || schema.IsRedacted(collection, field.GetName())
 }
 
 // normalize turns a raw field value into plain JSON values, so that values can

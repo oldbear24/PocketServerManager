@@ -73,12 +73,18 @@ func (p *Panel) registerSites() {
 		}
 		return e.Next()
 	})
-	p.App.OnRecordAfterUpdateSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
-		if original := e.Record.Original(); original != nil && servedDifferently(original, e.Record) {
+	p.App.OnRecordUpdate(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
+		// the stored site, not the record's original: a record saved before
+		// can carry an original from before that save
+		stored, _ := e.App.FindRecordById(schema.Sites, e.Record.Id)
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if stored == nil || servedDifferently(stored, e.Record) {
 			host := e.Record.GetString("host")
 			p.later.after(edgeSettle, func() { p.applyEdgeLogged(host, false) })
 		}
-		return e.Next()
+		return nil
 	})
 	p.App.OnRecordAfterDeleteSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
 		site := e.Record
@@ -168,17 +174,23 @@ func (p *Panel) validateSite(e *core.RecordEvent) error {
 	if err := sites.ValidName(site.GetString("name")); err != nil {
 		set("name", "validation_invalid_site_name", capitalize(err.Error())+".")
 	}
-	if original := site.Original(); !site.IsNew() && original != nil {
-		if original.GetString("name") != site.GetString("name") {
+	// the stored site, not the record's original: a record saved before can
+	// carry an original from before that save
+	var stored *core.Record
+	if !site.IsNew() {
+		stored, _ = e.App.FindRecordById(schema.Sites, site.Id)
+	}
+	if stored != nil {
+		if stored.GetString("name") != site.GetString("name") {
 			set("name", "validation_site_name_fixed", "A site keeps its name: its files are kept under it.")
 		}
-		if original.GetString("host") != site.GetString("host") {
+		if stored.GetString("host") != site.GetString("host") {
 			set("host", "validation_site_host_fixed", "A site stays on its server.")
 		}
 	}
 	// a site keeps its server, so this is checked where the server is chosen;
 	// the panel's own saves of the site must not fail on it later
-	if original := site.Original(); site.IsNew() || original == nil || original.GetString("host") != site.GetString("host") {
+	if stored == nil || stored.GetString("host") != site.GetString("host") {
 		if host, err := e.App.FindRecordById(schema.Hosts, site.GetString("host")); err == nil && !hasEdgeRole(host) {
 			set("host", "validation_no_edge", "The server has no edge role: give it one first.")
 		}
