@@ -5,6 +5,7 @@ package fakedns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -128,7 +129,8 @@ func (p *Provider) GetRecords(_ context.Context, zone string) ([]libdns.Record, 
 	return out, nil
 }
 
-// AppendRecords adds records.
+// AppendRecords adds records. As real providers do, it refuses a CNAME next
+// to other records of its name.
 func (p *Provider) AppendRecords(_ context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -137,7 +139,13 @@ func (p *Provider) AppendRecords(_ context.Context, zone string, recs []libdns.R
 		return nil, err
 	}
 	for _, r := range recs {
-		records = append(records, r.RR())
+		rr := r.RR()
+		for _, other := range records {
+			if strings.EqualFold(other.Name, rr.Name) && (other.Type == "CNAME" || rr.Type == "CNAME") {
+				return nil, fmt.Errorf("a CNAME cannot be next to other records of %s", rr.Name)
+			}
+		}
+		records = append(records, rr)
 	}
 	p.zones[norm(zone)] = records
 	return recs, nil

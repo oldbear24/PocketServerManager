@@ -77,13 +77,40 @@ func Set(ctx context.Context, p Provider, zone string, records []Record, own ...
 		return err
 	}
 	drift := Compare(records, present, own...)
+	// a CNAME cannot have other records next to it: the ones in the way of a
+	// missing record go first, which leaves the name unresolved a moment
+	var first, later []Record
+	for _, foreign := range drift.Foreign {
+		if slices.ContainsFunc(drift.Missing, func(missing Record) bool { return conflicts(missing, foreign) }) {
+			first = append(first, foreign)
+		} else {
+			later = append(later, foreign)
+		}
+	}
+	if err := deleteRecords(ctx, p, zone, first); err != nil {
+		return err
+	}
 	if err := Append(ctx, p, zone, drift.Missing); err != nil {
 		return err
 	}
-	if len(drift.Foreign) == 0 {
+	return deleteRecords(ctx, p, zone, later)
+}
+
+// conflicts tells whether two records of a name cannot be there together:
+// a CNAME and anything else.
+func conflicts(a, b Record) bool {
+	if !strings.EqualFold(a.Name, b.Name) {
+		return false
+	}
+	cname := func(r Record) bool { return strings.EqualFold(r.Type, "CNAME") }
+	return cname(a) != cname(b) || cname(a) && cname(b)
+}
+
+func deleteRecords(ctx context.Context, p Provider, zone string, records []Record) error {
+	if len(records) == 0 {
 		return nil
 	}
-	converted, err := convert(drift.Foreign)
+	converted, err := convert(records)
 	if err != nil {
 		return err
 	}

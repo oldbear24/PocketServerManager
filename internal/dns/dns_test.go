@@ -227,6 +227,41 @@ func TestPropagationNeedsEveryServer(t *testing.T) {
 	}
 }
 
+// TestANameBecomesAnAliasAndBackAgain: a CNAME cannot be next to other
+// records of its name, so the addresses in its way go first, and the other
+// way round; records of other types and names stay.
+func TestANameBecomesAnAliasAndBackAgain(t *testing.T) {
+	ctx := context.Background()
+	fake := fakedns.New("example.com")
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "A", Data: "198.51.101.1"})
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "AAAA", Data: "2001:4860::1"})
+	fake.Put("example.com", libdns.RR{Name: "shop", Type: "A", Data: "198.51.101.9"})
+
+	alias := []Record{CNAMERecord("www.example.com", "example.com", "shop.example.com")}
+	if err := Set(ctx, fake, "example.com", alias, AddressSets("www")...); err != nil {
+		t.Fatal(err)
+	}
+	zone, _ := Get(ctx, fake, "example.com")
+	if drift := Compare(alias, zone, AddressSets("www")...); !drift.None() || len(zone) != 2 {
+		t.Fatalf("as an alias: %+v %+v", drift, zone)
+	}
+
+	// another target replaces the CNAME
+	other := []Record{CNAMERecord("www.example.com", "example.com", "store.example.com")}
+	if err := Set(ctx, fake, "example.com", other, AddressSets("www")...); err != nil {
+		t.Fatal(err)
+	}
+	// and addresses again replace it
+	addresses, _ := AddressRecords("www.example.com", "example.com", "203.0.114.7", "")
+	if err := Set(ctx, fake, "example.com", addresses, AddressSets("www")...); err != nil {
+		t.Fatal(err)
+	}
+	zone, _ = Get(ctx, fake, "example.com")
+	if drift := Compare(addresses, zone, AddressSets("www")...); !drift.None() || len(zone) != 2 {
+		t.Fatalf("with addresses again: %+v %+v", drift, zone)
+	}
+}
+
 // TestSetReplacesEveryOtherValueOfItsSets: a name with two A records (round
 // robin with an old server) ends with PocketCloud's only, and an AAAA record
 // of a server without IPv6 goes too, with the new record added first.

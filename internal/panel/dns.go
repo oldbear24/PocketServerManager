@@ -50,13 +50,14 @@ func (p *Panel) registerDNS() {
 	// an alias goes with the domain it is an alias of: its name would point
 	// at nothing
 	p.App.OnRecordDelete(schema.Domains).BindFunc(func(e *core.RecordEvent) error {
-		aliases, err := e.App.FindRecordsByFilter(schema.Domains, "dns_alias={:name} && host={:host}", "", 0, 0,
-			dbx.Params{"name": e.Record.GetString("hostname"), "host": e.Record.GetString("host")})
+		aliases, err := e.App.FindRecordsByFilter(schema.Domains, "dns_alias={:name}", "", 0, 0,
+			dbx.Params{"name": e.Record.GetString("hostname")})
 		if err != nil {
 			return err
 		}
 		for _, alias := range aliases {
-			if err := e.App.Delete(alias); err != nil {
+			// by whoever removed the domain
+			if err := e.App.DeleteWithContext(e.Context, alias); err != nil {
 				return err
 			}
 		}

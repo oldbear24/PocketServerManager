@@ -366,17 +366,38 @@ func TestAnAliasGetsACNAMEAndGoesWithItsDomain(t *testing.T) {
 		t.Errorf("the alias's DNS: %s", status)
 	}
 
-	// the name it is an alias of keeps its name, and takes the alias with it
+	// the name it is an alias of keeps its name and its server, is no alias
+	// itself, and takes the alias with it
 	apex.Set("hostname", "store.example.com")
 	if err := d.app.Save(apex); err == nil || !strings.Contains(err.Error(), "aliases") {
 		t.Errorf("renaming the aliased domain: %v", err)
 	}
+	other := testutil.NewHost(t, d.app, "other-edge")
+	other.Set("roles", []string{schema.HostRoleDocker, schema.HostRoleEdge})
+	if err := d.app.Save(other); err != nil {
+		t.Fatal(err)
+	}
+	apex, _ = d.app.FindRecordById(schema.Domains, apex.Id)
+	apex.Set("host", other.Id)
+	if err := d.app.Save(apex); err == nil || !strings.Contains(err.Error(), "aliases") {
+		t.Errorf("moving the aliased domain: %v", err)
+	}
+	third := d.domain("third.example.com")
+	apex, _ = d.app.FindRecordById(schema.Domains, apex.Id)
+	apex.Set("dns_alias", third.GetString("hostname"))
+	if err := d.app.Save(apex); err == nil || !strings.Contains(err.Error(), "alias") {
+		t.Errorf("an aliased domain became an alias: %v", err)
+	}
+	apex, _ = d.app.FindRecordById(schema.Domains, apex.Id)
 	if status, _ := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/collections/domains/records/" + apex.Id, Token: d.admin}); status != http.StatusNoContent {
 		t.Fatalf("removing the domain: %d", status)
 	}
 	d.waitFor("both names to go", func() bool {
-		left, _ := d.app.FindRecordsByFilter(schema.Domains, "", "", 0, 0)
-		return len(left) == 0 && len(cloudflareRecords(d.api, "example.com")) == 0
+		left, _ := d.app.FindRecordsByFilter(schema.Domains, "hostname!='third.example.com'", "", 0, 0)
+		records := cloudflareRecords(d.api, "example.com")
+		_, a := records["shop.example.com A"]
+		_, cname := records["www.shop.example.com CNAME"]
+		return len(left) == 0 && !a && !cname
 	})
 }
 

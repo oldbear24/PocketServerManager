@@ -134,11 +134,17 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		errs["host"] = validation.NewError("validation_no_edge", "The server has no edge role: give it one first.")
 	}
 
-	// a domain whose name others are an alias of keeps it
+	// a domain whose name others are an alias of keeps its name and its
+	// server, which the aliases reach through it
+	aliased := int64(0)
 	if !record.IsNew() {
-		if stored, err := e.App.FindRecordById(schema.Domains, record.Id); err == nil && stored.GetString("hostname") != hostname {
-			if aliases, _ := e.App.CountRecords(schema.Domains, dbx.HashExp{"dns_alias": stored.GetString("hostname")}); aliases > 0 {
+		if stored, err := e.App.FindRecordById(schema.Domains, record.Id); err == nil {
+			aliased, _ = e.App.CountRecords(schema.Domains, dbx.HashExp{"dns_alias": stored.GetString("hostname")})
+			switch {
+			case aliased > 0 && stored.GetString("hostname") != hostname:
 				errs["hostname"] = validation.NewError("validation_has_aliases", "Other domains are aliases of this name: remove them or point them elsewhere first.")
+			case aliased > 0 && stored.GetString("host") != record.GetString("host"):
+				errs["host"] = validation.NewError("validation_has_aliases", "Other domains are aliases of this name and are served by this server: remove them first.")
 			}
 		}
 	}
@@ -153,8 +159,8 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 			errs["dns_alias"] = validation.NewError("validation_alias_loop", "A domain cannot be an alias of itself.")
 		case err != nil || target.GetString("host") != record.GetString("host"):
 			errs["dns_alias"] = validation.NewError("validation_alias_elsewhere", "An alias points at a domain of the same server.")
-		case target.GetString("dns_alias") != "":
-			errs["dns_alias"] = validation.NewError("validation_alias_chain", "An alias points at a domain with addresses, not at another alias.")
+		case target.GetString("dns_alias") != "" || aliased > 0:
+			errs["dns_alias"] = validation.NewError("validation_alias_chain", "An alias points at a domain with addresses, not at another alias, and no domain is an alias of an alias.")
 		}
 	}
 
