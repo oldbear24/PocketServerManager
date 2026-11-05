@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/dns"
 	"github.com/oldbear24/PocketServerManager/internal/dns/fakecloudflare"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -56,6 +57,11 @@ type dnsHarness struct {
 }
 
 func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
+	return newDNSHarnessWith(t, nil, zones...)
+}
+
+// newDNSHarnessWith starts the edge agent with a change of its config.
+func newDNSHarnessWith(t *testing.T, configure func(*agent.Config), zones ...string) *dnsHarness {
 	h := newHarness(t)
 	api := fakecloudflare.New("cf-token", zones...)
 	t.Cleanup(api.Close)
@@ -65,7 +71,11 @@ func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
 	resolvers := &fakeResolvers{answers: map[string][]string{}}
 	h.panel.SetDNSChecker(resolvers.checker())
 
-	agent, host, _ := h.managedEdge("dns-edge")
+	changes := []func(*agent.Config){}
+	if configure != nil {
+		changes = append(changes, configure)
+	}
+	edgeAgent, host, _ := h.managedEdge("dns-edge", changes...)
 	host = h.host(host.Id)
 	host.Set("public_ip4", "203.0.114.7")
 	host.Set("public_ip6", "2a01:4f8::7")
@@ -73,7 +83,7 @@ func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
 		t.Fatal(err)
 	}
 	_, admin := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
-	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, edge: agent, admin: admin}
+	return &dnsHarness{harness: h, api: api, resolvers: resolvers, host: host, edge: edgeAgent, admin: admin}
 }
 
 func (d *dnsHarness) connect(token string) (int, map[string]any) {

@@ -153,6 +153,10 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 		record.Set("port", 0)
 	}
 
+	if err := validateBasicAuth(record); err != nil {
+		errs["basic_auth"] = validation.NewError("validation_invalid_basic_auth", capitalize(err.Error())+".")
+	}
+
 	if len(errs) > 0 {
 		return errs
 	}
@@ -283,6 +287,13 @@ func (p *Panel) buildEdgeConfig(app core.App, host *core.Record) (edgeConfig, er
 			HSTS:     domain.GetBool("hsts"),
 			Compress: domain.GetBool("compress"),
 		}
+		users, err := p.domainBasicAuth(domain)
+		if err != nil {
+			// served without its password it would be open to everyone
+			p.Log.Error("a domain is left out of its edge's config", "domain", route.Hostname, "error", err)
+			continue
+		}
+		route.BasicAuth = users
 		switch domain.GetString("target_kind") {
 		case schema.TargetContainer:
 			route.Kind = edge.KindProxy
@@ -698,9 +709,15 @@ type edgeRoute struct {
 	HSTS          bool           `json:"hsts"`
 	Compress      bool           `json:"compress"`
 	// DNSStatus and DNSError are the state of the domain's DNS records (#22).
-	DNSStatus string          `json:"dns_status"`
-	DNSError  string          `json:"dns_error"`
-	Domain    json.RawMessage `json:"-"`
+	DNSStatus string `json:"dns_status"`
+	DNSError  string `json:"dns_error"`
+	// Origin is "label" for a domain a stack's label asks for (#25).
+	Origin       string          `json:"origin"`
+	Stack        string          `json:"stack"`
+	Service      string          `json:"service"`
+	LabelRemoved bool            `json:"label_removed"`
+	Password     bool            `json:"password"`
+	Domain       json.RawMessage `json:"-"`
 }
 
 type edgeCertBrief struct {
@@ -742,6 +759,11 @@ func (p *Panel) handleEdgeState(e *core.RequestEvent) error {
 			Compress:      domain.GetBool("compress"),
 			DNSStatus:     domain.GetString("dns_status"),
 			DNSError:      domain.GetString("dns_error"),
+			Origin:        domain.GetString("origin"),
+			Stack:         domain.GetString("stack"),
+			Service:       domain.GetString("service"),
+			LabelRemoved:  domain.GetBool("label_removed"),
+			Password:      domain.GetString("basic_auth") != "",
 		}
 		if route.TargetKind == schema.TargetContainer {
 			route.Target = domain.GetString("container") + ":" + strconv.Itoa(domain.GetInt("port"))

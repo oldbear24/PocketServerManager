@@ -155,6 +155,7 @@ func (p *Panel) Register() {
 	p.registerEdge()
 	p.registerDNS()
 	p.registerACME()
+	p.registerLabels()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -193,6 +194,7 @@ func (p *Panel) Register() {
 		p.bindEdgeRoutes(group)
 		p.bindDNSRoutes(group)
 		p.bindACMERoutes(group)
+		p.bindLabelRoutes(group)
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
