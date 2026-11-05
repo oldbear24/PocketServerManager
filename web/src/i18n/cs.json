@@ -615,7 +615,8 @@
     },
     "dns": {
       "failed": "DNS záznamy pro {{domain}} se nepodařilo nastavit: {{error}}",
-      "drift": "DNS záznamy pro {{domain}} byly změněny mimo PocketCloud"
+      "drift": "DNS záznamy pro {{domain}} byly změněny mimo PocketCloud",
+      "remove_failed": "DNS záznamy odebrané domény {{domain}} se nepodařilo odebrat: {{error}}"
     }
   },
   "alert": {
@@ -1107,19 +1108,20 @@
     "domainTitle": "DNS pro {{hostname}}",
     "inZone": "zóna {{zone}} u {{provider}}",
     "noZoneFor": "v žádné připojené zóně",
-    "manualText": "Vytvoř tyto záznamy u DNS hostingu domény. PocketCloud je každou minutu ověřuje, dokud je neodpoví všechny resolvery.",
+    "manualText": "Vytvoř tyto záznamy u DNS hostingu domény. PocketCloud je každou minutu ověřuje, dokud je nebudou vracet všechny resolvery.",
     "records": "DNS záznamy",
     "recordName": "Název",
     "recordType": "Typ",
     "recordValue": "Hodnota",
     "resolves": "Překládá se",
     "resolvesYes": "všude",
-    "resolvesCount": "{{ok}} z {{count}} serverů",
+    "resolvesCount": "{{ok}}/{{count}} serverů",
     "checkNow": "Ověřit teď",
     "sync": "Nastavit záznamy znovu",
     "synced": "Záznamy byly nastaveny znovu.",
     "publicAddresses": "Veřejné adresy",
     "publicAddressesNote": "kam míří záznamy A a AAAA domén tohoto serveru",
-    "addressesSaved": "Veřejné adresy byly uloženy."
+    "addressesSaved": "Veřejné adresy byly uloženy.",
+    "testName": "Ověřit {{name}}"
   }
 }

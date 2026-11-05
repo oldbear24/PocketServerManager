@@ -31,6 +31,7 @@ function signInAs(role: User["role"]) {
 }
 
 const kinds: DnsKind[] = [
+  { kind: "manual", label: "Manual", fields: null, lists_zones: false, manual: true },
   {
     kind: "cloudflare",
     label: "Cloudflare",
@@ -113,6 +114,34 @@ describe("connecting a DNS provider", () => {
       await screen.findByText("WEDOS cannot list its zones: name at least one."),
     ).toBeInTheDocument();
     expect(connect.mock.calls[0][0].zones).toEqual(["example.cz", "shop.example.cz"]);
+  });
+});
+
+describe("switching kinds", () => {
+  it("takes the manual kind, which asks for no credentials", async () => {
+    vi.spyOn(dnsApi, "kinds").mockResolvedValue(kinds);
+    wrap(<ConnectDialog onClose={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "manual" } });
+    expect(screen.getByLabelText("Zones, separated by commas")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API token")).not.toBeInTheDocument();
+  });
+
+  it("sends no zones typed for another kind to one that lists its own", async () => {
+    vi.spyOn(dnsApi, "kinds").mockResolvedValue(kinds);
+    const connect = vi.spyOn(dnsApi, "connect").mockResolvedValue({
+      provider: { id: "p1", name: "Cloudflare", kind: "cloudflare", status: "ok" } as never,
+      zones: [],
+    });
+    wrap(<ConnectDialog onClose={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "wedos" } });
+    fireEvent.change(screen.getByLabelText("Zones, separated by commas"), {
+      target: { value: "example.cz" },
+    });
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "cloudflare" } });
+    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "t" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Connect a DNS provider" }).at(-1)!);
+    await waitFor(() => expect(connect).toHaveBeenCalled());
+    expect(connect.mock.calls[0][0].zones).toEqual([]);
   });
 });
 

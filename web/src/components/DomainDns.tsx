@@ -63,20 +63,30 @@ export function DomainDnsPanel({ domainId }: { domainId: string }) {
   const sync = async () => {
     setBusy(true);
     try {
-      setState(await dnsApi.sync(domainId));
+      await dnsApi.sync(domainId);
       toast.success(t("dns.synced"));
     } catch (err) {
       toast.error(err);
     } finally {
       setBusy(false);
     }
+    // what the servers answer now
+    await load(true);
   };
 
-  if (error) {
-    return <Banner tone="err">{error}</Banner>;
-  }
   if (!state) {
-    return <p className="muted">{t("common.loading")}</p>;
+    return error ? (
+      <div className="dialog-form">
+        <Banner tone="err">{error}</Banner>
+        <div className="row-actions">
+          <Button disabled={busy} onClick={() => void load(true)}>
+            {t("dns.checkNow")}
+          </Button>
+        </div>
+      </div>
+    ) : (
+      <p className="muted">{t("common.loading")}</p>
+    );
   }
 
   const answers = new Map(
@@ -93,6 +103,7 @@ export function DomainDnsPanel({ domainId }: { domainId: string }) {
             : t("dns.noZoneFor")}
         </span>
       </div>
+      {error && <Banner tone="err">{error}</Banner>}
       {state.problem && <Banner tone="err">{state.problem}</Banner>}
       {!state.problem && state.error && <Banner tone="warn">{state.error}</Banner>}
       {state.manual && !state.problem && <p>{t("dns.manualText")}</p>}

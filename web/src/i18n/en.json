@@ -585,7 +585,8 @@
     },
     "dns": {
       "failed": "The DNS records of {{domain}} could not be set: {{error}}",
-      "drift": "The DNS records of {{domain}} were changed outside PocketCloud"
+      "drift": "The DNS records of {{domain}} were changed outside PocketCloud",
+      "remove_failed": "The DNS records of the removed domain {{domain}} could not be removed: {{error}}"
     }
   },
   "alert": {
@@ -1072,6 +1073,7 @@
     "synced": "The records were set again.",
     "publicAddresses": "Public addresses",
     "publicAddressesNote": "what the A and AAAA records of this server's domains point at",
-    "addressesSaved": "The public addresses were saved."
+    "addressesSaved": "The public addresses were saved.",
+    "testName": "Test {{name}}"
   }
 }

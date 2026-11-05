@@ -47,7 +47,16 @@ export function DomainsPage() {
         }
       />
 
-      <ProvidersCard providers={providers.items} zones={zones.items} isAdmin={isAdmin} />
+      {providers.error ? (
+        <Banner tone="err">{errorMessage(providers.error)}</Banner>
+      ) : (
+        <ProvidersCard
+          providers={providers.items}
+          zones={zones.items}
+          isAdmin={isAdmin}
+          loading={providers.loading}
+        />
+      )}
       <ZonesCard
         providers={providers.items}
         zones={zones.items}
@@ -73,10 +82,12 @@ function ProvidersCard({
   providers,
   zones,
   isAdmin,
+  loading,
 }: {
   providers: DnsProvider[];
   zones: DnsZone[];
   isAdmin: boolean;
+  loading: boolean;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -115,7 +126,9 @@ function ProvidersCard({
 
   return (
     <Card title={t("dns.providers")}>
-      {providers.length === 0 ? (
+      {loading && providers.length === 0 ? (
+        <p className="muted">{t("common.loading")}</p>
+      ) : providers.length === 0 ? (
         <EmptyState title={t("dns.noProviders")}>{t("dns.noProvidersText")}</EmptyState>
       ) : (
         <ul className="list dns-providers">
@@ -148,7 +161,11 @@ function ProvidersCard({
                 </div>
                 {isAdmin && (
                   <div className="dns-provider-actions">
-                    <Button disabled={busy === provider.id} onClick={() => void test(provider)}>
+                    <Button
+                      disabled={busy === provider.id}
+                      aria-label={t("dns.testName", { name: provider.name })}
+                      onClick={() => void test(provider)}
+                    >
                       <RefreshCw size={14} aria-hidden="true" /> {t("dns.test")}
                     </Button>
                     <IconButton
@@ -295,7 +312,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
   const driver = kinds.find((k) => k.kind === kind);
 
   const connect = async () => {
-    if (!driver) {
+    if (!driver || busy) {
       return;
     }
     setBusy(true);
@@ -305,10 +322,13 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
         name: name.trim() || driver.label,
         kind,
         credentials,
-        zones: zones
-          .split(/[\s,]+/)
-          .map((zone) => zone.trim())
-          .filter(Boolean),
+        // a kind whose API lists its zones takes none
+        zones: driver.lists_zones
+          ? []
+          : zones
+              .split(/[\s,]+/)
+              .map((zone) => zone.trim())
+              .filter(Boolean),
       });
       if (result.provider.status === "error") {
         // saved, but its API said no: the card shows why too
@@ -331,6 +351,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
       open
       title={t("dns.connectTitle")}
       confirmLabel={busy ? t("dns.connecting") : t("dns.connect")}
+      confirmDisabled={busy || !driver}
       onCancel={onClose}
       onConfirm={() => void connect()}
     >
@@ -343,6 +364,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
             onChange={(event) => {
               setKind(event.target.value);
               setCredentials({});
+              setZones("");
             }}
           >
             {kinds.map((k) => (
@@ -366,7 +388,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        {driver?.fields.map((field) => (
+        {(driver?.fields ?? []).map((field) => (
           <Field
             key={field.name}
             label={t(`dns.field.${field.name}`, { defaultValue: field.name })}

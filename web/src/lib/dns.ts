@@ -9,7 +9,8 @@ export type DnsStatus = "unknown" | "ok" | "error" | "pending" | "drift" | "manu
 export type DnsKind = {
   kind: string;
   label: string;
-  fields: { name: string; secret: boolean; optional?: boolean }[];
+  /** null for a kind without credentials, as the manual one */
+  fields: { name: string; secret: boolean; optional?: boolean }[] | null;
   lists_zones: boolean;
   manual: boolean;
   note?: string;
