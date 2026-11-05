@@ -36,6 +36,8 @@ const (
 	defaultBuildMemory = 2 << 30
 	// cleanupTimeout bounds removing what a failed deployment left
 	cleanupTimeout = time.Minute
+	// releaseTimeout bounds making a release live, which a cancel does not stop
+	releaseTimeout = 10 * time.Minute
 )
 
 // toolRun is one run of the site tool.
@@ -153,8 +155,15 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 	if keep < 1 {
 		keep = 5
 	}
-	out, err = runner.Tool(ctx, toolRun{Site: site, Deployment: n, Args: append([]string{"release",
-		"--output", plan.Output, "--keep", strconv.Itoa(keep)}, deployment...)}, reporter)
+	releaseArgs := append([]string{"release", "--output", plan.Output, "--keep", strconv.Itoa(keep)}, deployment...)
+	if plan.Command != "" {
+		releaseArgs = append(releaseArgs, "--built")
+	}
+	// once the switch may have happened, a cancel must not leave the panel
+	// believing the old release is served
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	out, err = runner.Tool(releaseCtx, toolRun{Site: site, Deployment: n, Args: releaseArgs}, reporter)
 	if err != nil {
 		return failed(err)
 	}
@@ -310,8 +319,9 @@ func (d dockerSites) Tool(ctx context.Context, run toolRun, log io.Writer) ([]by
 }
 
 func (d dockerSites) Build(ctx context.Context, run buildRun, log io.Writer) error {
-	fmt.Fprintf(log, "Pulling %s\n", run.Plan.Image)
-	if err := d.a.Docker.Pull(ctx, run.Plan.Image, nil, nil); err != nil {
+	image := withTag(run.Plan.Image)
+	fmt.Fprintf(log, "Pulling %s\n", image)
+	if err := d.a.Docker.Pull(ctx, image, nil, nil); err != nil {
 		return fmt.Errorf("the build image %s could not be pulled: %w", run.Plan.Image, err)
 	}
 	mount, err := d.sitesMount(ctx, path.Join(run.Site, ".build", strconv.Itoa(run.Deployment), "src"), "/src")
@@ -327,7 +337,7 @@ func (d dockerSites) Build(ctx context.Context, run buildRun, log io.Writer) err
 	}
 	fmt.Fprintf(log, "$ %s\n", run.Plan.Command)
 	config := map[string]any{
-		"Image":      run.Plan.Image,
+		"Image":      image,
 		"Entrypoint": []string{"/bin/sh", "-c"},
 		"Cmd":        []string{run.Plan.Command},
 		"WorkingDir": "/src",
@@ -356,6 +366,50 @@ func (d dockerSites) Build(ctx context.Context, run buildRun, log io.Writer) err
 		return fmt.Errorf("the build failed with exit code %d", exit.code)
 	}
 	return err
+}
+
+// withTag gives an image without a tag or digest the latest tag, as docker
+// run does: without one, a pull fetches every tag of the repository.
+func withTag(image string) string {
+	if strings.Contains(image, "@") {
+		return image
+	}
+	name := image[strings.LastIndex(image, "/")+1:]
+	if strings.Contains(name, ":") {
+		return image
+	}
+	return image + ":latest"
+}
+
+// cleanupSiteJobs removes what deployments left when the agent stopped in the
+// middle of one: their job containers, the downloads of their uploads, and
+// their build directories on the sites volume.
+func (a *Agent) cleanupSiteJobs(ctx context.Context) {
+	if a.Config.LocalSites != "" {
+		return
+	}
+	containers, err := a.Docker.Containers(ctx)
+	if err != nil {
+		return
+	}
+	for _, container := range containers {
+		if container.Labels[siteLabel] != "" && container.Labels["pocketcloud.role"] == "job" {
+			if err := a.Docker.Remove(ctx, container.ID, true, true); err != nil {
+				a.Log.Warn("failed to remove a site's job container", "container", container.ID, "error", err)
+			}
+		}
+	}
+	if uploads, err := filepath.Glob(filepath.Join(a.Config.StateDir, "site-upload-*.zip")); err == nil {
+		for _, upload := range uploads {
+			_ = os.Remove(upload)
+		}
+	}
+	if _, err := a.Docker.InspectVolume(ctx, sites.Volume); err != nil {
+		return
+	}
+	if _, err := (dockerSites{a: a}).Tool(ctx, toolRun{Args: []string{"sweep"}}, io.Discard); err != nil {
+		a.Log.Warn("failed to remove what interrupted deployments left", "error", err)
+	}
 }
 
 // exitError is a job container that ended with a code other than 0.

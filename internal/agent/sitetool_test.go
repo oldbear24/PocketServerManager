@@ -146,7 +146,12 @@ func TestTheSiteToolUnpacksAnUploadAndPlansItsBuild(t *testing.T) {
 	}
 
 	// the site's own choice wins over what the files say
-	found, _ = tool(t, root, nil, "source", "--site", "docs", "--n", "2", "--kind", "empty", "--generator", "custom", "--image", "alpine:3.22", "--command", "make", "--output", "out")
+	second := filepath.Join(sites.BuildDir(root, "docs", 2), sites.UploadName)
+	_ = os.MkdirAll(filepath.Dir(second), 0o755)
+	if err := os.WriteFile(second, buffer.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	found, _ = tool(t, root, nil, "source", "--site", "docs", "--n", "2", "--kind", "upload", "--generator", "custom", "--image", "alpine:3.22", "--command", "make", "--output", "out")
 	if plan := found["plan"].(map[string]any); plan["image"] != "alpine:3.22" || plan["command"] != "make" || plan["output"] != "out" {
 		t.Errorf("custom: %v", plan)
 	}
@@ -193,5 +198,88 @@ func TestTheSiteToolRefusesWhatIsNotASite(t *testing.T) {
 		if _, err := tool(t, root, nil, args...); err == nil {
 			t.Errorf("%v was accepted", args)
 		}
+	}
+}
+
+func TestATokenGoesToTheRepositorysServerOnly(t *testing.T) {
+	env, err := gitEnv("https://git.example.com:8443/me/blog.git", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "GIT_CONFIG_KEY_0=http.https://git.example.com:8443/.extraHeader") || strings.Contains(joined, "GIT_CONFIG_KEY_0=http.extraHeader") {
+		t.Errorf("the header is not scoped: %s", joined)
+	}
+	if _, err := gitEnv("http://git.example.com/me/blog.git", "tok"); err == nil {
+		t.Error("a token over plain HTTP")
+	}
+	if env, _ := gitEnv("http://git.example.com/me/blog.git", ""); strings.Contains(strings.Join(env, "\n"), "extraHeader") {
+		t.Error("a header without a token")
+	}
+}
+
+func TestImagesWithoutATagGetLatest(t *testing.T) {
+	for image, want := range map[string]string{
+		"node":                         "node:latest",
+		"node:22-alpine":               "node:22-alpine",
+		"localhost:5000/hugo":          "localhost:5000/hugo:latest",
+		"localhost:5000/hugo:0.152":    "localhost:5000/hugo:0.152",
+		"ghcr.io/a/b@sha256:" + "0123": "ghcr.io/a/b@sha256:0123",
+	} {
+		if got := withTag(image); got != want {
+			t.Errorf("%s: %s, not %s", image, got, want)
+		}
+	}
+}
+
+// TestWhatADeploymentLeftIsRemoved: a failed deployment's release, and what
+// deployments an agent restart ended left, go; the served release stays.
+func TestWhatADeploymentLeftIsRemoved(t *testing.T) {
+	root := t.TempDir()
+	for _, n := range []string{"1", "2"} {
+		if _, err := tool(t, root, nil, "source", "--site", "blog", "--n", n, "--kind", "empty"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tool(t, root, nil, "release", "--site", "blog", "--n", "1"); err != nil {
+		t.Fatal(err)
+	}
+	// a release that was made but never switched to, as a cancel may leave it
+	if _, err := sites.MakeRelease(root, "blog", 2, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool(t, root, nil, "clean", "--site", "blog", "--n", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if releases := sites.Releases(root, "blog"); len(releases) != 1 || releases[0] != 1 {
+		t.Errorf("releases after clean: %v", releases)
+	}
+
+	// deployments an agent restart ended
+	for _, n := range []string{"3", "4"} {
+		if _, err := tool(t, root, nil, "source", "--site", "blog", "--n", n, "--kind", "empty"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tool(t, root, nil, "sweep"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, "blog", ".build")); len(entries) != 0 {
+		t.Errorf("left after the sweep: %v", entries)
+	}
+	if sites.Current(root, "blog") != 1 {
+		t.Error("the sweep changed the served release")
+	}
+}
+
+func TestAPlaceholderIsNotBuilt(t *testing.T) {
+	root := t.TempDir()
+	found, err := tool(t, root, nil, "source", "--site", "blog", "--n", "1", "--kind", "empty",
+		"--generator", "hugo", "--command", "hugo", "--output", "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan := found["plan"].(map[string]any); plan["generator"] != sites.GeneratorNone || plan["command"] != nil || plan["output"] != nil {
+		t.Errorf("the placeholder's plan: %v", plan)
 	}
 }

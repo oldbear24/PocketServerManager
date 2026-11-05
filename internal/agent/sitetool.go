@@ -8,9 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/oldbear24/PocketServerManager/internal/sites"
@@ -25,13 +27,17 @@ import (
 //	             --kind git (--url, --branch, GIT_TOKEN), upload or empty;
 //	             then say how to build it (--generator, --image, --command,
 //	             --output)
-//	release      move the built site into its release, switch the site to it,
-//	             keep --keep releases and clean up the deployment
+//	release      move the built site into its release (--built: a build ran
+//	             and left an output of its own), switch the site to it, keep
+//	             --keep releases and clean up the deployment
 //	switch       serve release --n
-//	clean        remove what deployment --n left
+//	clean        remove what deployment --n left, its release too unless the
+//	             site serves it
 //	remove       remove the site
+//	sweep        remove what deployments of every site left, after an agent
+//	             restart ended them
 //
-// Every op takes --root (the volume's mount point) and --site.
+// Every op takes --root (the volume's mount point), and all but sweep --site.
 
 // sourceResult is what the source op found.
 type sourceResult struct {
@@ -59,20 +65,24 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	site := flags.String("site", "", "the site")
 	n := flags.Int("n", 0, "the deployment")
 	kind := flags.String("kind", "", "the source: git, upload or empty")
-	url := flags.String("url", "", "the Git repository")
+	repo := flags.String("url", "", "the Git repository")
 	branch := flags.String("branch", "", "the Git branch")
 	generator := flags.String("generator", sites.GeneratorAuto, "how to build the source")
 	image := flags.String("image", "", "the build image")
 	command := flags.String("command", "", "the build command")
 	output := flags.String("output", "", "where the build leaves the site")
 	keep := flags.Int("keep", 5, "how many releases to keep")
+	built := flags.Bool("built", false, "a build ran")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
+	}
+	if op == "sweep" {
+		return sweepBuilds(*root, stdout, stderr)
 	}
 	if err := sites.ValidName(*site); err != nil {
 		return err
 	}
-	needsDeployment := op != "remove"
+	needsDeployment := op != "remove" && op != "sweep"
 	if needsDeployment && *n < 1 {
 		return errors.New("site-tool: --n names the deployment")
 	}
@@ -80,34 +90,39 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	var result any
 	switch op {
 	case "source":
-		found, err := siteSource(ctx, *root, *site, *n, *kind, *url, *branch, env["GIT_TOKEN"], stderr)
+		found, err := siteSource(ctx, *root, *site, *n, *kind, *repo, *branch, env["GIT_TOKEN"], stderr)
 		if err != nil {
 			return err
 		}
-		chosen := *generator
-		if chosen == "" || chosen == sites.GeneratorAuto {
+		switch chosen := *generator; {
+		case *kind == sites.SourceEmpty:
+			// the placeholder is a page of its own, not a source to build
+			found.Plan = sites.Plan{Generator: sites.GeneratorNone}
+		case chosen == "" || chosen == sites.GeneratorAuto:
 			chosen = sites.Detect(sites.SourceDir(*root, *site, *n))
 			fmt.Fprintf(stderr, "The source looks like %s.\n", describeGenerator(chosen))
+			found.Plan = sites.PlanFor(chosen, *image, *command, *output)
+		default:
+			found.Plan = sites.PlanFor(chosen, *image, *command, *output)
 		}
-		found.Plan = sites.PlanFor(chosen, *image, *command, *output)
 		result = found
 	case "release":
-		release, err := sites.MakeRelease(*root, *site, *n, *output)
+		release, err := sites.MakeRelease(*root, *site, *n, *output, *built)
 		if err != nil {
 			return err
 		}
 		if err := sites.Switch(*root, *site, *n); err != nil {
 			return err
 		}
-		left, err := sites.Prune(*root, *site, max(*keep, 1))
-		if err != nil {
-			return err
+		fmt.Fprintf(stderr, "Release %d is live: %d files, %d bytes.\n", *n, release.Files, release.SizeBytes)
+		// the release is live from here on, whatever tidying up fails
+		if _, err := sites.Prune(*root, *site, max(*keep, 1)); err != nil {
+			fmt.Fprintf(stderr, "Old releases could not all be removed: %v\n", err)
 		}
 		if err := sites.Clean(*root, *site, *n); err != nil {
-			return err
+			fmt.Fprintf(stderr, "The build directory could not be removed: %v\n", err)
 		}
-		fmt.Fprintf(stderr, "Release %d is live: %d files, %d bytes.\n", *n, release.Files, release.SizeBytes)
-		result = releaseResult{Release: release, Releases: left}
+		result = releaseResult{Release: release, Releases: sites.Releases(*root, *site)}
 	case "switch":
 		if err := sites.Switch(*root, *site, *n); err != nil {
 			return err
@@ -116,6 +131,12 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	case "clean":
 		if err := sites.Clean(*root, *site, *n); err != nil {
 			return err
+		}
+		// a release that never went live
+		if sites.Current(*root, *site) != *n {
+			if err := os.RemoveAll(sites.ReleaseDir(*root, *site, *n)); err != nil {
+				return err
+			}
 		}
 		result = map[string]int{}
 	case "remove":
@@ -151,14 +172,14 @@ func describeGenerator(generator string) string {
 // siteSource makes the deployment's directories and puts its source there.
 // An upload is already in the build directory, put there before the tool
 // started.
-func siteSource(ctx context.Context, root, site string, n int, kind, url, branch, token string, log io.Writer) (sourceResult, error) {
+func siteSource(ctx context.Context, root, site string, n int, kind, repo, branch, token string, log io.Writer) (sourceResult, error) {
 	src := sites.SourceDir(root, site, n)
 	if err := sites.Prepare(root, site, n); err != nil {
 		return sourceResult{}, err
 	}
 	switch kind {
 	case sites.SourceGit:
-		return gitClone(ctx, url, branch, token, src, log)
+		return gitClone(ctx, repo, branch, token, src, log)
 	case sites.SourceUpload:
 		upload := filepath.Join(sites.BuildDir(root, site, n), sites.UploadName)
 		fmt.Fprintln(log, "Unpacking the upload.")
@@ -175,28 +196,27 @@ func siteSource(ctx context.Context, root, site string, n int, kind, url, branch
 // gitClone checks out the newest commit of a branch, with its submodules
 // (Hugo themes often are). A token goes to Git in its environment, not on its
 // command line, and is never written out.
-func gitClone(ctx context.Context, url, branch, token, src string, log io.Writer) (sourceResult, error) {
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
-	if token != "" {
-		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-		env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
+func gitClone(ctx context.Context, repo, branch, token, src string, log io.Writer) (sourceResult, error) {
+	env, err := gitEnv(repo, token)
+	if err != nil {
+		return sourceResult{}, err
 	}
 	args := []string{"clone", "--depth", "1", "--single-branch", "--no-tags", "--recurse-submodules", "--shallow-submodules"}
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
-	args = append(args, "--", url, src)
-	fmt.Fprintf(log, "$ git clone %s (%s)\n", url, branchOrDefault(branch))
+	args = append(args, "--", repo, src)
+	fmt.Fprintf(log, "$ git clone %s (%s)\n", repo, branchOrDefault(branch))
 
 	clone := exec.CommandContext(ctx, "git", args...)
 	clone.Env = env
 	clone.Stdout = log
 	clone.Stderr = log
 	if err := clone.Run(); err != nil {
-		return sourceResult{}, fmt.Errorf("git could not clone %s: %w", url, err)
+		return sourceResult{}, fmt.Errorf("git could not clone %s: %w", repo, err)
 	}
 
-	show := exec.CommandContext(ctx, "git", "-C", src, "log", "-1", "--format=%H%n%s")
+	show := exec.CommandContext(ctx, "git", "-C", src, "log", "-1", "--format=%H%n%s") //nolint:gosec // the deployment's own checkout
 	show.Env = env
 	out, err := show.Output()
 	if err != nil {
@@ -205,6 +225,24 @@ func gitClone(ctx context.Context, url, branch, token, src string, log io.Writer
 	commit, message, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	fmt.Fprintf(log, "Commit %s: %s\n", shortCommit(commit), message)
 	return sourceResult{Commit: commit, Message: message}, nil
+}
+
+// gitEnv is the environment of Git: no prompts, and a token, if any, as a
+// header for the repository's own server only, so a submodule elsewhere or one
+// over plain HTTP never gets it.
+func gitEnv(repo, token string) ([]string, error) {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
+	if token == "" {
+		return env, nil
+	}
+	origin, err := url.Parse(repo)
+	if err != nil || origin.Scheme != "https" || origin.Host == "" {
+		return nil, errors.New("a token is only sent to an HTTPS repository")
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return append(env, "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://"+origin.Host+"/.extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic "+basic), nil
 }
 
 func branchOrDefault(branch string) string {
@@ -219,4 +257,37 @@ func shortCommit(commit string) string {
 		return commit[:7]
 	}
 	return commit
+}
+
+// sweepBuilds removes the build directories of every site, and the releases
+// that never went live: what deployments left that an agent restart ended.
+func sweepBuilds(root string, stdout, stderr io.Writer) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	removed := 0
+	for _, entry := range entries {
+		site := entry.Name()
+		if !entry.IsDir() || sites.ValidName(site) != nil {
+			continue
+		}
+		builds, _ := os.ReadDir(filepath.Join(root, site, ".build"))
+		for _, build := range builds {
+			n, err := strconv.Atoi(build.Name())
+			if err != nil {
+				continue
+			}
+			if err := sites.Clean(root, site, n); err != nil {
+				return err
+			}
+			if sites.Current(root, site) != n {
+				_ = os.RemoveAll(sites.ReleaseDir(root, site, n))
+			}
+			removed++
+		}
+	}
+	fmt.Fprintf(stderr, "Removed what %d deployments left.\n", removed)
+	_, err = fmt.Fprintf(stdout, "{\"removed\":%d}\n", removed)
+	return err
 }

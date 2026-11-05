@@ -189,10 +189,11 @@ type Release struct {
 
 // MakeRelease moves the built site from a deployment's source into release n,
 // without what a site never serves (.git), and adds a gzip copy of the files
-// that compress, which the edge sends to browsers that take it.
-func MakeRelease(root, site string, n int, output string) (Release, error) {
+// that compress, which the edge sends to browsers that take it. built says
+// whether a build ran, which must leave an output of its own.
+func MakeRelease(root, site string, n int, output string, built bool) (Release, error) {
 	src := SourceDir(root, site, n)
-	dir, err := FindOutput(src, output)
+	dir, err := FindOutput(src, output, built)
 	if err != nil {
 		return Release{}, err
 	}
@@ -224,8 +225,9 @@ func MakeRelease(root, site string, n int, output string) (Release, error) {
 			return err
 		}
 		if !entry.Type().IsRegular() {
-			// a symlink from the build could point anywhere on the volume
-			return os.Remove(path)
+			// a symlink from the build could point anywhere on the volume; the
+			// build has ended, so nothing changes the release meanwhile
+			return os.Remove(path) //nolint:gosec // see above
 		}
 		if isPrecompressed(path) {
 			return nil

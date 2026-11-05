@@ -2,8 +2,10 @@ package sites
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Generators a site can be built with. GeneratorAuto looks at the source.
@@ -81,7 +83,8 @@ func Detect(src string) string {
 	}
 	switch {
 	case exists("hugo.toml", "hugo.yaml", "hugo.yml", "hugo.json"),
-		exists("config.toml", "config.yaml") && exists("content", "layouts", "themes", "archetypes"):
+		exists("config.toml", "config.yaml", "config.yml", "config.json", filepath.Join("config", "_default")) &&
+			exists("content", "layouts", "themes", "archetypes"):
 		return GeneratorHugo
 	case exists("mkdocs.yml", "mkdocs.yaml"):
 		return GeneratorMkDocs
@@ -108,29 +111,55 @@ func hasBuildScript(path string) bool {
 var outputCandidates = []string{"dist", "build", "out", "public", "_site", "site"}
 
 // FindOutput is the directory of the built site: the plan's, or the first of
-// the usual ones with an index.html, or the source itself.
-func FindOutput(src, output string) (string, error) {
+// the usual ones with an index.html, or, for a site that was not built, the
+// source itself. It is a real directory inside the source: a path through a
+// symlink, which a repository or a build may have put there, could reach
+// another site's files on the volume.
+func FindOutput(src, output string, built bool) (string, error) {
 	if output != "" {
 		dir, err := within(src, output)
 		if err != nil {
 			return "", err
 		}
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			return "", &OutputError{Output: output}
-		}
-		return dir, nil
+		return realDirIn(src, dir, output)
 	}
 	for _, candidate := range outputCandidates {
 		if _, err := os.Stat(filepath.Join(src, candidate, "index.html")); err == nil {
-			return filepath.Join(src, candidate), nil
+			return realDirIn(src, filepath.Join(src, candidate), candidate)
 		}
 	}
-	return src, nil
+	if built {
+		// the whole source would be served: its dependencies, its sources, an .env
+		return "", &OutputError{Output: "with an index.html (dist, build, out, public, _site or site)"}
+	}
+	return realDirIn(src, src, ".")
+}
+
+// realDirIn checks that dir is a directory inside src without a symlink on the
+// way, and returns it.
+func realDirIn(src, dir, name string) (string, error) {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return "", &OutputError{Output: name}
+	}
+	realSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", &OutputError{Output: name}
+	}
+	inside, _ := within(src, strings.TrimPrefix(real, realSrc))
+	if real != realSrc && !strings.HasPrefix(real, realSrc+string(filepath.Separator)) || inside != dir {
+		return "", fmt.Errorf("the output %s goes through a symlink, which a site's output cannot", name)
+	}
+	return dir, nil
 }
 
 // OutputError says the build left nothing where the site was expected.
 type OutputError struct{ Output string }
 
 func (e *OutputError) Error() string {
-	return "the build left no directory " + e.Output + ": check the site's output directory"
+	return "the build left no directory " + e.Output + ": set the site's output directory"
 }

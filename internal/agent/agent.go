@@ -138,6 +138,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.restoreCleanEnvFiles()
 	a.removeStaleAdminers(ctx)
+	a.cleanupSiteJobs(ctx)
 
 	// the edge keeps serving without the panel; one that is gone comes back
 	go a.restoreEdge(ctx)

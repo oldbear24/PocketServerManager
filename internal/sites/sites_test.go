@@ -55,12 +55,15 @@ func TestTheGeneratorIsFoundByItsFiles(t *testing.T) {
 			t.Errorf("%v: %s, not %s", files, got, want)
 		}
 	}
-	// an older Hugo site has config.toml and content/
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "config.toml"), "")
-	write(t, filepath.Join(dir, "content", "_index.md"), "")
-	if got := Detect(dir); got != GeneratorHugo {
-		t.Errorf("config.toml with content: %s", got)
+	// an older Hugo site has config.toml and content/; themes such as Blowfish
+	// keep their configuration in config/_default
+	for _, config := range []string{"config.toml", "config.yml", "config.json", "config/_default/hugo.toml"} {
+		dir := t.TempDir()
+		write(t, filepath.Join(dir, config), "")
+		write(t, filepath.Join(dir, "content", "_index.md"), "")
+		if got := Detect(dir); got != GeneratorHugo {
+			t.Errorf("%s with content: %s", config, got)
+		}
 	}
 }
 
@@ -171,7 +174,7 @@ func TestAReleaseIsTheBuiltSiteWithoutWhatIsNotServed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	release, err := MakeRelease(root, "blog", 3, "")
+	release, err := MakeRelease(root, "blog", 3, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,15 +200,44 @@ func TestAReleaseIsTheBuiltSiteWithoutWhatIsNotServed(t *testing.T) {
 	}
 	write(t, filepath.Join(SourceDir(root, "blog", 4), "index.html"), "x")
 	var missing *OutputError
-	if _, err := MakeRelease(root, "blog", 4, "public"); !errors.As(err, &missing) {
+	if _, err := MakeRelease(root, "blog", 4, "public", true); !errors.As(err, &missing) {
 		t.Errorf("a missing output: %v", err)
 	}
-	if _, err := MakeRelease(root, "blog", 4, "../../etc"); err == nil {
+	if _, err := MakeRelease(root, "blog", 4, "../../etc", true); err == nil {
 		t.Error("an output outside of the source")
 	}
-	// without an output, the source itself
-	if release, err := MakeRelease(root, "blog", 4, ""); err != nil || release.Files != 1 {
+	// a build that left nothing where sites usually are does not publish its source
+	if _, err := MakeRelease(root, "blog", 4, "", true); !errors.As(err, &missing) {
+		t.Errorf("a build without an output: %v", err)
+	}
+	// without a build, the source itself
+	if release, err := MakeRelease(root, "blog", 4, "", false); err != nil || release.Files != 1 {
 		t.Errorf("the source as it is: %+v %v", release, err)
+	}
+}
+
+// TestAnOutputThroughASymlinkIsRefused: a repository or a build can put a
+// symlink into its source; the output must not reach another site through it.
+func TestAnOutputThroughASymlinkIsRefused(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(ReleaseDir(root, "victim", 3), "dist", "index.html"), "the victim's")
+	if err := Prepare(root, "attacker", 1); err != nil {
+		t.Fatal(err)
+	}
+	src := SourceDir(root, "attacker", 1)
+	if err := os.Symlink(filepath.Join(root, "victim", "releases", "3"), filepath.Join(src, "web")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "victim", "releases", "3", "dist"), filepath.Join(src, "dist")); err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{"web/dist", "dist", ""} {
+		if _, err := MakeRelease(root, "attacker", 1, output, true); err == nil {
+			t.Errorf("the output %q through a symlink was released", output)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(ReleaseDir(root, "victim", 3), "dist", "index.html")); err != nil || string(data) != "the victim's" {
+		t.Errorf("the victim's release: %q %v", data, err)
 	}
 }
 
