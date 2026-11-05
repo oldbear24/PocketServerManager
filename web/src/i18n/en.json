@@ -1400,7 +1400,7 @@
     "recordType": "Type",
     "recordName": "Name",
     "recordValue": "Value",
-    "www": "Add {{hostname}} too, with a 301 redirect",
+    "www": "Add {{hostname}} too, redirecting permanently to the site",
     "automatic": "The zone {{zone}} is at {{provider}}: PocketCloud sets the DNS records.",
     "manualZone": "No connected provider manages {{zone}}: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",
     "manual": "No connected zone holds this name: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",

@@ -49,7 +49,7 @@ func newProvisionHarness(t *testing.T, zones ...string) *provisionHarness {
 	h := &provisionHarness{acmeHarness: a, operator: operator, viewer: viewer, sites: dir}
 	h.answers = func(url string) (int, string, error) {
 		if strings.HasPrefix(url, "https://www.") {
-			return http.StatusMovedPermanently, "https://" + strings.TrimPrefix(strings.TrimPrefix(url, "https://www."), "/"), nil
+			return http.StatusPermanentRedirect, "https://" + strings.TrimPrefix(strings.TrimPrefix(url, "https://www."), "/"), nil
 		}
 		return http.StatusOK, "", nil
 	}
@@ -330,7 +330,7 @@ func TestAFailedStepIsRetriedAndACancelledSetupRemovesItsRecords(t *testing.T) {
 	h.mu.Lock()
 	h.answers = func(url string) (int, string, error) {
 		if strings.HasPrefix(url, "https://www.") {
-			return http.StatusMovedPermanently, "https://flaky.example.com/", nil
+			return http.StatusPermanentRedirect, "https://flaky.example.com/", nil
 		}
 		return http.StatusOK, "", nil
 	}

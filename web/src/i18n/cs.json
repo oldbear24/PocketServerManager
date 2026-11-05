@@ -1466,7 +1466,7 @@
     "recordType": "Typ",
     "recordName": "Název",
     "recordValue": "Hodnota",
-    "www": "Přidat i {{hostname}} s přesměrováním 301",
+    "www": "Přidat i {{hostname}} s trvalým přesměrováním na web",
     "automatic": "Zóna {{zone}} je u poskytovatele {{provider}}: DNS záznamy nastavíme automaticky.",
     "manualZone": "Zónu {{zone}} nespravuje žádný připojený poskytovatel: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
     "manual": "Tento název nepatří do žádné připojené zóny: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
