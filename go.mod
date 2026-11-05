@@ -6,7 +6,11 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/compose-spec/compose-go/v2 v2.16.2
 	github.com/gowebpki/jcs v1.0.2
+	github.com/libdns/cloudflare v0.2.2
+	github.com/libdns/hetzner v1.0.0
+	github.com/libdns/libdns v1.1.1
 	github.com/pocketbase/dbx v1.12.0
+	github.com/pocketbase/ozzo-validation/v4 v4.3.0
 	github.com/pocketbase/pocketbase v0.40.6
 	github.com/spf13/cast v1.10.0
 	github.com/spf13/cobra v1.10.2
@@ -39,7 +43,6 @@ require (
 	github.com/mattn/go-shellwords v1.0.12 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/pocketbase/ozzo-validation/v4 v4.3.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1 // indirect
 	github.com/sirupsen/logrus v1.10.1 // indirect
