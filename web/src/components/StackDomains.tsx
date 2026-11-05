@@ -1,6 +1,7 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 
 import { edgeApi, tlsTone, type Certificate, type Domain, type EdgeRoute } from "../lib/edge";
 import { useLiveList } from "../lib/realtime";
@@ -8,6 +9,12 @@ import type { Stack } from "../lib/types";
 import { RouteLock, tlsText } from "../pages/EdgeProxy";
 import { useToast } from "./toast";
 import { Banner, Button, Card, ConfirmDialog } from "./ui";
+
+/** The routes of a stack's domains, and the certificates that are for them. */
+export type DomainRoutes = {
+  routes: Map<string, EdgeRoute>;
+  certificates: Certificate[];
+};
 
 /**
  * The routes of a stack's domains on its server's edge, with their TLS state
@@ -18,7 +25,7 @@ export function useDomainRoutes(
   hostId: string | undefined,
   edgeVersion: string,
   domains: Domain[],
-): Map<string, EdgeRoute> {
+): DomainRoutes {
   const certificates = useLiveList<Certificate>("certificates", {
     sort: "-not_after",
     enabled: domains.length > 0,
@@ -51,17 +58,30 @@ export function useDomainRoutes(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId, version]);
 
-  return routes;
+  return { routes, certificates: certificates.items };
+}
+
+/** Whether a certificate's names cover a hostname, as the edge matches them. */
+function covers(cert: Certificate, hostname: string): boolean {
+  const parent = hostname.slice(hostname.indexOf(".") + 1);
+  return cert.names.some((name) => name === hostname || name === `*.${parent}`);
+}
+
+/** The ACME certificate the panel is getting for a name that has none yet. */
+function orderFor(certificates: Certificate[], hostname: string): Certificate | undefined {
+  return certificates.find(
+    (cert) => cert.issuer === "acme" && !cert.fingerprint && covers(cert, hostname),
+  );
 }
 
 /** The domains the labels of one service put it on, with their TLS state
  * (#25), as its card on the stack page shows them. */
 export function ServiceDomains({
   domains,
-  routes,
+  routes: { routes, certificates },
 }: {
   domains: Domain[];
-  routes: Map<string, EdgeRoute>;
+  routes: DomainRoutes;
 }) {
   const { t } = useTranslation();
   if (domains.length === 0) {
@@ -71,6 +91,12 @@ export function ServiceDomains({
     <ul className="service-domains" aria-label={t("stack.domains")}>
       {domains.map((domain) => {
         const route = routes.get(domain.id);
+        // before the first certificate: on its way, or held up
+        const order =
+          route?.tls === "none" && domain.tls === "auto"
+            ? orderFor(certificates, domain.hostname)
+            : undefined;
+        const failed = order && (order.last_error !== "" || order.status === "failed");
         const secure = route && route.tls !== "none" && route.tls !== "off";
         return (
           <li key={domain.id} className="service-domain">
@@ -83,13 +109,16 @@ export function ServiceDomains({
             >
               {domain.hostname}
             </a>
-            {route && (
-              <span className={`small route-tls ${tlsTone(route.tls)}`}>
-                {route.tls === "none" && domain.tls === "auto"
-                  ? t("stack.gettingCertificate")
-                  : tlsText(t, route)}
-              </span>
-            )}
+            {route &&
+              (failed ? (
+                <Link className="small route-tls warn" to="/domains" title={order.last_error}>
+                  {t("stack.certificateFailed")}
+                </Link>
+              ) : (
+                <span className={`small route-tls ${order ? "info" : tlsTone(route.tls)}`}>
+                  {order ? t("stack.gettingCertificate") : tlsText(t, route)}
+                </span>
+              ))}
             {route?.password && (
               <KeyRound size={13} aria-label={t("edge.password")} role="img" className="muted" />
             )}
@@ -115,6 +144,7 @@ export function LabelDomainsCard({
   const { t } = useTranslation();
   const toast = useToast();
   const [removing, setRemoving] = useState<Domain | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
   const [busy, setBusy] = useState("");
   const problems = stack.label_problems ?? [];
   const removed = domains.filter((domain) => domain.label_removed);
@@ -139,11 +169,14 @@ export function LabelDomainsCard({
     if (!removing) {
       return;
     }
+    setRemoveBusy(true);
     try {
       await edgeApi.removeDomain(removing.id);
       toast.success(t("stack.domainRemoved", { hostname: removing.hostname }));
     } catch (err) {
       toast.error(err);
+    } finally {
+      setRemoveBusy(false);
     }
     setRemoving(null);
   };
@@ -208,6 +241,7 @@ export function LabelDomainsCard({
         open={removing !== null}
         title={t("stack.removeDomainTitle", { hostname: removing?.hostname ?? "" })}
         confirmLabel={t("common.remove")}
+        confirmDisabled={removeBusy}
         danger
         onCancel={() => setRemoving(null)}
         onConfirm={() => void remove()}

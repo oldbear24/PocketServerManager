@@ -6,7 +6,12 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { CommandOutput } from "../components/CommandOutput";
 import { PageHead } from "../components/Layout";
 import { LogViewer } from "../components/LogViewer";
-import { LabelDomainsCard, ServiceDomains, useDomainRoutes } from "../components/StackDomains";
+import {
+  LabelDomainsCard,
+  ServiceDomains,
+  useDomainRoutes,
+  type DomainRoutes,
+} from "../components/StackDomains";
 import { CommandStatusPill, ContainerStatePill } from "../components/status";
 import { useToast } from "../components/toast";
 import {
@@ -42,7 +47,7 @@ import {
   type StackProblem,
   type StackValidation,
 } from "../lib/stacks";
-import type { Domain, EdgeRoute } from "../lib/edge";
+import type { Domain } from "../lib/edge";
 import type { Command, Container, Host, Stack, StackRevision } from "../lib/types";
 
 const CodeEditor = lazy(() => import("../components/CodeEditor"));
@@ -75,7 +80,7 @@ function ServiceCards({
   host: string;
   containers: Container[];
   domains: Domain[];
-  routes: Map<string, EdgeRoute>;
+  routes: DomainRoutes;
 }) {
   const { t } = useTranslation();
   const now = useNow(30000);

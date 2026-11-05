@@ -212,10 +212,20 @@ describe("domains from labels", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("offers the removal once the label is gone", async () => {
+  it("offers the removal or keeping it once the label is gone", async () => {
+    const keep = vi.spyOn(edgeApi, "keepDomain").mockResolvedValue({ id: "d3" });
     renderTab("operator", labelled(true));
-    expect(await screen.findByText("label of web removed")).toBeInTheDocument();
+    const link = await screen.findByRole("link", { name: "label of web removed" });
+    expect(link.getAttribute("href")).toBe("/stacks/s1");
     expect(screen.getByRole("button", { name: /Remove shop.example.com/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep as a domain: shop.example.com" }));
+    await waitFor(() => expect(keep).toHaveBeenCalledWith("d3"));
+  });
+
+  it("offers viewers neither", async () => {
+    renderTab("viewer", labelled(true));
+    expect(await screen.findByText("label of web removed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Keep as a domain/ })).not.toBeInTheDocument();
   });
 });
 
