@@ -977,37 +977,34 @@ func (a *Agent) edgeRequestCount(ctx context.Context) (float64, map[string]float
 	return total, byHost, nil
 }
 
+// countRequests adds up the requests in Caddy's metrics, in all and per
+// hostname; a request of a name no route has counts as _other, in all only.
 func countRequests(metrics []byte) (float64, map[string]float64) {
 	var total float64
 	byHost := map[string]float64{}
 	scanner := bufio.NewScanner(bytes.NewReader(metrics))
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
-		line := scanner.Text()
-		rest, ok := strings.CutPrefix(line, "caddy_http_requests_total{")
+		rest, ok := strings.CutPrefix(scanner.Text(), "caddy_http_requests_total{")
 		if !ok {
 			continue
 		}
+		// the pinned Caddy counts a request once, under the first handler of
+		// its route (headers, encode, a site's subroute or the handler itself),
+		// so every counter adds up
 		labels, value, ok := strings.Cut(rest, "} ")
 		if !ok {
 			continue
 		}
-		answering := false
-		for _, handler := range edge.AnsweringHandlers {
-			if strings.Contains(labels, `handler="`+handler+`"`) {
-				answering = true
-			}
-		}
-		if !answering {
+		number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
 			continue
 		}
-		if number, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
-			total += number
-			// with per_host metrics, each hostname has its own counter
-			if _, rest, ok := strings.Cut(labels, `host="`); ok {
-				if host, _, ok := strings.Cut(rest, `"`); ok && host != "" {
-					byHost[strings.ToLower(host)] += number
-				}
+		total += number
+		// with per_host metrics, each hostname has its own counters
+		if _, rest, ok := strings.Cut(labels, `host="`); ok {
+			if host, _, ok := strings.Cut(rest, `"`); ok && host != "" && host != "_other" {
+				byHost[strings.ToLower(host)] += number
 			}
 		}
 	}

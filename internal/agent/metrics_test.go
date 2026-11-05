@@ -73,20 +73,24 @@ func TestContainerCPUIsOnTheScaleOfDockerStats(t *testing.T) {
 	}
 }
 
-// TestRequestsCountOncePerRequest: Caddy counts a request once per handler it
-// passes, so only the handlers that answer it count.
+// TestRequestsCountOncePerRequest: the pinned Caddy counts a request once,
+// under the first handler of its route, whatever that handler is; this is
+// what Caddy 2.11.7 reported for a site with compression, a proxy with HSTS
+// and a redirect to HTTPS.
 func TestRequestsCountOncePerRequest(t *testing.T) {
 	metrics := []byte(`# HELP caddy_http_requests_total Counter of HTTP(S) requests made.
 # TYPE caddy_http_requests_total counter
-caddy_http_requests_total{handler="headers",server="https"} 7
-caddy_http_requests_total{handler="encode",server="https"} 7
-caddy_http_requests_total{handler="reverse_proxy",server="https"} 7
-caddy_http_requests_total{handler="static_response",server="http"} 3
-caddy_http_requests_total{handler="file_server",server="http"} 2
-caddy_http_request_duration_seconds_count{code="200",handler="reverse_proxy",method="GET",server="https"} 7
+caddy_http_requests_total{handler="encode",host="hugo.example.test",server="http"} 5
+caddy_http_requests_total{handler="headers",host="app.example.test",server="https"} 7
+caddy_http_requests_total{handler="static_response",host="_other",server="http"} 3
+caddy_http_request_duration_seconds_count{code="200",handler="encode",host="hugo.example.test",method="GET",server="http"} 5
 `)
-	if got, _ := countRequests(metrics); got != 12 {
-		t.Errorf("counted %v requests, want 12", got)
+	total, byHost := countRequests(metrics)
+	if total != 15 {
+		t.Errorf("counted %v requests, want 15", total)
+	}
+	if byHost["hugo.example.test"] != 5 || byHost["app.example.test"] != 7 || len(byHost) != 2 {
+		t.Errorf("by host: %v", byHost)
 	}
 }
 
@@ -94,7 +98,6 @@ caddy_http_request_duration_seconds_count{code="200",handler="reverse_proxy",met
 // its own counters, and a heartbeat reports what each had since the last one.
 func TestRequestsAreCountedPerHostname(t *testing.T) {
 	metrics := []byte(`caddy_http_requests_total{handler="subroute",host="blog.example.com",server="https"} 40
-caddy_http_requests_total{handler="file_server",host="blog.example.com",server="https"} 40
 caddy_http_requests_total{handler="file_server",host="Docs.example.com",server="http"} 5
 caddy_http_requests_total{handler="reverse_proxy",host="app.example.com",server="https"} 9
 `)

@@ -251,12 +251,11 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	byHost := maps.Clone(s.byHost)
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	// as Caddy 2.11 counts: once per request, under the first handler of its
+	// route, with the hostname of a route or _other
 	_, _ = fmt.Fprintf(w, "# TYPE caddy_http_requests_total counter\n")
-	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"reverse_proxy\",server=\"http\"} %g\n", requests)
-	// a request passes the headers handler too, and must not count twice
-	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",server=\"http\"} %g\n", requests)
+	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",host=\"_other\",server=\"http\"} %g\n", requests)
 	for _, host := range slices.Sorted(maps.Keys(byHost)) {
-		_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"subroute\",host=%q,server=\"https\"} %g\n", host, byHost[host])
-		_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"file_server\",host=%q,server=\"https\"} %g\n", host, byHost[host])
+		_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"encode\",host=%q,server=\"https\"} %g\n", host, byHost[host])
 	}
 }

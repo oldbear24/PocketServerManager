@@ -48,10 +48,6 @@ const SitesRoot = "/srv/sites"
 // StreamCloseDelay is how long a WebSocket through a route survives a reload.
 const StreamCloseDelay = "24h"
 
-// AnsweringHandlers are the handlers that answer a request; the others only
-// pass it on, and Caddy counts a request once per handler it passes.
-var AnsweringHandlers = []string{"reverse_proxy", "static_response", "file_server"}
-
 // HSTSValue is the Strict-Transport-Security header of routes that ask for it:
 // a year, without includeSubDomains or preload, which are hard to take back.
 const HSTSValue = "max-age=31536000"
