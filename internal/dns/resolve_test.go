@@ -91,3 +91,31 @@ func TestLookupAsksTheServerItself(t *testing.T) {
 		t.Errorf("a wildcard does not resolve: %+v", result)
 	}
 }
+
+// TestAnACMEAnswerIsVisibleOnEveryNameServer: the answer may sit next to
+// other values, as a name and its wildcard share one, but every name server
+// must have it.
+func TestAnACMEAnswerIsVisibleOnEveryNameServer(t *testing.T) {
+	ready := serveDNS(t, map[string][]string{"_acme-challenge.example.com. TXT": {"other", "answer"}})
+	behind := serveDNS(t, map[string][]string{})
+	servers := []string{ready}
+	checker := &Checker{Lookup: lookupAt, NameServers: func(_ context.Context, zone string) ([]string, error) {
+		if zone != "example.com" {
+			t.Errorf("asked for the name servers of %q", zone)
+		}
+		return servers, nil
+	}}
+	ctx := context.Background()
+
+	if ok, err := checker.Visible(ctx, "example.com", "_acme-challenge.example.com.", "TXT", `"answer"`); !ok || err != nil {
+		t.Errorf("one server with the answer: %v %v", ok, err)
+	}
+	servers = []string{ready, behind}
+	if ok, err := checker.Visible(ctx, "example.com", "_acme-challenge.example.com.", "TXT", "answer"); ok || err != nil {
+		t.Errorf("a server without it: %v %v", ok, err)
+	}
+	servers = nil
+	if ok, err := checker.Visible(ctx, "example.com", "_acme-challenge.example.com.", "TXT", "answer"); ok || err == nil {
+		t.Errorf("no name servers: %v %v", ok, err)
+	}
+}

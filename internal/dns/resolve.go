@@ -251,3 +251,31 @@ func nameServers(ctx context.Context, name string) ([]string, error) {
 	}
 	return nil, fmt.Errorf("no zone above %s has name servers", name)
 }
+
+// Visible tells whether every name server of a zone answers a value for a
+// name, next to any others: what a certificate authority checks for an
+// ACME DNS-01 answer. The public resolvers are not asked; they would cache
+// the name's absence while the answer is on its way.
+func (c *Checker) Visible(ctx context.Context, zone, name, kind, value string) (bool, error) {
+	if c.NameServers == nil {
+		return false, errors.New("there are no name servers to ask")
+	}
+	servers, err := c.NameServers(ctx, zone)
+	if err != nil {
+		return false, err
+	}
+	if len(servers) == 0 {
+		return false, fmt.Errorf("%s has no name servers", zone)
+	}
+	want := normalizeValue(kind, value)
+	for _, server := range servers {
+		values, err := c.Lookup(ctx, server, name, kind)
+		if err != nil {
+			return false, fmt.Errorf("asking %s: %w", server, err)
+		}
+		if !slices.ContainsFunc(values, func(v string) bool { return normalizeValue(kind, v) == want }) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
