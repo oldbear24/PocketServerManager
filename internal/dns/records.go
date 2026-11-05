@@ -45,7 +45,7 @@ func Set(ctx context.Context, p Provider, zone string, records []Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = p.SetRecords(ctx, zone+".", converted)
+	_, err = p.SetRecords(ctx, NormalizeZone(zone), converted)
 	return err
 }
 
@@ -59,7 +59,7 @@ func Append(ctx context.Context, p Provider, zone string, records []Record) erro
 	if err != nil {
 		return err
 	}
-	_, err = p.AppendRecords(ctx, zone+".", converted)
+	_, err = p.AppendRecords(ctx, NormalizeZone(zone), converted)
 	return err
 }
 
@@ -90,13 +90,13 @@ func Delete(ctx context.Context, p Provider, zone string, records []Record) erro
 	if err != nil {
 		return err
 	}
-	_, err = p.DeleteRecords(ctx, zone+".", converted)
+	_, err = p.DeleteRecords(ctx, NormalizeZone(zone), converted)
 	return err
 }
 
 // Get reads every record of a zone.
 func Get(ctx context.Context, p Provider, zone string) ([]Record, error) {
-	records, err := p.GetRecords(ctx, zone+".")
+	records, err := p.GetRecords(ctx, NormalizeZone(zone))
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +169,6 @@ func convert(records []Record) ([]libdns.Record, error) {
 // Check reads a zone's records, which tells whether the credentials may
 // change it: the check of a zone the API does not list.
 func Check(ctx context.Context, p Provider, zone string) error {
-	_, err := p.GetRecords(ctx, zone+".")
+	_, err := p.GetRecords(ctx, NormalizeZone(zone))
 	return err
 }

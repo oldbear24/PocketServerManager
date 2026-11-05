@@ -31,6 +31,9 @@ const (
 	DBMoves           = "db_moves"
 	Domains           = "domains"
 	Certificates      = "certificates"
+	DNSProviders      = "dns_providers"
+	DNSZones          = "dns_zones"
+	DNSRecords        = "dns_records"
 )
 
 // Reserved names of collections that land with later features. They are listed
@@ -38,7 +41,7 @@ const (
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
 	"sites", "site_php", "deployments", "scheduled_tasks",
-	"dns_providers", "dns_zones", "dns_records", "acme_accounts",
+	"acme_accounts",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -119,6 +122,20 @@ const (
 	TLSOff  = "off"
 )
 
+// DNS states. A provider and a zone are ok once their API answered; a
+// domain's records are pending until the provider took them, ok once every
+// resolver answers them, drift when someone changed them outside PocketCloud,
+// manual when no connected zone holds the name, and none when it needs none.
+const (
+	DNSUnknown = "unknown"
+	DNSOK      = "ok"
+	DNSError   = "error"
+	DNSPending = "pending"
+	DNSDrift   = "drift"
+	DNSManual  = "manual"
+	DNSNone    = "none"
+)
+
 // Issuers and states of certificates.
 const (
 	IssuerManual   = "manual"
@@ -153,7 +170,7 @@ var Encrypted = map[string][]string{
 	"notification_channels": {"config"},
 	"sites":                 {"webhook_secret", "basic_auth"},
 	"site_php":              {"secrets"},
-	"dns_providers":         {"credentials"},
+	DNSProviders:            {"credentials"},
 	"acme_accounts":         {"key", "eab_hmac"},
 	Certificates:            {"key_pem"},
 	DBServers:               {"admin_password"},
@@ -201,8 +218,9 @@ var Audited = []AuditedCollection{
 	{Name: "sites", Label: "name", Host: "host", Ignore: []string{"active_deployment"}},
 	{Name: "site_php", Label: "site"},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
-	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"dns_status"}},
-	{Name: "dns_providers", Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
+	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error"}},
+	{Name: DNSProviders, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
+	{Name: DNSZones, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: Certificates, Label: "names", Ignore: []string{"status", "attempts", "last_error", "installed"}},
 	{Name: DBServers, Label: "name", Host: "host", Ignore: []string{
 		"status", "size_bytes", "connections", "max_connections", "version", "stats_at", "last_error", "container_ref",

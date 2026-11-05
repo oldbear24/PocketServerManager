@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/libdns/cloudflare"
 	"github.com/libdns/hetzner"
 	"github.com/libdns/libdns"
 )
@@ -76,7 +75,7 @@ func init() {
 		ListsZones: true,
 		Note:       "An API token with the Zone.DNS:Edit and Zone:Read permissions, for all zones or the ones PocketCloud may change.",
 		open: func(c map[string]string) (Provider, error) {
-			return &cloudflare.Provider{APIToken: c["api_token"]}, nil
+			return newCloudflare(c["api_token"]), nil
 		},
 		explain: explainHTTP,
 	})
@@ -96,7 +95,7 @@ func init() {
 		Fields: []Field{{Name: "username"}, {Name: "password", Secret: true}},
 		Note:   "WEDOS's WAPI answers only the IP addresses on its allow-list: add the panel's public address in the WEDOS administration first. Name the zones it may change.",
 		open: func(c map[string]string) (Provider, error) {
-			return newWEDOS(c["username"], c["password"], "", nil), nil
+			return newWEDOS(c["username"], c["password"], "", httpClient.Load()), nil
 		},
 		explain: explainWEDOS,
 	})
