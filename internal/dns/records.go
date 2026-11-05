@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ func (r Record) Key() string {
 func normalizeValue(kind, value string) string {
 	value = strings.TrimSpace(value)
 	switch strings.ToUpper(kind) {
+	case "A", "AAAA":
+		if addr, err := netip.ParseAddr(value); err == nil {
+			return addr.Unmap().String()
+		}
 	case "CNAME", "NS", "MX":
 		return strings.ToLower(strings.TrimSuffix(value, ".")) + "."
 	case "TXT":
@@ -34,18 +39,53 @@ func normalizeValue(kind, value string) string {
 	return strings.ToLower(value)
 }
 
-// Set makes the records the only members of their name and type in the
-// zone: an A record that pointed elsewhere is replaced, other names and types
-// are left alone.
-func Set(ctx context.Context, p Provider, zone string, records []Record) error {
-	if len(records) == 0 {
+// RRSet is a name and a type: the records PocketCloud owns at a name.
+type RRSet struct {
+	Name string
+	Type string
+}
+
+func (s RRSet) key() string {
+	return strings.ToLower(s.Name) + " " + strings.ToUpper(s.Type)
+}
+
+func (r Record) set() RRSet {
+	return RRSet{Name: r.Name, Type: r.Type}
+}
+
+// AddressSets are the sets of a name's A and AAAA records, which PocketCloud
+// owns together: a server without an IPv6 address must not leave an old
+// AAAA record of the name pointing elsewhere.
+func AddressSets(name string) []RRSet {
+	return []RRSet{{Name: name, Type: "A"}, {Name: name, Type: "AAAA"}}
+}
+
+// Set makes the records the only members of their sets, and of the sets in
+// own: another address of the same name and type, or of an owned set, goes;
+// other names and types are left alone. The missing records are added before
+// the others go, so the name always resolves. It does not rely on the
+// providers' own SetRecords, which differ: libdns/cloudflare fails on a name
+// with two records, libdns/hetzner changes only the first.
+func Set(ctx context.Context, p Provider, zone string, records []Record, own ...RRSet) error {
+	if len(records) == 0 && len(own) == 0 {
 		return nil
 	}
-	converted, err := convert(records)
+	present, err := Get(ctx, p, zone)
 	if err != nil {
 		return err
 	}
-	_, err = p.SetRecords(ctx, NormalizeZone(zone), converted)
+	drift := Compare(records, present, own...)
+	if err := Append(ctx, p, zone, drift.Missing); err != nil {
+		return err
+	}
+	if len(drift.Foreign) == 0 {
+		return nil
+	}
+	converted, err := convert(drift.Foreign)
+	if err != nil {
+		return err
+	}
+	_, err = p.DeleteRecords(ctx, NormalizeZone(zone), converted)
 	return err
 }
 
@@ -121,8 +161,10 @@ func (d Drift) None() bool {
 	return len(d.Missing) == 0 && len(d.Foreign) == 0
 }
 
-// Compare finds the drift of wanted records within a zone's records.
-func Compare(wanted, zone []Record) Drift {
+// Compare finds the drift of wanted records within a zone's records: the
+// sets of the wanted records, and the sets in own, should hold the wanted
+// records and nothing else.
+func Compare(wanted, zone []Record, own ...RRSet) Drift {
 	present := map[string]bool{}
 	for _, r := range zone {
 		present[r.Key()] = true
@@ -131,7 +173,10 @@ func Compare(wanted, zone []Record) Drift {
 	sets := map[string]bool{}
 	for _, r := range wanted {
 		wantedKeys[r.Key()] = true
-		sets[strings.ToLower(r.Name)+" "+strings.ToUpper(r.Type)] = true
+		sets[r.set().key()] = true
+	}
+	for _, s := range own {
+		sets[s.key()] = true
 	}
 
 	var d Drift
@@ -141,7 +186,7 @@ func Compare(wanted, zone []Record) Drift {
 		}
 	}
 	for _, r := range zone {
-		if sets[strings.ToLower(r.Name)+" "+strings.ToUpper(r.Type)] && !wantedKeys[r.Key()] {
+		if sets[r.set().key()] && !wantedKeys[r.Key()] {
 			d.Foreign = append(d.Foreign, r)
 		}
 	}

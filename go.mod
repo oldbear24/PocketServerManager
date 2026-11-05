@@ -7,7 +7,6 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.16.2
 	github.com/gowebpki/jcs v1.0.2
 	github.com/libdns/cloudflare v0.2.2
-	github.com/libdns/hetzner v1.0.0
 	github.com/libdns/libdns v1.1.1
 	github.com/pocketbase/dbx v1.12.0
 	github.com/pocketbase/ozzo-validation/v4 v4.3.0

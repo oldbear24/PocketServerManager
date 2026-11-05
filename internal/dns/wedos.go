@@ -52,14 +52,15 @@ func newWEDOS(username, password, endpoint string, client *http.Client) *wedosPr
 	return &wedosProvider{username: username, password: password, endpoint: endpoint, client: client, now: time.Now}
 }
 
-// auth is sha1(user + sha1(password) + the hour in Prague), as WAPI defines it.
+// auth is sha1(user + sha1(password) + the hour in Prague, 00 to 23), as WAPI defines it.
 func (p *wedosProvider) auth() string {
 	location, err := time.LoadLocation("Europe/Prague")
 	if err != nil {
 		location = time.FixedZone("CET", 3600)
 	}
-	password := sha1.Sum([]byte(p.password))                                                                          //nolint:gosec // WAPI's definition
-	sum := sha1.Sum([]byte(p.username + hex.EncodeToString(password[:]) + strconv.Itoa(p.now().In(location).Hour()))) //nolint:gosec // WAPI's definition
+	password := sha1.Sum([]byte(p.password)) //nolint:gosec // WAPI's definition
+	// the hour has two digits, 00 to 23, as PHP's date('H') in WAPI's manual
+	sum := sha1.Sum([]byte(p.username + hex.EncodeToString(password[:]) + p.now().In(location).Format("15"))) //nolint:gosec // WAPI's definition
 	return hex.EncodeToString(sum[:])
 }
 

@@ -2,6 +2,8 @@ package dns
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // WAPI's definition
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -95,8 +97,11 @@ func TestWEDOSSetsRecordsAndSaysWhyItFails(t *testing.T) {
 	defer server.Close()
 
 	p := newWEDOS("user", "secret", server.URL, server.Client())
-	p.now = func() time.Time { return time.Date(2026, 11, 5, 9, 30, 0, 0, time.UTC) }
-	fake.wantAuth = p.auth()
+	// 07:30 in Prague: WAPI wants the hour as "07"
+	p.now = func() time.Time { return time.Date(2026, 11, 5, 6, 30, 0, 0, time.UTC) }
+	password := sha1.Sum([]byte("secret"))
+	want := sha1.Sum([]byte("user" + hex.EncodeToString(password[:]) + "07"))
+	fake.wantAuth = hex.EncodeToString(want[:])
 	ctx := context.Background()
 
 	// the zone goes without its final dot
@@ -116,12 +121,13 @@ func TestWEDOSSetsRecordsAndSaysWhyItFails(t *testing.T) {
 	if drift := Compare(wanted, zone); !drift.None() || len(zone) != 2 {
 		t.Fatalf("%+v %+v", zone, drift)
 	}
-	if fake.commits != 1 {
+	// one commit after the new record was added, one after the old went
+	if fake.commits != 2 {
 		t.Errorf("%d commits", fake.commits)
 	}
 
 	// setting what is there changes nothing, and commits nothing
-	if err := Set(ctx, p, "example.cz", wanted); err != nil || fake.commits != 1 {
+	if err := Set(ctx, p, "example.cz", wanted); err != nil || fake.commits != 2 {
 		t.Errorf("%v, %d commits", err, fake.commits)
 	}
 

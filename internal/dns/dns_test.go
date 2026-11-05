@@ -164,7 +164,7 @@ func TestDriversAndCredentials(t *testing.T) {
 
 func TestExplain(t *testing.T) {
 	cf, _ := Lookup(Cloudflare)
-	if got := cf.Explain(errors.New("got error status: HTTP 403: Authentication error")); !strings.Contains(got, "refused the credentials") && !strings.Contains(got, "may not") {
+	if got := cf.Explain(errors.New("got error status: HTTP 403: Authentication error")); !strings.Contains(got, "refused the request") {
 		t.Errorf("%q", got)
 	}
 	wedos, _ := Lookup(WEDOS)
@@ -189,26 +189,84 @@ func TestPropagationNeedsEveryServer(t *testing.T) {
 		},
 		NameServers: func(context.Context, string) ([]string, error) { return []string{"ns1.example.net:53"}, nil },
 	}
-	record := Record{Name: "app", Type: "A", Value: "203.0.114.7"}
+	record := []Record{{Name: "app", Type: "A", Value: "203.0.114.7"}}
 
-	result := checker.Check(context.Background(), "example.com", record)
+	result := checker.Check(context.Background(), "example.com", record)[0]
 	if result.Resolved || len(result.Answers) != 3 || result.Answers[1].OK {
 		t.Fatalf("%+v", result)
 	}
 
+	// the new address next to the old one is not done either
+	answers["8.8.8.8:53"] = []string{"203.0.114.7", "203.0.114.99"}
+	if result := checker.Check(context.Background(), "example.com", record)[0]; result.Resolved {
+		t.Fatalf("a stale second address counted as resolved: %+v", result)
+	}
+
 	answers["8.8.8.8:53"] = []string{"203.0.114.7"}
-	if result := checker.Check(context.Background(), "example.com", record); !result.Resolved {
+	if result := checker.Check(context.Background(), "example.com", record)[0]; !result.Resolved {
+		t.Fatalf("%+v", result)
+	}
+
+	// name servers that cannot be found are said, and nothing is resolved
+	checker.NameServers = func(context.Context, string) ([]string, error) { return nil, errors.New("no zone") }
+	result = checker.Check(context.Background(), "example.com", record)[0]
+	if result.Resolved || !strings.Contains(result.Answers[len(result.Answers)-1].Error, "no zone") {
 		t.Fatalf("%+v", result)
 	}
 
 	// the zone's apex is asked as the zone's name
+	checker.NameServers = nil
 	checker.Lookup = func(_ context.Context, _, name, _ string) ([]string, error) {
 		if name != "example.com" {
 			t.Errorf("asked for %s", name)
 		}
 		return nil, nil
 	}
-	if result := checker.Check(context.Background(), "example.com", Record{Name: "@", Type: "A", Value: "203.0.114.7"}); result.Resolved {
+	if result := checker.Check(context.Background(), "example.com", []Record{{Name: "@", Type: "A", Value: "203.0.114.7"}})[0]; result.Resolved {
 		t.Error("an empty answer counted as resolved")
+	}
+}
+
+// TestSetReplacesEveryOtherValueOfItsSets: a name with two A records (round
+// robin with an old server) ends with PocketCloud's only, and an AAAA record
+// of a server without IPv6 goes too, with the new record added first.
+func TestSetReplacesEveryOtherValueOfItsSets(t *testing.T) {
+	ctx := context.Background()
+	fake := fakedns.New("example.com")
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "A", Data: "198.51.101.1"})
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "A", Data: "198.51.101.2"})
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "AAAA", Data: "2001:4860::1"})
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "TXT", Data: "keep me"})
+
+	wanted, _ := AddressRecords("www.example.com", "example.com", "203.0.114.7", "")
+	if err := Set(ctx, fake, "example.com", wanted, AddressSets("www")...); err != nil {
+		t.Fatal(err)
+	}
+	zone, _ := Get(ctx, fake, "example.com")
+	if drift := Compare(wanted, zone, AddressSets("www")...); !drift.None() {
+		t.Fatalf("%+v", drift)
+	}
+	if len(zone) != 2 {
+		t.Fatalf("%+v", zone)
+	}
+
+	// an AAAA that appears later is drift of the address sets
+	fake.Put("example.com", libdns.RR{Name: "www", Type: "AAAA", Data: "2001:4860::2"})
+	zone, _ = Get(ctx, fake, "example.com")
+	if drift := Compare(wanted, zone, AddressSets("www")...); len(drift.Foreign) != 1 {
+		t.Fatalf("%+v", drift)
+	}
+
+	// IPv6 written another way is the same record
+	if (Record{Name: "a", Type: "AAAA", Value: "2a01:04f8:0000::0007"}).Key() != (Record{Name: "a", Type: "AAAA", Value: "2a01:4f8::7"}).Key() {
+		t.Error("two spellings of one IPv6 address are two records")
+	}
+}
+
+func TestMoreAddressesAreNotPublic(t *testing.T) {
+	for _, address := range []string{"0.1.2.3", "3fff::1", "100::1", "fec0::1", "::1.2.3.4"} {
+		if _, err := AddressRecords("a.example.com", "example.com", address, ""); err == nil {
+			t.Errorf("%s was taken for a public address", address)
+		}
 	}
 }

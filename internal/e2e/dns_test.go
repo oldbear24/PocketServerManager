@@ -33,7 +33,8 @@ func (f *fakeResolvers) set(name, kind string, values ...string) {
 
 func (f *fakeResolvers) checker() *dns.Checker {
 	return &dns.Checker{
-		Resolvers: []string{"1.1.1.1:53", "8.8.8.8:53"},
+		Resolvers:   []string{"1.1.1.1:53", "8.8.8.8:53"},
+		NameServers: func(context.Context, string) ([]string, error) { return []string{"ns1.example.net:53"}, nil },
 		Lookup: func(_ context.Context, _, name, kind string) ([]string, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -118,6 +119,22 @@ func (d *dnsHarness) synced(id string, n int) {
 	})
 }
 
+// setCloudflareA changes an A record at Cloudflare by hand.
+func (d *dnsHarness) setCloudflareA(t *testing.T, name, value string) {
+	t.Helper()
+	for _, r := range d.api.Records("example.com") {
+		if r.Type == "A" && r.Name == name {
+			req, _ := http.NewRequest(http.MethodPut, "https://api.cloudflare.com/client/v4/zones/"+r.ZoneID+"/dns_records/"+r.ID, strings.NewReader(fmt.Sprintf(`{"content":%q}`, value)))
+			req.Header.Set("Authorization", "Bearer cf-token")
+			response, err := d.api.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+		}
+	}
+}
+
 func cloudflareRecords(api *fakecloudflare.API, zone string) map[string]string {
 	out := map[string]string{}
 	for _, r := range api.Records(zone) {
@@ -171,7 +188,7 @@ func TestConnectingCloudflareListsItsZones(t *testing.T) {
 	// a wrong token: the provider is saved with the reason
 	d.api.Token = "rotated"
 	_, raw3 := testutil.Do(t, d.handler, testutil.Request{Method: "POST", URL: "/api/pc/dns-providers/" + provider["id"].(string) + "/test", Token: d.admin})
-	if !strings.Contains(raw3, `"status":"error"`) || !strings.Contains(raw3, "refused the credentials") && !strings.Contains(raw3, "may not") {
+	if !strings.Contains(raw3, `"status":"error"`) || !strings.Contains(raw3, "refused the request") {
 		t.Fatalf("%s", raw3)
 	}
 }
@@ -310,17 +327,7 @@ func TestRecordsChangedOutsidePocketCloudAreDrift(t *testing.T) {
 	d.synced(domain.Id, 2)
 
 	// the A record is changed by hand at Cloudflare
-	for _, r := range d.api.Records("example.com") {
-		if r.Type == "A" {
-			req, _ := http.NewRequest(http.MethodPut, "https://api.cloudflare.com/client/v4/zones/"+r.ZoneID+"/dns_records/"+r.ID, strings.NewReader(`{"content":"198.51.101.1"}`))
-			req.Header.Set("Authorization", "Bearer cf-token")
-			response, err := d.api.Client().Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_ = response.Body.Close()
-		}
-	}
+	d.setCloudflareA(t, "app.example.com", "198.51.101.1")
 
 	d.panel.CheckDNSDrift()
 	if status := d.dnsStatus(domain.Id); status != schema.DNSDrift {
@@ -328,6 +335,18 @@ func TestRecordsChangedOutsidePocketCloudAreDrift(t *testing.T) {
 	}
 	if found, _ := d.app.FindRecordsByFilter(schema.Events, "kind='dns.drift'", "", 0, 0); len(found) != 1 {
 		t.Errorf("%d drift events", len(found))
+	}
+
+	// put back by hand: the next check clears the drift by itself
+	d.setCloudflareA(t, "app.example.com", "203.0.114.7")
+	d.panel.CheckDNSDrift()
+	if status := d.dnsStatus(domain.Id); status != schema.DNSOK {
+		t.Fatalf("the drift stayed after the zone was right again: %s", status)
+	}
+	d.setCloudflareA(t, "app.example.com", "198.51.101.1")
+	d.panel.CheckDNSDrift()
+	if status := d.dnsStatus(domain.Id); status != schema.DNSDrift {
+		t.Fatalf("%s", status)
 	}
 
 	status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "POST", URL: "/api/pc/domains/" + domain.Id + "/dns/sync", Token: d.admin})
@@ -368,5 +387,64 @@ func TestAZoneNotManagedAnyMoreIsLeftAlone(t *testing.T) {
 	}
 	if status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/pc/dns-providers/" + providerID, Token: d.admin}); status != http.StatusNoContent {
 		t.Fatalf("%d %s", status, raw)
+	}
+}
+
+// TestDNSMistakesAreRefusedClearly: a zone with records cannot be removed, a
+// connect with a bad zone leaves no provider behind, and a private address
+// for a server says why it is refused.
+func TestDNSMistakesAreRefusedClearly(t *testing.T) {
+	d := newDNSHarness(t, "example.com")
+	_, out := d.connect("cf-token")
+	zoneID := out["zones"].([]any)[0].(map[string]any)["id"].(string)
+	domain := d.domain("app.example.com")
+	d.synced(domain.Id, 2)
+
+	if status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/pc/dns-zones/" + zoneID, Token: d.admin}); status != http.StatusBadRequest || !strings.Contains(raw, "manages 2 records") {
+		t.Fatalf("%d %s", status, raw)
+	}
+
+	status, raw := testutil.Do(t, d.handler, testutil.Request{Method: "POST", URL: "/api/pc/dns-providers", Token: d.admin,
+		Body: `{"name":"WEDOS","kind":"wedos","credentials":{"username":"u","password":"p"},"zones":["not a zone"]}`})
+	if status != http.StatusBadRequest {
+		t.Fatalf("%d %s", status, raw)
+	}
+	if _, err := d.app.FindFirstRecordByData(schema.DNSProviders, "name", "WEDOS"); err == nil {
+		t.Error("a provider was left behind")
+	}
+
+	status, raw = testutil.Do(t, d.handler, testutil.Request{Method: "PATCH", URL: "/api/collections/hosts/records/" + d.host.Id, Token: d.admin, Body: `{"public_ip4":"10.1.2.3"}`})
+	if status != http.StatusBadRequest || !strings.Contains(raw, "not a public address") {
+		t.Fatalf("%d %s", status, raw)
+	}
+}
+
+// TestARemovalThatFailedIsTriedAgain: the records of a domain removed while
+// the provider refused are removed by the next drift check.
+func TestARemovalThatFailedIsTriedAgain(t *testing.T) {
+	d := newDNSHarness(t, "example.com")
+	d.connect("cf-token")
+	domain := d.domain("app.example.com")
+	d.synced(domain.Id, 2)
+
+	d.api.Token = "rotated"
+	if status, _ := testutil.Do(t, d.handler, testutil.Request{Method: "DELETE", URL: "/api/collections/domains/records/" + domain.Id, Token: d.admin}); status != http.StatusNoContent {
+		t.Fatalf("%d", status)
+	}
+	d.waitFor("the failed removal", func() bool {
+		found, _ := d.app.FindRecordsByFilter(schema.Events, "kind='dns.remove_failed'", "", 0, 0)
+		return len(found) == 1
+	})
+	if records := cloudflareRecords(d.api, "example.com"); len(records) != 2 {
+		t.Fatalf("%v", records)
+	}
+
+	d.api.Token = "cf-token"
+	d.panel.CheckDNSDrift()
+	if records := cloudflareRecords(d.api, "example.com"); len(records) != 0 {
+		t.Fatalf("the records stayed: %v", records)
+	}
+	if rows, _ := d.app.FindRecordsByFilter(schema.DNSRecords, "", "", 0, 0); len(rows) != 0 {
+		t.Errorf("%d rows", len(rows))
 	}
 }

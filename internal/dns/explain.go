@@ -15,11 +15,16 @@ func explainHTTP(err error) string {
 		return "The provider did not answer in time."
 	case isNetwork(err):
 		return "The panel could not reach the provider's API: " + err.Error()
+	// Cloudflare answers 403 with code 10000 "Authentication error" both for a
+	// wrong token and for one without a permission it needs
+	case strings.Contains(text, "10000") || strings.Contains(text, "403") || strings.Contains(text, "forbidden") || strings.Contains(text, "permission"):
+		return "The provider refused the request: check the token, and that it may read the zones and edit their DNS records (on Cloudflare: Zone:Read and Zone.DNS:Edit)."
 	case strings.Contains(text, "401") || strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid api token") ||
 		strings.Contains(text, "authentication"):
 		return "The provider refused the credentials: check the token, and that it has not expired."
-	case strings.Contains(text, "403") || strings.Contains(text, "forbidden") || strings.Contains(text, "permission"):
-		return "The credentials may not do this: the token needs permission to read and edit the zone's DNS records."
+	// libdns/cloudflare's words for a zone the token cannot see
+	case strings.Contains(text, "expected 1 zone, got 0"):
+		return "The token cannot see this zone: give it the Zone:Read permission for the zone."
 	case strings.Contains(text, "not found") || strings.Contains(text, "404") || strings.Contains(text, "zone could not be found"):
 		return "The provider does not know this zone, or the credentials cannot see it."
 	case strings.Contains(text, "429") || strings.Contains(text, "rate limit"):

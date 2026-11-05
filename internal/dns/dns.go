@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/libdns/hetzner"
 	"github.com/libdns/libdns"
 )
 
@@ -85,7 +84,7 @@ func init() {
 		Fields: []Field{{Name: "api_token", Secret: true}},
 		Note:   "An API token of the Hetzner DNS Console. Name the zones it may change: its API does not list them here.",
 		open: func(c map[string]string) (Provider, error) {
-			return &hetzner.Provider{AuthAPIToken: c["api_token"]}, nil
+			return newHetzner(c["api_token"], httpClient.Load()), nil
 		},
 		explain: explainHTTP,
 	})
@@ -102,6 +101,7 @@ func init() {
 	Register(Driver{
 		Kind:   Manual,
 		Label:  "Manual",
+		Fields: []Field{},
 		Manual: true,
 		Note:   "No API: PocketCloud shows the records to create at your DNS host and checks until they resolve.",
 	})
@@ -295,6 +295,7 @@ func IsPublic(addr netip.Addr) bool {
 // nonPublic are ranges that netip does not call private but that the
 // internet cannot reach either.
 var nonPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT
 	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
 	netip.MustParsePrefix("192.0.2.0/24"),  // documentation
@@ -303,6 +304,10 @@ var nonPublic = []netip.Prefix{
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("2001:db8::/32"), // documentation
+	netip.MustParsePrefix("3fff::/20"),     // documentation, RFC 9637
+	netip.MustParsePrefix("100::/64"),      // discard
+	netip.MustParsePrefix("fec0::/10"),     // site-local
+	netip.MustParsePrefix("::/96"),         // IPv4-compatible
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 }
 
