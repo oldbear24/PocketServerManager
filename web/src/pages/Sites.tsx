@@ -48,7 +48,7 @@ import type { Host } from "../lib/types";
 import { tlsText } from "./EdgeProxy";
 
 /** The errors of a record the API refused, by field. */
-function fieldErrors(reason: unknown): Record<string, string> {
+export function fieldErrors(reason: unknown): Record<string, string> {
   const data = (reason as { response?: { data?: Record<string, { message?: string }> } }).response
     ?.data;
   const fields: Record<string, string> = {};
@@ -69,7 +69,8 @@ export function SitesPage() {
   const canAct = hasRole(user, "operator");
   const sites = useLiveList<Site>("sites", { sort: "name" });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
-  const [creating, setCreating] = useState(false);
+  const navigate = useNavigate();
+  const create = () => navigate("/sites/new");
 
   if (!id && sites.items.length > 0) {
     return <Navigate to={`/sites/${sites.items[0].id}`} replace />;
@@ -92,7 +93,7 @@ export function SitesPage() {
           </Link>
         ))}
         {canAct && (
-          <button type="button" className="site-chip" onClick={() => setCreating(true)}>
+          <button type="button" className="site-chip" onClick={create}>
             <Plus size={13} aria-hidden="true" />
             {t("site.new")}
           </button>
@@ -108,7 +109,7 @@ export function SitesPage() {
             title={t("site.none")}
             action={
               canAct && (
-                <Button variant="primary" onClick={() => setCreating(true)}>
+                <Button variant="primary" onClick={create}>
                   {t("site.new")}
                 </Button>
               )
@@ -121,13 +122,6 @@ export function SitesPage() {
         <Banner tone="warn">{t("site.notFound")}</Banner>
       ) : (
         <SiteDetail key={site.id} site={site} host={host} canAct={canAct} />
-      )}
-
-      {creating && (
-        <NewSiteDialog
-          hosts={hosts.items.filter((item) => item.roles.includes("edge"))}
-          onClose={() => setCreating(false)}
-        />
       )}
     </>
   );
@@ -823,7 +817,7 @@ function SourceCard({
 }
 
 /** The fields of how a site is built, shared by the new and the edit dialog. */
-function BuildFields({
+export function BuildFields({
   values,
   set,
   errors,
@@ -928,7 +922,7 @@ function BuildFields({
   );
 }
 
-type BuildValues = {
+export type BuildValues = {
   source: SiteSource;
   repo_url: string;
   branch: string;
@@ -939,112 +933,6 @@ type BuildValues = {
   build_cmd: string;
   output_dir: string;
 };
-
-function NewSiteDialog({ hosts, onClose }: { hosts: Host[]; onClose: () => void }) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [host, setHost] = useState(hosts[0]?.id ?? "");
-  const [values, setValues] = useState<BuildValues>({
-    source: "git",
-    repo_url: "",
-    branch: "main",
-    token: "",
-    tokenSet: false,
-    generator: "auto",
-    build_image: "",
-    build_cmd: "",
-    output_dir: "",
-  });
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-  const set = (change: Partial<BuildValues>) => setValues((current) => ({ ...current, ...change }));
-
-  const create = async () => {
-    setBusy(true);
-    setErrors({});
-    try {
-      const site = await pb.collection("sites").create<Site>({
-        name: name.trim(),
-        host,
-        source: values.source,
-        repo_url: values.source === "git" ? values.repo_url.trim() : "",
-        branch: values.source === "git" ? values.branch.trim() : "",
-        generator: values.generator,
-        // "as it is" builds nothing, whatever the hidden fields still hold
-        build_image: values.generator === "none" ? "" : values.build_image.trim(),
-        build_cmd: values.generator === "none" ? "" : values.build_cmd.trim(),
-        output_dir: values.output_dir.trim(),
-        https_redirect: true,
-        compress: true,
-        // with the site itself, so its first deployment already has it
-        ...(values.source === "git" && values.token.trim()
-          ? { git_token: values.token.trim() }
-          : {}),
-      });
-      toast.success(t("site.created", { name: site.name }));
-      onClose();
-      navigate(`/sites/${site.id}`);
-    } catch (reason) {
-      setErrors(fieldErrors(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <ConfirmDialog
-      open
-      title={t("site.newTitle")}
-      confirmLabel={t("site.create")}
-      confirmDisabled={busy || !name.trim() || !host}
-      onCancel={onClose}
-      onConfirm={() => void create()}
-    >
-      <div className="dialog-form">
-        {hosts.length === 0 && <Banner tone="warn">{t("site.noEdge")}</Banner>}
-        <Field label={t("site.name")} htmlFor="site-name" error={errors.name}>
-          <input
-            id="site-name"
-            className="input mono"
-            placeholder="blog"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
-        <Field label={t("site.server")} htmlFor="site-host" error={errors.host}>
-          <select
-            id="site-host"
-            className="select"
-            value={host}
-            onChange={(event) => setHost(event.target.value)}
-          >
-            {hosts.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <SegmentedControl
-          label={t("site.source")}
-          value={values.source}
-          onChange={(source) => set({ source })}
-          options={(["git", "upload", "empty"] as SiteSource[]).map((source) => ({
-            value: source,
-            label: t(`site.sourceKind.${source}`),
-          }))}
-        />
-        <p className="muted small">{t(`site.sourceNote.${values.source}`)}</p>
-        <BuildFields values={values} set={set} errors={errors} idPrefix="new-site" />
-        {(errors.form || errors.headers) && (
-          <p className="field-error">{errors.form || errors.headers}</p>
-        )}
-      </div>
-    </ConfirmDialog>
-  );
-}
 
 function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }) {
   const { t } = useTranslation();

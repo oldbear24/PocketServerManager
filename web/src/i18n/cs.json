@@ -1440,5 +1440,89 @@
     "serverDegraded": "Server s potížemi",
     "expired": "Vypršel",
     "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách"
+  },
+  "siteNew": {
+    "title": "Nový web",
+    "description": "Statický web nebo PHP aplikace. Zadej doménu a zbytek zařídíme: DNS záznamy u připojeného poskytovatele, certifikát přes ACME, build a nasazení na zvolený server.",
+    "typeTitle": "1 · Typ webu",
+    "static": "Statický web",
+    "staticNote": "HTML · Hugo, MkDocs, Astro…",
+    "php": "PHP aplikace",
+    "phpLater": "Přijde s PHP weby",
+    "sourceTitle": "2 · Zdroj obsahu",
+    "sourceNote": {
+      "git": "build při každém push",
+      "upload": "ZIP se soubory",
+      "empty": "obsah později"
+    },
+    "zip": "Soubor ZIP",
+    "domainTitle": "3 · Doména a server",
+    "hostname": "Doména",
+    "server": "Server (edge proxy)",
+    "siteName": "Název webu",
+    "records": "Záznamy, které doména potřebuje",
+    "recordsToMake": "Záznamy k vytvoření u registrátora",
+    "recordsToMakeNote": "Nastavení je kontroluje každých pár sekund, později jednou za minutu, a pokračuje samo, jakmile je vrátí každý resolver.",
+    "recordType": "Typ",
+    "recordName": "Název",
+    "recordValue": "Hodnota",
+    "www": "Přidat i {{hostname}} s přesměrováním 301",
+    "automatic": "Zóna {{zone}} je u poskytovatele {{provider}}: DNS záznamy nastavíme automaticky.",
+    "manualZone": "Zónu {{zone}} nespravuje žádný připojený poskytovatel: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
+    "manual": "Tento název nepatří do žádné připojené zóny: vytvoř tyto záznamy u registrátora. Nastavení počká, až se začnou překládat, a pokračuje samo.",
+    "taken": "{{names}} už je doménou.",
+    "certificateTitle": "4 · Certifikát",
+    "challenge": "Ověření (ACME challenge)",
+    "noAccount": "Zatím žádný účet ACME",
+    "noAccountText": "Certifikáty vydává účet ACME z Nastavení: přidej ho, než nastavení dojde k certifikátu.",
+    "settings": "Otevřít Nastavení",
+    "start": "Vytvořit a nasadit",
+    "starting": "Spouštím…",
+    "started": "Nastavuji {{hostname}}",
+    "summaryTitle": "Nový web",
+    "requestedBy": "Zadal",
+    "progress": "Průběh",
+    "stepOf": "Krok {{step}} z {{total}}",
+    "done": "Hotovo",
+    "step": {
+      "site": {
+        "create": "Web vytvořen a přiřazen serveru",
+        "dns": "DNS záznamy vytvořeny",
+        "propagation": "Propagace DNS ověřena",
+        "certificate": "Certifikát vydán",
+        "check": "Kontrola dostupnosti"
+      },
+      "build": "Build obsahu",
+      "release": "Nasazení přes agenta"
+    },
+    "plan": {
+      "site": {
+        "create": "web a jeho server",
+        "dns": "A + AAAA a CNAME pro www",
+        "propagation": "veřejné resolvery a autoritativní NS zóny",
+        "certificate": "ACME, jeden certifikát pro všechny názvy",
+        "check": "HTTPS na veřejné adrese serveru"
+      },
+      "build": "v jednorázovém kontejneru na serveru",
+      "release": "site.deploy · atomické přepnutí"
+    },
+    "state": {
+      "done": "hotovo",
+      "running": "probíhá",
+      "failed": "selhalo",
+      "waiting": "čeká"
+    },
+    "now": "teď",
+    "dnsAutomatic": "{{types}} ({{provider}} API)",
+    "dnsManual": "{{types}}, k vytvoření ručně",
+    "authoritative": "autoritativní NS",
+    "retry": "Zopakovat krok",
+    "retrying": "Krok se opakuje",
+    "cancel": "Zrušit nastavení",
+    "cancelled": "Nastavení bylo zrušeno",
+    "live": "Web je dostupný:",
+    "ended": "Nastavení skončilo: {{error}} Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává.",
+    "openSite": "Otevřít stránku webu",
+    "history": "Každý krok je záznam v historii příkazů, takže nastavení uvidíš i v Auditu a aktivitě."
   }
 }

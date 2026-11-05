@@ -1374,5 +1374,89 @@
     "serverDegraded": "Server degraded",
     "expired": "Expired",
     "requestsKeys": "Requests per hour; the arrow keys move along the hours"
+  },
+  "siteNew": {
+    "title": "New site",
+    "description": "A static site or a PHP application. Enter its name on the web and the rest is set up for you: the DNS records at a connected provider, the certificate from ACME, the build and the deployment on the server you choose.",
+    "typeTitle": "1 · Type of site",
+    "static": "Static site",
+    "staticNote": "HTML · Hugo, MkDocs, Astro…",
+    "php": "PHP application",
+    "phpLater": "Comes with PHP sites",
+    "sourceTitle": "2 · Content",
+    "sourceNote": {
+      "git": "built on every push",
+      "upload": "a ZIP of its files",
+      "empty": "content later"
+    },
+    "zip": "ZIP file",
+    "domainTitle": "3 · Domain and server",
+    "hostname": "Domain",
+    "server": "Server (edge proxy)",
+    "siteName": "Site name",
+    "records": "The records the domain needs",
+    "recordsToMake": "Records to make at the registrar",
+    "recordsToMakeNote": "The setup checks every few seconds, then once a minute, and goes on by itself once every resolver answers them.",
+    "recordType": "Type",
+    "recordName": "Name",
+    "recordValue": "Value",
+    "www": "Add {{hostname}} too, with a 301 redirect",
+    "automatic": "The zone {{zone}} is at {{provider}}: PocketCloud sets the DNS records.",
+    "manualZone": "No connected provider manages {{zone}}: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",
+    "manual": "No connected zone holds this name: make these records at your registrar. The setup waits until they resolve, and goes on by itself.",
+    "taken": "{{names}} is a domain already.",
+    "certificateTitle": "4 · Certificate",
+    "challenge": "Validation (ACME challenge)",
+    "noAccount": "No ACME account yet",
+    "noAccountText": "Certificates come from the ACME account in Settings: add one before the setup reaches its certificate.",
+    "settings": "Open Settings",
+    "start": "Create and deploy",
+    "starting": "Starting…",
+    "started": "Setting up {{hostname}}",
+    "summaryTitle": "The new site",
+    "requestedBy": "Asked by",
+    "progress": "Progress",
+    "stepOf": "Step {{step}} of {{total}}",
+    "done": "Done",
+    "step": {
+      "site": {
+        "create": "Site created on its server",
+        "dns": "DNS records set",
+        "propagation": "DNS propagation checked",
+        "certificate": "Certificate issued",
+        "check": "Availability check"
+      },
+      "build": "Build",
+      "release": "Release through the agent"
+    },
+    "plan": {
+      "site": {
+        "create": "the site and its server",
+        "dns": "A + AAAA, and a CNAME for www",
+        "propagation": "public resolvers and the zone's name servers",
+        "certificate": "ACME, one certificate for every name",
+        "check": "HTTPS at the server's public address"
+      },
+      "build": "in a job container on the server",
+      "release": "site.deploy · atomic switch"
+    },
+    "state": {
+      "done": "done",
+      "running": "under way",
+      "failed": "failed",
+      "waiting": "waiting"
+    },
+    "now": "now",
+    "dnsAutomatic": "{{types}} ({{provider}} API)",
+    "dnsManual": "{{types}}, to make by hand",
+    "authoritative": "the zone's name servers",
+    "retry": "Retry the step",
+    "retrying": "Retrying the step",
+    "cancel": "Cancel the setup",
+    "cancelled": "The setup was cancelled",
+    "live": "The site is live:",
+    "ended": "The setup ended: {{error}} The domains it created were removed, with their DNS records; the site stays.",
+    "openSite": "Open the site's page",
+    "history": "Every step is a command in the command history, so Audit & activity shows the setup too."
   }
 }
