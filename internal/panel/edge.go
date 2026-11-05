@@ -160,6 +160,8 @@ func (p *Panel) validateDomain(e *core.RecordEvent) error {
 			errs["site"] = validation.NewError("validation_no_site", "Choose the site the domain serves.")
 		case site.GetString("host") != record.GetString("host"):
 			errs["site"] = validation.NewError("validation_site_elsewhere", "The site is on another server: a domain of a site is served by the site's own edge.")
+		case site.GetString("basic_auth") != "" && record.GetString("tls") == schema.TLSOff:
+			errs["tls"] = validation.NewError("validation_invalid_basic_auth", "The site asks for a password, which needs HTTPS.")
 		}
 		record.Set("container", "")
 		record.Set("port", 0)
@@ -220,6 +222,10 @@ func (p *Panel) guardEdgeRole(e *core.RecordRequestEvent) error {
 		count, err := e.App.CountRecords(schema.Domains, dbx.HashExp{"host": e.Record.Id})
 		if err == nil && count > 0 {
 			return e.BadRequestError(fmt.Sprintf("%d domains are served by this server's edge: remove them or move them to another server first.", count), nil)
+		}
+		count, err = e.App.CountRecords(schema.Sites, dbx.HashExp{"host": e.Record.Id})
+		if err == nil && count > 0 {
+			return e.BadRequestError(fmt.Sprintf("%d sites are built and served on this server: remove them first.", count), nil)
 		}
 	}
 	return e.Next()

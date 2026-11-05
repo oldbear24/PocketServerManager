@@ -56,6 +56,10 @@ const (
 )
 
 func (p *Panel) registerSites() {
+	// the records API leaves out hidden fields for everyone but superusers;
+	// operators may set a site's secrets with its create or update all the same
+	p.App.OnRecordCreateRequest(schema.Sites).BindFunc(p.takeSiteSecrets)
+	p.App.OnRecordUpdateRequest(schema.Sites).BindFunc(p.takeSiteSecrets)
 	p.App.OnRecordCreate(schema.Sites).BindFunc(p.siteDefaults)
 	p.App.OnRecordValidate(schema.Sites).BindFunc(p.validateSite)
 	p.App.OnRecordAfterCreateSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
@@ -106,6 +110,26 @@ func (p *Panel) bindSiteRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	group.GET("/sites/{id}/requests", p.handleSiteRequests).BindFunc(everyone)
 }
 
+// takeSiteSecrets sets the Git token and the passwords from the request, so a
+// private site's first deployment already has its token.
+func (p *Panel) takeSiteSecrets(e *core.RecordRequestEvent) error {
+	// the request data PocketBase hands on has the hidden fields taken out,
+	// so the body is read again
+	var body struct {
+		GitToken  *string `json:"git_token" form:"git_token"`
+		BasicAuth *string `json:"basic_auth" form:"basic_auth"`
+	}
+	if err := e.BindBody(&body); err == nil {
+		if body.GitToken != nil {
+			e.Record.Set("git_token", strings.TrimSpace(*body.GitToken))
+		}
+		if body.BasicAuth != nil {
+			e.Record.Set("basic_auth", strings.TrimSpace(*body.BasicAuth))
+		}
+	}
+	return e.Next()
+}
+
 // siteDefaults fills in what a new site leaves out, and its webhook secret.
 func (p *Panel) siteDefaults(e *core.RecordEvent) error {
 	site := e.Record
@@ -152,8 +176,12 @@ func (p *Panel) validateSite(e *core.RecordEvent) error {
 			set("host", "validation_site_host_fixed", "A site stays on its server.")
 		}
 	}
-	if host, err := e.App.FindRecordById(schema.Hosts, site.GetString("host")); err == nil && !hasEdgeRole(host) {
-		set("host", "validation_no_edge", "The server has no edge role: give it one first.")
+	// a site keeps its server, so this is checked where the server is chosen;
+	// the panel's own saves of the site must not fail on it later
+	if original := site.Original(); site.IsNew() || original == nil || original.GetString("host") != site.GetString("host") {
+		if host, err := e.App.FindRecordById(schema.Hosts, site.GetString("host")); err == nil && !hasEdgeRole(host) {
+			set("host", "validation_no_edge", "The server has no edge role: give it one first.")
+		}
 	}
 
 	switch site.GetString("source") {
@@ -199,8 +227,13 @@ func (p *Panel) validateSite(e *core.RecordEvent) error {
 		users := parseBasicAuth(text)
 		if text == "" {
 			users = nil
-		} else if err := edge.ValidBasicAuth(users); err != nil {
+		} else if err := checkBasicAuthText(text); err != nil {
 			set("basic_auth", "validation_invalid_basic_auth", capitalize(err.Error())+".")
+		} else if !site.IsNew() {
+			// a password needs HTTPS on every domain of the site
+			if plain, _ := e.App.CountRecords(schema.Domains, dbx.HashExp{"site": site.Id, "tls": schema.TLSOff}); plain > 0 {
+				set("basic_auth", "validation_invalid_basic_auth", "A password needs HTTPS: a domain of this site is served over plain HTTP.")
+			}
 		}
 		names := []string{}
 		for _, user := range users {
@@ -422,8 +455,33 @@ func (p *Panel) enrichSiteDeploy(record *core.Record, command *agentv1.Command) 
 	return nil
 }
 
+// deploymentOf is the deployment of a site.deploy command. A command that
+// fails at once can finish before its deployment records it, so the site and
+// the number in its payload find it too.
 func (p *Panel) deploymentOf(command *core.Record) (*core.Record, error) {
-	return p.App.FindFirstRecordByData(schema.Deployments, "command", command.Id)
+	if deployment, err := p.App.FindFirstRecordByData(schema.Deployments, "command", command.Id); err == nil {
+		return deployment, nil
+	}
+	var payload struct {
+		Site       string `json:"site"`
+		Deployment any    `json:"deployment"`
+	}
+	raw, _ := json.Marshal(command.Get("payload"))
+	_ = json.Unmarshal(raw, &payload)
+	number, _ := strconv.Atoi(fmt.Sprint(payload.Deployment))
+	site, err := p.App.FindFirstRecordByFilter(schema.Sites, "host={:h} && name={:n}", dbx.Params{"h": command.GetString("host"), "n": payload.Site})
+	if err != nil {
+		return nil, err
+	}
+	deployment, err := p.App.FindFirstRecordByFilter(schema.Deployments, "site={:s} && number={:n}", dbx.Params{"s": site.Id, "n": number})
+	if err != nil {
+		return nil, err
+	}
+	// the command is this one's, whichever saved first
+	if deployment.GetString("command") == "" {
+		deployment.Set("command", command.Id)
+	}
+	return deployment, nil
 }
 
 func (p *Panel) deploymentStarted(command *core.Record) {
@@ -478,33 +536,56 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 	_ = json.Unmarshal(raw, &result)
 	fields["status"] = schema.DeploymentSucceeded
 	fields["on_server"] = true
-	fields["size_bytes"] = int64(result.SizeBytes)
-	fields["files"] = int64(result.Files)
-	fields["build_ms"] = int64(result.BuildMs)
-	fields["generator"] = result.Generator
-	fields["image"] = result.Image
-	fields["build_cmd"] = truncate(result.Command, 4096)
-	if result.Commit != "" {
-		fields["commit_sha"] = result.Commit
-		fields["message"] = truncate(result.Message, 1000)
+	// a command that finished while its agent was away is settled without
+	// its result: what it built is not known, and nothing is guessed
+	if result.Release != 0 {
+		fields["size_bytes"] = int64(result.SizeBytes)
+		fields["files"] = int64(result.Files)
+		fields["build_ms"] = int64(result.BuildMs)
+		fields["generator"] = result.Generator
+		fields["image"] = result.Image
+		fields["build_cmd"] = truncate(result.Command, 4096)
+		if result.Commit != "" {
+			fields["commit_sha"] = result.Commit
+			fields["message"] = truncate(result.Message, 1000)
+		}
 	}
 	p.setFields(deployment, fields)
 	p.setFields(site, map[string]any{"active_deployment": deployment.Id})
-	p.markReleasesOnServer(site, result.Releases)
+	if len(result.Releases) > 0 {
+		p.markReleasesOnServer(site, result.Releases)
+	}
 	events.Log(p.App, site.GetString("host"), "site.deployed", schema.SeverityInfo,
 		fmt.Sprintf("Deployment %s is live.", label), map[string]any{"site": site.Id, "deployment": deployment.Id})
 }
 
 // markReleasesOnServer records which releases the server still has, after a
-// deployment pruned the old ones.
+// deployment pruned the old ones. The upload of a release that is gone goes
+// too, unless it is the newest, which deploying again uses.
 func (p *Panel) markReleasesOnServer(site *core.Record, releases []int) {
-	deployments, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s} && on_server=true", "", 0, 0, dbx.Params{"s": site.Id})
+	deployments, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s} && (on_server=true || upload!='')", "-number", 0, 0, dbx.Params{"s": site.Id})
 	if err != nil {
 		return
 	}
+	newestUpload := ""
 	for _, deployment := range deployments {
-		if !slices.Contains(releases, deployment.GetInt("number")) {
-			p.setFields(deployment, map[string]any{"on_server": false})
+		if newestUpload == "" && deployment.GetString("upload") != "" {
+			newestUpload = deployment.Id
+		}
+	}
+	for _, deployment := range deployments {
+		if slices.Contains(releases, deployment.GetInt("number")) {
+			continue
+		}
+		fields := map[string]any{}
+		if deployment.GetBool("on_server") {
+			fields["on_server"] = false
+		}
+		if deployment.GetString("upload") != "" && deployment.Id != newestUpload {
+			fields["upload"] = nil
+		}
+		if len(fields) > 0 {
+			p.setFields(deployment, fields)
 		}
 	}
 }

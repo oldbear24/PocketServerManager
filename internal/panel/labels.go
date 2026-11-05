@@ -417,5 +417,20 @@ func validateBasicAuth(record *core.Record) (string, error) {
 	if secrets.IsSealed(text) {
 		return "", nil
 	}
-	return "basic_auth", edge.ValidBasicAuth(parseBasicAuth(text))
+	return "basic_auth", checkBasicAuthText(text)
+}
+
+// checkBasicAuthText checks user:hash lines as they are typed: a line without
+// a user, such as a hash alone, would leave the route without a password.
+func checkBasicAuthText(text string) error {
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.Contains(line, ":") {
+			return errors.New("each line is user:bcrypt-hash; a line has no user")
+		}
+	}
+	users := parseBasicAuth(text)
+	if len(users) == 0 {
+		return errors.New("name at least one user:bcrypt-hash")
+	}
+	return edge.ValidBasicAuth(users)
 }
