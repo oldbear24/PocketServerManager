@@ -384,6 +384,18 @@ func (p *Panel) databaseCreateFinished(record *core.Record) {
 		}
 	}
 
+	// a database for a site is ready once the site is connected to it (#50);
+	// one made by a new site's setup leaves the applying to its next step
+	if siteID := database.GetString("site"); siteID != "" {
+		if site, err := p.App.FindRecordById(schema.Sites, siteID); err == nil {
+			request := databaseRequest{Actor: dbActor, UserID: record.GetString("requested_by")}
+			if err := p.connectSite(context.Background(), request, server, database, site, record.GetString("parent") == ""); err != nil {
+				p.Log.Error("failed to connect a site to its database", "database", database.Id, "error", err)
+				database.Set("last_error", "The database is ready, but connecting "+site.GetString("name")+" failed: "+err.Error())
+			}
+		}
+	}
+
 	database.Set("status", dbReady)
 	p.saveAs(database)
 }

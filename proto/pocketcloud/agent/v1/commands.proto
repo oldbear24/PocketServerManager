@@ -380,6 +380,14 @@ message SitePhpDeploy {
   map<string, string> secrets = 5 [(pocketcloud.options.v1.sensitive) = true];
   // networks are the database networks the release hook joins.
   repeated string networks = 6;
+  // apply is the site's PHP-FPM for this release, as for a new PHP version:
+  // it is applied with the release, before the switch when apply_first is
+  // set and after it otherwise, so that the release that is served never runs
+  // on a PHP older than the one it was built for (#50).
+  SitePhpApply apply = 7;
+  // apply_first applies the new PHP-FPM before the switch: a newer PHP runs
+  // the release served now, and an older one would not run the new release.
+  bool apply_first = 8;
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.

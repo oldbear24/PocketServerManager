@@ -211,6 +211,23 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	if image, _ := s.docker.Find("shop-php").Config["Image"].(string); image != php.Image+":"+next+"-fpm" {
 		t.Errorf("after the switch: %q", image)
 	}
+	// PHP-FPM came with the release: a newer one before the switch
+	if command, err := s.app.FindRecordById(schema.Commands, two.GetString("command")); err != nil {
+		t.Error(err)
+	} else {
+		var payload struct {
+			PHP struct {
+				Apply      map[string]any `json:"apply"`
+				ApplyFirst bool           `json:"apply_first"`
+			} `json:"php"`
+		}
+		raw, _ := json.Marshal(command.Get("payload"))
+		_ = json.Unmarshal(raw, &payload)
+		upgrade := php.Compare(next, first) > 0
+		if payload.PHP.Apply["image"] != php.Image+":"+next+"-fpm" || payload.PHP.ApplyFirst != upgrade {
+			t.Errorf("the deployment's PHP-FPM: %v, first %v", payload.PHP.Apply["image"], payload.PHP.ApplyFirst)
+		}
+	}
 	if s.docker.Find("shop-php-old") != nil {
 		t.Error("the replaced PHP-FPM is still there")
 	}
@@ -218,7 +235,7 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 		return s.phpSettings(siteID).GetString("state") == schema.PHPRunning
 	})
 
-	// back to #1: PHP-FPM goes back to its version first
+	// back to #1, built for the older version
 	status, out = s.request(http.MethodPost, "/api/pc/sites/"+siteID+"/rollback", s.operator, map[string]any{"deployment": one.Id})
 	if status != http.StatusOK {
 		t.Fatalf("rollback: %d %v", status, out)
@@ -229,9 +246,11 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	if version := s.phpSettings(siteID).GetString("php_version"); version != first {
 		t.Errorf("the version after the rollback: %s", version)
 	}
-	if image, _ := s.docker.Find("shop-php").Config["Image"].(string); image != php.Image+":"+first+"-fpm" {
-		t.Errorf("the image after the rollback: %q", image)
-	}
+	// an older PHP-FPM follows the switch, as the newer one runs the old release
+	s.waitFor("PHP-FPM to go back to "+first, func() bool {
+		image, _ := s.docker.Find("shop-php").Config["Image"].(string)
+		return image == php.Image+":"+first+"-fpm"
+	})
 	if current := sites.Current(s.sites, "shop"); current != 1 {
 		t.Errorf("serves #%d", current)
 	}

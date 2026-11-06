@@ -205,3 +205,14 @@ func TestStatuses(t *testing.T) {
 		t.Errorf("newest %+v", statuses[0])
 	}
 }
+
+func TestVersionsAreComparedByTheirNumbers(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{{"8.3", "8.4", -1}, {"8.4", "8.3", 1}, {"8.10", "8.9", 1}, {"8.4", "8.4", 0}, {"9.0", "8.5", 1}} {
+		if got := Compare(c.a, c.b); got != c.want {
+			t.Errorf("Compare(%s, %s) = %d", c.a, c.b, got)
+		}
+	}
+}

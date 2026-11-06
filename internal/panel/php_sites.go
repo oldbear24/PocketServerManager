@@ -19,6 +19,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -339,21 +340,18 @@ func (p *Panel) siteNetworks(site *core.Record) []string {
 	return names
 }
 
-// applyPHP sends a site's PHP settings to its PHP-FPM container.
-func (p *Panel) applyPHP(ctx context.Context, site *core.Record, options commands.Options) (*core.Record, error) {
+// phpApplyPayload is a site's PHP-FPM as its settings have it, without its
+// secrets, which are added when the command is delivered.
+func (p *Panel) phpApplyPayload(site *core.Record) (*agentv1.SitePhpApply, *core.Record, error) {
 	settings, err := p.phpSettings(p.App, site)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	plain, _, err := parsePHPEnv(settings.GetString("env"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	options.Host = site.GetString("host")
-	if options.Label == "" {
-		options.Label = site.GetString("name")
-	}
-	options.Command = &agentv1.Command{Payload: &agentv1.Command_SitePhpApply{SitePhpApply: &agentv1.SitePhpApply{
+	return &agentv1.SitePhpApply{
 		Site:          site.GetString("name"),
 		Image:         p.phpImage(settings.GetString("php_version")),
 		FpmConf:       fpmConf(site.GetString("name"), fpmOf(settings)),
@@ -363,7 +361,20 @@ func (p *Panel) applyPHP(ctx context.Context, site *core.Record, options command
 		MemLimitBytes: uint64(max(settings.GetInt("mem_limit_mb"), 0)) << 20, //nolint:gosec // checked above 0
 		Networks:      p.siteNetworks(site),
 		Classic:       settings.GetString("mode") == schema.PHPClassic,
-	}}}
+	}, settings, nil
+}
+
+// applyPHP sends a site's PHP settings to its PHP-FPM container.
+func (p *Panel) applyPHP(ctx context.Context, site *core.Record, options commands.Options) (*core.Record, error) {
+	payload, settings, err := p.phpApplyPayload(site)
+	if err != nil {
+		return nil, err
+	}
+	options.Host = site.GetString("host")
+	if options.Label == "" {
+		options.Label = site.GetString("name")
+	}
+	options.Command = &agentv1.Command{Payload: &agentv1.Command_SitePhpApply{SitePhpApply: payload}}
 	command, err := p.Commands.Create(ctx, options)
 	if err != nil {
 		return nil, err
@@ -423,6 +434,66 @@ func (p *Panel) enrichPHPApply(record *core.Record, command *agentv1.Command) er
 	return nil
 }
 
+// phpApplied keeps the state of a site's PHP-FPM container after an apply, of
+// its own or with a deployment.
+func (p *Panel) phpApplied(site *core.Record, result map[string]any, failure string) {
+	settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+	if err != nil {
+		return
+	}
+	if failure != "" {
+		p.setFields(settings, map[string]any{"state": schema.PHPFailed, "last_error": truncate(failure, 4096)})
+		events.Log(p.App, site.GetString("host"), "site.php_failed", schema.SeverityWarning,
+			truncate(fmt.Sprintf("PHP-FPM of %s could not be applied: %s", site.GetString("name"), failure), 2048),
+			map[string]any{"site": site.Id})
+		return
+	}
+	image, _ := result["image"].(string)
+	if digest, _ := result["digest"].(string); digest != "" {
+		image = digest
+	}
+	p.setFields(settings, map[string]any{"state": schema.PHPRunning, "image": image, "applied_at": types.NowDateTime(), "last_error": ""})
+}
+
+// phpDeployApplied keeps the state of a site's PHP-FPM after a deployment
+// that came with one.
+func (p *Panel) phpDeployApplied(site, command *core.Record) {
+	var result struct {
+		PHP      map[string]any `json:"php"`
+		PHPError string         `json:"php_error"`
+	}
+	raw, _ := json.Marshal(command.Get("result"))
+	_ = json.Unmarshal(raw, &result)
+	switch {
+	case result.PHPError != "":
+		p.phpApplied(site, nil, result.PHPError)
+	case len(result.PHP) > 0:
+		p.phpApplied(site, result.PHP, "")
+	}
+}
+
+// keepLivePHPVersion goes back to the PHP version of the release a site
+// serves after a deployment for another version failed: its PHP-FPM may have
+// changed already, and must run what is live.
+func (p *Panel) keepLivePHPVersion(site, failed *core.Record) {
+	live, err := p.App.FindRecordById(schema.Deployments, site.GetString("active_deployment"))
+	if err != nil || live.GetString("php_version") == "" || live.GetString("php_version") == failed.GetString("php_version") {
+		return
+	}
+	settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+	if err != nil || settings.GetString("php_version") == live.GetString("php_version") {
+		return
+	}
+	version := live.GetString("php_version")
+	p.setFields(settings, map[string]any{"php_version": version})
+	if _, err := p.applyPHP(context.Background(), site, commands.Options{Requester: "panel"}); err != nil {
+		p.Log.Error("failed to go back to the live release's PHP", "site", site.GetString("name"), "version", version, "error", err)
+	}
+	events.Log(p.App, site.GetString("host"), "site.php_kept", schema.SeverityInfo,
+		fmt.Sprintf("%s stays on PHP %s, as the deployment for PHP %s failed.", site.GetString("name"), version, failed.GetString("php_version")),
+		map[string]any{"site": site.Id, "deployment": failed.Id})
+}
+
 // phpApplyFinished keeps the state of a site's PHP-FPM container.
 func (p *Panel) phpApplyFinished(command *core.Record) {
 	var payload struct {
@@ -435,28 +506,14 @@ func (p *Panel) phpApplyFinished(command *core.Record) {
 	if err != nil {
 		return
 	}
-	settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
-	if err != nil {
-		return
-	}
 	if command.GetString("status") != schema.CommandSucceeded {
-		p.setFields(settings, map[string]any{"state": schema.PHPFailed, "last_error": truncate(command.GetString("error"), 4096)})
-		events.Log(p.App, site.GetString("host"), "site.php_failed", schema.SeverityWarning,
-			truncate(fmt.Sprintf("PHP-FPM of %s could not be applied: %s", site.GetString("name"), command.GetString("error")), 2048),
-			map[string]any{"site": site.Id})
+		p.phpApplied(site, nil, command.GetString("error"))
 		return
 	}
-	var result struct {
-		Image  string `json:"image"`
-		Digest string `json:"digest"`
-	}
+	result := map[string]any{}
 	raw, _ = json.Marshal(command.Get("result"))
 	_ = json.Unmarshal(raw, &result)
-	image := result.Image
-	if result.Digest != "" {
-		image = result.Digest
-	}
-	p.setFields(settings, map[string]any{"state": schema.PHPRunning, "image": image, "applied_at": types.NowDateTime(), "last_error": ""})
+	p.phpApplied(site, result, "")
 }
 
 // handlePHPSettings changes a PHP site's settings and applies them: a new
@@ -529,13 +586,10 @@ func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
 	version := settings.GetString("php_version")
 	if version != before && site.GetString("active_deployment") != "" {
 		// the release goes on the new image as a deployment of its own, which a
-		// rollback takes back to the old version
+		// rollback takes back to the old version; PHP-FPM changes with it
 		deployment, err := p.startDeployment(e.Request.Context(), site, deploymentRequest{
 			Trigger: schema.TriggerManual, RequestedBy: id, Requester: label,
-			Message: fmt.Sprintf("PHP %s → %s", before, version), BeforeSend: func(ctx context.Context) error {
-				_, err := p.applyPHP(ctx, site, commands.Options{RequestedBy: id, Requester: label})
-				return err
-			},
+			Message: fmt.Sprintf("PHP %s → %s", before, version), PHPApply: true, PHPFrom: before,
 		})
 		if err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
@@ -632,4 +686,70 @@ func (p *Panel) handlePHPApply(e *core.RequestEvent) error {
 		return e.BadRequestError(capitalize(err.Error())+".", nil)
 	}
 	return e.JSON(http.StatusOK, map[string]any{"command": command.Id})
+}
+
+// siteNetwork names the database network of a site. Its dot keeps it apart
+// from a stack's, as stack names have none.
+func siteNetwork(site string) string {
+	return databases.NetworkName("site." + site)
+}
+
+// connectSite gives a PHP site a database of a server on its own host: the
+// server joins a database network of the site's, the site's environment gets
+// DB_HOST, DB_NAME, DB_USER and DB_PASSWORD (as ${secret:db/<name>}), and its
+// PHP-FPM, when it runs, joins the network with them.
+func (p *Panel) connectSite(ctx context.Context, request databaseRequest, server, database, site *core.Record, apply bool) error {
+	if site.GetString("host") != server.GetString("host") {
+		return errors.New("a site can only use the database servers of its own server")
+	}
+	engine, err := engineOfServer(server)
+	if err != nil {
+		return err
+	}
+	network := siteNetwork(site.GetString("name"))
+	if _, err := p.App.FindFirstRecordByFilter(schema.DBNetworks, "server={:server} && site={:site}",
+		dbx.Params{"server": server.Id, "site": site.Id}); err != nil {
+		collection, err := p.App.FindCachedCollectionByNameOrId(schema.DBNetworks)
+		if err != nil {
+			return err
+		}
+		record := core.NewRecord(collection)
+		record.Set("server", server.Id)
+		record.Set("site", site.Id)
+		record.Set("name", network)
+		if err := p.App.SaveWithContext(audit.WithActor(ctx, request.Actor), record); err != nil {
+			return err
+		}
+	}
+	account, err := p.userOf(server, database.GetString("name"))
+	if err != nil {
+		return err
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return err
+	}
+	connection := databases.Connection{Engine: engine, Server: server.GetString("name"), Database: database.GetString("name"), User: account.GetString("name")}
+	env, _ := databases.AddEnv(settings.GetString("env"), connection.EnvLines())
+	settings.Set("env", env)
+	settings.Set("database", database.Id)
+	if err := p.App.SaveWithContext(audit.WithActor(ctx, request.Actor), settings); err != nil {
+		return err
+	}
+	if _, err := p.Commands.Create(ctx, commands.Options{
+		Host:        site.GetString("host"),
+		Label:       site.GetString("name") + " → " + server.GetString("name"),
+		RequestedBy: request.UserID,
+		Command: &agentv1.Command{Payload: &agentv1.Command_DbNetworkAttach{DbNetworkAttach: &agentv1.DbNetworkAttach{
+			Network:           network,
+			ServerContainerId: server.GetString("container_ref"),
+			ServerAlias:       server.GetString("name"),
+		}}},
+	}); err != nil {
+		return err
+	}
+	if apply {
+		_, err = p.applyPHP(ctx, site, commands.Options{RequestedBy: request.UserID, Requester: request.Label})
+	}
+	return err
 }

@@ -293,6 +293,21 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 		}
 	}
 
+	// a new PHP version's PHP-FPM comes with the release: before the switch
+	// when it is newer, as it runs the release served now, and after it when
+	// it is older, as the old PHP-FPM runs the new release
+	apply := php.GetApply()
+	if apply != nil && apply.GetSite() != site {
+		return failed(errors.New("the PHP-FPM of another site came with the deployment"))
+	}
+	var applied map[string]any
+	if apply != nil && php.GetApplyFirst() {
+		reporter.Progress("php", "Starting PHP-FPM on "+apply.GetImage(), 90)
+		if applied, err = a.applySitePHP(ctx, apply, reporter); err != nil {
+			return failed(fmt.Errorf("PHP-FPM of the new version: %w", err))
+		}
+	}
+
 	reporter.Progress("release", "Switching to the new release", 95)
 	// once the switch may have happened, a cancel must not leave the panel
 	// believing the old release is served
@@ -306,7 +321,17 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 	if err := json.Unmarshal(out, &live); err != nil {
 		return failed(fmt.Errorf("the site tool said: %s", out))
 	}
-	a.reloadPHP(releaseCtx, site, reporter)
+	phpError := ""
+	if apply != nil && !php.GetApplyFirst() {
+		// the release is live: an old PHP-FPM that serves on is no failure of it
+		reporter.Progress("php", "Starting PHP-FPM on "+apply.GetImage(), 97)
+		if applied, err = a.applySitePHP(releaseCtx, apply, reporter); err != nil {
+			phpError = err.Error()
+			fmt.Fprintf(reporter, "PHP-FPM of the new version did not start: %v\nThe PHP-FPM that ran before serves the new release.\n", err)
+		}
+	} else {
+		a.reloadPHP(releaseCtx, site, reporter)
+	}
 
 	releases := make([]any, 0, len(live.Releases))
 	for _, number := range live.Releases {
@@ -323,6 +348,8 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 		"image":      found.Plan.Image,
 		"command":    found.Plan.Command,
 		"build_ms":   float64(buildMs),
+		"php":        applied,
+		"php_error":  phpError,
 	}, nil
 }
 

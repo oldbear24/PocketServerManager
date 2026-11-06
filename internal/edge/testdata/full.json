@@ -379,6 +379,10 @@
                       "handle": [
                         {
                           "handler": "reverse_proxy",
+                          "load_balancing": {
+                            "try_duration": "10s",
+                            "try_interval": "100ms"
+                          },
                           "transport": {
                             "protocol": "fastcgi",
                             "resolve_root_symlink": true,

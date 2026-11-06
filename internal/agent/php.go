@@ -57,7 +57,12 @@ func (a *Agent) registerPHPHandlers() {
 }
 
 func (a *Agent) handleSitePHPApply(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
-	payload := command.GetSitePhpApply()
+	return a.applySitePHP(ctx, command.GetSitePhpApply(), reporter)
+}
+
+// applySitePHP makes a site's PHP-FPM container run with its settings, on its
+// own or as part of a deployment of a new PHP version.
+func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply, reporter *Reporter) (map[string]any, error) {
 	site := payload.GetSite()
 	if err := sites.ValidName(site); err != nil {
 		return nil, err
@@ -86,7 +91,11 @@ func (a *Agent) handleSitePHPApply(ctx context.Context, command *agentv1.Command
 
 	reporter.Progress("pull", "Pulling "+payload.GetImage(), 25)
 	if err := a.Docker.Pull(ctx, payload.GetImage(), nil, nil); err != nil {
-		return nil, fmt.Errorf("the runtime image %s could not be pulled: %w", payload.GetImage(), err)
+		// the image the server has serves on while its registry cannot be reached
+		if _, inspectErr := a.Docker.InspectImage(ctx, payload.GetImage()); inspectErr != nil {
+			return nil, fmt.Errorf("the runtime image %s could not be pulled: %w", payload.GetImage(), err)
+		}
+		fmt.Fprintf(reporter, "The runtime image could not be pulled (%v): the copy this server has is used.\n", err)
 	}
 	mounts, err := a.phpMounts(ctx, site, payload.GetClassic())
 	if err != nil {

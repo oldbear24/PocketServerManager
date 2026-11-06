@@ -770,6 +770,8 @@ func siteRoutes(route Route) []any {
 //   - a script goes to the PHP-FPM container, under the release that root's
 //     symlink points at now (resolve_root_symlink), so that a release switch
 //     takes effect between requests, and OPcache never mixes two releases;
+//     a connection PHP-FPM refuses, as while its container is replaced, is
+//     tried again for a while, which is safe as no request was sent;
 //   - any other file is served as it is, but none whose name starts with a
 //     dot, such as .env.
 func phpRoutes(options *SiteOptions) []any {
@@ -804,7 +806,8 @@ func phpRoutes(options *SiteOptions) []any {
 					"split_path":           []string{".php"},
 					"resolve_root_symlink": true,
 				},
-				"upstreams": []any{object{"dial": options.FastCGI}},
+				"upstreams":      []any{object{"dial": options.FastCGI}},
+				"load_balancing": object{"try_duration": phpTryFor, "try_interval": "100ms"},
 			}},
 		},
 		object{"handle": []any{object{"handler": "file_server", "root": options.Root, "hide": []string{".*"}}}},
@@ -833,6 +836,10 @@ func siteFiles(root, status string) object {
 	}
 	return server
 }
+
+// phpTryFor is how long the edge keeps dialing a PHP site's PHP-FPM, which
+// covers the replacement of its container.
+const phpTryFor = "10s"
 
 // siteVar names the site whose route a request went through.
 const siteVar = "pocketcloud_site"

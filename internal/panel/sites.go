@@ -31,6 +31,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
+	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
@@ -421,8 +422,12 @@ type deploymentRequest struct {
 	// Message describes a deployment that is not from a push or an upload.
 	Message string
 	// BeforeSend sends what must reach the server first, such as the PHP-FPM
-	// of a new PHP version: commands of a site run in the order they were made.
+	// of a new PHP site: commands of a site run in the order they were made.
 	BeforeSend func(ctx context.Context) error
+	// PHPApply changes a PHP site's PHP-FPM with the release, as for a new
+	// PHP version, which is newer or older than PHPFrom (#50).
+	PHPApply bool
+	PHPFrom  string
 }
 
 // startDeployment records a deployment and sends it to the site's server.
@@ -520,7 +525,14 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 	var hook string
 	if site.GetString("type") == schema.SitePHPApp {
 		var err error
-		if phpDeploy, shared, hook, err = p.phpDeploy(site, deployment); err != nil {
+		if phpDeploy, shared, hook, err = p.phpDeploy(site, deployment); err == nil && request.PHPApply {
+			var settings *core.Record
+			if phpDeploy.Apply, settings, err = p.phpApplyPayload(site); err == nil {
+				// a newer PHP runs the release served now; an older one the new release
+				phpDeploy.ApplyFirst = php.Compare(settings.GetString("php_version"), request.PHPFrom) > 0
+			}
+		}
+		if err != nil {
 			p.setFields(deployment, map[string]any{"status": schema.DeploymentFailed, "error": truncate(err.Error(), 4096), "finished_at": types.NowDateTime()})
 			return err
 		}
@@ -590,6 +602,9 @@ func (p *Panel) enrichSiteDeploy(record *core.Record, command *agentv1.Command) 
 			return err
 		}
 		payload.Php.Secrets = secrets
+		if payload.Php.Apply != nil {
+			payload.Php.Apply.Secrets = secrets
+		}
 	}
 	if payload.GetSource() != sites.SourceGit {
 		return nil
@@ -670,6 +685,14 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 	}
 	label := fmt.Sprintf("%s #%d", site.GetString("name"), deployment.GetInt("number"))
 
+	// a new PHP version's PHP-FPM may have been applied, with the release or
+	// before a switch that failed (#50)
+	if site.GetString("type") == schema.SitePHPApp {
+		p.phpDeployApplied(site, command)
+		if command.GetString("status") != schema.CommandSucceeded {
+			p.keepLivePHPVersion(site, deployment)
+		}
+	}
 	if command.GetString("status") != schema.CommandSucceeded {
 		fields["status"] = schema.DeploymentFailed
 		fields["error"] = truncate(command.GetString("error"), 4096)
@@ -945,12 +968,29 @@ func (p *Panel) handleSiteRollback(e *core.RequestEvent) error {
 			return e.InternalServerError("", err)
 		}
 		if version := deployment.GetString("php_version"); version != "" && version != settings.GetString("php_version") {
+			current := settings.GetString("php_version")
 			settings.Set("php_version", version)
 			if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
 				return e.InternalServerError("", err)
 			}
-			if _, err := p.applyPHP(e.Request.Context(), site, commands.Options{RequestedBy: id, Requester: label}); err != nil {
-				return e.InternalServerError("Failed to go back to PHP "+version+".", err)
+			// a newer PHP-FPM first, as it runs the release served now; an
+			// older one after the switch, as the current one runs the release
+			// it goes back to
+			ctx := context.WithoutCancel(e.Request.Context())
+			applyPHP := func() error {
+				_, err := p.applyPHP(ctx, site, commands.Options{RequestedBy: id, Requester: label})
+				return err
+			}
+			if php.Compare(version, current) > 0 {
+				if err := applyPHP(); err != nil {
+					return e.InternalServerError("Failed to go back to PHP "+version+".", err)
+				}
+			} else {
+				defer func() {
+					if err := applyPHP(); err != nil {
+						p.Log.Error("failed to go back to an older PHP", "site", site.GetString("name"), "version", version, "error", err)
+					}
+				}()
 			}
 		}
 	}
