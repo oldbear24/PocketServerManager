@@ -153,21 +153,27 @@ func (p *Panel) secretResolver(stack *core.Record) func(string) (string, error) 
 			return p.sealed(server, "admin_password")
 		}
 
-		if _, ok := strings.CutPrefix(name, "db/"); ok {
-			users, err := p.App.FindRecordsByFilter(schema.DBUsers, "secret_name={:secret} && server.host={:host}", "", 1, 0,
-				dbx.Params{"secret": name, "host": hostID})
-			if err != nil || len(users) == 0 {
-				return "", fmt.Errorf("%s: no database of this server has it: %w", name, stacks.ErrUnknownSecret)
-			}
-			password, err := p.sealed(users[0], "password")
-			if err == nil && password == "" {
-				err = fmt.Errorf("%s has no password yet: %w", name, stacks.ErrUnknownSecret)
-			}
-			return password, err
+		if strings.HasPrefix(name, "db/") {
+			return p.databaseSecret(hostID, name)
 		}
 
 		return "", fmt.Errorf("%s: %w", name, stacks.ErrUnknownSecret)
 	}
+}
+
+// databaseSecret is `db/<database>`: the password of a database on a server of
+// the host, which its stacks and sites may refer to.
+func (p *Panel) databaseSecret(hostID, name string) (string, error) {
+	users, err := p.App.FindRecordsByFilter(schema.DBUsers, "secret_name={:secret} && server.host={:host}", "", 1, 0,
+		dbx.Params{"secret": name, "host": hostID})
+	if err != nil || len(users) == 0 {
+		return "", fmt.Errorf("%s: no database of this server has it: %w", name, stacks.ErrUnknownSecret)
+	}
+	password, err := p.sealed(users[0], "password")
+	if err == nil && password == "" {
+		err = fmt.Errorf("%s has no password yet: %w", name, stacks.ErrUnknownSecret)
+	}
+	return password, err
 }
 
 // stackOverride generates the second Compose file of a deploy, which puts a stack on

@@ -53,6 +53,8 @@ func upPHPSites(app core.App) error {
 		&core.TextField{Name: "env", Max: 64 << 10},
 		// the site's own secrets, sealed: a JSON object of name → value
 		&core.TextField{Name: "secrets", Max: maxSealed, Hidden: true},
+		// their names, which are shown
+		&core.JSONField{Name: "secret_names", MaxSize: 16 << 10},
 		&core.NumberField{Name: "cpu_limit"},
 		&core.NumberField{Name: "mem_limit_mb", OnlyInt: true},
 		// paths of the release kept in shared/ across releases, such as storage

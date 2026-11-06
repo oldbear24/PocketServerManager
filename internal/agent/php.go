@@ -190,6 +190,10 @@ func (a *Agent) replacePHP(ctx context.Context, current *dockerapi.ContainerInsp
 	if err := a.Docker.CopyFile(ctx, id, phpIniDir, phpIniFile, []byte(payload.GetPhpIni()), 0o644); err != nil {
 		return fail(fmt.Errorf("the php.ini lines: %w", err))
 	}
+	// the alias the edge dials, which an engine may not have set from the create
+	if err := a.attach(ctx, sites.Network(payload.GetSite()), id, []string{name}); err != nil {
+		return fail(fmt.Errorf("the site's network: %w", err))
+	}
 	if err := a.joinDatabaseNetworks(ctx, id, payload.GetNetworks()); err != nil {
 		return fail(err)
 	}

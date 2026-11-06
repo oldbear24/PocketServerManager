@@ -1,0 +1,635 @@
+package panel
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/types"
+
+	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/audit"
+	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/events"
+	"github.com/oldbear24/PocketServerManager/internal/php"
+	"github.com/oldbear24/PocketServerManager/internal/schema"
+	"github.com/oldbear24/PocketServerManager/internal/sites"
+	"github.com/oldbear24/PocketServerManager/internal/stacks"
+)
+
+// PHP sites (#50). A site of type php keeps its PHP settings in site_php,
+// which only the panel writes: every change is applied to the site's PHP-FPM
+// container with site.php.apply, and a change of the PHP version deploys the
+// active release on the new runtime image as a new deployment. Its
+// environment may refer to the site's own secrets and to the passwords of the
+// host's databases as ${secret:name}; they are resolved when a command is
+// delivered, never stored with it.
+
+// FPM pool defaults, as the design shows them.
+const (
+	defaultFPMProcesses = "dynamic"
+	defaultMaxChildren  = 10
+	defaultMaxRequests  = 500
+	defaultTerminate    = 60
+	defaultPHPCPUs      = 1.0
+	defaultPHPMemoryMB  = 512
+)
+
+// fpmSettings are a site's PHP-FPM pool.
+type fpmSettings struct {
+	PM          string `json:"pm"`
+	MaxChildren int    `json:"max_children"`
+	MaxRequests int    `json:"max_requests"`
+	// TerminateTimeout ends a request that runs longer, in seconds; 0 never
+	TerminateTimeout int `json:"request_terminate_timeout"`
+}
+
+func defaultFPM() fpmSettings {
+	return fpmSettings{PM: defaultFPMProcesses, MaxChildren: defaultMaxChildren, MaxRequests: defaultMaxRequests, TerminateTimeout: defaultTerminate}
+}
+
+func (f fpmSettings) check() error {
+	if !slices.Contains([]string{"dynamic", "ondemand", "static"}, f.PM) {
+		return errors.New("the process manager is dynamic, ondemand or static")
+	}
+	if f.MaxChildren < 1 || f.MaxChildren > 256 {
+		return errors.New("a pool has 1 to 256 workers")
+	}
+	if f.MaxRequests < 0 || f.MaxRequests > 1000000 {
+		return errors.New("a worker serves up to a million requests before it is replaced, or 0 for no limit")
+	}
+	if f.TerminateTimeout < 0 || f.TerminateTimeout > 86400 {
+		return errors.New("a request may run up to a day, or 0 for no limit")
+	}
+	return nil
+}
+
+// phpSettingsBody is what PUT /sites/{id}/php changes; a field left out stays.
+type phpSettingsBody struct {
+	PHPVersion  *string      `json:"php_version"`
+	Docroot     *string      `json:"docroot"`
+	Mode        *string      `json:"mode"`
+	Template    *string      `json:"template"`
+	FPM         *fpmSettings `json:"fpm"`
+	PHPIni      *string      `json:"php_ini"`
+	Env         *string      `json:"env"`
+	CPULimit    *float64     `json:"cpu_limit"`
+	MemLimitMB  *int         `json:"mem_limit_mb"`
+	SharedPaths *[]string    `json:"shared_paths"`
+	ReleaseHook *string      `json:"release_hook"`
+}
+
+var (
+	docrootPath = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+	iniLine     = regexp.MustCompile(`^[A-Za-z0-9_.]+(\[[A-Za-z0-9_.-]*\])?\s*=\s*[^\r\n]*$`)
+	envName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	secretName  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+)
+
+func (p *Panel) registerPHPSites() {
+	p.Commands.RegisterEnricher("site.php.apply", p.enrichPHPApply)
+	p.Commands.OnFinish("site.php.apply", p.phpApplyFinished)
+}
+
+// phpImage is the runtime image of a PHP version.
+func (p *Panel) phpImage(version string) string {
+	repository := php.Image
+	if p.Config != nil && p.Config.PHPImage != "" {
+		repository = p.Config.PHPImage
+	}
+	return repository + ":" + version + "-fpm"
+}
+
+// defaultPHPVersion is the one a new site gets: the newest that has been out
+// for a year, as frameworks and plugins need that long to catch up, and is
+// supported; or the newest supported one.
+func defaultPHPVersion(now time.Time) string {
+	versions := php.Versions()
+	for _, version := range versions {
+		if version.State(now, php.WarnDays) == php.Supported && now.Sub(version.Released) >= 365*24*time.Hour {
+			return version.Version
+		}
+	}
+	for _, version := range versions {
+		if version.State(now, php.WarnDays) != php.Ended {
+			return version.Version
+		}
+	}
+	return versions[0].Version
+}
+
+// phpSettings returns a PHP site's settings, made with the defaults the first
+// time.
+func (p *Panel) phpSettings(app core.App, site *core.Record) (*core.Record, error) {
+	if settings, err := app.FindFirstRecordByData(schema.SitePHP, "site", site.Id); err == nil {
+		return settings, nil
+	}
+	collection, err := app.FindCachedCollectionByNameOrId(schema.SitePHP)
+	if err != nil {
+		return nil, err
+	}
+	settings := core.NewRecord(collection)
+	settings.Load(map[string]any{
+		"site":         site.Id,
+		"php_version":  defaultPHPVersion(time.Now()),
+		"template":     schema.PHPCustom,
+		"mode":         schema.PHPReleases,
+		"fpm":          defaultFPM(),
+		"cpu_limit":    defaultPHPCPUs,
+		"mem_limit_mb": defaultPHPMemoryMB,
+		"shared_paths": []string{},
+		"secret_names": []string{},
+		"state":        schema.PHPPending,
+	})
+	return settings, app.Save(settings)
+}
+
+func fpmOf(settings *core.Record) fpmSettings {
+	fpm := defaultFPM()
+	raw, _ := json.Marshal(settings.Get("fpm"))
+	_ = json.Unmarshal(raw, &fpm)
+	return fpm
+}
+
+func sharedPathsOf(settings *core.Record) []string {
+	paths := []string{}
+	raw, _ := json.Marshal(settings.Get("shared_paths"))
+	_ = json.Unmarshal(raw, &paths)
+	return paths
+}
+
+// checkPHPSettings says what is wrong with a site's PHP settings.
+func checkPHPSettings(settings *core.Record) error {
+	if _, found := php.Find(settings.GetString("php_version")); !found {
+		return fmt.Errorf("PocketCloud has no runtime image of PHP %s", settings.GetString("php_version"))
+	}
+	if docroot := settings.GetString("docroot"); docroot != "" && (!docrootPath.MatchString(docroot) || slices.Contains(strings.Split(docroot, "/"), "..")) {
+		return errors.New("the web root is a directory of the release, such as public, or empty for the release itself")
+	}
+	if mode := settings.GetString("mode"); mode != schema.PHPReleases && mode != schema.PHPClassic {
+		return errors.New("the mode is releases or classic")
+	}
+	if err := fpmOf(settings).check(); err != nil {
+		return err
+	}
+	for i, line := range strings.Split(settings.GetString("php_ini"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !iniLine.MatchString(line) {
+			return fmt.Errorf("php.ini line %d is not a setting such as memory_limit = 256M", i+1)
+		}
+	}
+	if _, _, err := parsePHPEnv(settings.GetString("env")); err != nil {
+		return err
+	}
+	if cpus := settings.GetFloat("cpu_limit"); cpus < 0 || cpus > 64 {
+		return errors.New("a site gets up to 64 CPUs")
+	}
+	if memory := settings.GetInt("mem_limit_mb"); memory != 0 && (memory < 64 || memory > 65536) {
+		return errors.New("a site gets 64 MiB to 64 GiB of memory")
+	}
+	paths := sharedPathsOf(settings)
+	if len(paths) > 32 {
+		return errors.New("a site has up to 32 shared paths")
+	}
+	for _, path := range paths {
+		if err := sites.ValidSharedPath(path); err != nil {
+			return err
+		}
+	}
+	if len(settings.GetString("release_hook")) > 4096 {
+		return errors.New("the release hook is a command of up to 4096 characters")
+	}
+	return nil
+}
+
+// parsePHPEnv splits a site's environment into its plain variables and those
+// that refer to secrets, whose values stay as they are written.
+func parsePHPEnv(text string) (plain map[string]string, withSecrets map[string]string, err error) {
+	plain, withSecrets = map[string]string{}, map[string]string{}
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		name = strings.TrimSpace(strings.TrimPrefix(name, "export "))
+		if !found || !envName.MatchString(name) {
+			return nil, nil, fmt.Errorf("environment line %d is not NAME=value", i+1)
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' && value[len(value)-1] == '"' || value[0] == '\'' && value[len(value)-1] == '\'') {
+			value = value[1 : len(value)-1]
+		}
+		if strings.HasPrefix(name, "POCKETCLOUD_") {
+			return nil, nil, fmt.Errorf("%s: names that start with POCKETCLOUD_ are the panel's", name)
+		}
+		if stacks.SecretReference.MatchString(value) {
+			withSecrets[name] = value
+		} else {
+			plain[name] = value
+		}
+	}
+	return plain, withSecrets, nil
+}
+
+// phpSecrets resolves the environment variables of a site that refer to
+// secrets: the site's own, by name, or db/<database>, a password of a
+// database on the site's server.
+func (p *Panel) phpSecrets(site, settings *core.Record) (map[string]string, error) {
+	_, withSecrets, err := parsePHPEnv(settings.GetString("env"))
+	if err != nil {
+		return nil, err
+	}
+	own := map[string]string{}
+	if sealed := settings.GetString("secrets"); sealed != "" {
+		plain, err := p.Box.OpenString(sealed)
+		if err != nil {
+			return nil, fmt.Errorf("the site's secrets cannot be opened: %w", err)
+		}
+		if err := json.Unmarshal([]byte(plain), &own); err != nil {
+			return nil, err
+		}
+	}
+	resolved := map[string]string{}
+	for name, value := range withSecrets {
+		var failure error
+		resolved[name] = stacks.SecretReference.ReplaceAllStringFunc(value, func(reference string) string {
+			secret := stacks.SecretReference.FindStringSubmatch(reference)[1]
+			if strings.HasPrefix(secret, "db/") {
+				password, err := p.databaseSecret(site.GetString("host"), secret)
+				if err != nil {
+					failure = err
+				}
+				return password
+			}
+			text, ok := own[secret]
+			if !ok {
+				failure = fmt.Errorf("%s: the site has no secret %s: %w", name, secret, stacks.ErrUnknownSecret)
+			}
+			return text
+		})
+		if failure != nil {
+			return nil, failure
+		}
+	}
+	return resolved, nil
+}
+
+// fpmConf is a site's pool, after the image's own: its process manager, and
+// what it may not change, as its PHP sees only its own directory and /tmp.
+func fpmConf(site string, fpm fpmSettings) string {
+	lines := []string{
+		"; Written by PocketCloud: the pool of the site " + site + ", after the image's own.",
+		"[global]",
+		"; a reload after a release switch lets the requests under way finish",
+		"process_control_timeout = 30s",
+		"",
+		"[www]",
+		"pm = " + fpm.PM,
+		"pm.max_children = " + strconv.Itoa(fpm.MaxChildren),
+	}
+	if fpm.PM == "dynamic" {
+		spare := max(1, fpm.MaxChildren/4)
+		lines = append(lines,
+			"pm.start_servers = "+strconv.Itoa(spare),
+			"pm.min_spare_servers = 1",
+			"pm.max_spare_servers = "+strconv.Itoa(max(spare, min(fpm.MaxChildren, fpm.MaxChildren/2+1))),
+		)
+	}
+	lines = append(lines,
+		"pm.max_requests = "+strconv.Itoa(fpm.MaxRequests),
+		"request_terminate_timeout = "+strconv.Itoa(fpm.TerminateTimeout)+"s",
+		"php_admin_value[open_basedir] = "+sites.Root+"/"+site+":/tmp",
+		"php_admin_value[upload_tmp_dir] = /tmp",
+		"php_admin_value[sys_temp_dir] = /tmp",
+		"php_admin_value[session.save_path] = /tmp",
+		"php_admin_flag[allow_url_include] = off",
+		"",
+	)
+	return strings.Join(lines, "\n")
+}
+
+// phpIni is a site's own php.ini lines, after the image's.
+func phpIni(settings *core.Record) string {
+	return "; Written by PocketCloud: the site's own php.ini lines.\n" + strings.TrimSpace(settings.GetString("php_ini")) + "\n"
+}
+
+// siteNetworks are the database networks a site's containers join.
+func (p *Panel) siteNetworks(site *core.Record) []string {
+	networks, err := p.App.FindRecordsByFilter(schema.DBNetworks, "site={:s}", "name", 0, 0, dbx.Params{"s": site.Id})
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(networks))
+	for _, network := range networks {
+		names = append(names, network.GetString("name"))
+	}
+	return names
+}
+
+// applyPHP sends a site's PHP settings to its PHP-FPM container.
+func (p *Panel) applyPHP(ctx context.Context, site *core.Record, options commands.Options) (*core.Record, error) {
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return nil, err
+	}
+	plain, _, err := parsePHPEnv(settings.GetString("env"))
+	if err != nil {
+		return nil, err
+	}
+	options.Host = site.GetString("host")
+	if options.Label == "" {
+		options.Label = site.GetString("name")
+	}
+	options.Command = &agentv1.Command{Payload: &agentv1.Command_SitePhpApply{SitePhpApply: &agentv1.SitePhpApply{
+		Site:          site.GetString("name"),
+		Image:         p.phpImage(settings.GetString("php_version")),
+		FpmConf:       fpmConf(site.GetString("name"), fpmOf(settings)),
+		PhpIni:        phpIni(settings),
+		Env:           plain,
+		CpuLimit:      settings.GetFloat("cpu_limit"),
+		MemLimitBytes: uint64(max(settings.GetInt("mem_limit_mb"), 0)) << 20, //nolint:gosec // checked above 0
+		Networks:      p.siteNetworks(site),
+		Classic:       settings.GetString("mode") == schema.PHPClassic,
+	}}}
+	command, err := p.Commands.Create(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	p.setFields(settings, map[string]any{"state": schema.PHPPending})
+	return command, nil
+}
+
+// phpDeploy is the PHP part of a deployment.
+func (p *Panel) phpDeploy(site, deployment *core.Record) (*agentv1.SitePhpDeploy, []string, string, error) {
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	plain, _, err := parsePHPEnv(settings.GetString("env"))
+	if err != nil {
+		return nil, nil, "", err
+	}
+	version := settings.GetString("php_version")
+	if deployment != nil && deployment.GetString("php_version") != "" {
+		version = deployment.GetString("php_version")
+	}
+	return &agentv1.SitePhpDeploy{
+		Image:    p.phpImage(version),
+		Docroot:  settings.GetString("docroot"),
+		Classic:  settings.GetString("mode") == schema.PHPClassic,
+		Env:      plain,
+		Networks: p.siteNetworks(site),
+	}, sharedPathsOf(settings), settings.GetString("release_hook"), nil
+}
+
+// siteOfCommand finds the site a command of a host names.
+func (p *Panel) siteOfCommand(host, name string) (*core.Record, error) {
+	site, err := p.App.FindFirstRecordByFilter(schema.Sites, "host={:h} && name={:n}", dbx.Params{"h": host, "n": name})
+	if err != nil {
+		return nil, errors.New("the site was removed")
+	}
+	return site, nil
+}
+
+// enrichPHPApply adds the site's secrets as the command is delivered.
+func (p *Panel) enrichPHPApply(record *core.Record, command *agentv1.Command) error {
+	payload := command.GetSitePhpApply()
+	site, err := p.siteOfCommand(record.GetString("host"), payload.GetSite())
+	if err != nil {
+		return err
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return err
+	}
+	secrets, err := p.phpSecrets(site, settings)
+	if err != nil {
+		return err
+	}
+	payload.Secrets = secrets
+	return nil
+}
+
+// phpApplyFinished keeps the state of a site's PHP-FPM container.
+func (p *Panel) phpApplyFinished(command *core.Record) {
+	var payload struct {
+		Site  string `json:"site"`
+		Image string `json:"image"`
+	}
+	raw, _ := json.Marshal(command.Get("payload"))
+	_ = json.Unmarshal(raw, &payload)
+	site, err := p.siteOfCommand(command.GetString("host"), payload.Site)
+	if err != nil {
+		return
+	}
+	settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+	if err != nil {
+		return
+	}
+	if command.GetString("status") != schema.CommandSucceeded {
+		p.setFields(settings, map[string]any{"state": schema.PHPFailed, "last_error": truncate(command.GetString("error"), 4096)})
+		events.Log(p.App, site.GetString("host"), "site.php_failed", schema.SeverityWarning,
+			truncate(fmt.Sprintf("PHP-FPM of %s could not be applied: %s", site.GetString("name"), command.GetString("error")), 2048),
+			map[string]any{"site": site.Id})
+		return
+	}
+	var result struct {
+		Image  string `json:"image"`
+		Digest string `json:"digest"`
+	}
+	raw, _ = json.Marshal(command.Get("result"))
+	_ = json.Unmarshal(raw, &result)
+	image := result.Image
+	if result.Digest != "" {
+		image = result.Digest
+	}
+	p.setFields(settings, map[string]any{"state": schema.PHPRunning, "image": image, "applied_at": types.NowDateTime(), "last_error": ""})
+}
+
+// handlePHPSettings changes a PHP site's settings and applies them: a new
+// version deploys the active release on its image as a new deployment, and a
+// new web root changes the edge's route.
+func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
+	site, err := p.findSite(e)
+	if err != nil {
+		return err
+	}
+	if site.GetString("type") != schema.SitePHPApp {
+		return e.BadRequestError("This is not a PHP site.", nil)
+	}
+	var body phpSettingsBody
+	if err := e.BindBody(&body); err != nil {
+		return e.BadRequestError("Invalid body.", err)
+	}
+	settings, err := p.phpSettings(e.App, site)
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	before := settings.GetString("php_version")
+	beforeRoot := settings.GetString("docroot")
+	set := func(field string, value any) { settings.Set(field, value) }
+	if body.PHPVersion != nil {
+		set("php_version", strings.TrimSpace(*body.PHPVersion))
+	}
+	if body.Docroot != nil {
+		set("docroot", strings.Trim(strings.TrimSpace(*body.Docroot), "/"))
+	}
+	if body.Mode != nil {
+		set("mode", *body.Mode)
+	}
+	if body.Template != nil {
+		set("template", *body.Template)
+	}
+	if body.FPM != nil {
+		set("fpm", *body.FPM)
+	}
+	if body.PHPIni != nil {
+		set("php_ini", *body.PHPIni)
+	}
+	if body.Env != nil {
+		set("env", *body.Env)
+	}
+	if body.CPULimit != nil {
+		set("cpu_limit", *body.CPULimit)
+	}
+	if body.MemLimitMB != nil {
+		set("mem_limit_mb", *body.MemLimitMB)
+	}
+	if body.SharedPaths != nil {
+		set("shared_paths", *body.SharedPaths)
+	}
+	if body.ReleaseHook != nil {
+		set("release_hook", strings.TrimSpace(*body.ReleaseHook))
+	}
+	if err := checkPHPSettings(settings); err != nil {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
+	if _, err := p.phpSecrets(site, settings); err != nil {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
+	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
+		return e.BadRequestError("The settings could not be saved: "+err.Error(), nil)
+	}
+
+	id, label := requester(e)
+	result := map[string]any{}
+	version := settings.GetString("php_version")
+	if version != before && site.GetString("active_deployment") != "" {
+		// the release goes on the new image as a deployment of its own, which a
+		// rollback takes back to the old version
+		deployment, err := p.startDeployment(e.Request.Context(), site, deploymentRequest{
+			Trigger: schema.TriggerManual, RequestedBy: id, Requester: label,
+			Message: fmt.Sprintf("PHP %s → %s", before, version), BeforeSend: func(ctx context.Context) error {
+				_, err := p.applyPHP(ctx, site, commands.Options{RequestedBy: id, Requester: label})
+				return err
+			},
+		})
+		if err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+		result["deployment"] = deployment.Id
+	} else {
+		command, err := p.applyPHP(e.Request.Context(), site, commands.Options{RequestedBy: id, Requester: label})
+		if err != nil {
+			return e.InternalServerError("The settings were saved, but not applied.", err)
+		}
+		result["command"] = command.Id
+	}
+	if settings.GetString("docroot") != beforeRoot {
+		host := site.GetString("host")
+		p.later.after(0, func() { p.applyEdgeLogged(host, false) })
+	}
+	result["settings"] = settings
+	return e.JSON(http.StatusOK, result)
+}
+
+// handlePHPSecrets sets a PHP site's own secrets, which its environment refers
+// to as ${secret:name}: a name with a value sets it, one with null removes it.
+func (p *Panel) handlePHPSecrets(e *core.RequestEvent) error {
+	site, err := p.findSite(e)
+	if err != nil {
+		return err
+	}
+	if site.GetString("type") != schema.SitePHPApp {
+		return e.BadRequestError("This is not a PHP site.", nil)
+	}
+	var body map[string]*string
+	if err := e.BindBody(&body); err != nil {
+		return e.BadRequestError("Invalid body: an object of names and values.", err)
+	}
+	settings, err := p.phpSettings(e.App, site)
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	own := map[string]string{}
+	if sealed := settings.GetString("secrets"); sealed != "" {
+		plain, err := p.Box.OpenString(sealed)
+		if err != nil {
+			return e.InternalServerError("The site's secrets cannot be opened.", err)
+		}
+		if err := json.Unmarshal([]byte(plain), &own); err != nil {
+			return e.InternalServerError("", err)
+		}
+	}
+	for name, value := range body {
+		if !secretName.MatchString(name) {
+			return e.BadRequestError(fmt.Sprintf("%q is not a secret's name: letters, digits, . _ and -.", name), nil)
+		}
+		if value == nil {
+			delete(own, name)
+		} else {
+			own[name] = *value
+		}
+	}
+	if _, err := p.phpSecrets(site, settings); err != nil && !errors.Is(err, stacks.ErrUnknownSecret) {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
+	raw, _ := json.Marshal(own)
+	names := make([]string, 0, len(own))
+	for name := range own {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	settings.Set("secrets", string(raw))
+	settings.Set("secret_names", names)
+	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
+		return e.BadRequestError("The secrets could not be saved: "+err.Error(), nil)
+	}
+	id, label := requester(e)
+	command, err := p.applyPHP(e.Request.Context(), site, commands.Options{RequestedBy: id, Requester: label})
+	if err != nil {
+		return e.InternalServerError("The secrets were saved, but not applied.", err)
+	}
+	return e.JSON(http.StatusOK, map[string]any{"command": command.Id, "secret_names": names})
+}
+
+// handlePHPApply applies a PHP site's settings again, as after its container
+// was removed by hand.
+func (p *Panel) handlePHPApply(e *core.RequestEvent) error {
+	site, err := p.findSite(e)
+	if err != nil {
+		return err
+	}
+	if site.GetString("type") != schema.SitePHPApp {
+		return e.BadRequestError("This is not a PHP site.", nil)
+	}
+	id, label := requester(e)
+	command, err := p.applyPHP(e.Request.Context(), site, commands.Options{RequestedBy: id, Requester: label})
+	if err != nil {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
+	return e.JSON(http.StatusOK, map[string]any{"command": command.Id})
+}

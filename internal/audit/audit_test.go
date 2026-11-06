@@ -337,13 +337,14 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// a PHP site, whose settings have secrets of their own (#50)
+	// a site for PHP settings, which have secrets of their own (#50); the
+	// panel makes a PHP site's settings itself, so this one is static
 	sites, err := env.app.FindCollectionByNameOrId(schema.Sites)
 	if err != nil {
 		t.Fatal(err)
 	}
 	phpSite := core.NewRecord(sites)
-	phpSite.Load(map[string]any{"host": edgeHost.Id, "name": "php-secrets", "type": schema.SitePHPApp, "source": "empty"})
+	phpSite.Load(map[string]any{"host": edgeHost.Id, "name": "php-secrets", "source": "empty"})
 	if err := env.app.Save(phpSite); err != nil {
 		t.Fatal(err)
 	}
