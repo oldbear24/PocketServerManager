@@ -275,6 +275,12 @@ func (c *Client) Stop(ctx context.Context, id string, timeoutSeconds int) error 
 	return c.do(ctx, http.MethodPost, "/containers/"+id+"/stop", timeoutQuery(timeoutSeconds), nil, nil)
 }
 
+// Kill sends a signal to a container's main process, such as USR2, which
+// reloads PHP-FPM without dropping a request.
+func (c *Client) Kill(ctx context.Context, id, signal string) error {
+	return c.do(ctx, http.MethodPost, "/containers/"+id+"/kill", url.Values{"signal": {signal}}, nil, nil)
+}
+
 // Restart restarts a container. A timeout of 0 uses the Docker default.
 func (c *Client) Restart(ctx context.Context, id string, timeoutSeconds int) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+id+"/restart", timeoutQuery(timeoutSeconds), nil, nil)

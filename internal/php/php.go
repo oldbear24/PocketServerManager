@@ -221,3 +221,32 @@ func Statuses(t time.Time, warnDays int) []Status {
 	}
 	return out
 }
+
+// Compare orders two versions such as 8.3 and 8.10: -1, 0 or 1.
+func Compare(a, b string) int {
+	parse := func(text string) []int {
+		parts := []int{}
+		for _, part := range strings.Split(text, ".") {
+			n, _ := strconv.Atoi(part)
+			parts = append(parts, n)
+		}
+		return parts
+	}
+	x, y := parse(a), parse(b)
+	for i := range max(len(x), len(y)) {
+		var p, q int
+		if i < len(x) {
+			p = x[i]
+		}
+		if i < len(y) {
+			q = y[i]
+		}
+		if p != q {
+			if p < q {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}

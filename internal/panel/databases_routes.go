@@ -476,9 +476,27 @@ func (p *Panel) handleRemoveServer(e *core.RequestEvent) error {
 	return e.NoContent(http.StatusNoContent)
 }
 
+// databaseRequest is who asks for a database, and what it is for: a stack,
+// or a site (#50), or nothing yet. Parent makes its command a step of a flow.
+type databaseRequest struct {
+	Actor  audit.Actor
+	UserID string
+	Label  string
+	Stack  string
+	Site   string
+	Parent string
+}
+
+// databaseRequestOf is a request from the API.
+func databaseRequestOf(e *core.RequestEvent, stackID string) databaseRequest {
+	userID, label := requester(e)
+	return databaseRequest{Actor: audit.ActorFromRequest(e), UserID: userID, Label: label, Stack: stackID}
+}
+
 // newDatabase creates the records of a database and its user, with a new password,
 // and queues the command that creates them on the server.
-func (p *Panel) newDatabase(ctx context.Context, e *core.RequestEvent, server *core.Record, name, stackID string, command func(user string) *agentv1.Command) (*core.Record, *core.Record, error) {
+func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server *core.Record, name string, command func(user string) *agentv1.Command) (*core.Record, *core.Record, error) {
+	stackID := request.Stack
 	engine, err := engineOfServer(server)
 	if err != nil {
 		return nil, nil, err
@@ -504,8 +522,7 @@ func (p *Panel) newDatabase(ctx context.Context, e *core.RequestEvent, server *c
 		return nil, nil, fmt.Errorf("this server already has a database named %s", name)
 	}
 
-	actor := audit.ActorFromRequest(e)
-	userID, label := requester(e)
+	actor, userID, label := request.Actor, request.UserID, request.Label
 
 	var database *core.Record
 	err = p.App.RunInTransaction(func(tx core.App) error {
@@ -521,6 +538,10 @@ func (p *Panel) newDatabase(ctx context.Context, e *core.RequestEvent, server *c
 		if stackID != "" {
 			database.Set("owner_kind", "stack")
 			database.Set("stack", stackID)
+		}
+		if request.Site != "" {
+			database.Set("owner_kind", "site")
+			database.Set("site", request.Site)
 		}
 		if err := tx.SaveWithContext(audit.WithActor(ctx, actor), database); err != nil {
 			return err
@@ -547,6 +568,8 @@ func (p *Panel) newDatabase(ctx context.Context, e *core.RequestEvent, server *c
 		Label:       server.GetString("name") + "/" + name,
 		RequestedBy: userID,
 		Requester:   label,
+		Parent:      request.Parent,
+		Correlation: request.Parent,
 		Command:     command(name),
 	})
 	if err != nil {
@@ -561,6 +584,8 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 		Server string `json:"server"`
 		Name   string `json:"name"`
 		Stack  string `json:"stack"`
+		// a PHP site the database is for (#50)
+		Site string `json:"site"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
@@ -569,6 +594,21 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 	server, err := p.App.FindRecordById(schema.DBServers, body.Server)
 	if err != nil {
 		return e.NotFoundError("The database server does not exist.", err)
+	}
+	if body.Stack != "" && body.Site != "" {
+		return e.BadRequestError("A database is for a stack or for a site, not both.", nil)
+	}
+	if body.Site != "" {
+		site, err := p.App.FindRecordById(schema.Sites, body.Site)
+		if err != nil {
+			return e.NotFoundError("The site does not exist.", err)
+		}
+		if site.GetString("type") != schema.SitePHPApp {
+			return e.BadRequestError("Only a PHP site has a database.", nil)
+		}
+		if site.GetString("host") != server.GetString("host") {
+			return e.BadRequestError("A site can only use the database servers of its own server.", nil)
+		}
 	}
 
 	if body.Stack != "" {
@@ -581,7 +621,9 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 		}
 	}
 
-	database, command, err := p.newDatabase(e.Request.Context(), e, server, body.Name, body.Stack, func(user string) *agentv1.Command {
+	request := databaseRequestOf(e, body.Stack)
+	request.Site = body.Site
+	database, command, err := p.newDatabase(e.Request.Context(), request, server, body.Name, func(user string) *agentv1.Command {
 		return &agentv1.Command{Payload: &agentv1.Command_DbDatabaseCreate{DbDatabaseCreate: &agentv1.DbDatabaseCreate{
 			Connection: connectionOf(server),
 			Database:   body.Name,
@@ -740,7 +782,7 @@ func (p *Panel) handleCloneDatabase(e *core.RequestEvent) error {
 		return e.BadRequestError("Invalid body.", err)
 	}
 
-	database, command, err := p.newDatabase(e.Request.Context(), e, server, body.Name, "", func(user string) *agentv1.Command {
+	database, command, err := p.newDatabase(e.Request.Context(), databaseRequestOf(e, ""), server, body.Name, func(user string) *agentv1.Command {
 		return &agentv1.Command{Payload: &agentv1.Command_DbDatabaseClone{DbDatabaseClone: &agentv1.DbDatabaseClone{
 			Connection: connectionOf(server),
 			Source:     source.GetString("name"),

@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/oldbear24/PocketServerManager/internal/php"
 )
 
 // Environment variables that configure the panel; flags take precedence.
@@ -14,6 +16,7 @@ const (
 	EnvGRPCAddr      = "POCKETCLOUD_GRPC_ADDR"
 	EnvGRPCPublic    = "POCKETCLOUD_GRPC_PUBLIC_ADDR"
 	EnvMasterKeyFile = "POCKETCLOUD_MASTER_KEY_FILE"
+	EnvPHPImage      = "POCKETCLOUD_PHP_IMAGE"
 	EnvDataDir       = "POCKETCLOUD_DATA_DIR"
 
 	defaultGRPCAddr      = ":9443"
@@ -32,6 +35,9 @@ type Config struct {
 	MasterKeyFile string
 	// MasterKey is used instead of MasterKeyFile in tests.
 	MasterKey []byte
+	// PHPImage is the repository of the PHP runtime images (#50), such as
+	// a registry's copy of PocketCloud's own.
+	PHPImage string
 }
 
 // ConfigFromEnv returns the defaults, overridden by the environment.
@@ -41,6 +47,7 @@ func ConfigFromEnv() Config {
 		GRPCAddr:       envOr(EnvGRPCAddr, defaultGRPCAddr),
 		GRPCPublicAddr: os.Getenv(EnvGRPCPublic),
 		MasterKeyFile:  envOr(EnvMasterKeyFile, defaultMasterKeyFile),
+		PHPImage:       envOr(EnvPHPImage, php.Image),
 	}
 }
 
@@ -51,6 +58,7 @@ func (c *Config) BindFlags(cmd *cobra.Command) {
 	flags.StringVar(&c.GRPCAddr, "grpc-addr", c.GRPCAddr, "address the gRPC gateway for agents listens on")
 	flags.StringVar(&c.GRPCPublicAddr, "grpc-public-addr", c.GRPCPublicAddr, "host:port agents dial (default: the public URL's host with the gRPC port)")
 	flags.StringVar(&c.MasterKeyFile, "master-key-file", c.MasterKeyFile, "file with the master key; create one with: panel keygen")
+	flags.StringVar(&c.PHPImage, "php-image", c.PHPImage, "repository of the PHP runtime images, tagged <version>-fpm")
 }
 
 // AgentEndpoint returns the host:port that agents dial.

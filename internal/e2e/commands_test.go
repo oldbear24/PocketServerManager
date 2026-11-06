@@ -406,7 +406,7 @@ func TestUnsupportedCommandFailsAtOnce(t *testing.T) {
 	_, host := h.enrolled("old-agent")
 
 	// no agent of this version can run these yet
-	record := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_SitePhpApply{SitePhpApply: &agentv1.SitePhpApply{Site: "x"}}})
+	record := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_TaskRun{TaskRun: &agentv1.TaskRun{TaskId: "x"}}})
 
 	failed := h.waitForStatus(record.Id, schema.CommandFailed)
 	if !strings.Contains(failed.GetString("error"), "does not support") {

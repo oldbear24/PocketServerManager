@@ -85,6 +85,8 @@ type Agent struct {
 	edgeCount     float64
 	edgeCountAt   time.Time
 	edgeByHost    map[string]float64
+	// edgeLatency is the last reading of the requests' durations per hostname
+	edgeLatency map[string]hostHistogram
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64

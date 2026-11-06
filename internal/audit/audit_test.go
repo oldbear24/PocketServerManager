@@ -337,8 +337,21 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// a site for PHP settings, which have secrets of their own (#50); the
+	// panel makes a PHP site's settings itself, so this one is static
+	sites, err := env.app.FindCollectionByNameOrId(schema.Sites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phpSite := core.NewRecord(sites)
+	phpSite.Load(map[string]any{"host": edgeHost.Id, "name": "php-secrets", "source": "empty"})
+	if err := env.app.Save(phpSite); err != nil {
+		t.Fatal(err)
+	}
+
 	// what a collection needs besides a host and a name
 	required := map[string]map[string]any{
+		schema.SitePHP: {"site": phpSite.Id, "php_version": "8.4"},
 		schema.Domains: {
 			"host": edgeHost.Id, "hostname": "secret.example.com", "target_kind": schema.TargetContainer,
 			"container": "web", "port": 80, "tls": schema.TLSAuto,
