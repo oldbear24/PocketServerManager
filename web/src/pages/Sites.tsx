@@ -805,7 +805,8 @@ function SourceCard({
 
   const php = site.type === "php";
   const image = site.build_image || active?.image;
-  const command = site.build_cmd || active?.build_cmd || (php ? t("site.composerDefault") : "");
+  // a PHP site's own build is composer, whose command says less than its name
+  const command = site.build_cmd || (php ? t("site.composerDefault") : active?.build_cmd);
   // a PHP application routes its own paths (#50)
   const options = servingOptions.filter((field) => !php || field !== "spa");
   return (

@@ -122,6 +122,12 @@ function fpmOf(settings: SitePhp | null): FpmSettings {
   return { ...defaultFpm, ...(settings?.fpm ?? {}) };
 }
 
+/** "repo:8.4-fpm · sha256:94a71dd6" for an image the agent pinned by its digest. */
+function imageText(image: string, version: string): string {
+  const [repository, digest] = image.split("@");
+  return digest ? `${repository}:${version}-fpm · ${digest.slice(0, 15)}` : image;
+}
+
 function percent(value: number): string {
   return `${formatNumber(value, value > 0 && value < 1 ? 1 : 0)} %`;
 }
@@ -164,7 +170,10 @@ export function PhpKpis({ data, requests }: { data: PhpSiteData; requests: SiteR
         </div>
         <div className="kpi-note">
           {status?.opcache?.enabled
-            ? t("phpSite.opcacheHits", { rate: percent(status.opcache.hit_rate) })
+            ? // 99.8 % of hits is not all of them
+              t("phpSite.opcacheHits", {
+                rate: `${formatNumber(Math.floor(status.opcache.hit_rate))} %`,
+              })
             : answered
               ? ""
               : t("phpSite.noRequests")}
@@ -264,7 +273,9 @@ export function PhpRuntimeCard({
       )}
       <dl className="facts">
         <dt>{t("phpSite.image")}</dt>
-        <dd className="mono break">{settings.image || "–"}</dd>
+        <dd className="mono break" title={settings.image}>
+          {settings.image ? imageText(settings.image, settings.php_version) : "–"}
+        </dd>
         <dt>FastCGI</dt>
         <dd className="mono">{t("phpSite.fastcgi", { upstream: `${container}:9000` })}</dd>
         <dt>{t("phpSite.pool")}</dt>
@@ -279,7 +290,7 @@ export function PhpRuntimeCard({
         <dd>
           {t("phpSite.limitsValue", {
             cpu: formatNumber(settings.cpu_limit || 1, 2),
-            memory: formatBytes((settings.mem_limit_mb || 512) * 1024 * 1024),
+            memory: `${formatNumber(settings.mem_limit_mb || 512)} MB`,
           })}
         </dd>
         <dt>{t("phpSite.webRoot")}</dt>
