@@ -6,7 +6,7 @@ import { PageHead } from "../components/Layout";
 import { CommandStatusPill, HostStatusPill } from "../components/status";
 import { Card, EmptyState, Kpi, ProgressBar, Table } from "../components/ui";
 import { hasRole, useAuth } from "../lib/auth";
-import { alertText } from "../lib/events";
+import { alertLink, alertText } from "../lib/events";
 import {
   formatDay,
   formatNumber,
@@ -254,8 +254,8 @@ export function OverviewPage() {
                       </span>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: 500 }}>
-                          {alert.host ? (
-                            <Link to={`/servers/${alert.host}`} style={{ color: "var(--text)" }}>
+                          {alertLink(alert) ? (
+                            <Link to={alertLink(alert)!} style={{ color: "var(--text)" }}>
                               {alertText(t, alert, hostNames.get(alert.host))}
                             </Link>
                           ) : (

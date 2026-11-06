@@ -1,13 +1,5 @@
 import { Lock, LockOpen, RefreshCw, Trash2 } from "lucide-react";
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -38,6 +30,7 @@ import {
   Card,
   CodeBlock,
   ConfirmDialog,
+  Drawer,
   EmptyState,
   Field,
   SegmentedControl,
@@ -68,14 +61,29 @@ export function useDirectoryLabel() {
 function useIssuerLabel(accounts: AcmeAccount[]) {
   const { t } = useTranslation();
   const directoryLabel = useDirectoryLabel();
-  const primary = accounts.find((account) => account.role === "primary");
   return (cert: Certificate) => {
     if (cert.issuer !== "acme") {
       return t(`cert.issuer.${cert.issuer}`);
     }
+    // before it is issued, the CA it is asked of: its account, or the primary
+    const asked = accounts.find((account) => account.role === (cert.account || "primary"));
     return (
-      caName(cert.issuer_name) || (primary ? directoryLabel(primary.directory_url) : t("cert.acme"))
+      caName(cert.issuer_name) || (asked ? directoryLabel(asked.directory_url) : t("cert.acme"))
     );
+  };
+}
+
+/** The ACME account a certificate is asked of alone, if it is (#27). */
+function useAccountLabel(accounts: AcmeAccount[]) {
+  const { t } = useTranslation();
+  const directoryLabel = useDirectoryLabel();
+  return (cert: Certificate) => {
+    if (!cert.account) {
+      return "";
+    }
+    const account = accounts.find((item) => item.role === cert.account);
+    const ca = account ? directoryLabel(account.directory_url) : t("cert.noSuchAccount");
+    return t(cert.account === "primary" ? "cert.caPrimary" : "cert.caFallback", { ca });
   };
 }
 
@@ -123,6 +131,8 @@ export function CertificatesCard({
   isAdmin,
   loading,
   onRequest,
+  focus = "",
+  onFocusDone,
 }: {
   certificates: Certificate[];
   hosts: Host[];
@@ -133,14 +143,25 @@ export function CertificatesCard({
   isAdmin: boolean;
   loading: boolean;
   onRequest: () => void;
+  /** a certificate to open, as a warning links to it (#27) */
+  focus?: string;
+  onFocusDone?: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(null);
+  // a warning's link opens its certificate once the list has it
+  useEffect(() => {
+    if (focus && certificates.some((cert) => cert.id === focus)) {
+      setOpen(focus);
+      onFocusDone?.();
+    }
+  }, [focus, certificates, onFocusDone]);
   const [retrying, setRetrying] = useState("");
   const now = useNow();
   const issuerLabel = useIssuerLabel(accounts);
+  const accountLabel = useAccountLabel(accounts);
 
   const hostNames = useMemo(() => new Map(hosts.map((host) => [host.id, host.name])), [hosts]);
   const counts = useMemo(() => {
@@ -302,6 +323,7 @@ export function CertificatesCard({
                       {showRetry && (
                         <Button
                           size="small"
+                          variant="warning"
                           disabled={retrying === cert.id}
                           onClick={() => void retry(cert)}
                           aria-label={t("cert.retryName", { name: cert.names[0] })}
@@ -309,12 +331,16 @@ export function CertificatesCard({
                           <RefreshCw size={14} aria-hidden="true" /> {t("cert.retry")}
                         </Button>
                       )}
+                      {/* while it is issued, the panel shows how far it got */}
                       <Button
                         size="small"
                         onClick={() => setOpen(cert.id)}
-                        aria-label={t("cert.detailName", { name: cert.names[0] })}
+                        aria-label={t(
+                          state === "issuing" ? "cert.progressName" : "cert.detailName",
+                          { name: cert.names[0] },
+                        )}
                       >
-                        {t("cert.detail")}
+                        {state === "issuing" ? t("cert.progress") : t("cert.detail")}
                       </Button>
                     </div>
                   </td>
@@ -329,6 +355,7 @@ export function CertificatesCard({
           cert={selected}
           hostNames={hostNames}
           issuer={issuerLabel(selected)}
+          account={accountLabel(selected)}
           validation={validation(selected)}
           canRetry={canRetry}
           isAdmin={isAdmin}
@@ -350,57 +377,11 @@ function useNow() {
   return now;
 }
 
-/** A side panel on the native dialog element, which traps focus, and gives
- * it back to what opened it. */
-function Drawer({
-  title,
-  onClose,
-  children,
-  actions,
-}: {
-  title: ReactNode;
-  onClose: () => void;
-  children: ReactNode;
-  actions: ReactNode;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
-  // a layout effect, so it closes before the dialog leaves the page and the
-  // focus can go back
-  useLayoutEffect(() => {
-    const element = ref.current;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (element && !element.open) {
-      element.showModal?.();
-    }
-    return () => {
-      element?.close?.();
-      opener?.focus();
-    };
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      className="dialog drawer"
-      aria-labelledby={titleId}
-      onCancel={(event) => {
-        // Escape in a dialog inside it closes only that one
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <h2 id={titleId}>{title}</h2>
-      <div className="drawer-body">{children}</div>
-      <div className="dialog-actions">{actions}</div>
-    </dialog>
-  );
-}
-
 function CertificateDetail({
   cert,
   hostNames,
   issuer,
+  account,
   validation,
   canRetry,
   isAdmin,
@@ -410,6 +391,8 @@ function CertificateDetail({
   cert: Certificate;
   hostNames: Map<string, string>;
   issuer: string;
+  /** the ACME account it is asked of alone, if it is */
+  account: string;
   validation: string;
   canRetry: boolean;
   isAdmin: boolean;
@@ -514,6 +497,12 @@ function CertificateDetail({
         <dd className="mono">{cert.names.join(", ")}</dd>
         <dt>{t("cert.issuerColumn")}</dt>
         <dd>{issuer}</dd>
+        {account && (
+          <>
+            <dt>{t("cert.caField")}</dt>
+            <dd>{account}</dd>
+          </>
+        )}
         {cert.issuer === "acme" && (
           <>
             <dt>{t("cert.validation")}</dt>
@@ -584,12 +573,58 @@ function CertificateDetail({
   );
 }
 
+/** The CA a request asks: the ACME accounts in turn, one of them, or the internal CA. */
+type CAChoice = "acme" | "primary" | "fallback" | "internal";
+
 /** Asks for a certificate for names of the admin's choosing: a wildcard, say. */
-export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
+export function RequestCertificateDialog({
+  accounts,
+  onClose,
+}: {
+  accounts: AcmeAccount[];
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const toast = useToast();
+  const directoryLabel = useDirectoryLabel();
   const [names, setNames] = useState("");
-  const [issuer, setIssuer] = useState<"acme" | "internal">("acme");
+  const primary = accounts.find((account) => account.role === "primary");
+  const fallback = accounts.find((account) => account.role === "fallback");
+  // the CAs to ask: both ACME accounts in turn, one of them alone, or the internal CA
+  // the first, and the default, asks the accounts in turn, those added later too
+  const cas: { value: CAChoice; label: string }[] = [];
+  if (primary && fallback) {
+    cas.push({
+      value: "acme",
+      label: t("cert.caBoth", {
+        primary: directoryLabel(primary.directory_url),
+        fallback: directoryLabel(fallback.directory_url),
+      }),
+    });
+  } else if (primary ?? fallback) {
+    cas.push({
+      value: "acme",
+      label: t("cert.caOneThenOther", { ca: directoryLabel((primary ?? fallback)!.directory_url) }),
+    });
+  }
+  if (primary) {
+    cas.push({
+      value: "primary",
+      label: t("cert.caPrimary", { ca: directoryLabel(primary.directory_url) }),
+    });
+  }
+  if (fallback) {
+    cas.push({
+      value: "fallback",
+      label: t("cert.caFallback", { ca: directoryLabel(fallback.directory_url) }),
+    });
+  }
+  if (!primary && !fallback) {
+    cas.push({ value: "acme", label: t("cert.issuerAcme") });
+  }
+  cas.push({ value: "internal", label: t("cert.issuer.internal") });
+  const [ca, setCA] = useState<CAChoice>(cas[0].value);
+  const issuer = ca === "internal" ? "internal" : "acme";
   const [challenge, setChallenge] = useState<Challenge>("auto");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -602,7 +637,12 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await certificatesApi.request(parsed, challenge, issuer);
+      await certificatesApi.request(
+        parsed,
+        challenge,
+        issuer,
+        ca === "primary" || ca === "fallback" ? ca : "",
+      );
       toast.success(t("cert.requested", { name: parsed[0] }));
       onClose();
     } catch (err) {
@@ -623,15 +663,6 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="dialog-form">
         <p className="muted small">{t("cert.requestText")}</p>
-        <SegmentedControl
-          label={t("cert.issuerColumn")}
-          value={issuer}
-          onChange={setIssuer}
-          options={[
-            { value: "acme", label: t("cert.issuerAcme") },
-            { value: "internal", label: t("cert.issuer.internal") },
-          ]}
-        />
         <Field label={t("cert.names")} htmlFor="cert-names">
           <textarea
             id="cert-names"
@@ -644,6 +675,23 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
             onChange={(event) => setNames(event.target.value)}
           />
         </Field>
+        <Field label={t("cert.caField")} htmlFor="cert-ca">
+          <select
+            id="cert-ca"
+            className="input"
+            value={ca}
+            onChange={(event) => setCA(event.target.value as CAChoice)}
+          >
+            {cas.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {!primary && !fallback && issuer === "acme" && (
+          <Banner tone="warn">{t("cert.noAccountAdmin")}</Banner>
+        )}
         {issuer === "internal" ? (
           <p className="muted small">{t("cert.internalNote")}</p>
         ) : (

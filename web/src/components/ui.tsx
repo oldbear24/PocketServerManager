@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -14,7 +15,7 @@ import { useTranslation } from "react-i18next";
 export type Tone = "ok" | "warn" | "err" | "off" | "info";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "default" | "primary" | "danger";
+  variant?: "default" | "primary" | "danger" | "warning";
   size?: "default" | "small";
 };
 
@@ -409,6 +410,53 @@ export function ConfirmDialog({
           {confirmLabel}
         </Button>
       </div>
+    </dialog>
+  );
+}
+
+/** A side panel on the native dialog element, which traps focus, and gives
+ * it back to what opened it. */
+export function Drawer({
+  title,
+  onClose,
+  children,
+  actions,
+}: {
+  title: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+  actions: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  // a layout effect, so it closes before the dialog leaves the page and the
+  // focus can go back
+  useLayoutEffect(() => {
+    const element = ref.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (element && !element.open) {
+      element.showModal?.();
+    }
+    return () => {
+      element?.close?.();
+      opener?.focus();
+    };
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className="dialog drawer"
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        // Escape in a dialog inside it closes only that one
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <h2 id={titleId}>{title}</h2>
+      <div className="drawer-body">{children}</div>
+      <div className="dialog-actions">{actions}</div>
     </dialog>
   );
 }

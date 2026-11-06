@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet } from "react-router-dom";
 
 import { api } from "../lib/api";
+import { domainAlertRules } from "../lib/events";
 import { hasRole, useAuth } from "../lib/auth";
 import type { Database as DatabaseRecord } from "../lib/databases";
 import type { Role } from "../lib/pb";
@@ -36,6 +37,8 @@ type NavItem = {
   role?: Role;
   count?: number;
   dot?: "err" | "warn";
+  /** what the dot means, for a screen reader */
+  dotLabel?: string;
 };
 
 function Item({ item }: { item: NavItem }) {
@@ -49,7 +52,12 @@ function Item({ item }: { item: NavItem }) {
       <Icon size={18} className="icon" aria-hidden="true" />
       <span>{item.label}</span>
       {item.count !== undefined && <span className="nav-count">{item.count}</span>}
-      {item.dot && <span className={`nav-dot status-dot ${item.dot}`} aria-hidden="true" />}
+      {item.dot && (
+        <>
+          <span className={`nav-dot status-dot ${item.dot}`} aria-hidden="true" />
+          <span className="visually-hidden">{item.dotLabel}</span>
+        </>
+      )}
     </NavLink>
   );
 }
@@ -115,6 +123,16 @@ export function Layout() {
   const databases = useLiveList<DatabaseRecord>("databases", { perPage: 1 });
   const sites = useLiveList<Site>("sites", { perPage: 1 });
   const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
+  // a failing certificate or DNS provider marks Domains & TLS (#27)
+  const domainAlerts = useLiveList<Alert>("alerts", {
+    filter: `status != 'resolved' && (${domainAlertRules.map((rule) => `rule = '${rule}'`).join(" || ")})`,
+    perPage: 50,
+  });
+  const domainsDot = domainAlerts.items.some((alert) => alert.severity === "critical")
+    ? "err"
+    : domainAlerts.total > 0
+      ? "warn"
+      : undefined;
 
   const overview: NavItem[] = [
     { to: "/", label: t("nav.overview"), icon: LayoutDashboard, end: true },
@@ -129,7 +147,13 @@ export function Layout() {
 
   const web: NavItem[] = [
     { to: "/sites", label: t("nav.sites"), icon: Globe, count: sites.total },
-    { to: "/domains", label: t("nav.domains"), icon: Lock },
+    {
+      to: "/domains",
+      label: t("nav.domains"),
+      icon: Lock,
+      dot: domainsDot,
+      dotLabel: t("nav.domainsAlert", { count: domainAlerts.total }),
+    },
   ];
 
   const system: NavItem[] = (

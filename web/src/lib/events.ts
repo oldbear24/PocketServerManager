@@ -37,3 +37,23 @@ export function alertText(t: TFunction, alert: Alert, hostName?: string): string
     defaultValue: alert.message,
   });
 }
+
+/** The rules of the alerts about Domains & TLS, which link there (#27). */
+export const domainAlertRules = [
+  "certificate_failed",
+  "certificate_expiring",
+  "dns_provider_failed",
+];
+
+/** Where an alert is fixed: the certificate or the DNS provider it is about
+ * on Domains & TLS, or its server. */
+export function alertLink(alert: Alert): string | null {
+  switch (alert.rule) {
+    case "certificate_failed":
+    case "certificate_expiring":
+      return `/domains?certificate=${encodeURIComponent(alert.target)}`;
+    case "dns_provider_failed":
+      return `/domains?provider=${encodeURIComponent(alert.target)}`;
+  }
+  return alert.host ? `/servers/${alert.host}` : null;
+}

@@ -45,11 +45,17 @@ export function directoryId(url: string): DirectoryId {
 export type Challenge = "auto" | "http-01" | "dns-01";
 
 export const certificatesApi = {
-  /** issuer internal asks the internal CA, for LAN names (#26) */
-  request: (names: string[], challenge: Challenge, issuer: "acme" | "internal" = "acme") =>
+  /** issuer internal asks the internal CA, for LAN names (#26); an account
+   * asks that ACME CA only, without falling back to the other (#27) */
+  request: (
+    names: string[],
+    challenge: Challenge,
+    issuer: "acme" | "internal" = "acme",
+    account: "" | AcmeAccount["role"] = "",
+  ) =>
     pb.send<{ id: string }>("/api/pc/certificates/acme", {
       method: "POST",
-      body: { names, challenge, issuer },
+      body: { names, challenge, issuer, account },
     }),
   retry: (id: string) =>
     pb.send<{ id: string }>(`/api/pc/certificates/${id}/retry`, { method: "POST" }),

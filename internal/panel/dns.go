@@ -31,6 +31,36 @@ import (
 
 const dnsTimeout = 30 * time.Second
 
+// alertDNSProviderFailed is the alert of a provider whose API fails.
+const alertDNSProviderFailed = "dns_provider_failed"
+
+// refreshProviderAlert raises the alert of a provider whose API failed, for
+// itself or for one of its managed zones, and resolves it once all answer.
+func (p *Panel) refreshProviderAlert(app core.App, providerID string) {
+	if providerID == "" {
+		return
+	}
+	message := ""
+	if provider, err := app.FindRecordById(schema.DNSProviders, providerID); err == nil {
+		name := provider.GetString("name")
+		if provider.GetString("status") == schema.DNSError {
+			message = name + ": " + provider.GetString("last_error")
+		} else if zones, err := app.FindRecordsByFilter(schema.DNSZones, "provider={:p} && managed=true && status={:e}", "name", 1, 0,
+			dbx.Params{"p": providerID, "e": schema.DNSError}); err == nil && len(zones) > 0 {
+			message = name + ": " + zones[0].GetString("name") + ": " + zones[0].GetString("last_error")
+		}
+	}
+	var err error
+	if message == "" {
+		err = events.ResolveAlert(app, alertDNSProviderFailed, providerID)
+	} else {
+		err = events.RaiseAlert(app, alertDNSProviderFailed, providerID, "", schema.SeverityWarning, truncateText(message, 2048))
+	}
+	if err != nil {
+		p.Log.Warn("failed to update an alert", "rule", alertDNSProviderFailed, "error", err)
+	}
+}
+
 func (p *Panel) registerDNS() {
 	p.App.OnRecordAfterCreateSuccess(schema.Domains).BindFunc(func(e *core.RecordEvent) error {
 		id := e.Record.Id
@@ -101,6 +131,27 @@ func (p *Panel) registerDNS() {
 	})
 	p.App.OnRecordValidate(schema.Hosts).BindFunc(p.validatePublicAddresses)
 	p.Commands.RegisterEnricher("dns.rewrite", p.enrichDNSRewrite)
+
+	// a provider whose API fails, or fails for one of its managed zones, has
+	// an alert that links to it (#27)
+	p.App.OnRecordAfterUpdateSuccess(schema.DNSProviders).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.Id)
+		return e.Next()
+	})
+	p.App.OnRecordAfterUpdateSuccess(schema.DNSZones).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.GetString("provider"))
+		return e.Next()
+	})
+	p.App.OnRecordAfterDeleteSuccess(schema.DNSZones).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.GetString("provider"))
+		return e.Next()
+	})
+	p.App.OnRecordAfterDeleteSuccess(schema.DNSProviders).BindFunc(func(e *core.RecordEvent) error {
+		if err := events.ResolveAlert(e.App, alertDNSProviderFailed, e.Record.Id); err != nil {
+			p.Log.Warn("failed to resolve an alert", "rule", alertDNSProviderFailed, "error", err)
+		}
+		return e.Next()
+	})
 
 	p.App.Cron().MustAdd("pocketcloud_dns_propagation", "* * * * *", p.CheckDNSPropagation)
 	p.App.Cron().MustAdd("pocketcloud_dns_drift", "*/15 * * * *", p.CheckDNSDrift)
@@ -371,7 +422,7 @@ func (p *Panel) testProvider(ctx context.Context, provider *core.Record) {
 		return
 	}
 
-	zones, _ := p.App.FindRecordsByFilter(schema.DNSZones, "provider={:p}", "", 0, 0, dbx.Params{"p": provider.Id})
+	zones, _ := p.App.FindRecordsByFilter(schema.DNSZones, "provider={:p}", "name", 0, 0, dbx.Params{"p": provider.Id})
 
 	if driver.ListsZones {
 		listed, err := dns.ListZones(ctx, client)
@@ -404,24 +455,51 @@ func (p *Panel) testProvider(ctx context.Context, provider *core.Record) {
 		return
 	}
 
-	failed := ""
 	for _, zone := range zones {
 		if err := dns.Check(ctx, client, zone.GetString("name")); err != nil {
-			text := driver.Explain(err)
-			p.setFields(zone, map[string]any{"status": schema.DNSError, "last_error": text, "last_check": now})
-			if failed == "" {
-				failed = zone.GetString("name") + ": " + text
-			}
+			p.setFields(zone, map[string]any{"status": schema.DNSError, "last_error": driver.Explain(err), "last_check": now})
 			continue
 		}
 		p.setFields(zone, map[string]any{"status": schema.DNSOK, "last_error": "", "last_check": now})
 	}
-	if failed != "" {
+	if failed := zonesFailure(zones); failed != "" {
 		p.setFields(provider, map[string]any{"status": schema.DNSError, "last_error": failed, "last_check": now})
 		return
 	}
 	p.setFields(provider, map[string]any{"status": schema.DNSOK, "last_error": "", "last_check": now})
 	p.syncAllDomainsLater()
+}
+
+// zonesFailure is what failed for a provider that cannot list its zones, so
+// that its API is asked about each: one of its managed zones, or, with none
+// managed, any of them, which is all that says whether its credentials work.
+func zonesFailure(zones []*core.Record) string {
+	managed := false
+	for _, zone := range zones {
+		managed = managed || zone.GetBool("managed")
+	}
+	for _, zone := range zones {
+		if (zone.GetBool("managed") || !managed) && zone.GetString("status") == schema.DNSError {
+			return zone.GetString("name") + ": " + zone.GetString("last_error")
+		}
+	}
+	return ""
+}
+
+// retestFailingProvider asks the API of a failing provider that cannot list
+// its zones again, after one of them stopped being managed or was removed:
+// its failure may have been that zone's.
+func (p *Panel) retestFailingProvider(ctx context.Context, providerID string) {
+	provider, err := p.App.FindRecordById(schema.DNSProviders, providerID)
+	if err != nil || provider.GetString("status") != schema.DNSError {
+		return
+	}
+	if driver, ok := dns.Lookup(provider.GetString("kind")); !ok || driver.ListsZones || driver.Manual {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
+	defer cancel()
+	p.testProvider(ctx, provider)
 }
 
 // checkZoneName says whether a zone name can be added for a provider: a name
@@ -546,7 +624,11 @@ func (p *Panel) handleChangeZone(e *core.RequestEvent) error {
 			return e.InternalServerError("", err)
 		}
 	}
+	p.retestFailingProvider(e.Request.Context(), zone.GetString("provider"))
 	p.syncAllDomainsLater()
+	if fresh, err := p.App.FindRecordById(schema.DNSZones, zone.Id); err == nil {
+		zone = fresh
+	}
 	return e.JSON(http.StatusOK, zone)
 }
 
@@ -565,6 +647,7 @@ func (p *Panel) handleRemoveZone(e *core.RequestEvent) error {
 	if err := p.App.Delete(zone); err != nil {
 		return e.InternalServerError("", err)
 	}
+	p.retestFailingProvider(e.Request.Context(), zone.GetString("provider"))
 	p.syncAllDomainsLater()
 	return e.NoContent(http.StatusNoContent)
 }
@@ -1028,6 +1111,25 @@ func (p *Panel) CheckDNSDrift() {
 	}
 	for _, zone := range zones {
 		p.checkZoneDrift(ctx, zone)
+	}
+	p.retestFailingProviders(ctx)
+}
+
+// retestFailingProviders asks the APIs that failed again, so that a provider
+// that answers again, and its alert, recover without someone pressing Test.
+// A DNS server of a LAN is asked once an hour, as each look is a command.
+func (p *Panel) retestFailingProviders(ctx context.Context) {
+	failing, err := p.App.FindRecordsByFilter(schema.DNSProviders, "status={:e}", "", 0, 0, dbx.Params{"e": schema.DNSError})
+	if err != nil {
+		return
+	}
+	for _, provider := range failing {
+		if lanDriver(provider) && time.Since(provider.GetDateTime("last_check").Time()) < time.Hour-time.Minute {
+			continue
+		}
+		tctx, cancel := context.WithTimeout(ctx, dnsTimeout)
+		p.testProvider(tctx, provider)
+		cancel()
 	}
 }
 

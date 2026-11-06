@@ -89,7 +89,12 @@ func newDNSHarnessWith(t *testing.T, configure func(*agent.Config), zones ...str
 
 func (d *dnsHarness) connect(token string) (int, map[string]any) {
 	d.t.Helper()
-	body := fmt.Sprintf(`{"name":"Cloudflare","kind":"cloudflare","credentials":{"api_token":%q}}`, token)
+	return d.connectNamed("Cloudflare", token)
+}
+
+func (d *dnsHarness) connectNamed(name, token string) (int, map[string]any) {
+	d.t.Helper()
+	body := fmt.Sprintf(`{"name":%q,"kind":"cloudflare","credentials":{"api_token":%q}}`, name, token)
 	status, raw := testutil.Do(d.t, d.handler, testutil.Request{Method: "POST", URL: "/api/pc/dns-providers", Token: d.admin, Body: body})
 	var out map[string]any
 	_ = json.Unmarshal([]byte(raw), &out)
