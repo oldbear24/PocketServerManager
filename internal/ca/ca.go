@@ -1,15 +1,17 @@
 // Package ca is the panel's internal certificate authority. Agents authenticate
 // with client certificates it issues; no passwords or API tokens live on servers.
 //
-// The hierarchy is a root (ECDSA P-256), an intermediate for agent identities and
-// a server certificate for the gRPC gateway. Private keys are stored only sealed
-// with the master key.
+// The hierarchy is a root (ECDSA P-256), an intermediate for agent identities, a
+// server certificate for the gRPC gateway, and an intermediate that signs the
+// certificates of LAN names (#26), which browsers trust once the root is
+// installed. Private keys are stored only sealed with the master key.
 package ca
 
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -21,6 +23,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,10 +41,18 @@ const (
 	// RenewBefore is how long before expiry an agent renews its certificate.
 	RenewBefore = 30 * 24 * time.Hour
 
+	// LANCertTTL is the validity of a certificate for LAN names: under the
+	// 398 days that browsers allow public CAs, and well under the 825 days
+	// that Apple's platforms accept from a root a user installed.
+	LANCertTTL = 397 * 24 * time.Hour
+
 	rootTTL         = 20 * 365 * 24 * time.Hour
 	intermediateTTL = 10 * 365 * 24 * time.Hour
 	serverCertTTL   = 365 * 24 * time.Hour
 	serverRenewal   = 30 * 24 * time.Hour
+	// a LAN intermediate is replaced while it still outlives every leaf it
+	// could sign
+	lanIntermediateRenewal = LANCertTTL + 30*24*time.Hour
 )
 
 // Authority issues and verifies certificates.
@@ -55,6 +66,8 @@ type Authority struct {
 	intermediate    *x509.Certificate
 	intermediatePEM []byte
 	intermediateKey *ecdsa.PrivateKey
+
+	lan atomic.Pointer[lanIssuer]
 
 	roots *x509.CertPool
 
@@ -89,6 +102,9 @@ func Open(app core.App, box *secrets.Box, serverNames []string) (*Authority, err
 
 	if err := a.ensureServerCert(record, serverNames); err != nil {
 		return nil, err
+	}
+	if err := a.ensureLANIntermediate(record); err != nil {
+		return nil, fmt.Errorf("LAN intermediate: %w", err)
 	}
 
 	return a, nil
@@ -307,6 +323,165 @@ func (a *Authority) ensureServerCert(record *core.Record, names []string) error 
 	a.server.Store(&cert)
 
 	return nil
+}
+
+// lanIssuer is the intermediate that signs the certificates of LAN names.
+type lanIssuer struct {
+	cert *x509.Certificate
+	pem  []byte
+	key  *ecdsa.PrivateKey
+}
+
+// ensureLANIntermediate loads the LAN intermediate, or makes it when the CA
+// has none yet, as one made before #26, or when it would not outlive a new
+// leaf.
+func (a *Authority) ensureLANIntermediate(record *core.Record) error {
+	if certPEM, sealed := record.GetString("lan_intermediate_cert"), record.GetString("lan_intermediate_key"); certPEM != "" && sealed != "" {
+		cert, err := parseCertPEM(certPEM)
+		if err != nil {
+			return err
+		}
+		key, err := a.openKey(sealed)
+		if err != nil {
+			return err
+		}
+		if time.Until(cert.NotAfter) > lanIntermediateRenewal {
+			a.lan.Store(&lanIssuer{cert: cert, pem: encodeCertPEM(cert), key: key})
+			return nil
+		}
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          newSerial(),
+		Subject:               pkix.Name{CommonName: "PocketCloud LAN", Organization: []string{"PocketCloud"}},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              earliest(now.Add(intermediateTTL), a.root.NotAfter),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, a.root, key.Public(), a.rootKey)
+	if err != nil {
+		return err
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return err
+	}
+	sealed, err := a.sealKey(key)
+	if err != nil {
+		return err
+	}
+	record.Set("lan_intermediate_cert", string(encodeCertPEM(cert)))
+	record.Set("lan_intermediate_key", sealed)
+	if err := a.app.Save(record); err != nil {
+		return err
+	}
+	a.lan.Store(&lanIssuer{cert: cert, pem: encodeCertPEM(cert), key: key})
+	return nil
+}
+
+// LANCertificate is a certificate for LAN names and its key.
+type LANCertificate struct {
+	// ChainPEM holds the certificate followed by the LAN intermediate; the
+	// root is left out, as clients must have it installed.
+	ChainPEM  []byte
+	KeyPEM    []byte
+	NotBefore time.Time
+	NotAfter  time.Time
+}
+
+// IssueLANCert signs a server certificate for names, such as wiki.lan or
+// *.home.arpa, and IP addresses. Which names may get one is the panel's
+// choice: the root signs for any name, so a client that installed it trusts
+// every certificate of this CA.
+func (a *Authority) IssueLANCert(names []string) (*LANCertificate, error) {
+	issuer := a.lan.Load()
+	if issuer == nil {
+		return nil, errors.New("the CA has no LAN intermediate")
+	}
+	if len(names) == 0 {
+		return nil, errors.New("a certificate needs a name")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: newSerial(),
+		Subject:      pkix.Name{CommonName: names[0], Organization: []string{"PocketCloud"}},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     earliest(now.Add(LANCertTTL), issuer.cert.NotAfter),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, name := range names {
+		name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if name == "" {
+			return nil, errors.New("a certificate name is empty")
+		}
+		if ip := net.ParseIP(name); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+			continue
+		}
+		template.DNSNames = append(template.DNSNames, name)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, issuer.cert, key.Public(), issuer.key)
+	if err != nil {
+		return nil, err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return &LANCertificate{
+		ChainPEM:  append(encodeCertPEM(leaf), issuer.pem...),
+		KeyPEM:    pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+		NotBefore: leaf.NotBefore,
+		NotAfter:  leaf.NotAfter,
+	}, nil
+}
+
+// Root describes the root certificate for people who install it.
+type Root struct {
+	Subject  string    `json:"subject"`
+	NotAfter time.Time `json:"not_after"`
+	// SHA256 is the fingerprint as browsers show it, in pairs of hex digits.
+	SHA256 string `json:"sha256"`
+}
+
+// RootInfo describes the root certificate.
+func (a *Authority) RootInfo() Root {
+	sum := sha256.Sum256(a.root.Raw)
+	pairs := make([]string, len(sum))
+	for i, b := range sum {
+		pairs[i] = fmt.Sprintf("%02X", b)
+	}
+	return Root{Subject: a.root.Subject.CommonName, NotAfter: a.root.NotAfter, SHA256: strings.Join(pairs, ":")}
+}
+
+// RootDER is the root certificate in DER, as some devices import it.
+func (a *Authority) RootDER() []byte {
+	return a.root.Raw
+}
+
+func earliest(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 // RootPEM returns the root certificate, safe to publish.

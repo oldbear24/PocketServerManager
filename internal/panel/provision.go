@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,7 +81,9 @@ type provisionState struct {
 	// checked is when each step last asked: the resolvers, or the site.
 	checked sync.Map
 	// siteCheck asks a site's server for it; tests replace it.
-	siteCheck func(ctx context.Context, url, address string) (siteAnswer, error)
+	// roots, when set, are the only CAs trusted, as the internal CA's root
+	// for a name of the LAN
+	siteCheck func(ctx context.Context, url, address string, roots *x509.CertPool) (siteAnswer, error)
 }
 
 // siteAnswer is what a server answered for a site.
@@ -119,7 +122,7 @@ func (p *Panel) scheduleAdvance(parentID string) {
 
 // SetSiteCheck replaces how the availability check asks a site's server.
 func (p *Panel) SetSiteCheck(check func(ctx context.Context, url, address string) (status int, location string, err error)) {
-	p.provision.siteCheck = func(ctx context.Context, url, address string) (siteAnswer, error) {
+	p.provision.siteCheck = func(ctx context.Context, url, address string, _ *x509.CertPool) (siteAnswer, error) {
 		status, location, err := check(ctx, url, address)
 		return siteAnswer{Status: status, Location: location}, err
 	}
@@ -449,7 +452,7 @@ func (p *Panel) workOnStep(parent, step *core.Record) {
 	case "site.dns":
 		p.workOnDNS(step, domains)
 	case "site.propagation":
-		p.workOnPropagation(step, domains)
+		p.workOnPropagation(parent, step, domains)
 	case "site.certificate":
 		p.workOnCertificate(parent, step, payload)
 	case "site.check":
@@ -500,6 +503,10 @@ func (p *Panel) createProvisionDomains(parent, step *core.Record) error {
 		_ = p.Commands.Report(step.Id, map[string]any{"step": "dns", "created": created}, time.Time{})
 		return p.Commands.Settle(step.Id, schema.CommandFailed, message, nil)
 	}
+	tls := schema.TLSAuto
+	if lan, _ := p.provisionLAN(parent); lan {
+		tls = schema.TLSInternal
+	}
 	for _, name := range []string{payload.Hostname, payload.WWW} {
 		if name == "" {
 			continue
@@ -518,7 +525,7 @@ func (p *Panel) createProvisionDomains(parent, step *core.Record) error {
 		domain := core.NewRecord(collection)
 		domain.Set("hostname", name)
 		domain.Set("host", site.GetString("host"))
-		domain.Set("tls", schema.TLSAuto)
+		domain.Set("tls", tls)
 		if name == payload.Hostname {
 			domain.Set("target_kind", schema.TargetSite)
 			domain.Set("site", site.Id)
@@ -544,7 +551,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 		return
 	}
 	var records []map[string]any
-	mode, zone, provider := "automatic", "", ""
+	mode, zone, provider, lan := "automatic", "", "", false
 	for _, domain := range domains {
 		want := p.desiredDNS(domain)
 		if want.Problem != "" {
@@ -554,6 +561,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 		if want.Manual {
 			mode = "manual"
 		}
+		lan = lan || want.LAN
 		zone = want.ZoneName
 		if want.Provider != nil {
 			provider = want.Provider.GetString("name")
@@ -572,7 +580,7 @@ func (p *Panel) workOnDNS(step *core.Record, domains []*core.Record) {
 			return // not synced yet
 		}
 	}
-	result := map[string]any{"mode": mode, "zone": zone, "provider": provider, "records": records, "created": createdOf(step)}
+	result := map[string]any{"mode": mode, "zone": zone, "provider": provider, "records": records, "created": createdOf(step), "lan": lan}
 	_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", result)
 }
 
@@ -606,7 +614,7 @@ func recordsOf(want domainDNS, hostname string) []map[string]any {
 // workOnPropagation asks the resolvers until every record of the flow's
 // domains resolves: often at first, then once a minute, as records made by
 // hand can take a while.
-func (p *Panel) workOnPropagation(step *core.Record, domains []*core.Record) {
+func (p *Panel) workOnPropagation(parent, step *core.Record, domains []*core.Record) {
 	if len(domains) == 0 {
 		_ = p.Commands.Settle(step.Id, schema.CommandFailed, "The site's domains are gone.", nil)
 		return
@@ -630,7 +638,12 @@ func (p *Panel) workOnPropagation(step *core.Record, domains []*core.Record) {
 	}
 	if len(waiting) == 0 {
 		p.provision.checked.Delete(step.Id)
-		_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", map[string]any{"resolvers": p.checker().Resolvers})
+		result := map[string]any{"resolvers": p.checker().Resolvers}
+		if lan, server := p.provisionLAN(parent); lan {
+			// the DNS server of the LAN answers what it took
+			result = map[string]any{"resolvers": []string{}, "lan": server}
+		}
+		_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", result)
 		return
 	}
 	_ = p.Commands.Report(step.Id, map[string]any{
@@ -668,6 +681,25 @@ func (p *Panel) startProvisionDeploy(parent *core.Record) error {
 }
 
 // provisionNames are the names of a flow's certificate.
+// provisionLAN tells whether a flow's name is in a zone of a DNS server of a
+// LAN (#26), and which: its domains get a certificate of the internal CA,
+// nothing propagates, and the site is checked at its server's address on its
+// network.
+func (p *Panel) provisionLAN(parent *core.Record) (bool, string) {
+	collection, err := p.App.FindCachedCollectionByNameOrId(schema.Domains)
+	if err != nil {
+		return false, ""
+	}
+	domain := core.NewRecord(collection)
+	domain.Set("hostname", payloadOf(parent).Hostname)
+	domain.Set("host", parent.GetString("host"))
+	want := p.desiredDNS(domain)
+	if want.Manual || !lanDriver(want.Provider) {
+		return false, ""
+	}
+	return true, want.Provider.GetString("name")
+}
+
 func provisionNames(payload provisionPayload) []string {
 	names := []string{payload.Hostname}
 	if payload.WWW != "" {
@@ -682,7 +714,8 @@ func provisionNames(payload provisionPayload) []string {
 func (p *Panel) orderProvisionCertificate(parent *core.Record) {
 	payload := payloadOf(parent)
 	names := provisionNames(payload)
-	if p.provisionCertificate(names) != nil {
+	internal, _ := p.provisionLAN(parent)
+	if p.provisionCertificate(names, internal) != nil {
 		return
 	}
 	collection, err := p.App.FindCachedCollectionByNameOrId(schema.Certificates)
@@ -691,9 +724,13 @@ func (p *Panel) orderProvisionCertificate(parent *core.Record) {
 	}
 	cert := core.NewRecord(collection)
 	cert.Set("names", names)
-	cert.Set("issuer", schema.IssuerACME)
 	cert.Set("status", schema.CertPending)
-	cert.Set("challenge", payload.Challenge)
+	if internal {
+		cert.Set("issuer", schema.IssuerInternal)
+	} else {
+		cert.Set("issuer", schema.IssuerACME)
+		cert.Set("challenge", payload.Challenge)
+	}
 	// renewed while a domain needs it, and dropped when none does
 	cert.Set("auto", true)
 	cert.Set("next_attempt", time.Now().Add(heldBack).UTC())
@@ -707,19 +744,20 @@ func (p *Panel) orderProvisionCertificate(parent *core.Record) {
 func (p *Panel) startProvisionCertificate(parent, step *core.Record) error {
 	payload := payloadOf(parent)
 	names := provisionNames(payload)
-	if p.installedCovering(names, parent.GetString("host")) != nil {
+	internal, _ := p.provisionLAN(parent)
+	if p.installedCovering(names, parent.GetString("host"), internal) != nil {
 		return nil // the step sees it is done
 	}
-	cert := p.provisionCertificate(names)
+	cert := p.provisionCertificate(names, internal)
 	if cert == nil {
 		p.acme.planning.Lock()
 		p.orderProvisionCertificate(parent)
 		p.acme.planning.Unlock()
-		if cert = p.provisionCertificate(names); cert == nil {
+		if cert = p.provisionCertificate(names, internal); cert == nil {
 			return p.Commands.Settle(step.Id, schema.CommandFailed, "No certificate could be ordered for "+strings.Join(names, " and ")+".", nil)
 		}
 	}
-	if cert.GetString("issuer") != schema.IssuerACME || cert.GetString("key_pem") != "" {
+	if cert.GetString("key_pem") != "" {
 		return nil // issued: it waits for the edge
 	}
 	if until, limited := dailyLimit(cert, time.Now()); limited {
@@ -727,14 +765,19 @@ func (p *Panel) startProvisionCertificate(parent, step *core.Record) error {
 			fmt.Sprintf("The CA's daily limit for these names is reached: retry after %s.", until.UTC().Format(time.RFC1123)), map[string]any{"certificate": cert.Id})
 	}
 	p.setFields(cert, map[string]any{"status": schema.CertPending, "last_error": "", "next_attempt": nil})
-	_ = p.Commands.Report(step.Id, map[string]any{"step": "certificate", "message": "Asking the CA", "certificate": cert.Id}, time.Time{})
+	message := "Asking the CA"
+	if internal {
+		message = "Signing with the internal CA"
+	}
+	_ = p.Commands.Report(step.Id, map[string]any{"step": "certificate", "message": message, "certificate": cert.Id}, time.Time{})
 	p.startIssue(cert.Id, parent.GetString("requested_label"), false)
 	return nil
 }
 
-// provisionCertificate is a certificate that covers all the names: one that
-// is valid now, or an ACME one on its way.
-func (p *Panel) provisionCertificate(names []string) *core.Record {
+// provisionCertificate is a certificate of the kind the names' domains take
+// that covers all of them: one that is valid now, or one of ACME or the
+// internal CA on its way.
+func (p *Panel) provisionCertificate(names []string, internal bool) *core.Record {
 	records, err := p.App.FindAllRecords(schema.Certificates)
 	if err != nil {
 		return nil
@@ -742,11 +785,14 @@ func (p *Panel) provisionCertificate(names []string) *core.Record {
 	var found *core.Record
 	for _, record := range records {
 		covered := certificateNames(record)
+		if (record.GetString("issuer") == schema.IssuerInternal) != internal {
+			continue
+		}
 		if !slices.ContainsFunc(names, func(name string) bool { return !edge.Covers(covered, name) }) {
 			if record.GetString("key_pem") != "" && time.Now().Before(record.GetDateTime("not_after").Time()) {
 				return record
 			}
-			if record.GetString("issuer") == schema.IssuerACME && found == nil {
+			if record.GetString("issuer") != schema.IssuerManual && found == nil {
 				found = record
 			}
 		}
@@ -755,14 +801,18 @@ func (p *Panel) provisionCertificate(names []string) *core.Record {
 }
 
 // installedCovering is a valid certificate for all the names that the
-// server's edge has, whichever it is: the edge picks one per name itself.
-func (p *Panel) installedCovering(names []string, hostID string) *core.Record {
+// server's edge has, of the kind their domains take: the edge picks one per
+// name itself.
+func (p *Panel) installedCovering(names []string, hostID string, internal bool) *core.Record {
 	records, err := p.App.FindAllRecords(schema.Certificates)
 	if err != nil {
 		return nil
 	}
 	for _, record := range records {
 		covered := certificateNames(record)
+		if (record.GetString("issuer") == schema.IssuerInternal) != internal {
+			continue
+		}
 		if record.GetString("key_pem") != "" && time.Now().Before(record.GetDateTime("not_after").Time()) &&
 			installedOf(record)[hostID] != "" &&
 			!slices.ContainsFunc(names, func(name string) bool { return !edge.Covers(covered, name) }) {
@@ -777,14 +827,15 @@ func (p *Panel) installedCovering(names []string, hostID string) *core.Record {
 // step's own attempt.
 func (p *Panel) workOnCertificate(parent, step *core.Record, payload provisionPayload) {
 	names := provisionNames(payload)
-	if cert := p.installedCovering(names, parent.GetString("host")); cert != nil {
+	internal, _ := p.provisionLAN(parent)
+	if cert := p.installedCovering(names, parent.GetString("host"), internal); cert != nil {
 		_ = p.Commands.Settle(step.Id, schema.CommandSucceeded, "", map[string]any{
 			"certificate": cert.Id, "names": certificateNames(cert), "issuer": cert.GetString("issuer_name"),
 			"not_after": cert.GetDateTime("not_after").String(),
 		})
 		return
 	}
-	cert := p.provisionCertificate(names)
+	cert := p.provisionCertificate(names, internal)
 	if cert == nil {
 		_ = p.Commands.Settle(step.Id, schema.CommandFailed, "The certificate for these names is gone.", nil)
 		return
@@ -822,6 +873,19 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 	if address == "" {
 		address = host.GetString("public_ip6")
 	}
+	var roots *x509.CertPool
+	if lan, _ := p.provisionLAN(parent); lan {
+		// a name of the LAN is reached at the server's address there, with a
+		// certificate of the internal CA
+		address = host.GetString("ip4")
+		if address == "" {
+			address = host.GetString("ip6")
+		}
+		if authority := p.authority.Load(); authority != nil {
+			roots = x509.NewCertPool()
+			roots.AppendCertsFromPEM(authority.RootPEM())
+		}
+	}
 	// asked every checkEvery, whatever woke the flow
 	if last, ok := p.provision.checked.Load(step.Id); ok && time.Since(last.(time.Time)) < p.provision.checkEvery {
 		return
@@ -836,7 +900,7 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	url := "https://" + payload.Hostname + "/"
-	answer, err := p.provision.siteCheck(ctx, url, address)
+	answer, err := p.provision.siteCheck(ctx, url, address, roots)
 	problem := ""
 	switch {
 	case err != nil:
@@ -847,7 +911,7 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 	var wwwAnswer siteAnswer
 	if problem == "" && payload.WWW != "" {
 		wwwURL := "https://" + payload.WWW + "/"
-		wwwAnswer, err = p.provision.siteCheck(ctx, wwwURL, address)
+		wwwAnswer, err = p.provision.siteCheck(ctx, wwwURL, address, roots)
 		switch {
 		case err != nil:
 			problem = fmt.Sprintf("%s: %v", wwwURL, err)
@@ -1053,6 +1117,9 @@ type dnsPreview struct {
 	Records  []map[string]any `json:"records"`
 	Taken    []string         `json:"taken"`
 	Problem  string           `json:"problem,omitempty"`
+	// LAN is true for a zone of a DNS server of a LAN: the certificate comes
+	// from the internal CA
+	LAN bool `json:"lan"`
 }
 
 // previewDNS is what a new site's names would need, without saving anything.
@@ -1082,6 +1149,7 @@ func (p *Panel) previewDNS(hostname, hostID, www string) dnsPreview {
 			preview.Mode = "manual"
 		}
 		preview.Zone = want.ZoneName
+		preview.LAN = !want.Manual && lanDriver(want.Provider)
 		if want.Provider != nil {
 			preview.Provider = want.Provider.GetString("name")
 			preview.Kind = want.Provider.GetString("kind")
@@ -1116,9 +1184,10 @@ func (p *Panel) handleDNSPreview(e *core.RequestEvent) error {
 // askSite asks a server for a site over HTTPS, at its public address with the
 // site's name, as a visitor would once the name resolves there. Redirects are
 // not followed: the www name's redirect is what is checked of it.
-func askSite(ctx context.Context, url, address string) (siteAnswer, error) {
+func askSite(ctx context.Context, url, address string, roots *x509.CertPool) (siteAnswer, error) {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			_, port, err := net.SplitHostPort(addr)
 			if err != nil {

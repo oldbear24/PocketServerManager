@@ -170,6 +170,52 @@ describe("the sites page", () => {
     await waitFor(() => expect(rollback).toHaveBeenCalledWith("s1", "d2"));
   });
 
+  it("keeps a site of the LAN on the internal CA", async () => {
+    signInAs("operator");
+    lists.sites = [site];
+    lists.domains = [
+      {
+        id: "dm1",
+        hostname: "wiki.lan",
+        host: "h1",
+        target_kind: "site",
+        site: "s1",
+        tls: "internal",
+      },
+    ];
+    vi.spyOn(edgeApi, "state").mockResolvedValue({
+      routes: [
+        {
+          id: "dm1",
+          hostname: "wiki.lan",
+          target_kind: "site",
+          target: "blog",
+          tls: "valid",
+          certificate: {
+            id: "c1",
+            names: ["wiki.lan"],
+            issuer: "internal",
+            not_after: "2027-12-07T00:00:00Z",
+          },
+        },
+      ],
+      edge: { role: true, in_sync: true },
+    } as never);
+    const create = vi.fn().mockResolvedValue({});
+    const collection = pb.collection.bind(pb);
+    vi.spyOn(pb, "collection").mockImplementation((name: string) =>
+      name === "domains" ? ({ create, delete: vi.fn() } as never) : collection(name),
+    );
+    renderAt("/sites/s1");
+
+    // it renews like one from ACME, not by hand
+    expect(await screen.findByText("Internal CA · renews by itself")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Add a domain"), { target: { value: "docs.lan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ hostname: "docs.lan", tls: "internal" });
+  });
+
   it("gives viewers nothing to change", () => {
     signInAs("viewer");
     lists.sites = [site];

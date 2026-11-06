@@ -280,7 +280,22 @@ describe("requesting a certificate", () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(request).toHaveBeenCalledWith(["*.example.com", "example.com"], "dns-01");
+    expect(request).toHaveBeenCalledWith(["*.example.com", "example.com"], "dns-01", "acme");
+  });
+
+  it("asks the internal CA for LAN names, with no validation to choose", async () => {
+    const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
+    const onClose = vi.fn();
+    wrap(<RequestCertificateDialog onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Internal CA" }));
+    expect(screen.queryByLabelText("Validation")).toBeNull();
+    expect(screen.getByText(/refuse a wildcard right under a top-level name/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Names"), { target: { value: "nas.lan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Request certificate" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(request).toHaveBeenCalledWith(["nas.lan"], "auto", "internal");
   });
 
   it("shows why the panel refused", async () => {

@@ -114,6 +114,8 @@ function SiteForm({
   const name_ = hostname.trim().toLowerCase();
   const withWww = www && !name_.startsWith("www.");
   const preview = useDnsPreview(name_, server, withWww);
+  // a name of the LAN gets its certificate from the internal CA (#26)
+  const lan = preview.data?.lan === true;
   const primary = accounts.find((account) => account.role === "primary");
 
   const builds = values.source !== "empty" && values.generator !== "none";
@@ -297,29 +299,35 @@ function SiteForm({
                 className="input"
                 readOnly
                 value={
-                  primary
-                    ? directoryId(primary.directory_url) === "custom"
-                      ? primary.directory_url
-                      : t(`cert.ca.${directoryId(primary.directory_url)}`)
-                    : t("siteNew.noAccount")
+                  lan
+                    ? t("cert.issuer.internal")
+                    : primary
+                      ? directoryId(primary.directory_url) === "custom"
+                        ? primary.directory_url
+                        : t(`cert.ca.${directoryId(primary.directory_url)}`)
+                      : t("siteNew.noAccount")
                 }
               />
             </Field>
-            <Field label={t("siteNew.challenge")} htmlFor="new-site-challenge">
-              <select
-                id="new-site-challenge"
-                className="select"
-                value={challenge}
-                onChange={(event) => setChallenge(event.target.value as Challenge)}
-              >
-                <option value="auto">{t("cert.challengeAuto")}</option>
-                <option value="http-01">HTTP-01</option>
-                <option value="dns-01">DNS-01</option>
-              </select>
-            </Field>
+            {!lan && (
+              <Field label={t("siteNew.challenge")} htmlFor="new-site-challenge">
+                <select
+                  id="new-site-challenge"
+                  className="select"
+                  value={challenge}
+                  onChange={(event) => setChallenge(event.target.value as Challenge)}
+                >
+                  <option value="auto">{t("cert.challengeAuto")}</option>
+                  <option value="http-01">HTTP-01</option>
+                  <option value="dns-01">DNS-01</option>
+                </select>
+              </Field>
+            )}
           </div>
-          <p className="muted small">{t(`cert.challengeNote.${challenge}`)}</p>
-          {!primary && (
+          <p className="muted small">
+            {lan ? t("siteNew.internalNote") : t(`cert.challengeNote.${challenge}`)}
+          </p>
+          {!primary && !lan && (
             <Banner tone="warn">
               <span>
                 {t("siteNew.noAccountText")} <Link to="/settings">{t("siteNew.settings")}</Link>
@@ -590,6 +598,8 @@ function Timeline({
   }, [steps]);
 
   const states = rows.map((row) => rowState(row, latest));
+  // the DNS step says whether the name is one of the LAN
+  const lan = Boolean((latest.get("site.dns")?.result as { lan?: boolean } | null)?.lan);
   const done = states.filter((state) => state === "done").length;
   const current = Math.min(
     states.findIndex((state) => state !== "done"),
@@ -664,7 +674,7 @@ function Timeline({
                     {step && state !== "waiting" && <StepTime step={step} state={state} />}
                   </div>
                   <div className="timeline-detail mono">
-                    {step ? stepDetail(row, step, t) : t(`siteNew.plan.${row}`)}
+                    {step ? stepDetail(row, step, t, planOf(row, lan, t)) : planOf(row, lan, t)}
                   </div>
                   {state === "failed" && step?.error && <p className="field-error">{step.error}</p>}
                   {state === "failed" && paused && canAct && (
@@ -791,11 +801,19 @@ function StepTime({ step, state }: { step: Command; state: RowState }) {
 type Translate = ReturnType<typeof useTranslation>["t"];
 
 /** One line under a step: what it did, or what it waits for. */
-function stepDetail(row: Row, step: Command, t: Translate): string {
+/** What a step does before it ran: a name of the LAN skips the world (#26). */
+function planOf(row: Row, lan: boolean, t: Translate): string {
+  if (lan && (row === "site.propagation" || row === "site.certificate" || row === "site.check")) {
+    return t(`siteNew.planLan.${row.slice("site.".length)}`);
+  }
+  return t(`siteNew.plan.${row}`);
+}
+
+function stepDetail(row: Row, step: Command, t: Translate, plan: string): string {
   const result = (step.result ?? {}) as Record<string, unknown>;
   const progress = step.progress?.message ?? "";
   if (step.status !== "succeeded" && row !== "build" && row !== "release") {
-    return progress || t(`siteNew.plan.${row}`);
+    return progress || plan;
   }
   switch (row) {
     case "site.create":
@@ -809,6 +827,9 @@ function stepDetail(row: Row, step: Command, t: Translate): string {
         : t("siteNew.dnsAutomatic", { types, provider: String(result.provider ?? "") });
     }
     case "site.propagation":
+      if (result.lan) {
+        return t("siteNew.lanAnswered", { provider: String(result.lan) });
+      }
       return [
         ...((result.resolvers as string[]) ?? []).map((r) => r.replace(/:53$/, "")),
         t("siteNew.authoritative"),

@@ -469,10 +469,18 @@ func Build(c Config) ([]byte, error) {
 
 	plain := []any{challengeRoute()}
 	secure := []any{}
+	// the handshake of each name serves the certificate its route has, not
+	// any loaded one that covers the name: a certificate of the internal CA
+	// must not answer for a name that has a public one (#26)
+	policies := []any{}
 
 	for _, route := range routes {
 		if route.Certificate != "" {
 			secure = append(secure, hostRoute(route, true))
+			policies = append(policies, object{
+				"match":                 object{"sni": []string{route.Hostname}},
+				"certificate_selection": object{"any_tag": []string{route.Certificate}},
+			})
 		} else {
 			// a wildcard certificate may still complete the handshake for this
 			// name; without this the wildcard's route would answer it on 443
@@ -539,7 +547,7 @@ func Build(c Config) ([]byte, error) {
 			"listen":                  []string{":443"},
 			"automatic_https":         object{"disable": true},
 			"protocols":               []string{"h1", "h2", "h3"},
-			"tls_connection_policies": []any{object{}},
+			"tls_connection_policies": append(policies, object{}),
 			"routes":                  secure,
 		})
 	}

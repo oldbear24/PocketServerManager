@@ -1940,9 +1940,25 @@ textarea.input {
 /* DNS providers on the Domains & TLS page */
 .dns-provider {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: flex-start;
   padding: 12px 0;
+}
+
+/* the server whose agent reaches a DNS server of the LAN (#26) */
+.dns-provider-server {
+  flex: 0 1 200px;
+  min-width: 140px;
+}
+
+.dns-provider-server .input {
+  width: 100%;
+}
+
+.dns-provider-server label {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .dns-provider + .dns-provider {
@@ -1950,7 +1966,8 @@ textarea.input {
 }
 
 .dns-provider-body {
-  flex: 1 1 auto;
+  /* the avatar and the text stay on one line; the server and the actions wrap */
+  flex: 1 1 180px;
   min-width: 0;
   display: grid;
   gap: 4px;
@@ -2421,4 +2438,40 @@ td .row-actions {
   color: var(--text-2);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* The internal CA (#26) */
+.ca-summary {
+  margin: 0 0 12px;
+  color: var(--text-2);
+}
+
+.ca-actions {
+  margin-bottom: 12px;
+}
+
+.ca-actions .button {
+  text-decoration: none;
+}
+
+.ca-install summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.ca-install[open] summary {
+  margin-bottom: 12px;
+}
+
+.ca-fingerprint {
+  display: block;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+}
+
+.ca-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
 }

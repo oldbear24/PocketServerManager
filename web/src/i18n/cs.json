@@ -1040,7 +1040,12 @@
     "loading": "Načítají se trasy…",
     "password": "heslo",
     "fromLabel": "label služby {{service}}",
-    "labelRemoved": "label služby {{service}} odebrán"
+    "labelRemoved": "label služby {{service}} odebrán",
+    "certificateFrom": "Certifikát",
+    "tlsAcme": "ACME",
+    "tlsInternal": "Interní CA",
+    "tlsAcmeHint": "Veřejně důvěryhodný certifikát: CA ověří, že jméno vede na tento server.",
+    "tlsInternalHint": "Pro jméno v LAN, například wiki.lan: vydá se hned a důvěřují mu zařízení, která mají kořenový certifikát interní CA."
   },
   "php": {
     "title": "Běhová prostředí PHP",
@@ -1110,18 +1115,23 @@
       "cloudflare": "Cloudflare",
       "hetzner": "Hetzner DNS",
       "wedos": "WEDOS (WAPI)",
-      "manual": "Ruční"
+      "manual": "Ruční",
+      "adguard": "AdGuard Home",
+      "pihole": "Pi-hole"
     },
     "kindNote": {
       "cloudflare": "API token s oprávněními Zone.DNS:Edit a Zone:Read pro všechny zóny, nebo jen ty, které smí PocketCloud měnit.",
       "hetzner": "API token z Hetzner DNS Console. Vyjmenuj zóny, které smí měnit: jeho API je tu nevypíše.",
       "wedos": "WAPI od WEDOSu odpovídá jen IP adresám na svém seznamu povolených: nejdřív tam v administraci WEDOSu přidej veřejnou adresu panelu. Vyjmenuj zóny, které smí měnit.",
-      "manual": "Bez API: PocketCloud ukáže záznamy, které vytvoříš u svého DNS hostingu, a ověřuje je, dokud se nepropíšou."
+      "manual": "Bez API: PocketCloud ukáže záznamy, které vytvoříš u svého DNS hostingu, a ověřuje je, dokud se nepropíšou.",
+      "adguard": "PocketCloud nastavuje přepisy DNS v AdGuard Home přes agenta serveru ve stejné síti, s adresou, uživatelským jménem a heslem jeho webového rozhraní. Uveď zóny, na které odpovídá, například lan nebo home.arpa.",
+      "pihole": "Pi-hole v6. PocketCloud nastavuje jeho místní záznamy DNS přes agenta serveru ve stejné síti, s adresou a heslem jeho webového rozhraní; heslo aplikace funguje, když je zapnuté webserver.api.app_sudo. Uveď zóny, na které odpovídá, například lan nebo home.arpa."
     },
     "field": {
       "api_token": "API token",
       "username": "Uživatelské jméno",
-      "password": "Heslo k WAPI"
+      "password": "Heslo",
+      "url": "Adresa webového rozhraní"
     },
     "domainStatus": {
       "ok": "DNS v pořádku",
@@ -1150,7 +1160,22 @@
     "publicAddresses": "Veřejné adresy",
     "publicAddressesNote": "kam míří záznamy A a AAAA domén tohoto serveru",
     "addressesSaved": "Veřejné adresy byly uloženy.",
-    "testName": "Ověřit {{name}}"
+    "testName": "Ověřit {{name}}",
+    "server": "Server, jehož agent na něj dosáhne",
+    "serverHint": "Server ve stejné síti: PocketCloud čte a mění záznamy přes jeho agenta.",
+    "chooseServer": "Vyber server",
+    "serverOffline": "offline",
+    "throughAgent": "přes agenta serveru {{server}}",
+    "lanAnswered": "{{provider}} na tyto záznamy odpovídá sám, jakmile je převezme: nic se nemusí šířit.",
+    "fieldOf": {
+      "wedos": {
+        "password": "Heslo k WAPI"
+      }
+    },
+    "changeServer": "Server, jehož agent dosáhne na {{name}}",
+    "noServer": "Žádný server na něj nedosáhne: vyber jeden.",
+    "serverChanged": "{{name}} je teď dostupný přes {{server}}.",
+    "throughLabel": "Přes agenta serveru"
   },
   "cert": {
     "title": "Certifikáty",
@@ -1256,7 +1281,9 @@
     "renewalPolicy_many": "30 dní předem · max. {{count}} neúspěšných pokusů denně",
     "renewalPolicy_other": "30 dní předem · max. {{count}} neúspěšných pokusů denně",
     "alerts": "Upozornění",
-    "alertsPolicy": "v panelu, 14 dní před vypršením a při selhání"
+    "alertsPolicy": "v panelu, 14 dní před vypršením a při selhání",
+    "issuerAcme": "ACME",
+    "internalNote": "Interní CA podepisuje hned a jména neověřuje. Prohlížeče jí důvěřují na zařízeních s jejím kořenovým certifikátem a odmítají zástupný znak přímo pod doménou nejvyšší úrovně, například *.lan."
   },
   "acme": {
     "title": "Certifikáty (ACME)",
@@ -1439,7 +1466,8 @@
     "notLive": "Zatím nic neběží",
     "serverDegraded": "Server s potížemi",
     "expired": "Vypršel",
-    "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách"
+    "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách",
+    "internalRenews": "Interní CA · obnoví se sám"
   },
   "siteNew": {
     "title": "Nový web",
@@ -1531,6 +1559,66 @@
     "files_few": "{{formatted}} soubory",
     "files_many": "{{formatted}} souboru",
     "files_other": "{{formatted}} souborů",
-    "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává."
+    "endedCleanup": "Domény, které vytvořilo, jsou odstraněné i s DNS záznamy; web zůstává.",
+    "internalNote": "Pro jméno v LAN: certifikát hned podepíše interní CA a důvěřují mu zařízení, která mají její kořenový certifikát.",
+    "lanAnswered": "{{provider}} na jména odpovídá hned: nic se nemusí šířit.",
+    "planLan": {
+      "propagation": "žádné: DNS server v LAN odpovídá hned",
+      "certificate": "interní CA, jeden certifikát pro všechna jména",
+      "check": "HTTPS na adrese serveru v jeho síti"
+    }
+  },
+  "ca": {
+    "title": "Interní CA",
+    "summary": "{{subject}} · platná do {{date}}. Podepisuje certifikáty agentů ({{agents}}) a jmen v LAN ({{lan}}).",
+    "download": "Stáhnout kořenový certifikát",
+    "downloadPemLabel": "Stáhnout kořenový certifikát jako PEM",
+    "agents": "Certifikáty agentů",
+    "install": "Jak ho nainstalovat",
+    "warning": "Zařízení, které tomuto kořenu věří, věří každému certifikátu, který panel podepíše, pro jakékoli jméno: instaluj ho jen do vlastních zařízení a panel i jeho hlavní klíč dobře chraň.",
+    "fingerprint": "Otisk SHA-256",
+    "fingerprintNote": "Než mu začneš věřit, porovnej ho s otiskem SHA-256, který ukáže zařízení.",
+    "device": "Zařízení",
+    "platform": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux",
+      "ios": "iPhone a iPad",
+      "android": "Android",
+      "firefox": "Firefox"
+    },
+    "command": "Příkaz",
+    "after": "Pak se jména v LAN s certifikáty interní CA otevřou přes HTTPS bez varování.",
+    "steps": {
+      "windows": {
+        "1": "Otevři pocketcloud-root-ca.crt a zvol Nainstalovat certifikát.",
+        "2": "Zvol Místní počítač a povol změnu jako správce. Pak zvol Všechny certifikáty umístit v následujícím úložišti a přes Procházet vyber Důvěryhodné kořenové certifikační autority.",
+        "3": "Dokonči průvodce: Windows ohlásí, že import proběhl úspěšně.",
+        "4": "Restartuj prohlížeč. Chrome a Edge používají certifikáty Windows."
+      },
+      "macos": {
+        "1": "Otevři pocketcloud-root-ca.crt: Klíčenka ho přidá do tvé klíčenky.",
+        "2": "Dvakrát klikni na PocketCloud Root CA, otevři Důvěra a u Při použití tohoto certifikátu nastav Vždy důvěřovat.",
+        "3": "Zavři okno a potvrď heslem. Safari a Chrome ho pak používají."
+      },
+      "linux": {
+        "1": "Zkopíruj certifikát do seznamu systému a aktualizuj ho, jak to dělají příkazy níže.",
+        "2": "Chrome a Chromium mají vlastní seznam: importuj ho v Nastavení → Ochrana soukromí a zabezpečení → Zabezpečení → Spravovat certifikáty, nebo přes certutil."
+      },
+      "ios": {
+        "1": "Otevři adresu kořenového certifikátu v Safari a povol stažení profilu.",
+        "2": "V Nastavení → Obecné → VPN a správa zařízení otevři PocketCloud Root CA a nainstaluj ho.",
+        "3": "V Nastavení → Obecné → Informace → Nastavení důvěryhodnosti certifikátů zapni plnou důvěru pro PocketCloud Root CA."
+      },
+      "android": {
+        "1": "Stáhni pocketcloud-root-ca.crt, pak otevři Nastavení → Zabezpečení a soukromí → Další nastavení zabezpečení → Šifrování a pověření → Instalovat certifikát → Certifikát CA a vyber soubor. Názvy nabídek se u výrobců liší.",
+        "2": "Chrome mu pak věří; ostatní aplikace jen tehdy, když certifikátům nainstalovaným uživatelem věřit chtějí."
+      },
+      "firefox": {
+        "1": "Firefox má na každém systému vlastní seznam: v Nastavení → Soukromí a zabezpečení → Certifikáty → Zobrazit certifikáty → Autority importuj pocketcloud-root-ca.pem.",
+        "2": "Zaškrtni Důvěřovat této certifikační autoritě pro identifikaci webových serverů. Na Windows a macOS může Firefox místo toho používat seznam systému, když v about:config zapneš security.enterprise_roots.enabled."
+      }
+    },
+    "windowsAdmin": "Nebo v PowerShellu spuštěném jako správce:"
   }
 }

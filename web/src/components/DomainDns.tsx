@@ -107,6 +107,9 @@ export function DomainDnsPanel({ domainId }: { domainId: string }) {
       {state.problem && <Banner tone="err">{state.problem}</Banner>}
       {!state.problem && state.error && <Banner tone="warn">{state.error}</Banner>}
       {state.manual && !state.problem && <p>{t("dns.manualText")}</p>}
+      {state.lan && state.provider && (
+        <p className="muted small">{t("dns.lanAnswered", { provider: state.provider.name })}</p>
+      )}
 
       {state.records.length > 0 && (
         <Table label={t("dns.records")} compact>

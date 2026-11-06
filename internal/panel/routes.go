@@ -65,6 +65,8 @@ func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 		return err
 	})
 
+	se.Router.GET("/api/pc/ca.crt", p.handleRootDER)
+
 	se.Router.GET("/api/pc/install.sh", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 		_, err := e.Response.Write([]byte(p.installScript(e.Request.Host)))

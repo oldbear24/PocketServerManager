@@ -609,6 +609,8 @@ function AddDomainDialog({
   const [redirectTo, setRedirectTo] = useState("");
   const [permanent, setPermanent] = useState(false);
   const [https, setHttps] = useState(true);
+  // a name of the LAN gets its certificate from the internal CA (#26)
+  const [issuer, setIssuer] = useState<"auto" | "internal">("auto");
   const [httpsRedirect, setHttpsRedirect] = useState(true);
   const [hsts, setHsts] = useState(false);
   const [compress, setCompress] = useState(false);
@@ -624,7 +626,7 @@ function AddDomainDialog({
         port: kind === "container" ? Number(port) : 0,
         redirect_to: kind === "redirect" ? redirectTo.trim() : "",
         redirect_permanent: permanent,
-        tls: https ? "auto" : "off",
+        tls: https ? issuer : "off",
         https_redirect: https && httpsRedirect,
         hsts: https && hsts,
         compress,
@@ -739,6 +741,18 @@ function AddDomainDialog({
         </label>
         {https && (
           <>
+            <SegmentedControl
+              label={t("edge.certificateFrom")}
+              value={issuer}
+              onChange={setIssuer}
+              options={[
+                { value: "auto", label: t("edge.tlsAcme") },
+                { value: "internal", label: t("edge.tlsInternal") },
+              ]}
+            />
+            <p className="muted small">
+              {issuer === "internal" ? t("edge.tlsInternalHint") : t("edge.tlsAcmeHint")}
+            </p>
             <label className="check-line">
               <input
                 type="checkbox"

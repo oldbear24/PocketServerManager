@@ -20,6 +20,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"golang.org/x/net/publicsuffix"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/acme"
@@ -323,6 +324,14 @@ func checkNames(names []string) ([]string, error) {
 		if name == "" {
 			continue
 		}
+		if rest, ok := strings.CutPrefix(name, "*."); ok && rest != "" {
+			// Chrome refuses a wildcard of a public suffix or of a top-level
+			// name it does not know: *.com, *.co.uk, *.home.arpa, *.lan; CAs
+			// refuse them too
+			if suffix, icann := publicsuffix.PublicSuffix(rest); suffix == rest && (icann || !strings.Contains(rest, ".")) {
+				return nil, fmt.Errorf("browsers do not accept a wildcard right under a public suffix or a top-level name, such as %s: name each host, such as wiki.%s", name, rest)
+			}
+		}
 		if err := edge.ValidHostname(name); err != nil {
 			return nil, err
 		}
@@ -345,6 +354,8 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	var body struct {
 		Names     []string `json:"names"`
 		Challenge string   `json:"challenge"`
+		// Issuer is acme, the default, or internal for LAN names (#26).
+		Issuer string `json:"issuer"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid request.", err)
@@ -353,6 +364,13 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	if err != nil {
 		return e.BadRequestError(capitalize(err.Error())+".", nil)
 	}
+	issuer := body.Issuer
+	if issuer == "" {
+		issuer = schema.IssuerACME
+	}
+	if issuer != schema.IssuerACME && issuer != schema.IssuerInternal {
+		return e.BadRequestError("The issuer is acme or internal.", nil)
+	}
 	challenge := body.Challenge
 	if challenge == "" {
 		challenge = schema.ChallengeAuto
@@ -360,13 +378,22 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	if !slices.Contains([]string{schema.ChallengeAuto, schema.ChallengeHTTP01, schema.ChallengeDNS01}, challenge) {
 		return e.BadRequestError("The challenge is auto, http-01 or dns-01.", nil)
 	}
+	if issuer == schema.IssuerInternal {
+		// the internal CA checks nothing, so it signs names of the LAN only
+		challenge = ""
+		for _, name := range names {
+			if err := p.checkInternalName(name); err != nil {
+				return e.BadRequestError(capitalize(err.Error())+".", nil)
+			}
+		}
+	}
 	for _, name := range names {
 		if strings.HasPrefix(name, "*.") && challenge == schema.ChallengeHTTP01 {
 			return e.BadRequestError(fmt.Sprintf("A wildcard (%s) can only be checked with DNS-01.", name), nil)
 		}
 	}
 
-	existing, err := e.App.FindRecordsByFilter(schema.Certificates, "issuer={:acme}", "", 0, 0, dbx.Params{"acme": schema.IssuerACME})
+	existing, err := e.App.FindRecordsByFilter(schema.Certificates, "issuer={:issuer}", "", 0, 0, dbx.Params{"issuer": issuer})
 	if err != nil {
 		return e.InternalServerError("", err)
 	}
@@ -383,7 +410,7 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	}
 	record := core.NewRecord(collection)
 	record.Set("names", names)
-	record.Set("issuer", schema.IssuerACME)
+	record.Set("issuer", issuer)
 	record.Set("status", schema.CertPending)
 	record.Set("challenge", challenge)
 	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), record); err != nil {
@@ -401,8 +428,8 @@ func (p *Panel) handleRetryCertificate(e *core.RequestEvent) error {
 	if err != nil {
 		return e.NotFoundError("The certificate does not exist.", err)
 	}
-	if record.GetString("issuer") != schema.IssuerACME {
-		return e.BadRequestError("Only certificates from ACME can be tried again; upload a new one instead.", nil)
+	if issuer := record.GetString("issuer"); issuer != schema.IssuerACME && issuer != schema.IssuerInternal {
+		return e.BadRequestError("Only certificates from ACME or the internal CA can be tried again; upload a new one instead.", nil)
 	}
 	if !needsAttempt(record, time.Now()) {
 		// a new certificate each time would use up the CA's rate limits:
@@ -509,7 +536,8 @@ func (p *Panel) RunACME() {
 		return
 	}
 
-	records, err := p.App.FindRecordsByFilter(schema.Certificates, "issuer={:acme}", "created", 0, 0, dbx.Params{"acme": schema.IssuerACME})
+	records, err := p.App.FindRecordsByFilter(schema.Certificates, "issuer={:acme} || issuer={:internal}", "created", 0, 0,
+		dbx.Params{"acme": schema.IssuerACME, "internal": schema.IssuerInternal})
 	if err != nil {
 		p.Log.Error("failed to read the certificates", "error", err)
 		return
@@ -519,6 +547,7 @@ func (p *Panel) RunACME() {
 		if _, busy := p.acme.issuing.Load(record.Id); busy {
 			continue
 		}
+
 		// an attempt the panel did not finish, as before a restart
 		if !record.GetDateTime("attempt_started").IsZero() {
 			p.setFields(record, map[string]any{"attempt_started": nil})
@@ -538,7 +567,8 @@ func (p *Panel) RunACME() {
 			p.setFields(record, map[string]any{"next_attempt": until.UTC()})
 			continue
 		}
-		if accounts == 0 {
+		// the internal CA needs no account
+		if accounts == 0 && record.GetString("issuer") == schema.IssuerACME {
 			p.acmeWaiting(record, noAccount)
 			continue
 		}
@@ -552,13 +582,15 @@ func (p *Panel) tlsDomains() ([]*core.Record, error) {
 }
 
 // neededBy tells whether a certificate is wanted: an admin asked for it, or a
-// domain with automatic TLS needs it.
+// domain with TLS of its kind needs it.
 func neededBy(record *core.Record, domains []*core.Record) bool {
 	if !record.GetBool("auto") {
 		return true
 	}
 	names := certificateNames(record)
-	return slices.ContainsFunc(domains, func(d *core.Record) bool { return edge.Covers(names, d.GetString("hostname")) })
+	return slices.ContainsFunc(domains, func(d *core.Record) bool {
+		return suits(record, d) && edge.Covers(names, d.GetString("hostname"))
+	})
 }
 
 // isDue tells whether a certificate is to be issued now: it never was, or
@@ -589,8 +621,9 @@ func (p *Panel) resolveCertificateAlerts(id string, rules ...string) {
 }
 
 // orderCertificates asks for a certificate for each domain that no
-// certificate covers that is valid now, unless one from ACME covers it
-// already: its renewal is under way.
+// certificate of its kind covers that is valid now, unless one from ACME, or
+// the internal CA for internal TLS, covers it already: its renewal is under
+// way.
 func (p *Panel) orderCertificates(domains []*core.Record) {
 	records, err := p.App.FindAllRecords(schema.Certificates)
 	if err != nil {
@@ -606,13 +639,14 @@ func (p *Panel) orderCertificates(domains []*core.Record) {
 	for _, domain := range domains {
 		hostname := domain.GetString("hostname")
 		covered := false
+		internal := domain.GetString("tls") == schema.TLSInternal
 		for _, record := range records {
 			names := certificateNames(record)
-			if !edge.Covers(names, hostname) {
+			if !edge.Covers(names, hostname) || !suits(record, domain) {
 				continue
 			}
 			valid := record.GetString("key_pem") != "" && now.Before(record.GetDateTime("not_after").Time())
-			if valid || record.GetString("issuer") == schema.IssuerACME {
+			if valid || record.GetString("issuer") == schema.IssuerACME || internal {
 				covered = true
 				break
 			}
@@ -623,10 +657,14 @@ func (p *Panel) orderCertificates(domains []*core.Record) {
 
 		record := core.NewRecord(collection)
 		record.Set("names", []string{hostname})
-		record.Set("issuer", schema.IssuerACME)
 		record.Set("status", schema.CertPending)
-		record.Set("challenge", schema.ChallengeAuto)
 		record.Set("auto", true)
+		if internal {
+			record.Set("issuer", schema.IssuerInternal)
+		} else {
+			record.Set("issuer", schema.IssuerACME)
+			record.Set("challenge", schema.ChallengeAuto)
+		}
 		if err := p.App.Save(record); err != nil {
 			p.Log.Error("failed to order a certificate", "domain", hostname, "error", err)
 			continue
@@ -644,6 +682,11 @@ func (p *Panel) startIssue(id, requester string, scheduled bool) {
 	}
 	p.later.after(0, func() {
 		defer p.acme.issuing.Delete(id)
+		// the internal CA signs at once: it does not wait for the CA's slots
+		if record, err := p.App.FindRecordById(schema.Certificates, id); err == nil && record.GetString("issuer") == schema.IssuerInternal {
+			p.issue(id, requester, scheduled)
+			return
+		}
 		select {
 		case p.acme.slots <- struct{}{}:
 		case <-p.acme.ctx.Done():
@@ -680,6 +723,11 @@ func (p *Panel) issue(id, requester string, scheduled bool) {
 		if _, limited := dailyLimit(record, now); limited {
 			return
 		}
+	}
+
+	if record.GetString("issuer") == schema.IssuerInternal {
+		p.issueInternal(record)
+		return
 	}
 
 	accounts := []*acmeAccount{}
@@ -900,7 +948,7 @@ func (p *Panel) checkCertificateExpiry() {
 		// in use: the one the edge serves a domain with, as buildEdgeConfig
 		// picks it; one that a newer one replaced is not
 		inUse := slices.ContainsFunc(domains, func(d *core.Record) bool {
-			chosen := coveringCertificate(certs, d.GetString("hostname"))
+			chosen := coveringCertificate(certs, d)
 			return chosen != nil && chosen.record.Id == cert.record.Id
 		})
 		left := cert.notAfter.Sub(now)
@@ -967,6 +1015,11 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 	zoneNames := make([]string, 0, len(zoneRecords))
 	byName := map[string]*core.Record{}
 	for _, zone := range zoneRecords {
+		// a DNS server of the LAN holds no TXT records, and the CA cannot ask
+		// it: the zone around it answers DNS-01, as for split horizon
+		if provider, err := p.App.FindRecordById(schema.DNSProviders, zone.GetString("provider")); err == nil && lanDriver(provider) {
+			continue
+		}
 		zoneNames = append(zoneNames, zone.GetString("name"))
 		byName[zone.GetString("name")] = zone
 	}

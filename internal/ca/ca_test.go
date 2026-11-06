@@ -398,3 +398,117 @@ func TestPins(t *testing.T) {
 		t.Error("a wrong pin must be refused")
 	}
 }
+
+func TestLANCertificatesChainToTheRoot(t *testing.T) {
+	authority, _ := newAuthority(t)
+
+	issued, err := authority.IssueLANCert([]string{"Wiki.lan", "*.home.arpa", "192.168.1.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := chainOf(t, issued.ChainPEM)
+	if len(chain) != 2 {
+		t.Fatalf("the chain has %d certificates: the leaf and the LAN intermediate, without the root", len(chain))
+	}
+	leaf := chain[0]
+
+	roots := x509.NewCertPool()
+	block, _ := pem.Decode(authority.RootPEM())
+	root, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots.AddCert(root)
+	intermediates := x509.NewCertPool()
+	intermediates.AddCert(chain[1])
+	for _, name := range []string{"wiki.lan", "nas.home.arpa", "192.168.1.10"} {
+		if _, err := leaf.Verify(x509.VerifyOptions{
+			DNSName: name, Roots: roots, Intermediates: intermediates,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}); err != nil {
+			t.Errorf("%s does not verify against the root: %v", name, err)
+		}
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{DNSName: "other.lan", Roots: roots, Intermediates: intermediates}); err == nil {
+		t.Error("the certificate verifies for a name it does not have")
+	}
+	// it is no agent certificate
+	if _, _, err := authority.VerifyAgent(chain); err == nil {
+		t.Error("a LAN certificate passes as an agent's")
+	}
+
+	if lifetime := issued.NotAfter.Sub(issued.NotBefore); lifetime > 398*24*time.Hour {
+		t.Errorf("valid for %v, more than browsers allow", lifetime)
+	}
+	if !leaf.NotAfter.Equal(issued.NotAfter) {
+		t.Errorf("not after %v, the certificate says %v", issued.NotAfter, leaf.NotAfter)
+	}
+	if chain[1].Subject.CommonName != "PocketCloud LAN" || !chain[1].IsCA {
+		t.Errorf("the intermediate is %q", chain[1].Subject)
+	}
+
+	// the key belongs to the certificate
+	if _, err := tls.X509KeyPair(issued.ChainPEM, issued.KeyPEM); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := authority.IssueLANCert(nil); err == nil {
+		t.Error("a certificate without a name was issued")
+	}
+}
+
+func TestTheLANIntermediateIsKeptAndAddedToAnOlderCA(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	box, _ := secrets.New(testutil.MasterKey)
+
+	first, err := Open(app, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := first.IssueLANCert([]string{"wiki.lan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(app, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := second.IssueLANCert([]string{"wiki.lan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := chainOf(t, issued.ChainPEM)[1], chainOf(t, again.ChainPEM)[1]; !a.Equal(b) {
+		t.Fatal("reopening the CA made another LAN intermediate")
+	}
+
+	// a CA made before LAN certificates gets its intermediate, with the same root
+	records, err := app.FindRecordsByFilter(schema.InternalCA, "", "", 0, 0)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("%d records, %v", len(records), err)
+	}
+	records[0].Set("lan_intermediate_cert", "")
+	records[0].Set("lan_intermediate_key", "")
+	if err := app.Save(records[0]); err != nil {
+		t.Fatal(err)
+	}
+	third, err := Open(app, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Pin() != first.Pin() {
+		t.Fatal("the root changed")
+	}
+	if _, err := third.IssueLANCert([]string{"wiki.lan"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := app.FindRecordById(schema.InternalCA, records[0].Id)
+	if !secrets.IsSealed(stored.GetString("lan_intermediate_key")) || stored.GetString("lan_intermediate_cert") == "" {
+		t.Fatal("the new intermediate was not stored, sealed")
+	}
+
+	info := third.RootInfo()
+	if info.Subject != "PocketCloud Root CA" || len(info.SHA256) != 95 || time.Until(info.NotAfter) < 19*365*24*time.Hour {
+		t.Fatalf("%+v", info)
+	}
+}

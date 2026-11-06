@@ -23,7 +23,8 @@ const (
 	// LabelPort is the port the service listens on inside its container; a
 	// service with a single port in expose or ports needs none.
 	LabelPort = "pocketcloud.port"
-	// LabelTLS is acme (the default) or off.
+	// LabelTLS is acme (the default), internal for a LAN name with a
+	// certificate of PocketCloud's internal CA, or off.
 	LabelTLS = "pocketcloud.tls"
 	// LabelAuth asks for a password: user:bcrypt-hash, separated by commas.
 	LabelAuth = "pocketcloud.auth"
@@ -145,10 +146,9 @@ func Exposures(project *types.Project, tree *yaml.Node, placeholder Placeholder)
 		case tls == TLSOff:
 			exposure.TLS = TLSOff
 		case tls == TLSInternal:
-			problems = append(problems, at(LabelTLS, "certificates from PocketCloud's internal CA are not available yet: use acme, or off."))
-			valid = false
+			exposure.TLS = TLSInternal
 		default:
-			problems = append(problems, at(LabelTLS, fmt.Sprintf("%s is acme or off, not %q.", LabelTLS, labels[LabelTLS])))
+			problems = append(problems, at(LabelTLS, fmt.Sprintf("%s is acme, internal or off, not %q.", LabelTLS, labels[LabelTLS])))
 			valid = false
 		}
 

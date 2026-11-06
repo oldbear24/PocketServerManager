@@ -311,8 +311,11 @@ func ownedBy(domain, stack *core.Record) bool {
 // changed anything.
 func (p *Panel) setExposure(domain, stack *core.Record, exposure stacks.Exposure) bool {
 	tls := schema.TLSAuto
-	if exposure.TLS == stacks.TLSOff {
+	switch exposure.TLS {
+	case stacks.TLSOff:
 		tls = schema.TLSOff
+	case stacks.TLSInternal:
+		tls = schema.TLSInternal
 	}
 	auth := basicAuthText(exposure.BasicAuth)
 	stored := ""
@@ -334,7 +337,7 @@ func (p *Panel) setExposure(domain, stack *core.Record, exposure stacks.Exposure
 	domain.Set("port", exposure.Port)
 	domain.Set("tls", tls)
 	// HTTPS once there is a certificate; the edge sends plain HTTP there then
-	domain.Set("https_redirect", tls == schema.TLSAuto)
+	domain.Set("https_redirect", tls != schema.TLSOff)
 	domain.Set("service", exposure.Service)
 	domain.Set("label_removed", false)
 	domain.Set("basic_auth", auth)

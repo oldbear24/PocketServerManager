@@ -50,6 +50,7 @@ func (a *Agent) registerHandlers() {
 	a.registerDatabaseHandlers()
 	a.registerEdgeHandlers()
 	a.registerSiteHandlers()
+	a.registerRewriteHandlers()
 }
 
 // protected refuses work on the containers PocketCloud itself depends on. The UI

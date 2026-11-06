@@ -255,7 +255,10 @@ export function CertificatesCard({
                 .sort();
               const LockIcon = cert.fingerprint && state !== "expired" ? Lock : LockOpen;
               const showRetry =
-                canRetry && cert.issuer === "acme" && state !== "issuing" && needsAction(cert, now);
+                canRetry &&
+                cert.issuer !== "manual" &&
+                state !== "issuing" &&
+                needsAction(cert, now);
               return (
                 <tr key={cert.id}>
                   <td>
@@ -478,11 +481,14 @@ function CertificateDetail({
               <Trash2 size={14} aria-hidden="true" /> {t("common.remove")}
             </Button>
           )}
-          {canRetry && cert.issuer === "acme" && state !== "issuing" && needsAction(cert, now) && (
-            <Button disabled={busy} onClick={() => void retry()}>
-              <RefreshCw size={14} aria-hidden="true" /> {t("cert.retry")}
-            </Button>
-          )}
+          {canRetry &&
+            cert.issuer !== "manual" &&
+            state !== "issuing" &&
+            needsAction(cert, now) && (
+              <Button disabled={busy} onClick={() => void retry()}>
+                <RefreshCw size={14} aria-hidden="true" /> {t("cert.retry")}
+              </Button>
+            )}
           <Button variant="primary" onClick={onClose}>
             {t("common.close")}
           </Button>
@@ -520,7 +526,7 @@ function CertificateDetail({
             <dd>
               {formatDate(cert.not_before)} – {formatDate(cert.not_after)}
             </dd>
-            {cert.issuer === "acme" && cert.renew_after && (
+            {cert.issuer !== "manual" && cert.renew_after && (
               <>
                 <dt>{t("cert.renewsAfter")}</dt>
                 <dd>{formatDate(cert.renew_after)}</dd>
@@ -534,7 +540,7 @@ function CertificateDetail({
         )}
         <dt>{t("cert.deployedOn")}</dt>
         <dd className="mono">{deployed.length > 0 ? deployed.join(", ") : "–"}</dd>
-        {cert.issuer === "acme" && (
+        {cert.issuer !== "manual" && (
           <>
             <dt>{t("cert.ordered")}</dt>
             <dd>{cert.auto ? t("cert.orderedAuto") : t("cert.orderedByHand")}</dd>
@@ -583,6 +589,7 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [names, setNames] = useState("");
+  const [issuer, setIssuer] = useState<"acme" | "internal">("acme");
   const [challenge, setChallenge] = useState<Challenge>("auto");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -595,7 +602,7 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await certificatesApi.request(parsed, challenge);
+      await certificatesApi.request(parsed, challenge, issuer);
       toast.success(t("cert.requested", { name: parsed[0] }));
       onClose();
     } catch (err) {
@@ -616,29 +623,46 @@ export function RequestCertificateDialog({ onClose }: { onClose: () => void }) {
     >
       <div className="dialog-form">
         <p className="muted small">{t("cert.requestText")}</p>
+        <SegmentedControl
+          label={t("cert.issuerColumn")}
+          value={issuer}
+          onChange={setIssuer}
+          options={[
+            { value: "acme", label: t("cert.issuerAcme") },
+            { value: "internal", label: t("cert.issuer.internal") },
+          ]}
+        />
         <Field label={t("cert.names")} htmlFor="cert-names">
           <textarea
             id="cert-names"
             className="input mono"
             rows={3}
-            placeholder={"*.example.com\nexample.com"}
+            placeholder={
+              issuer === "internal" ? "nas.lan\n*.home.lan" : "*.example.com\nexample.com"
+            }
             value={names}
             onChange={(event) => setNames(event.target.value)}
           />
         </Field>
-        <Field label={t("cert.validation")} htmlFor="cert-challenge">
-          <select
-            id="cert-challenge"
-            className="input"
-            value={challenge}
-            onChange={(event) => setChallenge(event.target.value as Challenge)}
-          >
-            <option value="auto">{t("cert.challengeAuto")}</option>
-            <option value="http-01">HTTP-01</option>
-            <option value="dns-01">DNS-01</option>
-          </select>
-        </Field>
-        <p className="muted small">{t(`cert.challengeNote.${challenge}`)}</p>
+        {issuer === "internal" ? (
+          <p className="muted small">{t("cert.internalNote")}</p>
+        ) : (
+          <>
+            <Field label={t("cert.validation")} htmlFor="cert-challenge">
+              <select
+                id="cert-challenge"
+                className="input"
+                value={challenge}
+                onChange={(event) => setChallenge(event.target.value as Challenge)}
+              >
+                <option value="auto">{t("cert.challengeAuto")}</option>
+                <option value="http-01">HTTP-01</option>
+                <option value="dns-01">DNS-01</option>
+              </select>
+            </Field>
+            <p className="muted small">{t(`cert.challengeNote.${challenge}`)}</p>
+          </>
+        )}
         {error && <Banner tone="err">{error}</Banner>}
       </div>
     </ConfirmDialog>

@@ -438,7 +438,13 @@ function SiteKpis({
         </div>
         <div className="kpi-note">
           {cert
-            ? t(cert.issuer === "acme" ? "site.renewsByItself" : "site.uploadedCertificate")
+            ? t(
+                cert.issuer === "manual"
+                  ? "site.uploadedCertificate"
+                  : cert.issuer === "internal"
+                    ? "site.internalRenews"
+                    : "site.renewsByItself",
+              )
             : domains.length === 0
               ? t("site.noDomain")
               : t("site.noCertificate")}
@@ -474,7 +480,8 @@ function SiteDomainsCard({
         host: site.host,
         target_kind: "site",
         site: site.id,
-        tls: "auto",
+        // a site of the LAN keeps its certificates from the internal CA (#26)
+        tls: domains.some((domain) => domain.tls === "internal") ? "internal" : "auto",
       });
       toast.success(t("site.domainConnected", { hostname: hostname.trim().toLowerCase() }));
       setHostname("");

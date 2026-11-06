@@ -7,6 +7,7 @@ import {
   CertificatesCard,
   RequestCertificateDialog,
 } from "../components/Certificates";
+import { InternalCACard } from "../components/InternalCA";
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import {
@@ -70,6 +71,7 @@ export function DomainsPage() {
         <ProvidersCard
           providers={providers.items}
           zones={zones.items}
+          hosts={hosts.items}
           isAdmin={isAdmin}
           loading={providers.loading}
         />
@@ -100,14 +102,18 @@ export function DomainsPage() {
         </div>
         <div className="column-side">
           <AcmeSummaryCard accounts={accounts.items} isAdmin={isAdmin} />
+          <InternalCACard />
         </div>
       </div>
 
-      {connecting && <ConnectDialog onClose={() => setConnecting(false)} />}
+      {connecting && <ConnectDialog hosts={hosts.items} onClose={() => setConnecting(false)} />}
       {requesting && <RequestCertificateDialog onClose={() => setRequesting(false)} />}
     </>
   );
 }
+
+/** Kinds reached through the agent of a server on their network (#26). */
+const lanKinds = new Set(["adguard", "pihole"]);
 
 function initials(name: string) {
   return name
@@ -121,11 +127,13 @@ function initials(name: string) {
 function ProvidersCard({
   providers,
   zones,
+  hosts,
   isAdmin,
   loading,
 }: {
   providers: DnsProvider[];
   zones: DnsZone[];
+  hosts: Host[];
   isAdmin: boolean;
   loading: boolean;
 }) {
@@ -142,6 +150,27 @@ function ProvidersCard({
         toast.success(t("dns.tested", { name: provider.name }));
       } else {
         toast.error(result.provider.last_error);
+      }
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const moveTo = async (provider: DnsProvider, host: string) => {
+    setBusy(provider.id);
+    try {
+      const result = await dnsApi.change(provider.id, { host });
+      if (result.provider.status === "error") {
+        toast.error(result.provider.last_error);
+      } else {
+        toast.success(
+          t("dns.serverChanged", {
+            name: provider.name,
+            server: hosts.find((item) => item.id === host)?.name ?? host,
+          }),
+        );
       }
     } catch (err) {
       toast.error(err);
@@ -194,11 +223,41 @@ function ProvidersCard({
                   ) : (
                     <p className="muted small">
                       {t(`dns.kindName.${provider.kind}`, { defaultValue: provider.kind })}
+                      {provider.host &&
+                        !isAdmin &&
+                        " · " +
+                          t("dns.throughAgent", {
+                            server: hosts.find((host) => host.id === provider.host)?.name ?? "–",
+                          })}
                       {provider.last_check &&
                         " · " + t("dns.checked", { when: formatRelative(provider.last_check) })}
                     </p>
                   )}
                 </div>
+                {isAdmin && lanKinds.has(provider.kind) && (
+                  <div className="dns-provider-server">
+                    <label className="small muted" htmlFor={`dns-server-${provider.id}`}>
+                      {t("dns.throughLabel")}
+                    </label>
+                    <select
+                      id={`dns-server-${provider.id}`}
+                      className="input"
+                      title={t("dns.changeServer", { name: provider.name })}
+                      value={provider.host}
+                      disabled={busy === provider.id}
+                      onChange={(event) => void moveTo(provider, event.target.value)}
+                    >
+                      {!provider.host && <option value="">{t("dns.chooseServer")}</option>}
+                      {hosts.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                          {item.status === "online" ? "" : ` (${t("dns.serverOffline")})`}
+                        </option>
+                      ))}
+                    </select>
+                    {!provider.host && <p className="field-error small">{t("dns.noServer")}</p>}
+                  </div>
+                )}
                 {isAdmin && (
                   <div className="dns-provider-actions">
                     <Button
@@ -319,12 +378,14 @@ function ZonesCard({
 
 /** Connects a provider: its kind, a name, the credentials it asks for and,
  * for a kind whose API cannot list them, its zones. */
-export function ConnectDialog({ onClose }: { onClose: () => void }) {
+export function ConnectDialog({ hosts, onClose }: { hosts: Host[]; onClose: () => void }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [kinds, setKinds] = useState<DnsKind[]>([]);
   const [kind, setKind] = useState("cloudflare");
   const [name, setName] = useState("");
+  // the server whose agent reaches a DNS server of a LAN
+  const [host, setHost] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [zones, setZones] = useState("");
   const [error, setError] = useState("");
@@ -362,6 +423,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
         name: name.trim() || driver.label,
         kind,
         credentials,
+        ...(driver.agent ? { host } : {}),
         // a kind whose API lists its zones takes none
         zones: driver.lists_zones
           ? []
@@ -391,7 +453,7 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
       open
       title={t("dns.connectTitle")}
       confirmLabel={busy ? t("dns.connecting") : t("dns.connect")}
-      confirmDisabled={busy || !driver}
+      confirmDisabled={busy || !driver || (driver.agent === true && host === "")}
       onCancel={onClose}
       onConfirm={() => void connect()}
     >
@@ -431,13 +493,16 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
         {(driver?.fields ?? []).map((field) => (
           <Field
             key={field.name}
-            label={t(`dns.field.${field.name}`, { defaultValue: field.name })}
+            label={t(`dns.fieldOf.${driver?.kind ?? ""}.${field.name}`, {
+              defaultValue: t(`dns.field.${field.name}`, { defaultValue: field.name }),
+            })}
             htmlFor={`dns-field-${field.name}`}
           >
             <input
               id={`dns-field-${field.name}`}
               className="input mono"
               type={field.secret ? "password" : "text"}
+              placeholder={field.name === "url" ? "http://192.168.1.2:3000" : undefined}
               autoComplete="off"
               value={credentials[field.name] ?? ""}
               onChange={(event) =>
@@ -446,12 +511,31 @@ export function ConnectDialog({ onClose }: { onClose: () => void }) {
             />
           </Field>
         ))}
+        {driver?.agent && (
+          <Field label={t("dns.server")} htmlFor="dns-host">
+            <select
+              id="dns-host"
+              className="input"
+              value={host}
+              onChange={(event) => setHost(event.target.value)}
+            >
+              <option value="">{t("dns.chooseServer")}</option>
+              {hosts.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                  {item.status === "online" ? "" : ` (${t("dns.serverOffline")})`}
+                </option>
+              ))}
+            </select>
+            <p className="muted small">{t("dns.serverHint")}</p>
+          </Field>
+        )}
         {driver && !driver.lists_zones && (
           <Field label={t("dns.zonesField")} htmlFor="dns-zones">
             <input
               id="dns-zones"
               className="input mono"
-              placeholder="example.com, example.org"
+              placeholder={driver.agent ? "lan, home.arpa" : "example.com, example.org"}
               value={zones}
               onChange={(event) => setZones(event.target.value)}
             />

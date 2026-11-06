@@ -54,6 +54,10 @@ type Driver struct {
 	ListsZones bool `json:"lists_zones"`
 	// Manual kinds have no API at all.
 	Manual bool `json:"manual"`
+	// Agent kinds are DNS servers of a LAN, such as AdGuard Home: the agent
+	// of a server on their network reaches them, and they answer what they
+	// took at once.
+	Agent bool `json:"agent"`
 	// Note says what to know before connecting, such as an allow-list.
 	Note string `json:"note,omitempty"`
 
@@ -160,6 +164,9 @@ func (d Driver) CheckCredentials(c map[string]string) error {
 
 // Open builds a provider's client.
 func (d Driver) Open(c map[string]string) (Provider, error) {
+	if d.Agent {
+		return nil, ErrThroughAgent
+	}
 	if d.Manual || d.open == nil {
 		return nil, ErrManual
 	}

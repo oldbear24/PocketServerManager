@@ -13,12 +13,16 @@ export type DnsKind = {
   fields: { name: string; secret: boolean; optional?: boolean }[] | null;
   lists_zones: boolean;
   manual: boolean;
+  /** a DNS server of a LAN, reached through the agent of a server (#26) */
+  agent?: boolean;
   note?: string;
 };
 
 export type DnsProvider = RecordModel & {
   name: string;
   kind: string;
+  /** the server whose agent reaches a DNS server of a LAN */
+  host: string;
   status: DnsStatus;
   last_check: string;
   last_error: string;
@@ -51,6 +55,8 @@ export type DomainDns = {
   manual: boolean;
   problem: string;
   records: DnsRecord[];
+  /** a DNS server of a LAN answers what it took: nothing propagates */
+  lan?: boolean;
   provider?: { id: string; name: string; kind: string };
   propagation?: {
     record: { name: string; type: string; value: string };
@@ -69,7 +75,12 @@ export const dnsApi = {
     kind: string;
     credentials: Record<string, string>;
     zones: string[];
+    host?: string;
   }) => pb.send<ProviderWithZones>("/api/pc/dns-providers", { method: "POST", body }),
+
+  /** another server reaches a DNS server of the LAN (#26) */
+  change: (id: string, body: { host: string }) =>
+    pb.send<ProviderWithZones>(`/api/pc/dns-providers/${id}`, { method: "PATCH", body }),
 
   test: (id: string) =>
     pb.send<ProviderWithZones>(`/api/pc/dns-providers/${id}/test`, { method: "POST" }),

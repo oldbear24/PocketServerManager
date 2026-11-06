@@ -45,10 +45,11 @@ export function directoryId(url: string): DirectoryId {
 export type Challenge = "auto" | "http-01" | "dns-01";
 
 export const certificatesApi = {
-  request: (names: string[], challenge: Challenge) =>
+  /** issuer internal asks the internal CA, for LAN names (#26) */
+  request: (names: string[], challenge: Challenge, issuer: "acme" | "internal" = "acme") =>
     pb.send<{ id: string }>("/api/pc/certificates/acme", {
       method: "POST",
-      body: { names, challenge },
+      body: { names, challenge, issuer },
     }),
   retry: (id: string) =>
     pb.send<{ id: string }>(`/api/pc/certificates/${id}/retry`, { method: "POST" }),
@@ -91,12 +92,13 @@ export function certificateState(cert: Certificate, now = Date.now()): CertState
   if (end <= now) {
     return "expired";
   }
-  if (cert.issuer === "acme" && cert.attempts > 0) {
+  // the internal CA renews its own as ACME does
+  if (cert.issuer !== "manual" && cert.attempts > 0) {
     return "renewal_failed";
   }
   // due, but it waits: for an account, or for the edge
   const renew = parseDate(cert.renew_after)?.getTime();
-  if (cert.issuer === "acme" && cert.last_error && renew !== undefined && renew <= now) {
+  if (cert.issuer !== "manual" && cert.last_error && renew !== undefined && renew <= now) {
     return "renewal_waiting";
   }
   return end - now < expiringWithin ? "expiring" : "valid";
@@ -192,3 +194,16 @@ export function parseNames(text: string): string[] {
     .filter(Boolean);
   return [...new Set(names)];
 }
+
+/** The internal CA as its card shows it (#26). */
+export type InternalCA = {
+  root: { subject: string; not_after: string; sha256: string };
+  agents: number;
+  lan_certificates: number;
+};
+
+export const caApi = {
+  info: () => pb.send<InternalCA>("/api/pc/ca", {}),
+  /** where the root certificate is downloaded, without an account */
+  rootURL: (format: "crt" | "pem") => pb.buildURL(`/api/pc/ca.${format}`),
+};

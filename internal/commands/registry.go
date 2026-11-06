@@ -181,6 +181,9 @@ var Specs = map[string]Spec{
 	"cert.install": {Timeout: 2 * time.Minute, Resource: edge},
 	"cert.remove":  {Timeout: 2 * time.Minute, Resource: edge},
 
+	// changes of one DNS server of a LAN, one after another
+	"dns.rewrite": {Timeout: time.Minute, Resource: func(c *agentv1.Command) string { return "dns-rewrite:" + c.GetDnsRewrite().GetProviderId() }},
+
 	"acme.challenge.present": {Timeout: time.Minute},
 	"acme.challenge.cleanup": {Timeout: time.Minute},
 
