@@ -584,3 +584,66 @@ func TestRequestsAreCountedPerHourAndHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTheDurationsOfASitesRequestsAreKeptByTheHour(t *testing.T) {
+	store, _ := open(t)
+	clock := time.Date(2026, 11, 6, 12, 30, 0, 0, time.UTC)
+	store.Now = func() time.Time { return clock }
+
+	// 100 requests: 50 within 100 ms, 45 within 250 ms, 5 over 10 s; 3 failed
+	if err := store.AddLatency("h1", map[string]HostLatency{
+		"shop.test":  {Buckets: []uint64{0, 0, 0, 0, 50, 45, 0, 0, 0, 0, 0, 5}, Errors: 3},
+		"other.test": {Buckets: []uint64{1000}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Hour)
+	if err := store.AddLatency("h1", map[string]HostLatency{"SHOP.test": {Errors: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Latency("h1", []string{"shop.test"}, nil, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Requests != 100 || got.Errors != 4 {
+		t.Errorf("%+v", got)
+	}
+	// the 50th is the last of the 50 within 100 ms; the 95th the last of the 250 ms ones
+	if got.P50Ms != 100 || got.P95Ms != 250 {
+		t.Errorf("percentiles %v %v", got.P50Ms, got.P95Ms)
+	}
+	if other, _ := store.Latency("h1", []string{"other.test"}, nil, 24); other.P95Ms <= 0 || other.P95Ms > 5 {
+		t.Errorf("other: %+v", other)
+	}
+	if none, _ := store.Latency("h2", []string{"shop.test"}, nil, 24); none.Requests != 0 || none.P50Ms != 0 {
+		t.Errorf("another host: %+v", none)
+	}
+	// an hour outside the window is left out
+	if recent, _ := store.Latency("h1", []string{"shop.test"}, nil, 1); recent.Requests != 0 || recent.Errors != 1 {
+		t.Errorf("the last hour: %+v", recent)
+	}
+
+	rows := func() int {
+		t.Helper()
+		var n int
+		if err := store.db.QueryRow(`SELECT COUNT(*) FROM latency`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// they are kept as long as the request counts: an hour later, the older
+	// hour is gone
+	clock = clock.Add(KeepRequests - time.Hour)
+	if err := store.Rollup(); err != nil {
+		t.Fatal(err)
+	}
+	if n := rows(); n != 1 {
+		t.Errorf("%d rows are left, not the last hour's", n)
+	}
+	if err := store.DeleteHost("h1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := rows(); n != 0 {
+		t.Errorf("%d rows are left of a removed host", n)
+	}
+}

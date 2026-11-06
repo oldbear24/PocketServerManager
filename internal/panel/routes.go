@@ -39,6 +39,8 @@ func (p *Panel) handlePHPVersions(e *core.RequestEvent) error {
 	return e.JSON(http.StatusOK, map[string]any{
 		"warn_days": php.WarnDays,
 		"versions":  php.Statuses(time.Now(), php.WarnDays),
+		// what a new PHP site runs when it does not say (#50)
+		"default": defaultPHPVersion(time.Now()),
 	})
 }
 

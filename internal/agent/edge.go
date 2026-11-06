@@ -925,10 +925,12 @@ func (a *Agent) edgeStatus(ctx context.Context) *agentv1.EdgeStatus {
 		return status
 	}
 
-	total, byHost, err := a.edgeRequestCount(ctx)
+	metrics, err := a.edgeMetrics(ctx)
 	if err != nil {
 		return status
 	}
+	total, byHost := countRequests(metrics)
+	latency := readLatency(metrics)
 	status.Running = true
 
 	a.edgeMetricsMu.Lock()
@@ -940,8 +942,9 @@ func (a *Agent) edgeStatus(ctx context.Context) *agentv1.EdgeStatus {
 	}
 	if !a.edgeCountAt.IsZero() {
 		status.RequestsByHost = requestsSince(a.edgeByHost, byHost)
+		status.LatencyByHost = latencySince(a.edgeLatency, latency)
 	}
-	a.edgeCount, a.edgeCountAt, a.edgeByHost = total, now, byHost
+	a.edgeCount, a.edgeCountAt, a.edgeByHost, a.edgeLatency = total, now, byHost, latency
 	a.edgeMetricsMu.Unlock()
 
 	return status
@@ -970,18 +973,113 @@ func requestsSince(before, now map[string]float64) map[string]uint64 {
 	return since
 }
 
-// edgeRequestCount sums Caddy's request counters of the handlers that answer
-// requests, so that a request passing several handlers counts once.
-func (a *Agent) edgeRequestCount(ctx context.Context) (float64, map[string]float64, error) {
+// edgeMetrics reads Caddy's metrics.
+func (a *Agent) edgeMetrics(ctx context.Context) ([]byte, error) {
 	body, status, err := a.edgeRequest(ctx, http.MethodGet, "/metrics", nil, edgeMetricsLimit)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	if status != http.StatusOK {
-		return 0, nil, fmt.Errorf("the edge's metrics answered %d", status)
+		return nil, fmt.Errorf("the edge's metrics answered %d", status)
 	}
-	total, byHost := countRequests(body)
-	return total, byHost, nil
+	return body, nil
+}
+
+// latencyBounds are the upper bounds of Caddy's duration histogram, in seconds,
+// as its le labels write them; the last bucket has none.
+var latencyBounds = []string{"0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "+Inf"}
+
+// hostHistogram is a hostname's requests by duration, cumulative as
+// Prometheus counts them, and its requests answered with a 5xx.
+type hostHistogram struct {
+	cumulative [12]float64
+	errors     float64
+}
+
+// readLatency reads the durations of each hostname's requests from Caddy's
+// metrics. A request is counted under its route's first handler only, as for
+// countRequests, so the counters of every code and handler add up (#50).
+func readLatency(metrics []byte) map[string]hostHistogram {
+	byHost := map[string]hostHistogram{}
+	scanner := bufio.NewScanner(bytes.NewReader(metrics))
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		bucket := strings.HasPrefix(line, "caddy_http_request_duration_seconds_bucket{")
+		count := strings.HasPrefix(line, "caddy_http_request_duration_seconds_count{")
+		if !bucket && !count {
+			continue
+		}
+		labels, value, ok := strings.Cut(line[strings.Index(line, "{")+1:], "} ")
+		if !ok {
+			continue
+		}
+		number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			continue
+		}
+		host := strings.ToLower(promLabel(labels, "host"))
+		if host == "" || host == "_other" {
+			continue
+		}
+		histogram := byHost[host]
+		if bucket {
+			if index := slices.Index(latencyBounds, promLabel(labels, "le")); index >= 0 {
+				histogram.cumulative[index] += number
+			}
+		} else if strings.HasPrefix(promLabel(labels, "code"), "5") {
+			histogram.errors += number
+		}
+		byHost[host] = histogram
+	}
+	return byHost
+}
+
+// promLabel is the value of a label in a line of Prometheus' text format.
+func promLabel(labels, name string) string {
+	_, rest, ok := strings.Cut(","+labels, ","+name+`="`)
+	if !ok {
+		return ""
+	}
+	value, _, _ := strings.Cut(rest, `"`)
+	return value
+}
+
+// latencySince is each hostname's requests since the previous reading, one
+// bucket each. A counter lower than before was reset by a restart of the edge,
+// and counts from 0.
+func latencySince(before, now map[string]hostHistogram) map[string]*agentv1.HostLatency {
+	since := map[string]*agentv1.HostLatency{}
+	for host, current := range now {
+		if len(since) >= maxReportedHosts {
+			break
+		}
+		previous, known := before[host]
+		if known && current.cumulative[len(latencyBounds)-1] < previous.cumulative[len(latencyBounds)-1] {
+			known = false
+		}
+		delta := func(now, then float64) uint64 {
+			if !known || now < then {
+				return uint64(max(now, 0))
+			}
+			return uint64(now - then)
+		}
+		latency := &agentv1.HostLatency{Buckets: make([]uint64, len(latencyBounds))}
+		var below, total uint64
+		for i := range latencyBounds {
+			cumulative := delta(current.cumulative[i], previous.cumulative[i])
+			if cumulative >= below {
+				latency.Buckets[i] = cumulative - below
+				below = cumulative
+			}
+			total += latency.Buckets[i]
+		}
+		latency.Errors = delta(current.errors, previous.errors)
+		if total > 0 || latency.Errors > 0 {
+			since[host] = latency
+		}
+	}
+	return since
 }
 
 // countRequests adds up the requests in Caddy's metrics, in all and per

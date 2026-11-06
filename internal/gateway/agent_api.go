@@ -240,6 +240,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	if byHost := req.GetEdge().GetRequestsByHost(); s.OnRequests != nil && len(byHost) > 0 {
 		s.OnRequests(hostID, byHost)
 	}
+	if byHost := req.GetEdge().GetLatencyByHost(); s.OnLatency != nil && len(byHost) > 0 {
+		s.OnLatency(hostID, byHost)
+	}
 	for _, check := range failed {
 		events.Log(s.App, hostID, "agent.self_check_failed", schema.SeverityWarning,
 			fmt.Sprintf("Self-check %s failed: %s", check.name, check.detail),

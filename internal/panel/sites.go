@@ -31,6 +31,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
+	"github.com/oldbear24/PocketServerManager/internal/metrics"
 	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
@@ -139,6 +140,8 @@ func (p *Panel) bindSiteRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	group.PUT("/sites/{id}/php", p.handlePHPSettings).BindFunc(operators)
 	group.PUT("/sites/{id}/php/secrets", p.handlePHPSecrets).BindFunc(operators)
 	group.POST("/sites/{id}/php/apply", p.handlePHPApply).BindFunc(operators)
+	group.GET("/sites/{id}/php/status", p.handlePHPStatus).BindFunc(everyone)
+	group.GET("/sites/{id}/php/logs", p.handlePHPLogs).BindFunc(everyone)
 }
 
 // takeSiteSecrets sets the Git token and the passwords from the request, so a
@@ -867,6 +870,20 @@ func (p *Panel) onRequests(hostID string, byHost map[string]uint64) {
 	}
 }
 
+// onLatency keeps how long the requests of each hostname took (#50).
+func (p *Panel) onLatency(hostID string, byHost map[string]*agentv1.HostLatency) {
+	if p.Metrics == nil {
+		return
+	}
+	latency := make(map[string]metrics.HostLatency, len(byHost))
+	for name, host := range byHost {
+		latency[name] = metrics.HostLatency{Buckets: host.GetBuckets(), Errors: host.GetErrors()}
+	}
+	if err := p.Metrics.AddLatency(hostID, latency); err != nil {
+		p.Log.Error("failed to store request durations", "host", hostID, "error", err)
+	}
+}
+
 func (p *Panel) findSite(e *core.RequestEvent) (*core.Record, error) {
 	site, err := e.App.FindRecordById(schema.Sites, e.Request.PathValue("id"))
 	if err != nil {
@@ -1157,6 +1174,12 @@ func (p *Panel) handleSiteRequests(e *core.RequestEvent) error {
 	for _, count := range counts {
 		total += count
 	}
+	var latency metrics.Latency
+	if p.Metrics != nil {
+		if latency, err = p.Metrics.Latency(site.GetString("host"), names, exact, requestHours); err != nil {
+			return e.InternalServerError("Failed to read the requests' durations.", err)
+		}
+	}
 	from := time.Now().UTC().Truncate(time.Hour).Add(-(requestHours - 1) * time.Hour)
-	return e.JSON(http.StatusOK, map[string]any{"from": from.Format(time.RFC3339), "hours": counts, "total": total})
+	return e.JSON(http.StatusOK, map[string]any{"from": from.Format(time.RFC3339), "hours": counts, "total": total, "latency": latency})
 }

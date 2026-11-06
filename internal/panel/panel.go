@@ -272,6 +272,7 @@ func (p *Panel) startGateway() error {
 	p.Gateway.BindHostRemoval()
 	p.Gateway.OnEdgeStatus = p.onEdgeStatus
 	p.Gateway.OnRequests = p.onRequests
+	p.Gateway.OnLatency = p.onLatency
 	p.Gateway.Fetch = p.fetchArtifact
 
 	for _, observe := range p.Observers {

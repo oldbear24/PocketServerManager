@@ -72,6 +72,8 @@ message Command {
     SiteRemove site_remove = 152;
     // site_php_apply creates or updates the PHP-FPM container of a site.
     SitePhpApply site_php_apply = 153;
+    // site_php_status reads the state of a site's PHP-FPM (#50).
+    SitePhpStatus site_php_status = 154;
 
     // task_run runs a scheduled task.
     TaskRun task_run = 160;
@@ -429,6 +431,16 @@ message SitePhpApply {
   // classic lets PHP-FPM write the site's code, for an application that
   // updates itself; otherwise only `shared/` is writable (#50).
   bool classic = 10;
+}
+
+// SitePhpStatus reads a site's PHP-FPM: its pool's workers and queue, OPcache
+// and PHP's version, as pocketcloud-php-status reports them in its container.
+message SitePhpStatus {
+  // site is the site name.
+  string site = 1;
+  // shared_paths are the site's paths in shared/, whose sizes the agent
+  // reports.
+  repeated string shared_paths = 2;
 }
 
 // TaskRun runs a scheduled task with `docker exec`.

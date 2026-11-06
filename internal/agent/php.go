@@ -10,6 +10,7 @@ import (
 	"io"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,96 @@ const (
 
 func (a *Agent) registerPHPHandlers() {
 	a.Executor.Handle("site.php.apply", a.handleSitePHPApply)
+	a.Executor.Handle("site.php.status", a.handleSitePHPStatus)
+}
+
+// handleSitePHPStatus reads a site's PHP-FPM with the runtime image's status
+// tool: its workers, its queue, OPcache and PHP's version.
+func (a *Agent) handleSitePHPStatus(ctx context.Context, command *agentv1.Command, _ *Reporter) (map[string]any, error) {
+	site := command.GetSitePhpStatus().GetSite()
+	if err := sites.ValidName(site); err != nil {
+		return nil, err
+	}
+	var out strings.Builder
+	result, err := a.Docker.Run(ctx, sites.PHPContainer(site), dockerapi.ExecOptions{Cmd: []string{"pocketcloud-php-status"}}, &out)
+	if err != nil {
+		if dockerapi.IsNotFound(err) {
+			return nil, fmt.Errorf("%s does not run", sites.PHPContainer(site))
+		}
+		return nil, err
+	}
+	// the tool prints what it could read even when a part failed, with the
+	// errors that say why
+	status := map[string]any{}
+	if err := json.Unmarshal([]byte(out.String()), &status); err != nil {
+		if result.ExitCode != 0 {
+			return nil, fmt.Errorf("the status tool failed: %.300s", strings.TrimSpace(result.Stderr))
+		}
+		return nil, fmt.Errorf("the status tool said: %.200s", out.String())
+	}
+	// a result is a protobuf Struct, of JSON's types only
+	extensions := []any{}
+	for _, name := range a.phpExtensions(ctx, site) {
+		extensions = append(extensions, name)
+	}
+	status["extensions"] = extensions
+	if paths := command.GetSitePhpStatus().GetSharedPaths(); len(paths) > 0 {
+		shared := map[string]any{}
+		for path, size := range a.sharedSizes(ctx, site, paths) {
+			shared[path] = size
+		}
+		status["shared"] = shared
+	}
+	return status, nil
+}
+
+// phpExtensions lists the extensions the runtime image added to PHP's own,
+// by their ini files: docker-php-ext-install writes one for each.
+func (a *Agent) phpExtensions(ctx context.Context, site string) []string {
+	var out strings.Builder
+	if _, err := a.Docker.Run(ctx, sites.PHPContainer(site), dockerapi.ExecOptions{Cmd: []string{"ls", "-1", "/usr/local/etc/php/conf.d"}}, &out); err != nil {
+		return nil
+	}
+	extensions := []string{}
+	for line := range strings.Lines(out.String()) {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), "docker-php-ext-")
+		if name, found := strings.CutSuffix(name, ".ini"); ok && found && name != "" {
+			extensions = append(extensions, name)
+		}
+	}
+	slices.Sort(extensions)
+	return extensions
+}
+
+// sharedSizesWait is how long the sizes of a site's shared paths may take:
+// a site with many uploads takes a while.
+const sharedSizesWait = 10 * time.Second
+
+// sharedSizes measures a site's shared paths, in bytes, with du in its
+// PHP-FPM container, which mounts shared/. A path that is missing, or took
+// too long, has no size.
+func (a *Agent) sharedSizes(ctx context.Context, site string, paths []string) map[string]int64 {
+	args := []string{"sh", "-c", `for p; do du -sk -- "$p"; done`, "sh"}
+	for _, shared := range paths {
+		if sites.ValidSharedPath(shared) == nil {
+			args = append(args, sites.Root+"/"+site+"/shared/"+path.Clean(shared))
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, sharedSizesWait)
+	defer cancel()
+	var out strings.Builder
+	// du fails for a missing path and goes on with the others
+	_, _ = a.Docker.Run(ctx, sites.PHPContainer(site), dockerapi.ExecOptions{Cmd: args}, &out)
+	prefix := sites.Root + "/" + site + "/shared/"
+	sizes := map[string]int64{}
+	for line := range strings.Lines(out.String()) {
+		kib, path, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		size, err := strconv.ParseInt(kib, 10, 64)
+		if relative, inside := strings.CutPrefix(path, prefix); ok && err == nil && inside {
+			sizes[relative] = size * 1024
+		}
+	}
+	return sizes
 }
 
 func (a *Agent) handleSitePHPApply(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {

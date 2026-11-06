@@ -648,17 +648,22 @@ func (p *Panel) handlePHPSecrets(e *core.RequestEvent) error {
 			own[name] = *value
 		}
 	}
-	if _, err := p.phpSecrets(site, settings); err != nil && !errors.Is(err, stacks.ErrUnknownSecret) {
-		return e.BadRequestError(capitalize(err.Error())+".", nil)
-	}
 	raw, _ := json.Marshal(own)
 	names := make([]string, 0, len(own))
 	for name := range own {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	settings.Set("secrets", string(raw))
+	sealed, err := p.Box.SealString(string(raw))
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	settings.Set("secrets", sealed)
 	settings.Set("secret_names", names)
+	// a secret the environment refers to stays
+	if _, err := p.phpSecrets(site, settings); err != nil {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
 	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
 		return e.BadRequestError("The secrets could not be saved: "+err.Error(), nil)
 	}
@@ -752,4 +757,182 @@ func (p *Panel) connectSite(ctx context.Context, request databaseRequest, server
 		_, err = p.applyPHP(ctx, site, commands.Options{RequestedBy: request.UserID, Requester: request.Label})
 	}
 	return err
+}
+
+// phpStatusWait is how long a request waits for the PHP-FPM status of a site.
+const phpStatusWait = 15 * time.Second
+
+// phpStatus is what the site page shows of a site's PHP-FPM: its workers, as
+// FPM's status page counts them, and how well OPcache serves.
+type phpStatus struct {
+	PHPVersion string      `json:"php_version"`
+	Workers    phpWorkers  `json:"workers"`
+	OPcache    *phpOPcache `json:"opcache"`
+	// the extensions the runtime image added to PHP's own
+	Extensions []string `json:"extensions"`
+	// the sizes of the shared paths, in bytes; a path that could not be
+	// measured has none
+	Shared []phpShared    `json:"shared"`
+	Errors []string       `json:"errors,omitempty"`
+	ReadAt types.DateTime `json:"read_at"`
+}
+
+type phpShared struct {
+	Path  string `json:"path"`
+	Bytes *int64 `json:"bytes"`
+}
+
+type phpWorkers struct {
+	Active int64 `json:"active"`
+	Idle   int64 `json:"idle"`
+	Total  int64 `json:"total"`
+	// the most a site may have, of its settings
+	Max                int64 `json:"max"`
+	MaxActive          int64 `json:"max_active"`
+	MaxChildrenReached int64 `json:"max_children_reached"`
+	ListenQueue        int64 `json:"listen_queue"`
+	Accepted           int64 `json:"accepted"`
+	SlowRequests       int64 `json:"slow_requests"`
+	// how long FPM has run, in seconds
+	Uptime int64 `json:"uptime"`
+}
+
+type phpOPcache struct {
+	Enabled       bool    `json:"enabled"`
+	HitRate       float64 `json:"hit_rate"`
+	UsedBytes     int64   `json:"used_bytes"`
+	FreeBytes     int64   `json:"free_bytes"`
+	CachedScripts int64   `json:"cached_scripts"`
+	Full          bool    `json:"full"`
+}
+
+// readPHPStatus picks out of what pocketcloud-php-status printed what the
+// site page shows.
+func readPHPStatus(raw string, fpm fpmSettings, shared []string) (phpStatus, error) {
+	var answer struct {
+		PHPVersion string           `json:"php_version"`
+		Extensions []string         `json:"extensions"`
+		Shared     map[string]int64 `json:"shared"`
+		FPM        *struct {
+			Active             int64 `json:"active processes"`
+			Idle               int64 `json:"idle processes"`
+			Total              int64 `json:"total processes"`
+			MaxActive          int64 `json:"max active processes"`
+			MaxChildrenReached int64 `json:"max children reached"`
+			ListenQueue        int64 `json:"listen queue"`
+			Accepted           int64 `json:"accepted conn"`
+			SlowRequests       int64 `json:"slow requests"`
+			Since              int64 `json:"start since"`
+		} `json:"fpm"`
+		OPcache *struct {
+			Enabled bool `json:"opcache_enabled"`
+			Full    bool `json:"cache_full"`
+			Memory  struct {
+				Used int64 `json:"used_memory"`
+				Free int64 `json:"free_memory"`
+			} `json:"memory_usage"`
+			Statistics struct {
+				Scripts int64   `json:"num_cached_scripts"`
+				HitRate float64 `json:"opcache_hit_rate"`
+			} `json:"opcache_statistics"`
+		} `json:"opcache"`
+		Errors []string `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
+		return phpStatus{}, fmt.Errorf("the agent's answer cannot be read: %w", err)
+	}
+	status := phpStatus{
+		PHPVersion: answer.PHPVersion, Extensions: answer.Extensions, Shared: []phpShared{},
+		Errors: answer.Errors, ReadAt: types.NowDateTime(),
+	}
+	if status.Extensions == nil {
+		status.Extensions = []string{}
+	}
+	for _, path := range shared {
+		item := phpShared{Path: path}
+		if size, ok := answer.Shared[path]; ok {
+			item.Bytes = &size
+		}
+		status.Shared = append(status.Shared, item)
+	}
+	status.Workers.Max = int64(fpm.MaxChildren)
+	if f := answer.FPM; f != nil {
+		status.Workers = phpWorkers{
+			Active: f.Active, Idle: f.Idle, Total: f.Total, Max: int64(fpm.MaxChildren), MaxActive: f.MaxActive,
+			MaxChildrenReached: f.MaxChildrenReached, ListenQueue: f.ListenQueue, Accepted: f.Accepted,
+			SlowRequests: f.SlowRequests, Uptime: f.Since,
+		}
+	}
+	if o := answer.OPcache; o != nil {
+		status.OPcache = &phpOPcache{
+			Enabled: o.Enabled, HitRate: o.Statistics.HitRate, UsedBytes: o.Memory.Used,
+			FreeBytes: o.Memory.Free, CachedScripts: o.Statistics.Scripts, Full: o.Full,
+		}
+	}
+	return status, nil
+}
+
+// handlePHPStatus asks the site's agent how its PHP-FPM is doing.
+func (p *Panel) handlePHPStatus(e *core.RequestEvent) error {
+	site, err := p.findSite(e)
+	if err != nil {
+		return err
+	}
+	if site.GetString("type") != schema.SitePHPApp {
+		return e.BadRequestError("This is not a PHP site.", nil)
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return e.InternalServerError("Failed to read the site's PHP settings.", err)
+	}
+	ctx := e.Request.Context()
+	id, label := requester(e)
+	command, err := p.Commands.Create(ctx, commands.Options{
+		Host: site.GetString("host"),
+		Command: &agentv1.Command{Payload: &agentv1.Command_SitePhpStatus{
+			SitePhpStatus: &agentv1.SitePhpStatus{Site: site.GetString("name"), SharedPaths: sharedPathsOf(settings)},
+		}},
+		Label:       "Read the PHP-FPM status of " + site.GetString("name"),
+		RequestedBy: id,
+		Requester:   label,
+	})
+	if err != nil {
+		return e.BadRequestError(capitalize(err.Error())+".", nil)
+	}
+	done := p.waitForCommand(ctx, command.Id, phpStatusWait)
+	if done == nil {
+		_ = p.Commands.Cancel(command.Id, "The panel stopped waiting for it.")
+		return e.Error(http.StatusGatewayTimeout, "The server did not answer in time.", nil)
+	}
+	if done.GetString("status") != schema.CommandSucceeded {
+		message := done.GetString("error")
+		if message == "" {
+			message = "the command " + done.GetString("status")
+		}
+		return e.Error(http.StatusBadGateway, capitalize(message)+".", nil)
+	}
+	status, err := readPHPStatus(done.GetString("result"), fpmOf(settings), sharedPathsOf(settings))
+	if err != nil {
+		return e.Error(http.StatusBadGateway, capitalize(err.Error())+".", nil)
+	}
+	return e.JSON(http.StatusOK, status)
+}
+
+// handlePHPLogs follows the log of a site's PHP-FPM: PHP's errors and what
+// its scripts write to stderr.
+func (p *Panel) handlePHPLogs(e *core.RequestEvent) error {
+	site, err := p.findSite(e)
+	if err != nil {
+		return err
+	}
+	if site.GetString("type") != schema.SitePHPApp {
+		return e.BadRequestError("This is not a PHP site.", nil)
+	}
+	name := sites.PHPContainer(site.GetString("name"))
+	container, err := p.App.FindFirstRecordByFilter(schema.Containers, "host={:host} && name={:name}",
+		dbx.Params{"host": site.GetString("host"), "name": name})
+	if err != nil {
+		return e.NotFoundError("The site's PHP-FPM does not run.", err)
+	}
+	return p.serveLogs(e, site.GetString("host"), []string{container.GetString("docker_id")}, name)
 }

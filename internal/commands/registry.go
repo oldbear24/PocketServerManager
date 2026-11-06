@@ -159,6 +159,8 @@ var Specs = map[string]Spec{
 	"site.rollback":  {Timeout: time.Minute, Resource: site},
 	"site.remove":    {Timeout: 5 * time.Minute, Resource: site},
 	"site.php.apply": {Timeout: 5 * time.Minute, Resource: site},
+	// a read, which waits for no deployment
+	"site.php.status": {Timeout: 30 * time.Second},
 
 	"task.run": {Timeout: time.Hour},
 

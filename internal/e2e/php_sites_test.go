@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
 	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
@@ -81,6 +83,13 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	s.appliedPHP(out)
 	if status, _ := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/php", s.viewer, map[string]any{"php_ini": ""}); status != http.StatusForbidden {
 		t.Errorf("a viewer changed the settings: %d", status)
+	}
+	// a secret the environment refers to stays
+	if status, out := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/php/secrets", s.operator, map[string]any{"app-key": nil}); status != http.StatusBadRequest {
+		t.Errorf("a secret in use was removed: %d %v", status, out)
+	}
+	if raw := s.phpSettings(siteID).GetString("secret_names"); !strings.Contains(raw, "app-key") {
+		t.Errorf("the secrets after a refused removal: %s", raw)
 	}
 	for _, bad := range []map[string]any{
 		{"docroot": "../other"}, {"shared_paths": []string{"../../etc"}}, {"php_ini": "[PHP]"},
@@ -411,5 +420,121 @@ func TestADatabaseOfASiteReachesItsPHPFPM(t *testing.T) {
 	_ = json.Unmarshal(raw, &payload)
 	if !slices.Contains(payload.Networks, "pcdb-site.shop") {
 		t.Errorf("PHP-FPM's networks: %v", payload.Networks)
+	}
+}
+
+// TestThePageOfAPHPSiteShowsItsWorkersAndHowFastItAnswers: the page of a PHP
+// site (#50) reads its PHP-FPM's workers and OPcache from the site's server,
+// and how long its requests took, and how many failed, from the edge.
+func TestThePageOfAPHPSiteShowsItsWorkersAndHowFastItAnswers(t *testing.T) {
+	s := newSitesHarness(t)
+	siteID := s.newSite(map[string]any{"name": "shop", "type": schema.SitePHPApp, "source": sites.SourceUpload})
+	status, out := s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/php", s.operator, map[string]any{
+		"fpm":          map[string]any{"pm": "dynamic", "max_children": 12, "max_requests": 500, "request_terminate_timeout": 60},
+		"shared_paths": []string{"storage", "public/uploads"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("settings: %d %v", status, out)
+	}
+	s.appliedPHP(out)
+
+	var asked []string
+	var measured []string
+	s.docker.OnExec = func(call *fakedocker.ExecCall, _ []byte) fakedocker.ExecResult {
+		switch {
+		case slices.Equal(call.Cmd, []string{"ls", "-1", "/usr/local/etc/php/conf.d"}):
+			return fakedocker.ExecResult{Stdout: "docker-php-ext-sodium.ini\ndocker-php-ext-gd.ini\ndocker-php-ext-intl.ini\nzz-pocketcloud.ini\n"}
+		case len(call.Cmd) > 4 && call.Cmd[0] == "sh":
+			// du of each shared path; public/uploads is missing
+			measured = call.Cmd[4:]
+			return fakedocker.ExecResult{Code: 1, Stdout: "2048\t/srv/sites/shop/shared/storage\n", Stderr: "du: cannot access"}
+		case !slices.Equal(call.Cmd, []string{"pocketcloud-php-status"}):
+			return fakedocker.ExecResult{}
+		}
+		asked = append(asked, call.Container)
+		return fakedocker.ExecResult{Stdout: `{"php_version":"8.4.27","fpm":{"pool":"www","start since":662,"accepted conn":406,` +
+			`"listen queue":0,"idle processes":5,"active processes":2,"total processes":7,"max active processes":6,` +
+			`"max children reached":1,"slow requests":0,"processes":[]},"opcache":{"opcache_enabled":true,"cache_full":false,` +
+			`"memory_usage":{"used_memory":44880848,"free_memory":89336880},` +
+			`"opcache_statistics":{"num_cached_scripts":859,"opcache_hit_rate":99.32}}}` + "\n"}
+	}
+	status, out = s.request(http.MethodGet, "/api/pc/sites/"+siteID+"/php/status", s.viewer, nil)
+	workers, _ := out["workers"].(map[string]any)
+	opcache, _ := out["opcache"].(map[string]any)
+	if status != http.StatusOK || out["php_version"] != "8.4.27" || workers["active"] != float64(2) || workers["total"] != float64(7) ||
+		workers["max"] != float64(12) || workers["max_children_reached"] != float64(1) || opcache["hit_rate"] != 99.32 ||
+		opcache["cached_scripts"] != float64(859) {
+		t.Fatalf("the status: %d %v", status, out)
+	}
+	if len(asked) != 1 {
+		t.Errorf("the status tool ran %d times", len(asked))
+	}
+	if extensions, _ := out["extensions"].([]any); len(extensions) != 3 || extensions[0] != "gd" || extensions[2] != "sodium" {
+		t.Errorf("the extensions: %v", out["extensions"])
+	}
+	shared, _ := out["shared"].([]any)
+	if len(shared) != 2 || shared[0].(map[string]any)["bytes"] != float64(2<<20) || shared[1].(map[string]any)["path"] != "public/uploads" ||
+		shared[1].(map[string]any)["bytes"] != nil {
+		t.Errorf("the shared paths: %v", out["shared"])
+	}
+	if !slices.Equal(measured, []string{"/srv/sites/shop/shared/storage", "/srv/sites/shop/shared/public/uploads"}) {
+		t.Errorf("du measured %v", measured)
+	}
+
+	// its log, for everyone who may see the site
+	s.waitFor("the PHP-FPM container in the inventory", func() bool {
+		_, err := s.app.FindFirstRecordByFilter(schema.Containers, "host={:host} && name='shop-php'", dbx.Params{"host": s.host.Id})
+		return err == nil
+	})
+	s.docker.WriteLog("shop-php", "stderr", "PHP Warning:  Undefined array key \"variation_id\" in cart.php on line 211")
+	logs := openLogs(t, s.serve()+"/api/pc/sites/"+siteID+"/php/logs", s.viewer)
+	if line := logs.waitForLine(`PHP Warning:  Undefined array key "variation_id" in cart.php on line 211`); line.Stream != "stderr" {
+		t.Errorf("the log line: %+v", line)
+	}
+
+	// a PHP-FPM that does not run says so
+	s.docker.OnExec = func(call *fakedocker.ExecCall, _ []byte) fakedocker.ExecResult {
+		if slices.Equal(call.Cmd, []string{"pocketcloud-php-status"}) {
+			return fakedocker.ExecResult{Code: 1, Stderr: "pocketcloud-php-status: FPM does not answer"}
+		}
+		return fakedocker.ExecResult{}
+	}
+	if status, out := s.request(http.MethodGet, "/api/pc/sites/"+siteID+"/php/status", s.viewer, nil); status != http.StatusBadGateway ||
+		!strings.Contains(out["message"].(string), "FPM does not answer") {
+		t.Errorf("a failing status tool: %d %v", status, out)
+	}
+	static := s.newSite(map[string]any{"name": "docs", "source": sites.SourceUpload})
+	if status, _ := s.request(http.MethodGet, "/api/pc/sites/"+static+"/php/status", s.viewer, nil); status != http.StatusBadRequest {
+		t.Errorf("the PHP status of a static site: %d", status)
+	}
+
+	// how long its requests took, by the edge's histogram for its hostname
+	if status, out := s.request(http.MethodPost, "/api/collections/domains/records", s.operator, map[string]any{
+		"hostname": "shop.example.test", "host": s.host.Id, "target_kind": schema.TargetSite, "site": siteID, "tls": schema.TLSAuto,
+	}); status != http.StatusOK {
+		t.Fatalf("a domain of the site: %d %v", status, out)
+	}
+	server := s.edge.server()
+	for range 90 {
+		server.ServeTimed("shop.example.test", 30*time.Millisecond, http.StatusOK)
+	}
+	for range 8 {
+		server.ServeTimed("shop.example.test", 200*time.Millisecond, http.StatusOK)
+	}
+	server.ServeTimed("shop.example.test", 3*time.Second, http.StatusBadGateway)
+	server.ServeTimed("shop.example.test", 3*time.Second, http.StatusInternalServerError)
+	server.ServeTimed("other.example.test", time.Millisecond, http.StatusOK)
+	var latency map[string]any
+	s.waitFor("the requests' durations to be kept", func() bool {
+		_, requests := s.request(http.MethodGet, "/api/pc/sites/"+siteID+"/requests", s.viewer, nil)
+		latency, _ = requests["latency"].(map[string]any)
+		return latency["requests"] == float64(100)
+	})
+	// the 50th request took 25 to 50 ms, the 95th 100 to 250 ms: within a
+	// bucket, a percentile is where its rank falls, as Prometheus reckons
+	p50, _ := latency["p50_ms"].(float64)
+	p95, _ := latency["p95_ms"].(float64)
+	if latency["errors"] != float64(2) || p50 <= 25 || p50 > 50 || p95 <= 100 || p95 > 250 {
+		t.Errorf("the durations: %v", latency)
 	}
 }
