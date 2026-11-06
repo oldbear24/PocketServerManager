@@ -306,6 +306,12 @@ func (p *Panel) handleRemoveACMEAccount(e *core.RequestEvent) error {
 	if err := e.App.DeleteWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), record); err != nil {
 		return e.BadRequestError("Failed to remove the ACME account.", err)
 	}
+	// certificates asked of it alone are asked of the accounts there are, in turn (#27)
+	if pinned, err := e.App.FindRecordsByFilter(schema.Certificates, "account={:r}", "", 0, 0, dbx.Params{"r": record.GetString("role")}); err == nil {
+		for _, cert := range pinned {
+			p.setFields(cert, map[string]any{"account": ""})
+		}
+	}
 	return e.NoContent(http.StatusNoContent)
 }
 
@@ -760,6 +766,11 @@ func (p *Panel) issue(id, requester string, scheduled bool) {
 		}
 	}
 	if len(accounts) == 0 {
+		if chosen := record.GetString("account"); chosen != "" && len(unusable) == 0 {
+			// asked of an account that is gone: say which, and fail, so that it is seen
+			p.acmeFailed(record, "", fmt.Sprintf("This certificate is asked of the %s ACME account alone, and there is none: set it in Settings, or request the certificate again.", chosen), false)
+			return
+		}
 		if len(unusable) > 0 {
 			p.acmeFailed(record, "", strings.Join(unusable, "\n"), false)
 		} else {

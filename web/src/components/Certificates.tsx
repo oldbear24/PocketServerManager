@@ -61,14 +61,29 @@ export function useDirectoryLabel() {
 function useIssuerLabel(accounts: AcmeAccount[]) {
   const { t } = useTranslation();
   const directoryLabel = useDirectoryLabel();
-  const primary = accounts.find((account) => account.role === "primary");
   return (cert: Certificate) => {
     if (cert.issuer !== "acme") {
       return t(`cert.issuer.${cert.issuer}`);
     }
+    // before it is issued, the CA it is asked of: its account, or the primary
+    const asked = accounts.find((account) => account.role === (cert.account || "primary"));
     return (
-      caName(cert.issuer_name) || (primary ? directoryLabel(primary.directory_url) : t("cert.acme"))
+      caName(cert.issuer_name) || (asked ? directoryLabel(asked.directory_url) : t("cert.acme"))
     );
+  };
+}
+
+/** The ACME account a certificate is asked of alone, if it is (#27). */
+function useAccountLabel(accounts: AcmeAccount[]) {
+  const { t } = useTranslation();
+  const directoryLabel = useDirectoryLabel();
+  return (cert: Certificate) => {
+    if (!cert.account) {
+      return "";
+    }
+    const account = accounts.find((item) => item.role === cert.account);
+    const ca = account ? directoryLabel(account.directory_url) : t("cert.noSuchAccount");
+    return t(cert.account === "primary" ? "cert.caPrimary" : "cert.caFallback", { ca });
   };
 }
 
@@ -146,6 +161,7 @@ export function CertificatesCard({
   const [retrying, setRetrying] = useState("");
   const now = useNow();
   const issuerLabel = useIssuerLabel(accounts);
+  const accountLabel = useAccountLabel(accounts);
 
   const hostNames = useMemo(() => new Map(hosts.map((host) => [host.id, host.name])), [hosts]);
   const counts = useMemo(() => {
@@ -339,6 +355,7 @@ export function CertificatesCard({
           cert={selected}
           hostNames={hostNames}
           issuer={issuerLabel(selected)}
+          account={accountLabel(selected)}
           validation={validation(selected)}
           canRetry={canRetry}
           isAdmin={isAdmin}
@@ -364,6 +381,7 @@ function CertificateDetail({
   cert,
   hostNames,
   issuer,
+  account,
   validation,
   canRetry,
   isAdmin,
@@ -373,6 +391,8 @@ function CertificateDetail({
   cert: Certificate;
   hostNames: Map<string, string>;
   issuer: string;
+  /** the ACME account it is asked of alone, if it is */
+  account: string;
   validation: string;
   canRetry: boolean;
   isAdmin: boolean;
@@ -477,6 +497,12 @@ function CertificateDetail({
         <dd className="mono">{cert.names.join(", ")}</dd>
         <dt>{t("cert.issuerColumn")}</dt>
         <dd>{issuer}</dd>
+        {account && (
+          <>
+            <dt>{t("cert.caField")}</dt>
+            <dd>{account}</dd>
+          </>
+        )}
         {cert.issuer === "acme" && (
           <>
             <dt>{t("cert.validation")}</dt>
@@ -565,6 +591,7 @@ export function RequestCertificateDialog({
   const primary = accounts.find((account) => account.role === "primary");
   const fallback = accounts.find((account) => account.role === "fallback");
   // the CAs to ask: both ACME accounts in turn, one of them alone, or the internal CA
+  // the first, and the default, asks the accounts in turn, those added later too
   const cas: { value: CAChoice; label: string }[] = [];
   if (primary && fallback) {
     cas.push({
@@ -573,6 +600,11 @@ export function RequestCertificateDialog({
         primary: directoryLabel(primary.directory_url),
         fallback: directoryLabel(fallback.directory_url),
       }),
+    });
+  } else if (primary ?? fallback) {
+    cas.push({
+      value: "acme",
+      label: t("cert.caOneThenOther", { ca: directoryLabel((primary ?? fallback)!.directory_url) }),
     });
   }
   if (primary) {

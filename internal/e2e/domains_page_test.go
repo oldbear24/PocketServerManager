@@ -2,13 +2,18 @@ package e2e
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/types"
 
+	"github.com/oldbear24/PocketServerManager/internal/dns"
+	"github.com/oldbear24/PocketServerManager/internal/dns/fakedns"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
@@ -54,6 +59,127 @@ func TestACertificateAskedOfOneCAGoesToItOnly(t *testing.T) {
 	}
 	if cert.GetString("account") != schema.ACMEFallback {
 		t.Errorf("account %q", cert.GetString("account"))
+	}
+
+	// the account goes some other way than through the panel's API: the
+	// renewal fails, says which account it needs, and raises the alert
+	fallback, err := a.app.FindFirstRecordByData(schema.ACMEAccounts, "role", schema.ACMEFallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.app.Delete(fallback); err != nil {
+		t.Fatal(err)
+	}
+	a.setCertField(cert.Id, "renew_after", types.NowDateTime().String())
+	a.panel.RunACME()
+	cert = a.waitCertificate(cert.Id, "to fail", func(r *core.Record) bool { return r.GetInt("attempts") > 0 })
+	if !strings.Contains(cert.GetString("last_error"), "asked of the fallback ACME account alone") {
+		t.Errorf("last error: %q", cert.GetString("last_error"))
+	}
+	if alerts, _ := a.app.FindRecordsByFilter(schema.Alerts, "rule='certificate_failed' && target={:id} && status='open'", "", 0, 0, dbx.Params{"id": cert.Id}); len(alerts) != 1 {
+		t.Errorf("alerts: %d", len(alerts))
+	}
+
+	// removed through Settings, an account leaves its certificates to the
+	// accounts there are, in turn
+	if status, raw := a.setAccount(schema.ACMEFallback, other.DirectoryURL); status != http.StatusOK {
+		t.Fatalf("fallback: %d %s", status, raw)
+	}
+	if status, raw := testutil.Do(t, a.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/pc/acme-accounts/fallback", Token: a.admin}); status != http.StatusNoContent {
+		t.Fatalf("%d %s", status, raw)
+	}
+	if cert, err = a.app.FindRecordById(schema.Certificates, cert.Id); err != nil || cert.GetString("account") != "" {
+		t.Errorf("still asked of the removed account: %v %q", err, cert.GetString("account"))
+	}
+}
+
+// TestTheAlertOfAProviderFollowsItsManagedZones: for a kind that cannot list
+// its zones, the API is asked about each; a zone that fails but is not
+// managed, or is removed, no longer fails the provider (#27).
+func TestTheAlertOfAProviderFollowsItsManagedZones(t *testing.T) {
+	d := newDNSHarness(t, "example.com")
+	fake := fakedns.New("good.com")
+	dns.RegisterFake("fake27-zones", false, func(map[string]string) (dns.Provider, error) { return fake, nil })
+	status, raw := testutil.Do(t, d.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/dns-providers", Token: d.admin,
+		Body: `{"name":"Fake","kind":"fake27-zones","credentials":{"token":"x"},"zones":["good.com","gone.com"]}`})
+	if status != http.StatusOK {
+		t.Fatalf("%d %s", status, raw)
+	}
+	provider, err := d.app.FindFirstRecordByData(schema.DNSProviders, "name", "Fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alert := openProviderAlert(t, d.app, provider.Id); alert == nil || !strings.HasPrefix(alert.GetString("message"), "Fake: gone.com: ") {
+		t.Fatalf("the alert: %v", alert)
+	}
+	gone, err := d.app.FindFirstRecordByData(schema.DNSZones, "name", "gone.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := func(managed bool) {
+		t.Helper()
+		body := fmt.Sprintf(`{"managed":%t}`, managed)
+		if status, raw := testutil.Do(t, d.handler, testutil.Request{Method: http.MethodPatch, URL: "/api/pc/dns-zones/" + gone.Id, Token: d.admin, Body: body}); status != http.StatusOK {
+			t.Fatalf("%d %s", status, raw)
+		}
+	}
+
+	// not managed: the provider answers for what it manages
+	change(false)
+	if provider, _ = d.app.FindRecordById(schema.DNSProviders, provider.Id); provider.GetString("status") != schema.DNSOK {
+		t.Errorf("the provider: %s %q", provider.GetString("status"), provider.GetString("last_error"))
+	}
+	if alert := openProviderAlert(t, d.app, provider.Id); alert != nil {
+		t.Errorf("still open: %q", alert.GetString("message"))
+	}
+
+	// managed again, it fails the provider again, until it is removed
+	change(true)
+	if alert := openProviderAlert(t, d.app, provider.Id); alert == nil {
+		t.Error("no alert for a managed zone that fails")
+	}
+	if status, raw := testutil.Do(t, d.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/pc/dns-zones/" + gone.Id, Token: d.admin}); status != http.StatusNoContent {
+		t.Fatalf("%d %s", status, raw)
+	}
+	if alert := openProviderAlert(t, d.app, provider.Id); alert != nil {
+		t.Errorf("open after the removal: %q", alert.GetString("message"))
+	}
+}
+
+// TestAProviderThatAnswersAgainRecovers: a provider whose API failed is asked
+// again by the drift check, so that it and its alert recover without anyone
+// pressing Test (#27).
+func TestAProviderThatAnswersAgainRecovers(t *testing.T) {
+	d := newDNSHarness(t, "example.com")
+	fake := fakedns.New("example.org")
+	fake.Fail(errors.New("503 Service Unavailable"))
+	dns.RegisterFake("fake27-down", true, func(map[string]string) (dns.Provider, error) { return fake, nil })
+	status, raw := testutil.Do(t, d.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/dns-providers", Token: d.admin,
+		Body: `{"name":"Down","kind":"fake27-down","credentials":{"token":"x"}}`})
+	if status != http.StatusOK && status != http.StatusBadRequest {
+		t.Fatalf("%d %s", status, raw)
+	}
+	provider, err := d.app.FindFirstRecordByData(schema.DNSProviders, "name", "Down")
+	if err != nil {
+		t.Fatalf("not kept: %d %s", status, raw)
+	}
+	if openProviderAlert(t, d.app, provider.Id) == nil {
+		t.Fatal("no alert while its API fails")
+	}
+
+	// still down: the drift check asks again, and it stays
+	d.panel.CheckDNSDrift()
+	if openProviderAlert(t, d.app, provider.Id) == nil {
+		t.Fatal("resolved while its API still fails")
+	}
+
+	fake.Fail(nil)
+	d.panel.CheckDNSDrift()
+	if provider, _ = d.app.FindRecordById(schema.DNSProviders, provider.Id); provider.GetString("status") != schema.DNSOK {
+		t.Errorf("the provider: %s %q", provider.GetString("status"), provider.GetString("last_error"))
+	}
+	if alert := openProviderAlert(t, d.app, provider.Id); alert != nil {
+		t.Errorf("still open: %q", alert.GetString("message"))
 	}
 }
 

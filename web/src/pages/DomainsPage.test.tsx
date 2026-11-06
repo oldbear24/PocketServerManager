@@ -298,6 +298,11 @@ describe("managing a provider", () => {
       target: { value: "admin@example.cz" },
     });
     expect(within(drawer).getByLabelText("WAPI password")).toHaveAttribute("type", "password");
+    // a browser fills no saved login of the panel in here
+    expect(within(drawer).getByLabelText("WAPI password")).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
     fireEvent.change(within(drawer).getByLabelText("WAPI password"), {
       target: { value: "new-secret" },
     });
@@ -328,7 +333,7 @@ describe("managing a provider", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Add" }));
     await waitFor(() => expect(add).toHaveBeenCalledWith("p2", "shop.example.cz"));
 
-    fireEvent.click(within(drawer).getByLabelText("PocketCloud manages example.org"));
+    fireEvent.click(within(drawer).getByLabelText("Managed: example.org"));
     await waitFor(() => expect(setManaged).toHaveBeenCalledWith("z2", false));
 
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove the zone example.org" }));

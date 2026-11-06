@@ -527,7 +527,7 @@ export function ManageProviderDrawer({
                   checked={zone.managed}
                   disabled={busy}
                   onChange={() => void run(() => dnsApi.setManaged(zone.id, !zone.managed))}
-                  aria-label={t("dns.manageZone", { zone: zone.name })}
+                  aria-label={t("dns.managedZone", { zone: zone.name })}
                 />
                 <span>{t("dns.managed")}</span>
               </label>
@@ -605,7 +605,7 @@ export function ManageProviderDrawer({
                 id={`manage-field-${field.name}`}
                 className="input mono"
                 type={field.secret ? "password" : "text"}
-                autoComplete="off"
+                autoComplete={field.secret ? "new-password" : "off"}
                 value={credentials[field.name] ?? ""}
                 onChange={(event) =>
                   setCredentials((current) => ({ ...current, [field.name]: event.target.value }))
@@ -828,7 +828,7 @@ export function ConnectDialog({ hosts, onClose }: { hosts: Host[]; onClose: () =
               className="input mono"
               type={field.secret ? "password" : "text"}
               placeholder={field.name === "url" ? "http://192.168.1.2:3000" : undefined}
-              autoComplete="off"
+              autoComplete={field.secret ? "new-password" : "off"}
               value={credentials[field.name] ?? ""}
               onChange={(event) =>
                 setCredentials((current) => ({ ...current, [field.name]: event.target.value }))

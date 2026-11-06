@@ -1100,7 +1100,6 @@
     "state": "Stav",
     "managed": "Spravovaná",
     "unused": "zatím nevyužito",
-    "manageZone": "PocketCloud spravuje {{zone}}",
     "kind": "Poskytovatel",
     "name": "Název",
     "zonesField": "Zóny, oddělené čárkami",
@@ -1211,7 +1210,8 @@
     "hostsIn_few": "{{count}} hosty · {{names}}",
     "hostsIn_many": "{{count}} hostu · {{names}}",
     "hostsIn_other": "{{count}} hostů · {{names}}",
-    "supportedKinds": "Podporováno: {{kinds}}."
+    "supportedKinds": "Podporováno: {{kinds}}.",
+    "managedZone": "Spravovaná: {{zone}}"
   },
   "cert": {
     "title": "Certifikáty",
@@ -1325,7 +1325,9 @@
     "caPrimary": "jen {{ca}} (výchozí)",
     "caFallback": "jen {{ca}} (záložní)",
     "progress": "Průběh",
-    "progressName": "Průběh vydání certifikátu pro {{name}}"
+    "progressName": "Průběh vydání certifikátu pro {{name}}",
+    "caOneThenOther": "{{ca}}, a druhý účet, až bude",
+    "noSuchAccount": "účet, který není nastavený"
   },
   "acme": {
     "title": "Certifikáty (ACME)",

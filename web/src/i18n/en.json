@@ -1048,7 +1048,6 @@
     "state": "State",
     "managed": "Managed",
     "unused": "not used yet",
-    "manageZone": "PocketCloud manages {{zone}}",
     "kind": "Provider",
     "name": "Name",
     "zonesField": "Zones, separated by commas",
@@ -1157,7 +1156,8 @@
     "notManaged": "not managed by PocketCloud",
     "hostsIn_one": "{{count}} host · {{names}}",
     "hostsIn_other": "{{count}} hosts · {{names}}",
-    "supportedKinds": "Supported: {{kinds}}."
+    "supportedKinds": "Supported: {{kinds}}.",
+    "managedZone": "Managed: {{zone}}"
   },
   "cert": {
     "title": "Certificates",
@@ -1261,7 +1261,9 @@
     "caPrimary": "{{ca}} only (primary)",
     "caFallback": "{{ca}} only (fallback)",
     "progress": "Progress",
-    "progressName": "How far the certificate for {{name}} got"
+    "progressName": "Progress of the certificate for {{name}}",
+    "caOneThenOther": "{{ca}}, and the other account once one is set",
+    "noSuchAccount": "an account that is not set"
   },
   "acme": {
     "title": "Certificates (ACME)",

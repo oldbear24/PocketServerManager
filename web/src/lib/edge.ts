@@ -105,6 +105,8 @@ export type Certificate = RecordModel & {
   next_attempt: string;
   attempt_started: string;
   history: CertificateAttempt[] | null;
+  /** asked of this ACME account alone, without the other (#27) */
+  account?: "" | "primary" | "fallback";
 };
 
 export const edgeApi = {

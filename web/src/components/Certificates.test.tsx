@@ -228,7 +228,7 @@ describe("the certificates table", () => {
     });
     expect(retry).toHaveClass("warning");
     const progress = screen.getByRole("button", {
-      name: "How far the certificate for docs.example.com got",
+      name: "Progress of the certificate for docs.example.com",
     });
     expect(progress).toHaveTextContent("Progress");
     fireEvent.click(progress);
@@ -236,6 +236,36 @@ describe("the certificates table", () => {
     expect(
       screen.getByRole("button", { name: "Details of the certificate for shop.example.com" }),
     ).toHaveTextContent("Detail");
+  });
+
+  it("names the CA a certificate is asked of alone, before it is issued", () => {
+    const pinned = cert({
+      id: "c4",
+      names: ["*.example.org"],
+      fingerprint: "",
+      chain_pem: "",
+      issuer_name: "",
+      status: "pending",
+      account: "fallback",
+    });
+    wrap(
+      <CertificatesCard
+        certificates={[pinned]}
+        hosts={hosts}
+        zones={[]}
+        providers={[]}
+        accounts={accounts}
+        canRetry
+        isAdmin
+        loading={false}
+        onRequest={() => undefined}
+      />,
+    );
+    const row = screen.getByText("*.example.org").closest("tr")!;
+    expect(within(row).getByText("ZeroSSL")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: /Details of the certificate/ }));
+    const drawer = screen.getByRole("dialog", { name: "*.example.org" });
+    expect(within(drawer).getByText("ZeroSSL only (fallback)")).toBeTruthy();
   });
 
   it("shows a renewal that waits as needing action", () => {
@@ -338,6 +368,28 @@ describe("requesting a certificate", () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(request).toHaveBeenCalledWith(["shop.example.com"], "auto", "acme", "fallback");
+  });
+
+  it("asks the accounts in turn by default, also with one", async () => {
+    const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
+    const onClose = vi.fn();
+    wrap(<RequestCertificateDialog accounts={[accounts[0]]} onClose={onClose} />);
+
+    const ca = screen.getByLabelText("Certificate authority");
+    expect(
+      within(ca)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "Let's Encrypt, and the other account once one is set",
+      "Let's Encrypt only (primary)",
+      "Internal CA",
+    ]);
+    fireEvent.change(screen.getByLabelText("Names"), { target: { value: "shop.example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Issue certificate" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    // not tied to the one there is: a fallback set later is asked too
+    expect(request).toHaveBeenCalledWith(["shop.example.com"], "auto", "acme", "");
   });
 
   it("says when there is no ACME account to ask", () => {
