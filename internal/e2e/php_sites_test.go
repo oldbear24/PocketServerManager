@@ -1,7 +1,10 @@
 package e2e
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -262,4 +265,151 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	s.waitFor("the site's PHP-FPM and network to go", func() bool {
 		return s.docker.Find("shop-php") == nil && s.docker.FindNetwork("pcsite-shop") == nil
 	})
+}
+
+// TestANewPHPSiteIsSetUpWithItsPHPFPMBeforeItsRelease: the wizard's flow for
+// a PHP site (#50): its PHP-FPM, on the version chosen, starts before its
+// first release, and the release is served from the web root chosen.
+func TestANewPHPSiteIsSetUpWithItsPHPFPMBeforeItsRelease(t *testing.T) {
+	h := newProvisionHarness(t)
+	h.resolvers.set("php.example.org", "A", "203.0.114.7")
+	h.resolvers.set("php.example.org", "AAAA", "2a01:4f8::7")
+	version := php.Versions()[len(php.Versions())-1].Version
+
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for name, content := range map[string]string{"public/index.php": "<?php echo 'hi';", "src/App.php": "<?php"} {
+		file, _ := writer.Create(name)
+		_, _ = file.Write([]byte(content))
+	}
+	_ = writer.Close()
+	send := func(phpSettings map[string]any) (int, string) {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		data, _ := json.Marshal(map[string]any{
+			"site":     map[string]any{"name": "phpsite", "host": h.host.Id, "type": schema.SitePHPApp, "source": "upload"},
+			"hostname": "php.example.org",
+			"php":      phpSettings,
+		})
+		_ = form.WriteField("data", string(data))
+		part, _ := form.CreateFormFile("file", "site.zip")
+		_, _ = part.Write(archive.Bytes())
+		_ = form.Close()
+		return testutil.Do(t, h.handler, testutil.Request{Method: http.MethodPost, URL: "/api/pc/sites/provision", Token: h.operator, Body: body.String(),
+			Headers: map[string]string{"Content-Type": form.FormDataContentType()}})
+	}
+
+	// what is wrong is said before anything is made
+	for _, bad := range []map[string]any{
+		{"version": "5.6"}, {"docroot": "../x"}, {"template": "drupal"}, {"database_server": "nosuchserver"},
+	} {
+		if status, raw := send(bad); status != http.StatusBadRequest {
+			t.Errorf("%v: %d %s", bad, status, raw)
+		}
+	}
+	if _, err := h.app.FindFirstRecordByData(schema.Sites, "name", "phpsite"); err == nil {
+		t.Fatal("a site was made for a request that was refused")
+	}
+
+	status, raw := send(map[string]any{"version": version, "docroot": "public"})
+	if status != http.StatusCreated {
+		t.Fatalf("the new site: %d %s", status, raw)
+	}
+	var out map[string]string
+	_ = json.Unmarshal([]byte(raw), &out)
+	setup := h.waitSetup(out["provision"], schema.CommandSucceeded, schema.CommandFailed)
+	steps := h.steps(out["provision"])
+	if setup.GetString("status") != schema.CommandSucceeded {
+		t.Fatalf("the setup: %v; steps %s", setup.PublicExport(), stepTypes(steps))
+	}
+	if got := stepTypes(steps); got != "site.create:succeeded site.dns:succeeded site.propagation:succeeded site.php.apply:succeeded site.deploy:succeeded site.certificate:succeeded site.check:succeeded" {
+		t.Errorf("steps: %s", got)
+	}
+	settings, err := h.app.FindFirstRecordByData(schema.SitePHP, "site", out["site"])
+	if err != nil || settings.GetString("php_version") != version || settings.GetString("docroot") != "public" || settings.GetString("state") != schema.PHPRunning {
+		t.Fatalf("the settings: %v %v", err, settings)
+	}
+	container := h.docker.Find("phpsite-php")
+	if container == nil {
+		t.Fatal("no PHP-FPM")
+	}
+	if image, _ := container.Config["Image"].(string); image != php.Image+":"+version+"-fpm" {
+		t.Errorf("image %q", image)
+	}
+	if served, err := os.ReadFile(filepath.Join(h.sites, "phpsite", "current", "public", "index.php")); err != nil || string(served) != "<?php echo 'hi';" {
+		t.Errorf("served: %q %v", served, err)
+	}
+}
+
+// TestADatabaseOfASiteReachesItsPHPFPM: a database made for a PHP site (#50)
+// puts its server on a network of the site's, which its PHP-FPM joins, and
+// gives the site's environment what it needs, its password as a secret.
+func TestADatabaseOfASiteReachesItsPHPFPM(t *testing.T) {
+	d := newDatabaseHarness(t)
+	d.host.Set("roles", []string{schema.HostRoleDocker, schema.HostRoleEdge})
+	if err := d.app.Save(d.host); err != nil {
+		t.Fatal(err)
+	}
+	server := d.createServer("db-main", schema.EngineMariaDB)
+	status, body := d.post("/api/collections/sites/records", d.operator, map[string]any{"name": "shop", "host": d.host.Id, "type": schema.SitePHPApp, "source": "upload"})
+	if status != http.StatusOK {
+		t.Fatalf("the site: %d %s", status, body)
+	}
+	var site struct{ ID string }
+	answerOf(t, body, &site)
+
+	if status, body := d.post("/api/pc/databases", d.operator, map[string]any{"server": server.Id, "name": "shop", "site": site.ID, "stack": "x"}); status != http.StatusBadRequest {
+		t.Errorf("a stack and a site: %d %s", status, body)
+	}
+	status, body = d.post("/api/pc/databases", d.operator, map[string]any{"server": server.Id, "name": "shop", "site": site.ID})
+	if status != http.StatusOK {
+		t.Fatalf("the database: %d %s", status, body)
+	}
+	var created struct {
+		Database struct{ ID string } `json:"database"`
+	}
+	answerOf(t, body, &created)
+	d.waitFor("the database to be ready", func() bool {
+		database, err := d.app.FindRecordById(schema.Databases, created.Database.ID)
+		return err == nil && database.GetString("status") == "ready"
+	})
+	database, _ := d.app.FindRecordById(schema.Databases, created.Database.ID)
+	if database.GetString("owner_kind") != "site" || database.GetString("site") != site.ID || database.GetString("last_error") != "" {
+		t.Errorf("the database: %v", database.PublicExport())
+	}
+
+	settings, err := d.app.FindFirstRecordByData(schema.SitePHP, "site", site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := settings.GetString("env")
+	for _, line := range []string{"DB_HOST=db-main", "DB_PORT=3306", "DB_NAME=shop", "DB_USER=shop", "DB_PASSWORD=${secret:db/shop}"} {
+		if !strings.Contains(env, line) {
+			t.Errorf("the environment has no %s:\n%s", line, env)
+		}
+	}
+	if settings.GetString("database") != database.Id {
+		t.Errorf("the settings' database: %q", settings.GetString("database"))
+	}
+	network, err := d.app.FindFirstRecordByFilter(schema.DBNetworks, "site={:s}", dbx.Params{"s": site.ID})
+	if err != nil || network.GetString("name") != "pcdb-site.shop" || network.GetString("server") != server.Id {
+		t.Fatalf("the network: %v %v", err, network)
+	}
+	// the server joins it, and the site's PHP-FPM is applied with it
+	d.waitFor("the server to join the site's network", func() bool {
+		attach, err := d.app.FindFirstRecordByFilter(schema.Commands, "type='db.network.attach' && label={:l}", dbx.Params{"l": "shop → db-main"})
+		return err == nil && attach.GetString("status") == schema.CommandSucceeded
+	})
+	apply, err := d.app.FindFirstRecordByFilter(schema.Commands, "type='site.php.apply'", dbx.Params{})
+	if err != nil {
+		t.Fatal("PHP-FPM was not applied with the database")
+	}
+	var payload struct {
+		Networks []string `json:"networks"`
+	}
+	raw, _ := json.Marshal(apply.Get("payload"))
+	_ = json.Unmarshal(raw, &payload)
+	if !slices.Contains(payload.Networks, "pcdb-site.shop") {
+		t.Errorf("PHP-FPM's networks: %v", payload.Networks)
+	}
 }

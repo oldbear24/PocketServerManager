@@ -584,6 +584,8 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 		Server string `json:"server"`
 		Name   string `json:"name"`
 		Stack  string `json:"stack"`
+		// a PHP site the database is for (#50)
+		Site string `json:"site"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
@@ -592,6 +594,21 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 	server, err := p.App.FindRecordById(schema.DBServers, body.Server)
 	if err != nil {
 		return e.NotFoundError("The database server does not exist.", err)
+	}
+	if body.Stack != "" && body.Site != "" {
+		return e.BadRequestError("A database is for a stack or for a site, not both.", nil)
+	}
+	if body.Site != "" {
+		site, err := p.App.FindRecordById(schema.Sites, body.Site)
+		if err != nil {
+			return e.NotFoundError("The site does not exist.", err)
+		}
+		if site.GetString("type") != schema.SitePHPApp {
+			return e.BadRequestError("Only a PHP site has a database.", nil)
+		}
+		if site.GetString("host") != server.GetString("host") {
+			return e.BadRequestError("A site can only use the database servers of its own server.", nil)
+		}
 	}
 
 	if body.Stack != "" {
@@ -604,7 +621,9 @@ func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
 		}
 	}
 
-	database, command, err := p.newDatabase(e.Request.Context(), databaseRequestOf(e, body.Stack), server, body.Name, func(user string) *agentv1.Command {
+	request := databaseRequestOf(e, body.Stack)
+	request.Site = body.Site
+	database, command, err := p.newDatabase(e.Request.Context(), request, server, body.Name, func(user string) *agentv1.Command {
 		return &agentv1.Command{Payload: &agentv1.Command_DbDatabaseCreate{DbDatabaseCreate: &agentv1.DbDatabaseCreate{
 			Connection: connectionOf(server),
 			Database:   body.Name,

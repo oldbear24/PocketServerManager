@@ -20,10 +20,13 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/router"
 
+	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
+	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
@@ -50,6 +53,22 @@ import (
 
 // provisionSteps are the steps of a new site, in order.
 var provisionSteps = []string{"site.create", "site.dns", "site.propagation", "site.deploy", "site.certificate", "site.check"}
+
+// phpProvisionSteps are those of a new PHP site (#50): its database, when it
+// has one, then its PHP-FPM, before its first release. They are the agent's
+// own commands, as a deployment is.
+var phpProvisionSteps = []string{"site.create", "site.dns", "site.propagation", "db.database.create", "site.php.apply", "site.deploy", "site.certificate", "site.check"}
+
+// steps are a flow's steps, in order.
+func (payload provisionPayload) steps() []string {
+	if payload.PHP == nil {
+		return provisionSteps
+	}
+	if payload.PHP.DatabaseServer == "" {
+		return slices.DeleteFunc(slices.Clone(phpProvisionSteps), func(step string) bool { return step == "db.database.create" })
+	}
+	return phpProvisionSteps
+}
 
 const (
 	// provisionPause is how long a failed step waits for Retry before the
@@ -146,6 +165,10 @@ func (p *Panel) registerProvision() {
 		}
 	}
 	p.Commands.OnFinish("site.deploy", advanceParent)
+	// a new PHP site's database and PHP-FPM; the database's own hook has
+	// connected the site by the time this one runs
+	p.Commands.OnFinish("db.database.create", advanceParent)
+	p.Commands.OnFinish("site.php.apply", advanceParent)
 	for _, step := range provisionSteps {
 		if commands.PanelRun(step) {
 			p.Commands.OnFinish(step, advanceParent)
@@ -183,6 +206,18 @@ type provisionPayload struct {
 	Hostname  string `json:"hostname"`
 	WWW       string `json:"www,omitempty"`
 	Challenge string `json:"challenge"`
+	// PHP is what a new PHP site was asked for (#50)
+	PHP *provisionPHP `json:"php,omitempty"`
+}
+
+// provisionPHP is a new PHP site's version, web root, template, and the
+// database made for it on a server of its host, if any.
+type provisionPHP struct {
+	Version        string `json:"version"`
+	Docroot        string `json:"docroot"`
+	Template       string `json:"template"`
+	DatabaseServer string `json:"database_server,omitempty"`
+	Database       string `json:"database,omitempty"`
 }
 
 func payloadOf(command *core.Record) provisionPayload {
@@ -194,7 +229,7 @@ func payloadOf(command *core.Record) provisionPayload {
 
 // siteFields are what the wizard may set of a new site.
 var siteFields = []string{
-	"name", "host", "source", "repo_url", "branch", "generator", "build_image", "build_cmd", "output_dir",
+	"name", "host", "type", "source", "repo_url", "branch", "generator", "build_image", "build_cmd", "output_dir",
 	"build_cpus", "build_memory_mb", "keep_releases", "git_token", "basic_auth",
 	"https_redirect", "hsts", "compress", "spa", "not_found", "headers", "cache_rules",
 }
@@ -208,6 +243,7 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		Hostname  string         `json:"hostname"`
 		WWW       bool           `json:"www"`
 		Challenge string         `json:"challenge"`
+		PHP       *provisionPHP  `json:"php"`
 	}
 	if data := e.Request.FormValue("data"); data != "" {
 		if err := json.Unmarshal([]byte(data), &body); err != nil {
@@ -263,6 +299,12 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 	if preview := p.previewDNS(hostname, host.Id, ""); preview.Problem != "" {
 		return e.BadRequestError(preview.Problem, nil)
 	}
+	var phpRequest *provisionPHP
+	if site.GetString("type") == schema.SitePHPApp {
+		if phpRequest, err = p.checkProvisionPHP(body.PHP, site, host); err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+	}
 
 	var upload *uploadedZip
 	if site.GetString("source") == sites.SourceUpload {
@@ -288,16 +330,35 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		return e.BadRequestError("The site cannot be created.", err)
 	}
 
+	if phpRequest != nil {
+		// the site was made with the defaults: the wizard's choices go in
+		settings, err := p.phpSettings(e.App, site)
+		if err == nil {
+			settings.Set("php_version", phpRequest.Version)
+			settings.Set("docroot", phpRequest.Docroot)
+			settings.Set("template", phpRequest.Template)
+			err = e.App.SaveWithContext(ctx, settings)
+		}
+		if err != nil {
+			_ = e.App.Delete(site)
+			return e.InternalServerError("Failed to start the new site.", err)
+		}
+	}
+
 	userID, label := requester(e)
+	payload := map[string]any{
+		"site": site.Id, "site_name": site.GetString("name"), "hostname": hostname, "www": www, "challenge": challenge,
+	}
+	if phpRequest != nil {
+		payload["php"] = phpRequest
+	}
 	parent, err := p.Commands.Begin(ctx, commands.Options{
 		Host:        host.Id,
 		Type:        "site.provision",
 		Label:       truncate(fmt.Sprintf("%s at %s", site.GetString("name"), hostname), 255),
 		RequestedBy: userID,
 		Requester:   label,
-	}, map[string]any{
-		"site": site.Id, "site_name": site.GetString("name"), "hostname": hostname, "www": www, "challenge": challenge,
-	})
+	}, payload)
 	if err != nil {
 		_ = e.App.Delete(site)
 		return e.InternalServerError("Failed to start the new site.", err)
@@ -376,11 +437,12 @@ func (p *Panel) advanceProvision(parentID string) {
 	}
 	defer lock.Unlock()
 
-	for range len(provisionSteps) + 1 {
+	for range len(phpProvisionSteps) + 1 {
 		parent, err := p.App.FindRecordById(schema.Commands, parentID)
 		if err != nil || parent.GetString("status") != schema.CommandRunning {
 			return
 		}
+		flowSteps := payloadOf(parent).steps()
 		steps := p.stepsOf(parentID)
 		if len(steps) == 0 {
 			return
@@ -393,17 +455,17 @@ func (p *Panel) advanceProvision(parentID string) {
 			if strings.HasPrefix(pausedOf(parent), "start:") {
 				return // the next step could not start: it waits for Retry
 			}
-			index := slices.Index(provisionSteps, last.GetString("type"))
-			if index == len(provisionSteps)-1 {
+			index := slices.Index(flowSteps, last.GetString("type"))
+			if index == len(flowSteps)-1 {
 				payload := payloadOf(parent)
 				_ = p.Commands.Settle(parentID, schema.CommandSucceeded, "", map[string]any{"url": "https://" + payload.Hostname})
 				events.Log(p.App, parent.GetString("host"), "site.provisioned", schema.SeverityInfo,
 					fmt.Sprintf("%s is live at https://%s.", payload.SiteName, payload.Hostname), map[string]any{"site": payload.Site, "command": parentID})
 				return
 			}
-			if err := p.startProvisionStep(parent, provisionSteps[index+1]); err != nil {
-				p.Log.Warn("a step of a new site could not start", "command", parentID, "step", provisionSteps[index+1], "error", err)
-				p.pauseStart(parent, provisionSteps[index+1], err)
+			if err := p.startProvisionStep(parent, flowSteps[index+1]); err != nil {
+				p.Log.Warn("a step of a new site could not start", "command", parentID, "step", flowSteps[index+1], "error", err)
+				p.pauseStart(parent, flowSteps[index+1], err)
 				return
 			}
 			continue
@@ -427,8 +489,11 @@ func (p *Panel) advanceProvision(parentID string) {
 // startProvisionStep starts a step: the panel's own as a running command it
 // works on, the deployment as the agent's command.
 func (p *Panel) startProvisionStep(parent *core.Record, step string) error {
-	if step == "site.deploy" {
+	switch step {
+	case "site.deploy":
 		return p.startProvisionDeploy(parent)
+	case "db.database.create", "site.php.apply":
+		return p.startProvisionPHP(parent, step)
 	}
 	command, err := p.beginStep(parent, step)
 	if err != nil {
@@ -1218,4 +1283,101 @@ func askSite(ctx context.Context, url, address string, roots *x509.CertPool) (si
 		answer.TLS = tls.VersionName(response.TLS.Version)
 	}
 	return answer, nil
+}
+
+// checkProvisionPHP checks what a new PHP site was asked for, with the
+// defaults for what was left out (#50).
+func (p *Panel) checkProvisionPHP(request *provisionPHP, site, host *core.Record) (*provisionPHP, error) {
+	checked := provisionPHP{Version: defaultPHPVersion(time.Now()), Template: schema.PHPCustom}
+	if request != nil {
+		checked = *request
+		if checked.Version == "" {
+			checked.Version = defaultPHPVersion(time.Now())
+		}
+		if checked.Template == "" {
+			checked.Template = schema.PHPCustom
+		}
+	}
+	checked.Docroot = strings.Trim(strings.TrimSpace(checked.Docroot), "/")
+	if _, found := php.Find(checked.Version); !found {
+		return nil, fmt.Errorf("PocketCloud has no runtime image of PHP %s", checked.Version)
+	}
+	if checked.Docroot != "" && (!docrootPath.MatchString(checked.Docroot) || slices.Contains(strings.Split(checked.Docroot, "/"), "..")) {
+		return nil, errors.New("the web root is a directory of the release, such as public, or empty for the release itself")
+	}
+	if !slices.Contains([]string{schema.PHPCustom, schema.PHPWordPress, schema.PHPLaravel, schema.PHPNette}, checked.Template) {
+		return nil, errors.New("the application is custom, wordpress, laravel or nette")
+	}
+	if checked.DatabaseServer == "" {
+		checked.Database = ""
+		return &checked, nil
+	}
+	server, err := p.App.FindRecordById(schema.DBServers, checked.DatabaseServer)
+	if err != nil || server.GetString("host") != host.Id {
+		return nil, errors.New("the database server is not one of the site's server")
+	}
+	engine, err := engineOfServer(server)
+	if err != nil {
+		return nil, err
+	}
+	if checked.Database == "" {
+		checked.Database = strings.ReplaceAll(site.GetString("name"), "-", "_")
+	}
+	if err := databases.ValidDatabaseName(engine, checked.Database); err != nil {
+		return nil, err
+	}
+	if used, _ := p.App.FindRecordsByFilter(schema.DBUsers, "secret_name={:secret} && server.host={:host}", "", 1, 0,
+		dbx.Params{"secret": databases.SecretName(checked.Database), "host": host.Id}); len(used) > 0 {
+		return nil, fmt.Errorf("this server already has a database named %s: choose another name", checked.Database)
+	}
+	return &checked, nil
+}
+
+// startProvisionPHP starts a new PHP site's database or PHP-FPM, as commands
+// of the agent with the flow as their parent (#50).
+func (p *Panel) startProvisionPHP(parent *core.Record, step string) error {
+	payload := payloadOf(parent)
+	site, err := p.App.FindRecordById(schema.Sites, payload.Site)
+	if err != nil {
+		_ = p.Commands.Settle(parent.Id, schema.CommandFailed, "The site is gone.", nil)
+		return nil //nolint:nilerr // the flow is settled, so there is no step to start
+	}
+	if payload.PHP == nil {
+		return errors.New("the setup is not one of a PHP site")
+	}
+	ctx := context.Background()
+	if step == "site.php.apply" {
+		_, err := p.applyPHP(ctx, site, commands.Options{
+			RequestedBy: parent.GetString("requested_by"), Requester: parent.GetString("requested_label"),
+			Parent: parent.Id, Correlation: parent.Id,
+		})
+		return err
+	}
+	server, err := p.App.FindRecordById(schema.DBServers, payload.PHP.DatabaseServer)
+	if err != nil {
+		return errors.New("the database server is gone")
+	}
+	create := func(user string) *agentv1.Command {
+		return &agentv1.Command{Payload: &agentv1.Command_DbDatabaseCreate{DbDatabaseCreate: &agentv1.DbDatabaseCreate{
+			Connection: connectionOf(server),
+			Database:   payload.PHP.Database,
+			User:       user,
+		}}}
+	}
+	// a Retry sends the create again for the records the first try made: the
+	// server makes what is missing, and the command's end connects the site
+	if database, err := p.App.FindFirstRecordByFilter(schema.Databases, "server={:server} && name={:name} && site={:site}",
+		dbx.Params{"server": server.Id, "name": payload.PHP.Database, "site": site.Id}); err == nil {
+		_, err = p.Commands.Create(ctx, commands.Options{
+			Host: server.GetString("host"), Label: server.GetString("name") + "/" + database.GetString("name"),
+			RequestedBy: parent.GetString("requested_by"), Requester: parent.GetString("requested_label"),
+			Parent: parent.Id, Correlation: parent.Id, Command: create(database.GetString("name")),
+		})
+		return err
+	}
+	_, _, err = p.newDatabase(ctx, databaseRequest{
+		Actor: dbActor, UserID: parent.GetString("requested_by"), Label: parent.GetString("requested_label"),
+		Site: site.Id, Parent: parent.Id,
+	}, server, payload.PHP.Database, create)
+	return err
 }
