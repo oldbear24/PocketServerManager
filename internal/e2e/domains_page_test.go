@@ -76,9 +76,11 @@ func TestACertificateAskedOfOneCAGoesToItOnly(t *testing.T) {
 	if !strings.Contains(cert.GetString("last_error"), "asked of the fallback ACME account alone") {
 		t.Errorf("last error: %q", cert.GetString("last_error"))
 	}
-	if alerts, _ := a.app.FindRecordsByFilter(schema.Alerts, "rule='certificate_failed' && target={:id} && status='open'", "", 0, 0, dbx.Params{"id": cert.Id}); len(alerts) != 1 {
-		t.Errorf("alerts: %d", len(alerts))
-	}
+	// the alert follows the failed attempt
+	a.waitFor("the certificate's alert", func() bool {
+		alerts, _ := a.app.FindRecordsByFilter(schema.Alerts, "rule='certificate_failed' && target={:id} && status='open'", "", 0, 0, dbx.Params{"id": cert.Id})
+		return len(alerts) == 1
+	})
 
 	// removed through Settings, an account leaves its certificates to the
 	// accounts there are, in turn
