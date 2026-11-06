@@ -1156,7 +1156,8 @@
     "noZonesText": "Connect a DNS provider: its zones show here, with the names PocketCloud keeps in each.",
     "notManaged": "not managed by PocketCloud",
     "hostsIn_one": "{{count}} host · {{names}}",
-    "hostsIn_other": "{{count}} hosts · {{names}}"
+    "hostsIn_other": "{{count}} hosts · {{names}}",
+    "supportedKinds": "Supported: {{kinds}}."
   },
   "cert": {
     "title": "Certificates",

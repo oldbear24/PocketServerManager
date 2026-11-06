@@ -231,6 +231,9 @@ describe("the DNS providers", () => {
     live.lists.dns_zones = [];
     page();
     expect(screen.getByRole("article", { name: "No DNS provider yet" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Supported: Cloudflare, Hetzner DNS, WEDOS (WAPI), AdGuard Home, Pi-hole."),
+    ).toBeInTheDocument();
     expect(screen.getByText("No zones yet")).toBeInTheDocument();
   });
 

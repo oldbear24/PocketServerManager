@@ -1210,7 +1210,8 @@
     "hostsIn_one": "{{count}} host · {{names}}",
     "hostsIn_few": "{{count}} hosty · {{names}}",
     "hostsIn_many": "{{count}} hostu · {{names}}",
-    "hostsIn_other": "{{count}} hostů · {{names}}"
+    "hostsIn_other": "{{count}} hostů · {{names}}",
+    "supportedKinds": "Podporováno: {{kinds}}."
   },
   "cert": {
     "title": "Certifikáty",

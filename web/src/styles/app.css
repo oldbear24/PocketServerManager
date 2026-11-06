@@ -1964,7 +1964,8 @@ textarea.input {
 
 .provider-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  /* auto-fill: a lone card keeps the width of one */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
 

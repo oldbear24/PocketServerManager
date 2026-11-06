@@ -247,9 +247,11 @@ function ProvidersSection({
             </div>
             <p className="provider-card-zones">{t("dns.manualMode")}</p>
             <p className="provider-card-note muted">
-              {others.length > 0
-                ? t("dns.alsoSupported", { kinds: others.join(", ") })
-                : t("dns.anotherAccount")}
+              {providers.length === 0
+                ? t("dns.supportedKinds", { kinds: others.join(", ") })
+                : others.length > 0
+                  ? t("dns.alsoSupported", { kinds: others.join(", ") })
+                  : t("dns.anotherAccount")}
             </p>
             {isAdmin && (
               <Button size="small" className="provider-card-action" onClick={onConnect}>
