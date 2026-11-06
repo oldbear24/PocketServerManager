@@ -38,7 +38,8 @@ const (
 	KindProxy = "proxy"
 	// KindRedirect answers every request with a redirect.
 	KindRedirect = "redirect"
-	// KindSite serves the files of a static site's current release (#21).
+	// KindSite serves the files of a site's current release (#21), and for a
+	// PHP site (#50) hands its PHP scripts to the site's PHP-FPM container.
 	KindSite = "site"
 )
 
@@ -98,6 +99,10 @@ type SiteOptions struct {
 	Headers []SiteHeader `json:"headers,omitempty"`
 	// Cache sets how long browsers may keep the files of a path.
 	Cache []CacheRule `json:"cache,omitempty"`
+	// FastCGI is "<name>:<port>" of a PHP site's PHP-FPM container (#50): a
+	// script under Root goes to it, as Caddy's php_fastcgi does, and other
+	// files are served as they are. SPA and NotFound are for static sites.
+	FastCGI string `json:"fastcgi,omitempty"`
 }
 
 // SiteHeader is a response header for the paths that match Path: "/" plus a
@@ -278,7 +283,9 @@ func (c Config) Validate() error {
 
 var (
 	headerName = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_|~-]+$`)
-	sitePath   = regexp.MustCompile(`^(/[^\s{}]*|\*\.[A-Za-z0-9]+)$`)
+	// fastcgiUpstream is a container's name or alias on a network of the edge
+	fastcgiUpstream = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,126}[a-z0-9])?:[0-9]{1,5}$`)
+	sitePath        = regexp.MustCompile(`^(/[^\s{}]*|\*\.[A-Za-z0-9]+)$`)
 )
 
 // ValidSiteOptions checks how a site is served.
@@ -291,6 +298,15 @@ func ValidSiteOptions(options *SiteOptions) error {
 	}
 	if options.NotFound != "" && (!strings.HasPrefix(options.NotFound, "/") || strings.Contains(options.NotFound, "..") || strings.ContainsAny(options.NotFound, "{} ")) {
 		return fmt.Errorf("the 404 page %q is not a path such as /404.html", options.NotFound)
+	}
+	if options.FastCGI != "" {
+		if !fastcgiUpstream.MatchString(options.FastCGI) {
+			return fmt.Errorf("%q is not the name and port of a PHP-FPM container", options.FastCGI)
+		}
+		// a PHP application routes its own paths and answers its own 404s
+		if options.SPA || options.NotFound != "" {
+			return errors.New("a PHP site has no single-page fallback or 404 page of its own")
+		}
 	}
 	for _, header := range options.Headers {
 		if !headerName.MatchString(header.Name) {
@@ -731,6 +747,9 @@ func siteRoutes(route Route) []any {
 			"handle": []any{object{"handler": "headers", "response": object{"set": object{"Cache-Control": []string{value}}}}},
 		}))
 	}
+	if options.FastCGI != "" {
+		return append(routes, phpRoutes(options)...)
+	}
 	if options.SPA {
 		routes = append(routes, object{
 			"match": []any{object{"file": object{
@@ -742,6 +761,54 @@ func siteRoutes(route Route) []any {
 	}
 	routes = append(routes, object{"handle": []any{siteFiles(options.Root, "")}})
 	return routes
+}
+
+// phpRoutes are what Caddy's php_fastcgi directive expands to (caddy adapt,
+// 2.11.7), with the root named instead of taken from a variable:
+//   - a directory with an index.php but no trailing slash is redirected to one;
+//   - a path that is no file goes to index.php, the application's front controller;
+//   - a script goes to the PHP-FPM container, under the release that root's
+//     symlink points at now (resolve_root_symlink), so that a release switch
+//     takes effect between requests, and OPcache never mixes two releases;
+//   - any other file is served as it is, but none whose name starts with a
+//     dot, such as .env.
+func phpRoutes(options *SiteOptions) []any {
+	return []any{
+		object{
+			"match": []any{object{
+				"file": object{"root": options.Root, "try_files": []string{"{http.request.uri.path}/index.php"}},
+				"not":  []any{object{"path": []string{"*/"}}},
+			}},
+			"handle": []any{object{
+				"handler":     "static_response",
+				"status_code": 308,
+				"headers":     object{"Location": []string{"{http.request.orig_uri.path}/{http.request.orig_uri.prefixed_query}"}},
+			}},
+		},
+		object{
+			"match": []any{object{"file": object{
+				"root":       options.Root,
+				"split_path": []string{".php"},
+				"try_files":  []string{"{http.request.uri.path}", "{http.request.uri.path}/index.php", "index.php"},
+				"try_policy": "first_exist_fallback",
+			}}},
+			"handle": []any{object{"handler": "rewrite", "uri": "{http.matchers.file.relative}"}},
+		},
+		object{
+			"match": []any{object{"path": []string{"*.php"}}},
+			"handle": []any{object{
+				"handler": "reverse_proxy",
+				"transport": object{
+					"protocol":             "fastcgi",
+					"root":                 options.Root,
+					"split_path":           []string{".php"},
+					"resolve_root_symlink": true,
+				},
+				"upstreams": []any{object{"dial": options.FastCGI}},
+			}},
+		},
+		object{"handle": []any{object{"handler": "file_server", "root": options.Root, "hide": []string{".*"}}}},
+	}
 }
 
 func withMatch(match []any, route object) object {

@@ -279,6 +279,155 @@
             {
               "handle": [
                 {
+                  "encodings": {
+                    "gzip": {},
+                    "zstd": {}
+                  },
+                  "handler": "encode",
+                  "prefer": [
+                    "zstd",
+                    "gzip"
+                  ]
+                },
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "vars",
+                          "pocketcloud_site": "/srv/sites/shop/current/public"
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "response": {
+                            "set": {
+                              "Cache-Control": [
+                                "public, max-age=31536000"
+                              ]
+                            }
+                          }
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "/build/*"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "static_response",
+                          "headers": {
+                            "Location": [
+                              "{http.request.orig_uri.path}/{http.request.orig_uri.prefixed_query}"
+                            ]
+                          },
+                          "status_code": 308
+                        }
+                      ],
+                      "match": [
+                        {
+                          "file": {
+                            "root": "/srv/sites/shop/current/public",
+                            "try_files": [
+                              "{http.request.uri.path}/index.php"
+                            ]
+                          },
+                          "not": [
+                            {
+                              "path": [
+                                "*/"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "rewrite",
+                          "uri": "{http.matchers.file.relative}"
+                        }
+                      ],
+                      "match": [
+                        {
+                          "file": {
+                            "root": "/srv/sites/shop/current/public",
+                            "split_path": [
+                              ".php"
+                            ],
+                            "try_files": [
+                              "{http.request.uri.path}",
+                              "{http.request.uri.path}/index.php",
+                              "index.php"
+                            ],
+                            "try_policy": "first_exist_fallback"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "transport": {
+                            "protocol": "fastcgi",
+                            "resolve_root_symlink": true,
+                            "root": "/srv/sites/shop/current/public",
+                            "split_path": [
+                              ".php"
+                            ]
+                          },
+                          "upstreams": [
+                            {
+                              "dial": "shop-php:9000"
+                            }
+                          ]
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "*.php"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "file_server",
+                          "hide": [
+                            ".*"
+                          ],
+                          "root": "/srv/sites/shop/current/public"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "shop.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
                   "handler": "static_response",
                   "headers": {
                     "Location": [
@@ -705,6 +854,27 @@
                 {
                   "host": [
                     "private.example.org"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "http://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "shop.example.org"
                   ]
                 }
               ],
