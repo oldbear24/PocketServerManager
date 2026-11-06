@@ -31,6 +31,36 @@ import (
 
 const dnsTimeout = 30 * time.Second
 
+// alertDNSProviderFailed is the alert of a provider whose API fails.
+const alertDNSProviderFailed = "dns_provider_failed"
+
+// refreshProviderAlert raises the alert of a provider whose API failed, for
+// itself or for one of its managed zones, and resolves it once all answer.
+func (p *Panel) refreshProviderAlert(app core.App, providerID string) {
+	if providerID == "" {
+		return
+	}
+	message := ""
+	if provider, err := app.FindRecordById(schema.DNSProviders, providerID); err == nil {
+		name := provider.GetString("name")
+		if provider.GetString("status") == schema.DNSError {
+			message = name + ": " + provider.GetString("last_error")
+		} else if zones, err := app.FindRecordsByFilter(schema.DNSZones, "provider={:p} && managed=true && status={:e}", "name", 1, 0,
+			dbx.Params{"p": providerID, "e": schema.DNSError}); err == nil && len(zones) > 0 {
+			message = name + ": " + zones[0].GetString("name") + ": " + zones[0].GetString("last_error")
+		}
+	}
+	var err error
+	if message == "" {
+		err = events.ResolveAlert(app, alertDNSProviderFailed, providerID)
+	} else {
+		err = events.RaiseAlert(app, alertDNSProviderFailed, providerID, "", schema.SeverityWarning, truncateText(message, 2048))
+	}
+	if err != nil {
+		p.Log.Warn("failed to update an alert", "rule", alertDNSProviderFailed, "error", err)
+	}
+}
+
 func (p *Panel) registerDNS() {
 	p.App.OnRecordAfterCreateSuccess(schema.Domains).BindFunc(func(e *core.RecordEvent) error {
 		id := e.Record.Id
@@ -101,6 +131,27 @@ func (p *Panel) registerDNS() {
 	})
 	p.App.OnRecordValidate(schema.Hosts).BindFunc(p.validatePublicAddresses)
 	p.Commands.RegisterEnricher("dns.rewrite", p.enrichDNSRewrite)
+
+	// a provider whose API fails, or fails for one of its managed zones, has
+	// an alert that links to it (#27)
+	p.App.OnRecordAfterUpdateSuccess(schema.DNSProviders).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.Id)
+		return e.Next()
+	})
+	p.App.OnRecordAfterUpdateSuccess(schema.DNSZones).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.GetString("provider"))
+		return e.Next()
+	})
+	p.App.OnRecordAfterDeleteSuccess(schema.DNSZones).BindFunc(func(e *core.RecordEvent) error {
+		p.refreshProviderAlert(e.App, e.Record.GetString("provider"))
+		return e.Next()
+	})
+	p.App.OnRecordAfterDeleteSuccess(schema.DNSProviders).BindFunc(func(e *core.RecordEvent) error {
+		if err := events.ResolveAlert(e.App, alertDNSProviderFailed, e.Record.Id); err != nil {
+			p.Log.Warn("failed to resolve an alert", "rule", alertDNSProviderFailed, "error", err)
+		}
+		return e.Next()
+	})
 
 	p.App.Cron().MustAdd("pocketcloud_dns_propagation", "* * * * *", p.CheckDNSPropagation)
 	p.App.Cron().MustAdd("pocketcloud_dns_drift", "*/15 * * * *", p.CheckDNSDrift)

@@ -356,6 +356,9 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 		Challenge string   `json:"challenge"`
 		// Issuer is acme, the default, or internal for LAN names (#26).
 		Issuer string `json:"issuer"`
+		// Account asks one ACME account only, primary or fallback (#27);
+		// empty tries both.
+		Account string `json:"account"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid request.", err)
@@ -370,6 +373,14 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	}
 	if issuer != schema.IssuerACME && issuer != schema.IssuerInternal {
 		return e.BadRequestError("The issuer is acme or internal.", nil)
+	}
+	if body.Account != "" {
+		if issuer != schema.IssuerACME || body.Account != schema.ACMEPrimary && body.Account != schema.ACMEFallback {
+			return e.BadRequestError("The account is primary or fallback, for a certificate from ACME.", nil)
+		}
+		if account, err := p.acmeAccount(body.Account); err != nil || account == nil {
+			return e.BadRequestError(fmt.Sprintf("There is no %s ACME account: set one in Settings.", body.Account), nil)
+		}
 	}
 	challenge := body.Challenge
 	if challenge == "" {
@@ -413,6 +424,7 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	record.Set("issuer", issuer)
 	record.Set("status", schema.CertPending)
 	record.Set("challenge", challenge)
+	record.Set("account", body.Account)
 	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), record); err != nil {
 		return e.BadRequestError("Failed to store the certificate.", err)
 	}
@@ -732,7 +744,12 @@ func (p *Panel) issue(id, requester string, scheduled bool) {
 
 	accounts := []*acmeAccount{}
 	unusable := []string{}
-	for _, role := range []string{schema.ACMEPrimary, schema.ACMEFallback} {
+	roles := []string{schema.ACMEPrimary, schema.ACMEFallback}
+	if chosen := record.GetString("account"); chosen != "" {
+		// asked of one CA: the other is no fallback for it
+		roles = []string{chosen}
+	}
+	for _, role := range roles {
 		account, err := p.acmeAccount(role)
 		if err != nil {
 			unusable = append(unusable, capitalize(err.Error())+": set the account again in Settings.")
