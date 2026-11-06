@@ -359,6 +359,27 @@ message SiteDeploy {
   double cpu_limit = 15;
   // mem_limit_bytes is the build's memory limit; 0 for the default.
   int64 mem_limit_bytes = 16;
+  // php is set for a PHP site (#50): the build runs in its runtime image,
+  // the release keeps shared_paths in `shared/`, release_hook runs in it
+  // before it goes live, and the site's PHP-FPM container reloads after.
+  SitePhpDeploy php = 17;
+}
+
+// SitePhpDeploy is how a PHP site's release is built and made live.
+message SitePhpDeploy {
+  // image is the runtime image of the site's PHP version: the build and the
+  // release hook run in it, as PHP-FPM does.
+  string image = 1;
+  // docroot is the directory the edge serves, in the release, such as public.
+  string docroot = 2;
+  // classic keeps one release, which PHP-FPM may write, instead of a history.
+  bool classic = 3;
+  // env holds the release hook's environment without secrets.
+  map<string, string> env = 4;
+  // secrets holds the release hook's resolved secret environment variables.
+  map<string, string> secrets = 5 [(pocketcloud.options.v1.sensitive) = true];
+  // networks are the database networks the release hook joins.
+  repeated string networks = 6;
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.
@@ -367,6 +388,8 @@ message SiteRollback {
   string site = 1;
   // deployment is the release to activate.
   int32 deployment = 2;
+  // php reloads the site's PHP-FPM container after the switch (#50).
+  bool php = 3;
 }
 
 // SiteRemove removes a site's files and containers.
@@ -393,6 +416,11 @@ message SitePhpApply {
   double cpu_limit = 7;
   // mem_limit_bytes is the memory limit.
   uint64 mem_limit_bytes = 8;
+  // networks are the database networks the container joins besides its own.
+  repeated string networks = 9;
+  // classic lets PHP-FPM write the site's code, for an application that
+  // updates itself; otherwise only `shared/` is writable (#50).
+  bool classic = 10;
 }
 
 // TaskRun runs a scheduled task with `docker exec`.

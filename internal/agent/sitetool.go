@@ -29,7 +29,12 @@ import (
 //	             --output)
 //	release      move the built site into its release (--built: a build ran
 //	             and left an output of its own), switch the site to it, keep
-//	             --keep releases and clean up the deployment
+//	             --keep releases and clean up the deployment; --php keeps the
+//	             whole source, links --shared paths from shared/ and gives the
+//	             release to www-data; --no-switch leaves the switch to activate
+//	activate     serve release --n and keep --keep releases, once a PHP
+//	             site's release hook ran in it
+//	php-prepare  make a PHP site's directories, which its PHP-FPM mounts
 //	switch       serve release --n
 //	clean        remove what deployment --n left, its release too unless the
 //	             site serves it
@@ -73,6 +78,9 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	output := flags.String("output", "", "where the build leaves the site")
 	keep := flags.Int("keep", 5, "how many releases to keep")
 	built := flags.Bool("built", false, "a build ran")
+	php := flags.Bool("php", false, "a PHP site (#50)")
+	shared := flags.String("shared", "", "a PHP site's shared paths, separated by commas")
+	noSwitch := flags.Bool("no-switch", false, "leave the switch to activate")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -82,7 +90,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	if err := sites.ValidName(*site); err != nil {
 		return err
 	}
-	needsDeployment := op != "remove" && op != "sweep"
+	needsDeployment := op != "remove" && op != "sweep" && op != "php-prepare"
 	if needsDeployment && *n < 1 {
 		return errors.New("site-tool: --n names the deployment")
 	}
@@ -95,6 +103,12 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 			return err
 		}
 		switch chosen := *generator; {
+		case *php:
+			// a PHP site's build runs as www-data, who must write its vendor/
+			found.Plan = sites.PHPPlan(*image, *command)
+			if err := sites.Chown(sites.SourceDir(*root, *site, *n)); err != nil {
+				return err
+			}
 		case *kind == sites.SourceEmpty:
 			// the placeholder is a page of its own, not a source to build
 			found.Plan = sites.Plan{Generator: sites.GeneratorNone}
@@ -107,9 +121,23 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 		}
 		result = found
 	case "release":
-		release, err := sites.MakeRelease(*root, *site, *n, *output, *built)
+		var release sites.Release
+		var err error
+		if *php {
+			release, err = phpRelease(*root, *site, *n, *shared)
+		} else {
+			release, err = sites.MakeRelease(*root, *site, *n, *output, *built)
+		}
 		if err != nil {
 			return err
+		}
+		if *noSwitch {
+			if err := sites.Clean(*root, *site, *n); err != nil {
+				fmt.Fprintf(stderr, "The build directory could not be removed: %v\n", err)
+			}
+			fmt.Fprintf(stderr, "Release %d is ready: %d files, %d bytes.\n", *n, release.Files, release.SizeBytes)
+			result = releaseResult{Release: release, Releases: sites.Releases(*root, *site)}
+			break
 		}
 		if err := sites.Switch(*root, *site, *n); err != nil {
 			return err
@@ -128,6 +156,20 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 			return err
 		}
 		result = map[string]int{"release": *n}
+	case "activate":
+		if err := sites.Switch(*root, *site, *n); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Release %d is live.\n", *n)
+		if _, err := sites.Prune(*root, *site, max(*keep, 1)); err != nil {
+			fmt.Fprintf(stderr, "Old releases could not all be removed: %v\n", err)
+		}
+		result = releaseResult{Release: sites.Release{Number: *n}, Releases: sites.Releases(*root, *site)}
+	case "php-prepare":
+		if err := sites.PreparePHP(*root, *site); err != nil {
+			return err
+		}
+		result = map[string]int{}
 	case "clean":
 		if err := sites.Clean(*root, *site, *n); err != nil {
 			return err
@@ -153,6 +195,29 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	}
 	_, err = fmt.Fprintln(stdout, string(line))
 	return err
+}
+
+// phpRelease makes a PHP site's release: its whole source, with its shared
+// paths linked from shared/, given to www-data, who runs its release hook
+// and PHP-FPM.
+func phpRelease(root, site string, n int, shared string) (sites.Release, error) {
+	release, err := sites.MakePHPRelease(root, site, n)
+	if err != nil {
+		return release, err
+	}
+	if err := sites.PreparePHP(root, site); err != nil {
+		return release, err
+	}
+	paths := []string{}
+	for _, path := range strings.Split(shared, ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if err := sites.LinkShared(root, site, n, paths); err != nil {
+		return release, err
+	}
+	return release, sites.Chown(sites.ReleaseDir(root, site, n))
 }
 
 func describeGenerator(generator string) string {

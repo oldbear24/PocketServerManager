@@ -323,10 +323,15 @@ func apiAtLeast(version, minimum string) bool {
 // that ignored a subpath would mount the whole volume, with the agent's identity,
 // into the one container that faces the internet.
 func checkEdgeMounts(info *dockerapi.ContainerInspect, wanted []map[string]any) error {
+	return checkMounts(info, wanted, "the edge container")
+}
+
+// checkMounts makes sure a container has exactly the mounts asked for.
+func checkMounts(info *dockerapi.ContainerInspect, wanted []map[string]any, what string) error {
 	mounts, _ := info.HostConfig["Mounts"].([]any)
 	binds, _ := info.HostConfig["Binds"].([]any)
 	if len(binds) > 0 || len(mounts) != len(wanted) {
-		return errors.New("the edge container has other mounts than its own directories")
+		return errors.New(what + " has other mounts than its own directories")
 	}
 	for _, want := range wanted {
 		found := false
@@ -583,6 +588,8 @@ func (a *Agent) startEdge(ctx context.Context, config map[string]any, mounts []m
 		remove()
 		return "", a.explainEdgeStart(ctx, err)
 	}
+	// it reaches the PHP sites' PHP-FPM on their networks (#50)
+	a.joinSiteNetworks(ctx, id)
 
 	return id, nil
 }

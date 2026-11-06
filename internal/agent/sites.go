@@ -58,6 +58,22 @@ type buildRun struct {
 	Plan       sites.Plan
 	CPUs       float64
 	Memory     int64
+	// User runs the build, root unless set; a PHP site's builds as www-data
+	User string
+}
+
+// hookRun is a PHP site's release hook, run in its new release before it goes
+// live (#50).
+type hookRun struct {
+	Site       string
+	Deployment int
+	Image      string
+	Command    string
+	Env        map[string]string
+	Secrets    map[string]string
+	Networks   []string
+	CPUs       float64
+	Memory     int64
 }
 
 // siteRunner runs the steps of a deployment: in job containers, or in a
@@ -67,6 +83,8 @@ type siteRunner interface {
 	Tool(ctx context.Context, run toolRun, log io.Writer) ([]byte, error)
 	// Build runs a plan's command in its image, in the deployment's source.
 	Build(ctx context.Context, run buildRun, log io.Writer) error
+	// Hook runs a PHP site's release hook in its new release.
+	Hook(ctx context.Context, run hookRun, log io.Writer) error
 }
 
 func (a *Agent) siteRunner() siteRunner {
@@ -102,6 +120,14 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 		"--command", payload.GetBuildCmd(),
 		"--output", payload.GetOutputDir(),
 	}, deployment...)}
+	php := payload.GetPhp()
+	if php != nil {
+		if php.GetImage() == "" {
+			return nil, errors.New("the PHP site has no runtime image")
+		}
+		// built in the runtime image of the site's PHP version
+		source.Args = append(source.Args, "--php", "--image", php.GetImage())
+	}
 	switch payload.GetSource() {
 	case sites.SourceGit:
 		source.Args = append(source.Args, "--url", payload.GetRepoUrl(), "--branch", payload.GetBranch())
@@ -144,11 +170,18 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 	if plan.Command != "" {
 		reporter.Progress("build", "Building in "+plan.Image, 30)
 		build := buildRun{Site: site, Deployment: n, Plan: plan, CPUs: payload.GetCpuLimit(), Memory: payload.GetMemLimitBytes()}
+		if php != nil {
+			build.User = fmt.Sprintf("%d:%d", sites.PHPUser, sites.PHPGroup)
+		}
 		if err := runner.Build(ctx, build, reporter); err != nil {
 			return failed(err)
 		}
 	}
 	buildMs := time.Since(started).Milliseconds()
+
+	if php != nil {
+		return a.releasePHP(ctx, runner, payload, found, buildMs, reporter, failed)
+	}
 
 	reporter.Progress("release", "Switching to the new release", 90)
 	keep := int(payload.GetKeepReleases())
@@ -202,7 +235,11 @@ func (a *Agent) handleSiteRollback(ctx context.Context, command *agentv1.Command
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"release": float64(n), "switch_ms": float64(time.Since(started).Milliseconds())}, nil
+	switchMs := time.Since(started).Milliseconds()
+	if payload.GetPhp() {
+		a.reloadPHP(ctx, site, reporter)
+	}
+	return map[string]any{"release": float64(n), "switch_ms": float64(switchMs)}, nil
 }
 
 func (a *Agent) handleSiteRemove(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
@@ -210,8 +247,83 @@ func (a *Agent) handleSiteRemove(ctx context.Context, command *agentv1.Command, 
 	if err := sites.ValidName(site); err != nil {
 		return nil, err
 	}
+	// a PHP site's container goes first, as it holds the site's directory
+	if err := a.removePHP(ctx, site); err != nil {
+		return nil, fmt.Errorf("the site's PHP-FPM container: %w", err)
+	}
 	_, err := a.siteRunner().Tool(ctx, toolRun{Site: site, Args: []string{"remove", "--site", site}}, reporter)
 	return map[string]any{}, err
+}
+
+// releasePHP makes a PHP site's build its release: with its shared paths
+// linked and given to www-data, then its release hook run in it, as in
+// php artisan migrate --force, and only then live. PHP-FPM reloads its
+// workers after the switch; requests under way finish in the old release.
+// A failing hook leaves the release the site serves as it is.
+func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agentv1.SiteDeploy, found sourceResult, buildMs int64,
+	reporter *Reporter, failed func(error) (map[string]any, error)) (map[string]any, error) {
+	site, n, php := payload.GetSite(), int(payload.GetDeployment()), payload.GetPhp()
+	deployment := []string{"--site", site, "--n", strconv.Itoa(n)}
+	keep := int(payload.GetKeepReleases())
+	if keep < 1 {
+		keep = 5
+	}
+	if php.GetClassic() {
+		// one copy, which the site may change; no history to go back to
+		keep = 1
+	}
+
+	reporter.Progress("release", "Preparing the new release", 75)
+	out, err := runner.Tool(ctx, toolRun{Site: site, Deployment: n, Args: append([]string{"release", "--php", "--no-switch",
+		"--shared", strings.Join(payload.GetSharedPaths(), ",")}, deployment...)}, reporter)
+	if err != nil {
+		return failed(err)
+	}
+	var release releaseResult
+	if err := json.Unmarshal(out, &release); err != nil {
+		return failed(fmt.Errorf("the site tool said: %s", out))
+	}
+
+	if hook := payload.GetReleaseHook(); hook != "" {
+		reporter.Progress("hook", "Running the release hook", 85)
+		run := hookRun{Site: site, Deployment: n, Image: php.GetImage(), Command: hook, Env: php.GetEnv(), Secrets: php.GetSecrets(),
+			Networks: php.GetNetworks(), CPUs: payload.GetCpuLimit(), Memory: payload.GetMemLimitBytes()}
+		if err := runner.Hook(ctx, run, newMaskingWriter(reporter, php.GetSecrets())); err != nil {
+			return failed(fmt.Errorf("the release hook: %w", err))
+		}
+	}
+
+	reporter.Progress("release", "Switching to the new release", 95)
+	// once the switch may have happened, a cancel must not leave the panel
+	// believing the old release is served
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	out, err = runner.Tool(releaseCtx, toolRun{Site: site, Deployment: n, Args: append([]string{"activate", "--keep", strconv.Itoa(keep)}, deployment...)}, reporter)
+	if err != nil {
+		return failed(err)
+	}
+	var live releaseResult
+	if err := json.Unmarshal(out, &live); err != nil {
+		return failed(fmt.Errorf("the site tool said: %s", out))
+	}
+	a.reloadPHP(releaseCtx, site, reporter)
+
+	releases := make([]any, 0, len(live.Releases))
+	for _, number := range live.Releases {
+		releases = append(releases, float64(number))
+	}
+	return map[string]any{
+		"release":    float64(n),
+		"size_bytes": float64(release.SizeBytes),
+		"files":      float64(release.Files),
+		"releases":   releases,
+		"commit":     found.Commit,
+		"message":    found.Message,
+		"generator":  found.Plan.Generator,
+		"image":      found.Plan.Image,
+		"command":    found.Plan.Command,
+		"build_ms":   float64(buildMs),
+	}, nil
 }
 
 // fetchUpload downloads an uploaded source from the panel into the agent's
@@ -335,15 +447,20 @@ func (d dockerSites) Build(ctx context.Context, run buildRun, log io.Writer) err
 	if memory <= 0 {
 		memory = defaultBuildMemory
 	}
+	user := run.User
+	if user == "" {
+		user = "0"
+	}
 	fmt.Fprintf(log, "$ %s\n", run.Plan.Command)
 	config := map[string]any{
 		"Image":      image,
 		"Entrypoint": []string{"/bin/sh", "-c"},
 		"Cmd":        []string{run.Plan.Command},
 		"WorkingDir": "/src",
-		// the source belongs to root; the build may write anywhere in it
-		"User":   "0",
-		"Env":    []string{"CI=true", "HOME=/tmp", "HUGO_CACHEDIR=/tmp/hugo_cache", "npm_config_update_notifier=false"},
+		// the source belongs to root, or to www-data for a PHP site; the
+		// build may write anywhere in it
+		"User":   user,
+		"Env":    []string{"CI=true", "HOME=/tmp", "HUGO_CACHEDIR=/tmp/hugo_cache", "npm_config_update_notifier=false", "COMPOSER_HOME=/tmp/composer"},
 		"Labels": map[string]string{"pocketcloud.role": "job", siteLabel: run.Site},
 		"HostConfig": map[string]any{
 			"Mounts":      []map[string]any{mount},
@@ -364,6 +481,65 @@ func (d dockerSites) Build(ctx context.Context, run buildRun, log io.Writer) err
 			return fmt.Errorf("the build ran out of memory (%d MiB)", memory>>20)
 		}
 		return fmt.Errorf("the build failed with exit code %d", exit.code)
+	}
+	return err
+}
+
+// Hook runs a PHP site's release hook in its runtime image, as www-data, in
+// the new release where PHP-FPM will see it, with the site's environment and
+// databases: on the site's own network, and on its databases' networks.
+func (d dockerSites) Hook(ctx context.Context, run hookRun, log io.Writer) error {
+	if err := d.a.ensureSiteNetwork(ctx, run.Site); err != nil {
+		return err
+	}
+	target := path.Join(sites.Root, run.Site)
+	mount, err := d.sitesMount(ctx, run.Site, target)
+	if err != nil {
+		return err
+	}
+	cpus, memory := run.CPUs, run.Memory
+	if cpus <= 0 {
+		cpus = defaultBuildCPUs
+	}
+	if memory <= 0 {
+		memory = defaultBuildMemory
+	}
+	env := []string{"HOME=/tmp"}
+	for _, values := range []map[string]string{run.Env, run.Secrets} {
+		for name, value := range values {
+			env = append(env, name+"="+value)
+		}
+	}
+	fmt.Fprintf(log, "$ %s\n", run.Command)
+	config := map[string]any{
+		"Image":      run.Image,
+		"Entrypoint": []string{"/bin/sh", "-c"},
+		"Cmd":        []string{run.Command},
+		"WorkingDir": path.Join(target, "releases", strconv.Itoa(run.Deployment)),
+		"User":       fmt.Sprintf("%d:%d", sites.PHPUser, sites.PHPGroup),
+		"Env":        env,
+		"Labels":     map[string]string{"pocketcloud.role": "job", siteLabel: run.Site},
+		"HostConfig": map[string]any{
+			"Mounts":      []map[string]any{mount},
+			"NetworkMode": sites.Network(run.Site),
+			"NanoCpus":    int64(cpus * 1e9),
+			"Memory":      memory,
+			"MemorySwap":  memory,
+			"PidsLimit":   4096,
+			"CapDrop":     []string{"ALL"},
+			"SecurityOpt": []string{"no-new-privileges"},
+			"LogConfig":   map[string]any{"Type": "json-file"},
+		},
+	}
+	err = d.run(ctx, config, func(id string) error {
+		return d.a.joinDatabaseNetworks(ctx, id, run.Networks)
+	}, log, log)
+	var exit *exitError
+	if errors.As(err, &exit) {
+		if exit.oom {
+			return fmt.Errorf("it ran out of memory (%d MiB)", memory>>20)
+		}
+		return fmt.Errorf("it failed with exit code %d", exit.code)
 	}
 	return err
 }
@@ -524,6 +700,27 @@ func (l localSites) Build(ctx context.Context, run buildRun, log io.Writer) erro
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return fmt.Errorf("the build failed with exit code %d", exit.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+func (l localSites) Hook(ctx context.Context, run hookRun, log io.Writer) error {
+	fmt.Fprintf(log, "$ %s\n", run.Command)
+	hook := exec.CommandContext(ctx, "sh", "-c", run.Command) //nolint:gosec // the site's own hook, in tests
+	hook.Dir = sites.ReleaseDir(l.root, run.Site, run.Deployment)
+	hook.Env = os.Environ()
+	for _, values := range []map[string]string{run.Env, run.Secrets} {
+		for name, value := range values {
+			hook.Env = append(hook.Env, name+"="+value)
+		}
+	}
+	hook.Stdout, hook.Stderr = log, log
+	if err := hook.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return fmt.Errorf("it failed with exit code %d", exit.ExitCode())
 		}
 		return err
 	}
