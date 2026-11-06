@@ -78,9 +78,13 @@ export const dnsApi = {
     host?: string;
   }) => pb.send<ProviderWithZones>("/api/pc/dns-providers", { method: "POST", body }),
 
-  /** another server reaches a DNS server of the LAN (#26) */
-  change: (id: string, body: { host: string }) =>
-    pb.send<ProviderWithZones>(`/api/pc/dns-providers/${id}`, { method: "PATCH", body }),
+  /** a new name or credentials, or another server for a DNS server of the LAN (#26) */
+  change: (
+    id: string,
+    body: { name?: string; credentials?: Record<string, string>; host?: string },
+  ) => pb.send<ProviderWithZones>(`/api/pc/dns-providers/${id}`, { method: "PATCH", body }),
+
+  removeZone: (id: string) => pb.send(`/api/pc/dns-zones/${id}`, { method: "DELETE" }),
 
   test: (id: string) =>
     pb.send<ProviderWithZones>(`/api/pc/dns-providers/${id}/test`, { method: "POST" }),

@@ -214,6 +214,30 @@ describe("the certificates table", () => {
     expect(screen.getByText("Nothing here")).toBeTruthy();
   });
 
+  it("has one action per row: Retry when it fails, Progress while it is issued", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    const issuing = cert({
+      id: "c3",
+      names: ["docs.example.com"],
+      attempt_started: iso(now - 5000),
+    });
+    card([cert({}), failed, issuing], true);
+
+    const retry = screen.getByRole("button", {
+      name: "Try the certificate for blog.example.com again",
+    });
+    expect(retry).toHaveClass("warning");
+    const progress = screen.getByRole("button", {
+      name: "How far the certificate for docs.example.com got",
+    });
+    expect(progress).toHaveTextContent("Progress");
+    fireEvent.click(progress);
+    expect(screen.getByRole("dialog", { name: "docs.example.com" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Details of the certificate for shop.example.com" }),
+    ).toHaveTextContent("Detail");
+  });
+
   it("shows a renewal that waits as needing action", () => {
     vi.useFakeTimers({ now, shouldAdvanceTime: true });
     const waiting = cert({
@@ -265,13 +289,22 @@ describe("the certificates table", () => {
   });
 });
 
+const accounts = [
+  { id: "a1", role: "primary", directory_url: "https://acme-v02.api.letsencrypt.org/directory" },
+  { id: "a2", role: "fallback", directory_url: "https://acme.zerossl.com/v2/DV90" },
+] as AcmeAccount[];
+
 describe("requesting a certificate", () => {
   it("sends the names typed and the challenge", async () => {
     const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
     const onClose = vi.fn();
-    wrap(<RequestCertificateDialog onClose={onClose} />);
+    wrap(<RequestCertificateDialog accounts={accounts} onClose={onClose} />);
 
-    const confirm = screen.getByRole("button", { name: "Request certificate" });
+    // both accounts in turn, unless one is chosen
+    expect((screen.getByLabelText("Certificate authority") as HTMLSelectElement).value).toBe(
+      "acme",
+    );
+    const confirm = screen.getByRole("button", { name: "Issue certificate" });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Names"), {
       target: { value: "*.example.com\nexample.com" },
@@ -280,31 +313,66 @@ describe("requesting a certificate", () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(request).toHaveBeenCalledWith(["*.example.com", "example.com"], "dns-01", "acme");
+    expect(request).toHaveBeenCalledWith(["*.example.com", "example.com"], "dns-01", "acme", "");
+  });
+
+  it("asks one ACME CA alone when it is chosen", async () => {
+    const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
+    const onClose = vi.fn();
+    wrap(<RequestCertificateDialog accounts={accounts} onClose={onClose} />);
+
+    const ca = screen.getByLabelText("Certificate authority");
+    expect(
+      within(ca)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "Let's Encrypt, then ZeroSSL if it fails",
+      "Let's Encrypt only (primary)",
+      "ZeroSSL only (fallback)",
+      "Internal CA",
+    ]);
+    fireEvent.change(ca, { target: { value: "fallback" } });
+    fireEvent.change(screen.getByLabelText("Names"), { target: { value: "shop.example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Issue certificate" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(request).toHaveBeenCalledWith(["shop.example.com"], "auto", "acme", "fallback");
+  });
+
+  it("says when there is no ACME account to ask", () => {
+    wrap(<RequestCertificateDialog accounts={[]} onClose={() => undefined} />);
+    expect(screen.getByText(/Set an ACME account in Settings/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Certificate authority"), {
+      target: { value: "internal" },
+    });
+    expect(screen.queryByText(/Set an ACME account in Settings/)).toBeNull();
   });
 
   it("asks the internal CA for LAN names, with no validation to choose", async () => {
     const request = vi.spyOn(certificatesApi, "request").mockResolvedValue({ id: "c9" });
     const onClose = vi.fn();
-    wrap(<RequestCertificateDialog onClose={onClose} />);
+    wrap(<RequestCertificateDialog accounts={accounts} onClose={onClose} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Internal CA" }));
+    fireEvent.change(screen.getByLabelText("Certificate authority"), {
+      target: { value: "internal" },
+    });
     expect(screen.queryByLabelText("Validation")).toBeNull();
     expect(screen.getByText(/refuse a wildcard right under a top-level name/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Names"), { target: { value: "nas.lan" } });
-    fireEvent.click(screen.getByRole("button", { name: "Request certificate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Issue certificate" }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(request).toHaveBeenCalledWith(["nas.lan"], "auto", "internal");
+    expect(request).toHaveBeenCalledWith(["nas.lan"], "auto", "internal", "");
   });
 
   it("shows why the panel refused", async () => {
     vi.spyOn(certificatesApi, "request").mockRejectedValue(
       new Error("A wildcard (*.x.com) can only be checked with DNS-01."),
     );
-    wrap(<RequestCertificateDialog onClose={() => undefined} />);
+    wrap(<RequestCertificateDialog accounts={accounts} onClose={() => undefined} />);
     fireEvent.change(screen.getByLabelText("Names"), { target: { value: "*.x.com" } });
-    fireEvent.click(screen.getByRole("button", { name: "Request certificate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Issue certificate" }));
     expect(
       await screen.findByText("A wildcard (*.x.com) can only be checked with DNS-01."),
     ).toBeTruthy();

@@ -1,6 +1,7 @@
-import { FilePlus2, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 
 import {
   AcmeSummaryCard,
@@ -15,6 +16,7 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  Drawer,
   EmptyState,
   Field,
   IconButton,
@@ -24,14 +26,23 @@ import {
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import type { AcmeAccount } from "../lib/certificates";
-import { dnsApi, dnsTone, type DnsKind, type DnsProvider, type DnsZone } from "../lib/dns";
+import {
+  dnsApi,
+  dnsTone,
+  type DnsKind,
+  type DnsProvider,
+  type DnsStatus,
+  type DnsZone,
+} from "../lib/dns";
 import type { Certificate, Domain } from "../lib/edge";
 import { formatRelative } from "../lib/format";
 import { useLiveList } from "../lib/realtime";
 import type { Host } from "../lib/types";
 
-/** Domains & TLS: the DNS providers and their zones (#22), and the
- * certificates the edges serve (#23). */
+/** Domains & TLS (#27): the DNS providers and their zones (#22), the
+ * certificates the edges serve (#23), the ACME account and the internal CA
+ * (#26). A warning elsewhere links here with ?provider= or ?certificate=,
+ * which brings its card into view or opens it. */
 export function DomainsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -44,6 +55,24 @@ export function DomainsPage() {
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const [connecting, setConnecting] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  const [managing, setManaging] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const focusProvider = params.get("provider") ?? "";
+  const focusCertificate = params.get("certificate") ?? "";
+
+  const forget = useCallback(
+    (key: string) =>
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.delete(key);
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+  const managed = providers.items.find((provider) => provider.id === managing);
 
   return (
     <>
@@ -54,11 +83,9 @@ export function DomainsPage() {
         actions={
           isAdmin && (
             <>
-              <Button onClick={() => setConnecting(true)}>
-                <Plus size={15} aria-hidden="true" /> {t("dns.connect")}
-              </Button>
+              <Button onClick={() => setConnecting(true)}>{t("dns.connect")}</Button>
               <Button variant="primary" onClick={() => setRequesting(true)}>
-                <FilePlus2 size={15} aria-hidden="true" /> {t("cert.request")}
+                <Plus size={15} aria-hidden="true" /> {t("cert.request")}
               </Button>
             </>
           )
@@ -68,12 +95,16 @@ export function DomainsPage() {
       {providers.error ? (
         <Banner tone="err">{errorMessage(providers.error)}</Banner>
       ) : (
-        <ProvidersCard
+        <ProvidersSection
           providers={providers.items}
           zones={zones.items}
           hosts={hosts.items}
           isAdmin={isAdmin}
           loading={providers.loading}
+          focus={focusProvider}
+          onFocusDone={() => forget("provider")}
+          onManage={setManaging}
+          onConnect={() => setConnecting(true)}
         />
       )}
       {certificates.error ? (
@@ -89,16 +120,13 @@ export function DomainsPage() {
           isAdmin={isAdmin}
           loading={certificates.loading}
           onRequest={() => setRequesting(true)}
+          focus={focusCertificate}
+          onFocusDone={() => forget("certificate")}
         />
       )}
       <div className="columns">
         <div className="column-wide">
-          <ZonesCard
-            providers={providers.items}
-            zones={zones.items}
-            domains={domains.items}
-            isAdmin={isAdmin}
-          />
+          <ZonesCard providers={providers.items} zones={zones.items} domains={domains.items} />
         </div>
         <div className="column-side">
           <AcmeSummaryCard accounts={accounts.items} isAdmin={isAdmin} />
@@ -107,13 +135,36 @@ export function DomainsPage() {
       </div>
 
       {connecting && <ConnectDialog hosts={hosts.items} onClose={() => setConnecting(false)} />}
-      {requesting && <RequestCertificateDialog onClose={() => setRequesting(false)} />}
+      {requesting && (
+        <RequestCertificateDialog accounts={accounts.items} onClose={() => setRequesting(false)} />
+      )}
+      {managed && (
+        <ManageProviderDrawer
+          provider={managed}
+          zones={zones.items.filter((zone) => zone.provider === managed.id)}
+          hosts={hosts.items}
+          onClose={() => setManaging(null)}
+        />
+      )}
     </>
   );
 }
 
 /** Kinds reached through the agent of a server on their network (#26). */
 const lanKinds = new Set(["adguard", "pihole"]);
+
+/** The kinds PocketCloud connects, as the card for more names them. */
+const knownKinds = ["cloudflare", "hetzner", "wedos", "adguard", "pihole"];
+
+/** The mark of a provider's card: its kind's, or its name's initials. */
+const kindMarks: Record<string, string> = {
+  cloudflare: "CF",
+  hetzner: "HZ",
+  wedos: "WE",
+  adguard: "AG",
+  pihole: "PH",
+  manual: "M",
+};
 
 function initials(name: string) {
   return name
@@ -124,254 +175,526 @@ function initials(name: string) {
     .toUpperCase();
 }
 
-function ProvidersCard({
+/** Whether a provider needs a look: its API failed, for itself or for one of
+ * its managed zones. */
+export function failingZone(provider: DnsProvider, zones: DnsZone[]): DnsZone | undefined {
+  return zones.find(
+    (zone) => zone.provider === provider.id && zone.managed && zone.status === "error",
+  );
+}
+
+function ProvidersSection({
   providers,
   zones,
   hosts,
   isAdmin,
   loading,
+  focus,
+  onFocusDone,
+  onManage,
+  onConnect,
 }: {
   providers: DnsProvider[];
   zones: DnsZone[];
   hosts: Host[];
   isAdmin: boolean;
   loading: boolean;
+  focus: string;
+  onFocusDone: () => void;
+  onManage: (id: string) => void;
+  onConnect: () => void;
+}) {
+  const { t } = useTranslation();
+  const connected = new Set(providers.map((provider) => provider.kind));
+  const others = knownKinds
+    .filter((kind) => !connected.has(kind))
+    .map((kind) => t(`dns.kindName.${kind}`));
+
+  return (
+    <section className="providers-section" aria-labelledby="providers-heading">
+      <h2 id="providers-heading" className="section-heading">
+        {t("dns.providers")}
+      </h2>
+      {loading && providers.length === 0 ? (
+        <p className="muted">{t("common.loading")}</p>
+      ) : (
+        <div className="provider-grid">
+          {providers.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              provider={provider}
+              zones={zones}
+              hosts={hosts}
+              isAdmin={isAdmin}
+              focused={provider.id === focus}
+              onFocusDone={onFocusDone}
+              onManage={() => onManage(provider.id)}
+            />
+          ))}
+          <article className="provider-card" aria-labelledby="provider-more">
+            <div className="provider-card-head">
+              <span className="provider-mark" aria-hidden="true">
+                <Plus size={14} />
+              </span>
+              <h3 id="provider-more" className="provider-card-name">
+                {providers.length === 0
+                  ? t("dns.noProviders")
+                  : others.length > 0
+                    ? t("dns.kindAndOthers", { kind: others[0] })
+                    : t("dns.moreProviders")}
+              </h3>
+              <StatusPill tone="off">{t("dns.notConnected")}</StatusPill>
+            </div>
+            <p className="provider-card-zones">{t("dns.manualMode")}</p>
+            <p className="provider-card-note muted">
+              {others.length > 0
+                ? t("dns.alsoSupported", { kinds: others.join(", ") })
+                : t("dns.anotherAccount")}
+            </p>
+            {isAdmin && (
+              <Button size="small" className="provider-card-action" onClick={onConnect}>
+                {t("dns.connectShort")}
+              </Button>
+            )}
+          </article>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProviderCard({
+  provider,
+  zones,
+  hosts,
+  isAdmin,
+  focused,
+  onFocusDone,
+  onManage,
+}: {
+  provider: DnsProvider;
+  zones: DnsZone[];
+  hosts: Host[];
+  isAdmin: boolean;
+  focused: boolean;
+  onFocusDone: () => void;
+  onManage: () => void;
+}) {
+  const { t } = useTranslation();
+  const ref = useRef<HTMLElement>(null);
+  const own = zones.filter((zone) => zone.provider === provider.id);
+  const zone = failingZone(provider, zones);
+  const failing = provider.status === "error" || zone !== undefined;
+  const status: DnsStatus = zone ? "error" : provider.status || "unknown";
+  const lan = lanKinds.has(provider.kind);
+  const titleId = `provider-${provider.id}-name`;
+
+  // a warning's link brings the card into view
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView?.({ block: "center" });
+      ref.current.focus();
+      onFocusDone();
+    }
+  }, [focused, onFocusDone]);
+
+  let note: string;
+  if (provider.status === "error" && provider.last_error) {
+    note = provider.last_error;
+  } else if (zone) {
+    note = `${zone.name}: ${zone.last_error}`;
+  } else {
+    const detail = lan
+      ? t("dns.throughAgent", {
+          server: hosts.find((host) => host.id === provider.host)?.name ?? "–",
+        })
+      : t(`dns.kindDetail.${provider.kind}`, { defaultValue: "" });
+    note = [
+      detail,
+      provider.last_check && t("dns.checked", { when: formatRelative(provider.last_check) }),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  return (
+    <article
+      ref={ref}
+      id={`provider-${provider.id}`}
+      tabIndex={-1}
+      className={`provider-card${failing ? " warn" : ""}`}
+      aria-labelledby={titleId}
+    >
+      <div className="provider-card-head">
+        <span className="provider-mark" aria-hidden="true">
+          {kindMarks[provider.kind] ?? initials(provider.name)}
+        </span>
+        <h3 id={titleId} className="provider-card-name">
+          {provider.name}
+        </h3>
+        {/* a card that needs a fix is a warning, as in the design */}
+        <StatusPill tone={failing ? "warn" : dnsTone(status)}>
+          {t(`dns.status.${status}`)}
+        </StatusPill>
+      </div>
+      <p className="provider-card-zones">
+        {own.length > 0 ? own.map((item) => item.name).join(", ") : t("dns.noZones")}
+        {lan && own.length > 0 && ` (${t("dns.lanRewrites")})`}
+      </p>
+      <p className={`provider-card-note${failing ? " warn-text" : " muted"}`}>{note}</p>
+      {isAdmin && (
+        <Button
+          size="small"
+          className="provider-card-action"
+          aria-label={t(failing ? "dns.fixName" : "dns.manageName", { name: provider.name })}
+          onClick={onManage}
+        >
+          {failing ? t("dns.fix") : t("dns.manage")}
+        </Button>
+      )}
+    </article>
+  );
+}
+
+/** Everything about one provider: its state and why it failed, its zones,
+ * the server that reaches a DNS server of the LAN, new credentials, a test
+ * and its removal. */
+export function ManageProviderDrawer({
+  provider,
+  zones,
+  hosts,
+  onClose,
+}: {
+  provider: DnsProvider;
+  zones: DnsZone[];
+  hosts: Host[];
+  onClose: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [busy, setBusy] = useState("");
-  const [removing, setRemoving] = useState<DnsProvider | null>(null);
+  const [kinds, setKinds] = useState<DnsKind[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [zoneName, setZoneName] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState("");
 
-  const test = async (provider: DnsProvider) => {
-    setBusy(provider.id);
-    try {
-      const result = await dnsApi.test(provider.id);
-      if (result.provider.status === "ok") {
-        toast.success(t("dns.tested", { name: provider.name }));
-      } else {
-        toast.error(result.provider.last_error);
-      }
-    } catch (err) {
-      toast.error(err);
-    } finally {
-      setBusy("");
-    }
-  };
+  useEffect(() => {
+    let cancelled = false;
+    dnsApi
+      .kinds()
+      .then((loaded) => !cancelled && setKinds(loaded))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const driver = kinds.find((kind) => kind.kind === provider.kind);
+  const lan = lanKinds.has(provider.kind);
+  const kindName = t(`dns.kindName.${provider.kind}`, { defaultValue: provider.kind });
 
-  const moveTo = async (provider: DnsProvider, host: string) => {
-    setBusy(provider.id);
+  const run = async (action: () => Promise<unknown>, done?: string) => {
+    setBusy(true);
+    setError("");
     try {
-      const result = await dnsApi.change(provider.id, { host });
-      if (result.provider.status === "error") {
-        toast.error(result.provider.last_error);
-      } else {
-        toast.success(
-          t("dns.serverChanged", {
-            name: provider.name,
-            server: hosts.find((item) => item.id === host)?.name ?? host,
-          }),
-        );
+      const result = await action();
+      const state = (result as { provider?: DnsProvider } | undefined)?.provider;
+      if (state?.status === "error") {
+        setError(state.last_error);
+      } else if (done) {
+        toast.success(done);
       }
+      return true;
     } catch (err) {
-      toast.error(err);
+      setError(errorMessage(err));
+      return false;
     } finally {
-      setBusy("");
+      setBusy(false);
     }
   };
 
   const remove = async () => {
-    if (!removing) {
-      return;
-    }
-    try {
-      await dnsApi.remove(removing.id);
-      toast.success(t("dns.removed", { name: removing.name }));
-    } catch (err) {
-      toast.error(err);
-    } finally {
-      setRemoving(null);
+    setRemoving(false);
+    if (await run(() => dnsApi.remove(provider.id), t("dns.removed", { name: provider.name }))) {
+      onClose();
     }
   };
 
   return (
-    <Card title={t("dns.providers")}>
-      {loading && providers.length === 0 ? (
-        <p className="muted">{t("common.loading")}</p>
-      ) : providers.length === 0 ? (
-        <EmptyState title={t("dns.noProviders")}>{t("dns.noProvidersText")}</EmptyState>
+    <Drawer
+      title={provider.name}
+      onClose={onClose}
+      actions={
+        <>
+          <Button
+            variant="danger"
+            disabled={busy}
+            onClick={() => setRemoving(true)}
+            aria-label={t("dns.remove", { name: provider.name })}
+          >
+            <Trash2 size={14} aria-hidden="true" /> {t("common.remove")}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() =>
+              void run(() => dnsApi.test(provider.id), t("dns.tested", { name: provider.name }))
+            }
+          >
+            <RefreshCw size={14} aria-hidden="true" /> {t("dns.test")}
+          </Button>
+          <Button variant="primary" onClick={onClose}>
+            {t("common.close")}
+          </Button>
+        </>
+      }
+    >
+      <dl className="facts">
+        <dt>{t("dns.kind")}</dt>
+        <dd>{kindName}</dd>
+        <dt>{t("dns.state")}</dt>
+        <dd>
+          <StatusPill tone={dnsTone(provider.status || "unknown")}>
+            {t(`dns.status.${provider.status || "unknown"}`)}
+          </StatusPill>
+          {provider.last_check && (
+            <span className="muted small">
+              {" "}
+              {t("dns.checked", { when: formatRelative(provider.last_check) })}
+            </span>
+          )}
+        </dd>
+      </dl>
+      {provider.status === "error" && provider.last_error && (
+        <Banner tone="warn">{provider.last_error}</Banner>
+      )}
+      {error && error !== provider.last_error && <Banner tone="err">{error}</Banner>}
+      {driver?.note && (
+        <p className="muted small">
+          {t(`dns.kindNote.${provider.kind}`, { defaultValue: driver.note })}
+        </p>
+      )}
+
+      {lan && (
+        <Field label={t("dns.server")} htmlFor="manage-server">
+          <select
+            id="manage-server"
+            className="input"
+            value={provider.host}
+            disabled={busy}
+            onChange={(event) =>
+              void run(
+                () => dnsApi.change(provider.id, { host: event.target.value }),
+                t("dns.serverChanged", {
+                  name: provider.name,
+                  server: hosts.find((host) => host.id === event.target.value)?.name ?? "",
+                }),
+              )
+            }
+          >
+            {!provider.host && <option value="">{t("dns.chooseServer")}</option>}
+            {hosts.map((host) => (
+              <option key={host.id} value={host.id}>
+                {host.name}
+                {host.status === "online" ? "" : ` (${t("dns.serverOffline")})`}
+              </option>
+            ))}
+          </select>
+          {!provider.host && <p className="field-error small">{t("dns.noServer")}</p>}
+        </Field>
+      )}
+
+      <h3 className="drawer-heading">{t("dns.zones")}</h3>
+      {zones.length === 0 ? (
+        <p className="muted small">{t("dns.noZones")}</p>
       ) : (
-        <ul className="list dns-providers">
-          {providers.map((provider) => {
-            const own = zones.filter((zone) => zone.provider === provider.id);
-            return (
-              <li key={provider.id} className="dns-provider">
-                <span className="avatar" aria-hidden="true">
-                  {initials(provider.name)}
-                </span>
-                <div className="dns-provider-body">
-                  <div className="dns-provider-head">
-                    <strong>{provider.name}</strong>
-                    <StatusPill tone={dnsTone(provider.status)}>
-                      {t(`dns.status.${provider.status || "unknown"}`)}
-                    </StatusPill>
-                  </div>
-                  <div className="mono small">
-                    {own.length > 0 ? own.map((zone) => zone.name).join(", ") : t("dns.noZones")}
-                  </div>
-                  {provider.status === "error" && provider.last_error ? (
-                    <p className="field-error small">{provider.last_error}</p>
-                  ) : (
-                    <p className="muted small">
-                      {t(`dns.kindName.${provider.kind}`, { defaultValue: provider.kind })}
-                      {provider.host &&
-                        !isAdmin &&
-                        " · " +
-                          t("dns.throughAgent", {
-                            server: hosts.find((host) => host.id === provider.host)?.name ?? "–",
-                          })}
-                      {provider.last_check &&
-                        " · " + t("dns.checked", { when: formatRelative(provider.last_check) })}
-                    </p>
-                  )}
-                </div>
-                {isAdmin && lanKinds.has(provider.kind) && (
-                  <div className="dns-provider-server">
-                    <label className="small muted" htmlFor={`dns-server-${provider.id}`}>
-                      {t("dns.throughLabel")}
-                    </label>
-                    <select
-                      id={`dns-server-${provider.id}`}
-                      className="input"
-                      title={t("dns.changeServer", { name: provider.name })}
-                      value={provider.host}
-                      disabled={busy === provider.id}
-                      onChange={(event) => void moveTo(provider, event.target.value)}
-                    >
-                      {!provider.host && <option value="">{t("dns.chooseServer")}</option>}
-                      {hosts.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                          {item.status === "online" ? "" : ` (${t("dns.serverOffline")})`}
-                        </option>
-                      ))}
-                    </select>
-                    {!provider.host && <p className="field-error small">{t("dns.noServer")}</p>}
-                  </div>
+        <ul className="list manage-zones">
+          {zones.map((zone) => (
+            <li key={zone.id} className="list-row">
+              <div>
+                <div className="mono">{zone.name}</div>
+                {zone.status === "error" && zone.last_error && (
+                  <div className="field-error small">{zone.last_error}</div>
                 )}
-                {isAdmin && (
-                  <div className="dns-provider-actions">
-                    <Button
-                      disabled={busy === provider.id}
-                      aria-label={t("dns.testName", { name: provider.name })}
-                      onClick={() => void test(provider)}
-                    >
-                      <RefreshCw size={14} aria-hidden="true" /> {t("dns.test")}
-                    </Button>
-                    <IconButton
-                      bare
-                      aria-label={t("dns.remove", { name: provider.name })}
-                      title={t("dns.remove", { name: provider.name })}
-                      onClick={() => setRemoving(provider)}
-                    >
-                      <Trash2 size={15} aria-hidden="true" />
-                    </IconButton>
-                  </div>
-                )}
-              </li>
-            );
-          })}
+              </div>
+              <StatusPill tone={dnsTone(zone.status || "unknown")}>
+                {t(`dns.status.${zone.status || "unknown"}`)}
+              </StatusPill>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={zone.managed}
+                  disabled={busy}
+                  onChange={() => void run(() => dnsApi.setManaged(zone.id, !zone.managed))}
+                  aria-label={t("dns.manageZone", { zone: zone.name })}
+                />
+                <span>{t("dns.managed")}</span>
+              </label>
+              {driver && !driver.lists_zones && (
+                <IconButton
+                  bare
+                  aria-label={t("dns.removeZone", { zone: zone.name })}
+                  title={t("dns.removeZone", { zone: zone.name })}
+                  disabled={busy}
+                  onClick={() =>
+                    void run(
+                      () => dnsApi.removeZone(zone.id),
+                      t("dns.zoneRemoved", { zone: zone.name }),
+                    )
+                  }
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </IconButton>
+              )}
+            </li>
+          ))}
         </ul>
       )}
+      {driver && !driver.lists_zones && (
+        <form
+          className="manage-add-zone"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const name = zoneName.trim();
+            if (name) {
+              void run(
+                () => dnsApi.addZone(provider.id, name),
+                t("dns.zoneAdded", { zone: name }),
+              ).then((ok) => ok && setZoneName(""));
+            }
+          }}
+        >
+          <Field label={t("dns.addZone")} htmlFor="manage-zone">
+            <input
+              id="manage-zone"
+              className="input mono"
+              value={zoneName}
+              placeholder={lan ? "home.arpa" : "example.org"}
+              onChange={(event) => setZoneName(event.target.value)}
+            />
+          </Field>
+          <Button type="submit" disabled={busy || !zoneName.trim()}>
+            {t("dns.add")}
+          </Button>
+        </form>
+      )}
+
+      {driver && (driver.fields ?? []).length > 0 && (
+        <form
+          className="manage-credentials"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(
+              () => dnsApi.change(provider.id, { credentials }),
+              t("dns.credentialsSaved", { name: provider.name }),
+            ).then((ok) => ok && setCredentials({}));
+          }}
+        >
+          <h3 className="drawer-heading">{t("dns.credentials")}</h3>
+          <p className="muted small">{t("dns.credentialsNote")}</p>
+          {(driver.fields ?? []).map((field) => (
+            <Field
+              key={field.name}
+              label={t(`dns.fieldOf.${driver.kind}.${field.name}`, {
+                defaultValue: t(`dns.field.${field.name}`, { defaultValue: field.name }),
+              })}
+              htmlFor={`manage-field-${field.name}`}
+            >
+              <input
+                id={`manage-field-${field.name}`}
+                className="input mono"
+                type={field.secret ? "password" : "text"}
+                autoComplete="off"
+                value={credentials[field.name] ?? ""}
+                onChange={(event) =>
+                  setCredentials((current) => ({ ...current, [field.name]: event.target.value }))
+                }
+              />
+            </Field>
+          ))}
+          <Button type="submit" disabled={busy}>
+            {t("dns.saveCredentials")}
+          </Button>
+        </form>
+      )}
+
       <ConfirmDialog
-        open={removing !== null}
-        title={t("dns.removeTitle", { name: removing?.name ?? "" })}
+        open={removing}
+        title={t("dns.removeTitle", { name: provider.name })}
         confirmLabel={t("common.remove")}
         danger
-        onCancel={() => setRemoving(null)}
+        onCancel={() => setRemoving(false)}
         onConfirm={() => void remove()}
       >
         <p>{t("dns.removeText")}</p>
       </ConfirmDialog>
-    </Card>
+    </Drawer>
   );
 }
 
+/** The zones as the design lists them: their provider, the names PocketCloud
+ * keeps in each, and their state. Whether PocketCloud manages one is set in
+ * its provider's panel. */
 function ZonesCard({
   providers,
   zones,
   domains,
-  isAdmin,
 }: {
   providers: DnsProvider[];
   zones: DnsZone[];
   domains: Domain[];
-  isAdmin: boolean;
 }) {
   const { t } = useTranslation();
-  const toast = useToast();
   const names = useMemo(() => new Map(providers.map((p) => [p.id, p.name])), [providers]);
-
-  const toggle = async (zone: DnsZone) => {
-    try {
-      await dnsApi.setManaged(zone.id, !zone.managed);
-    } catch (err) {
-      toast.error(err);
-    }
-  };
-
-  if (zones.length === 0) {
-    return null;
-  }
 
   return (
     <Card title={t("dns.zones")} note={t("dns.zonesNote")} flush>
-      <Table label={t("dns.zones")}>
-        <thead>
-          <tr>
-            <th>{t("dns.zone")}</th>
-            <th>{t("dns.provider")}</th>
-            <th>{t("dns.domains")}</th>
-            <th>{t("dns.state")}</th>
-            <th>{t("dns.managed")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {zones.map((zone) => {
-            const used = domains.filter((domain) => domain.zone === zone.id);
-            return (
-              <tr key={zone.id}>
-                <td className="mono">{zone.name}</td>
-                <td>{names.get(zone.provider) ?? "–"}</td>
-                <td className="muted">
-                  {used.length === 0
-                    ? t("dns.unused")
-                    : used.map((domain) => domain.hostname).join(", ")}
-                </td>
-                <td>
-                  <StatusPill tone={dnsTone(zone.status)}>
-                    {t(`dns.status.${zone.status || "unknown"}`)}
-                  </StatusPill>
-                  {zone.status === "error" && zone.last_error && (
-                    <div className="field-error small">{zone.last_error}</div>
-                  )}
-                </td>
-                <td>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={zone.managed}
-                      disabled={!isAdmin}
-                      onChange={() => void toggle(zone)}
-                      aria-label={t("dns.manageZone", { zone: zone.name })}
-                    />
-                    <span>{zone.managed ? t("dns.managedYes") : t("dns.managedNo")}</span>
-                  </label>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </Table>
+      {zones.length === 0 ? (
+        <EmptyState title={t("dns.noZonesTitle")}>{t("dns.noZonesText")}</EmptyState>
+      ) : (
+        <Table label={t("dns.zones")}>
+          <thead>
+            <tr>
+              <th>{t("dns.zone")}</th>
+              <th>{t("dns.provider")}</th>
+              <th>{t("dns.domains")}</th>
+              <th>
+                <span className="visually-hidden">{t("dns.state")}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {zones.map((zone) => {
+              const used = domains.filter((domain) => domain.zone === zone.id);
+              const short = used.map((domain) =>
+                domain.hostname === zone.name
+                  ? "@"
+                  : domain.hostname.slice(0, -zone.name.length - 1),
+              );
+              return (
+                <tr key={zone.id}>
+                  <td className="mono">{zone.name}</td>
+                  <td>{names.get(zone.provider) ?? "–"}</td>
+                  <td className="muted">
+                    {used.length === 0
+                      ? zone.managed
+                        ? t("dns.unused")
+                        : t("dns.notManaged")
+                      : t("dns.hostsIn", {
+                          count: used.length,
+                          names: short.slice(0, 4).join(", ") + (short.length > 4 ? "…" : ""),
+                        })}
+                  </td>
+                  <td className="zone-state">
+                    <StatusPill tone={dnsTone(zone.status || "unknown")}>
+                      {t(`dns.status.${zone.status || "unknown"}`)}
+                    </StatusPill>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+      )}
     </Card>
   );
 }
