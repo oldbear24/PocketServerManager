@@ -63,3 +63,16 @@ func TestTheDurationsOfAHostsRequestsAreReadFromCaddy(t *testing.T) {
 		t.Errorf("after a restart: %v", since)
 	}
 }
+
+// TestALoadedConfigStartsCaddysCountersAgain: Caddy resets its histograms
+// with every config it loads, and a bucket that goes down means that, even
+// when the total grew again since (#50).
+func TestALoadedConfigStartsCaddysCountersAgain(t *testing.T) {
+	before := map[string]hostHistogram{"shop.test": {cumulative: [12]float64{0, 0, 0, 50, 90, 100, 100, 100, 100, 100, 100, 100}}}
+	// after a reload: 120 new requests, all slow
+	now := map[string]hostHistogram{"shop.test": {cumulative: [12]float64{0, 0, 0, 0, 0, 0, 0, 0, 120, 120, 120, 120}}}
+	since := latencySince(before, now)["shop.test"]
+	if since == nil || since.GetBuckets()[8] != 120 {
+		t.Errorf("after a reload: %v", since)
+	}
+}

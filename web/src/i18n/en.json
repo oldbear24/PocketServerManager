@@ -370,7 +370,8 @@
       "databases": "database",
       "scheduled_tasks": "scheduled task",
       "api_tokens": "API token",
-      "alert_rules": "alert rule"
+      "alert_rules": "alert rule",
+      "site_php": "PHP settings"
     },
     "actionName": {
       "create": "Created",
@@ -1727,6 +1728,8 @@
     "secretsNote": "A secret is sealed by the panel and shown to nobody; the environment refers to it as ${secret:name}. One the environment refers to cannot be removed.",
     "keepSecret": "Keep",
     "removeSecret": "Remove",
-    "errorLog": "PHP error log"
+    "errorLog": "PHP error log",
+    "keepSecretNamed": "Keep {{name}}",
+    "removeSecretNamed": "Remove {{name}}"
   }
 }

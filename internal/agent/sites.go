@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -131,6 +132,9 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 	switch payload.GetSource() {
 	case sites.SourceGit:
 		source.Args = append(source.Args, "--url", payload.GetRepoUrl(), "--branch", payload.GetBranch())
+		if commit := payload.GetCommit(); commit != "" {
+			source.Args = append(source.Args, "--commit", commit)
+		}
 		source.Env = map[string]string{"GIT_TOKEN": payload.GetGitToken()}
 		source.Network = true
 		reporter.Progress("source", "Cloning "+payload.GetRepoUrl(), 10)
@@ -229,8 +233,18 @@ func (a *Agent) handleSiteRollback(ctx context.Context, command *agentv1.Command
 	if err := sites.ValidName(site); err != nil {
 		return nil, err
 	}
+	// a release built for a newer PHP: its PHP-FPM first, and nothing
+	// switches when it does not start
+	apply := payload.GetApply()
+	var phpResult map[string]any
+	var err error
+	if apply != nil && payload.GetApplyFirst() {
+		if phpResult, err = a.applySitePHP(ctx, apply, reporter); err != nil {
+			return nil, fmt.Errorf("the site's PHP-FPM: %w", err)
+		}
+	}
 	started := time.Now()
-	_, err := a.siteRunner().Tool(ctx, toolRun{Site: site, Deployment: n,
+	_, err = a.siteRunner().Tool(ctx, toolRun{Site: site, Deployment: n,
 		Args: []string{"switch", "--site", site, "--n", strconv.Itoa(n)}}, reporter)
 	if err != nil {
 		return nil, err
@@ -239,7 +253,17 @@ func (a *Agent) handleSiteRollback(ctx context.Context, command *agentv1.Command
 	if payload.GetPhp() {
 		a.reloadPHP(ctx, site, reporter)
 	}
-	return map[string]any{"release": float64(n), "switch_ms": float64(switchMs)}, nil
+	result := map[string]any{"release": float64(n), "switch_ms": float64(switchMs)}
+	// an older one after the switch: the newer one runs the release until then
+	if apply != nil && !payload.GetApplyFirst() {
+		if phpResult, err = a.applySitePHP(context.WithoutCancel(ctx), apply, reporter); err != nil {
+			result["php_error"] = err.Error()
+		}
+	}
+	if phpResult != nil {
+		result["php"] = phpResult
+	}
+	return result, nil
 }
 
 func (a *Agent) handleSiteRemove(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
@@ -288,7 +312,14 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 		reporter.Progress("hook", "Running the release hook", 85)
 		run := hookRun{Site: site, Deployment: n, Image: php.GetImage(), Command: hook, Env: php.GetEnv(), Secrets: php.GetSecrets(),
 			Networks: php.GetNetworks(), CPUs: payload.GetCpuLimit(), Memory: payload.GetMemLimitBytes()}
-		if err := runner.Hook(ctx, run, newMaskingWriter(reporter, php.GetSecrets())); err != nil {
+		masked := maps.Clone(php.GetSecrets())
+		if masked == nil {
+			masked = map[string]string{}
+		}
+		for i, value := range php.GetMasked() {
+			masked[fmt.Sprintf("masked %d", i)] = value
+		}
+		if err := runner.Hook(ctx, run, newMaskingWriter(reporter, masked)); err != nil {
 			return failed(fmt.Errorf("the release hook: %w", err))
 		}
 	}
@@ -306,6 +337,12 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 		if applied, err = a.applySitePHP(ctx, apply, reporter); err != nil {
 			return failed(fmt.Errorf("PHP-FPM of the new version: %w", err))
 		}
+	}
+	// a cancel during the new PHP-FPM's start stops the deployment before its
+	// release goes live: the newer PHP-FPM runs the old release, as an
+	// upgrade's does, and the panel puts the version back
+	if err := ctx.Err(); err != nil {
+		return failed(err)
 	}
 
 	reporter.Progress("release", "Switching to the new release", 95)
@@ -519,6 +556,10 @@ func (d dockerSites) Hook(ctx context.Context, run hookRun, log io.Writer) error
 	if err := d.a.ensureSiteNetwork(ctx, run.Site); err != nil {
 		return err
 	}
+	seccomp, err := phpSeccomp()
+	if err != nil {
+		return fmt.Errorf("the seccomp profile of PHP: %w", err)
+	}
 	target := path.Join(sites.Root, run.Site)
 	mount, err := d.sitesMount(ctx, run.Site, target)
 	if err != nil {
@@ -554,7 +595,8 @@ func (d dockerSites) Hook(ctx context.Context, run hookRun, log io.Writer) error
 			"MemorySwap":  memory,
 			"PidsLimit":   4096,
 			"CapDrop":     []string{"ALL"},
-			"SecurityOpt": []string{"no-new-privileges"},
+			// the hook cannot make links either: see phpSeccomp
+			"SecurityOpt": []string{"no-new-privileges", seccomp},
 			"LogConfig":   map[string]any{"Type": "json-file"},
 		},
 	}

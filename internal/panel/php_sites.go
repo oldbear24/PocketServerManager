@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -98,6 +99,7 @@ var (
 
 func (p *Panel) registerPHPSites() {
 	p.Commands.RegisterEnricher("site.php.apply", p.enrichPHPApply)
+	p.Commands.RegisterEnricher("site.rollback", p.enrichRollbackPHP)
 	p.Commands.OnFinish("site.php.apply", p.phpApplyFinished)
 }
 
@@ -249,21 +251,30 @@ func parsePHPEnv(text string) (plain map[string]string, withSecrets map[string]s
 // secrets: the site's own, by name, or db/<database>, a password of a
 // database on the site's server.
 func (p *Panel) phpSecrets(site, settings *core.Record) (map[string]string, error) {
+	resolved, _, err := p.phpSecretValues(site, settings)
+	return resolved, err
+}
+
+// phpSecretValues are a site's variables with secrets, resolved, and the
+// secrets' own values, which a release hook's output hides wherever they
+// appear, as within a longer variable such as DATABASE_URL.
+func (p *Panel) phpSecretValues(site, settings *core.Record) (map[string]string, []string, error) {
 	_, withSecrets, err := parsePHPEnv(settings.GetString("env"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	own := map[string]string{}
 	if sealed := settings.GetString("secrets"); sealed != "" {
 		plain, err := p.Box.OpenString(sealed)
 		if err != nil {
-			return nil, fmt.Errorf("the site's secrets cannot be opened: %w", err)
+			return nil, nil, fmt.Errorf("the site's secrets cannot be opened: %w", err)
 		}
 		if err := json.Unmarshal([]byte(plain), &own); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	resolved := map[string]string{}
+	values := []string{}
 	for name, value := range withSecrets {
 		var failure error
 		resolved[name] = stacks.SecretReference.ReplaceAllStringFunc(value, func(reference string) string {
@@ -273,19 +284,25 @@ func (p *Panel) phpSecrets(site, settings *core.Record) (map[string]string, erro
 				if err != nil {
 					failure = err
 				}
+				values = append(values, password)
 				return password
 			}
 			text, ok := own[secret]
 			if !ok {
 				failure = fmt.Errorf("%s: the site has no secret %s: %w", name, secret, stacks.ErrUnknownSecret)
 			}
+			values = append(values, text)
 			return text
 		})
 		if failure != nil {
-			return nil, failure
+			return nil, nil, failure
 		}
 	}
-	return resolved, nil
+	for _, value := range own {
+		values = append(values, value)
+	}
+	slices.Sort(values)
+	return resolved, slices.Compact(values), nil
 }
 
 // fpmConf is a site's pool, after the image's own: its process manager, and
@@ -347,6 +364,12 @@ func (p *Panel) phpApplyPayload(site *core.Record) (*agentv1.SitePhpApply, *core
 	if err != nil {
 		return nil, nil, err
 	}
+	return p.phpApplyPayloadOf(site, settings)
+}
+
+// phpApplyPayloadOf is the apply of settings that need not be stored yet, as
+// a rollback's PHP version, kept once the rollback succeeded.
+func (p *Panel) phpApplyPayloadOf(site, settings *core.Record) (*agentv1.SitePhpApply, *core.Record, error) {
 	plain, _, err := parsePHPEnv(settings.GetString("env"))
 	if err != nil {
 		return nil, nil, err
@@ -434,6 +457,25 @@ func (p *Panel) enrichPHPApply(record *core.Record, command *agentv1.Command) er
 	return nil
 }
 
+// enrichRollbackPHP adds the site's secrets to the PHP-FPM of a rollback to a
+// release of another PHP version.
+func (p *Panel) enrichRollbackPHP(record *core.Record, command *agentv1.Command) error {
+	apply := command.GetSiteRollback().GetApply()
+	if apply == nil {
+		return nil
+	}
+	site, err := p.siteOfCommand(record.GetString("host"), apply.GetSite())
+	if err != nil {
+		return err
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return err
+	}
+	apply.Secrets, err = p.phpSecrets(site, settings)
+	return err
+}
+
 // phpApplied keeps the state of a site's PHP-FPM container after an apply, of
 // its own or with a deployment.
 func (p *Panel) phpApplied(site *core.Record, result map[string]any, failure string) {
@@ -448,9 +490,14 @@ func (p *Panel) phpApplied(site *core.Record, result map[string]any, failure str
 			map[string]any{"site": site.Id})
 		return
 	}
+	// the tag it was pulled by, pinned by its digest: repo:8.4-fpm@sha256:…
 	image, _ := result["image"].(string)
 	if digest, _ := result["digest"].(string); digest != "" {
-		image = digest
+		if _, pin, found := strings.Cut(digest, "@"); found && image != "" && !strings.Contains(image, "@") {
+			image += "@" + pin
+		} else {
+			image = digest
+		}
 	}
 	p.setFields(settings, map[string]any{"state": schema.PHPRunning, "image": image, "applied_at": types.NowDateTime(), "last_error": ""})
 }
@@ -476,6 +523,11 @@ func (p *Panel) phpDeployApplied(site, command *core.Record) {
 // serves after a deployment for another version failed: its PHP-FPM may have
 // changed already, and must run what is live.
 func (p *Panel) keepLivePHPVersion(site, failed *core.Record) {
+	// a deployment after it, which may be for yet another version, decides
+	if later, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s} && number>{:n} && status!={:failed}", "", 1, 0,
+		dbx.Params{"s": site.Id, "n": failed.GetInt("number"), "failed": schema.DeploymentFailed}); err == nil && len(later) > 0 {
+		return
+	}
 	live, err := p.App.FindRecordById(schema.Deployments, site.GetString("active_deployment"))
 	if err != nil || live.GetString("php_version") == "" || live.GetString("php_version") == failed.GetString("php_version") {
 		return
@@ -584,12 +636,16 @@ func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
 	id, label := requester(e)
 	result := map[string]any{}
 	version := settings.GetString("php_version")
-	if version != before && site.GetString("active_deployment") != "" {
-		// the release goes on the new image as a deployment of its own, which a
-		// rollback takes back to the old version; PHP-FPM changes with it
+	live, _ := p.App.FindRecordById(schema.Deployments, site.GetString("active_deployment"))
+	// in classic mode the code is the application's to change, and a new
+	// release would replace what it wrote: PHP-FPM changes on its own
+	if version != before && live != nil && settings.GetString("mode") != schema.PHPClassic {
+		// the live release, built again on the new image as a deployment of its
+		// own, which a rollback takes back to the old version; PHP-FPM changes
+		// with it
 		deployment, err := p.startDeployment(e.Request.Context(), site, deploymentRequest{
 			Trigger: schema.TriggerManual, RequestedBy: id, Requester: label,
-			Message: fmt.Sprintf("PHP %s → %s", before, version), PHPApply: true, PHPFrom: before,
+			Message: fmt.Sprintf("PHP %s → %s", before, version), PHPApply: true, PHPFrom: before, Again: live,
 		})
 		if err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
@@ -765,9 +821,10 @@ const phpStatusWait = 15 * time.Second
 // phpStatus is what the site page shows of a site's PHP-FPM: its workers, as
 // FPM's status page counts them, and how well OPcache serves.
 type phpStatus struct {
-	PHPVersion string      `json:"php_version"`
-	Workers    phpWorkers  `json:"workers"`
-	OPcache    *phpOPcache `json:"opcache"`
+	PHPVersion string `json:"php_version"`
+	// none when FPM's status page could not be read: the errors say why
+	Workers *phpWorkers `json:"workers"`
+	OPcache *phpOPcache `json:"opcache"`
 	// the extensions the runtime image added to PHP's own
 	Extensions []string `json:"extensions"`
 	// the sizes of the shared paths, in bytes; a path that could not be
@@ -850,14 +907,14 @@ func readPHPStatus(raw string, fpm fpmSettings, shared []string) (phpStatus, err
 	}
 	for _, path := range shared {
 		item := phpShared{Path: path}
-		if size, ok := answer.Shared[path]; ok {
+		// the agent names a path as path.Clean does
+		if size, ok := answer.Shared[filepath.Clean(path)]; ok {
 			item.Bytes = &size
 		}
 		status.Shared = append(status.Shared, item)
 	}
-	status.Workers.Max = int64(fpm.MaxChildren)
 	if f := answer.FPM; f != nil {
-		status.Workers = phpWorkers{
+		status.Workers = &phpWorkers{
 			Active: f.Active, Idle: f.Idle, Total: f.Total, Max: int64(fpm.MaxChildren), MaxActive: f.MaxActive,
 			MaxChildrenReached: f.MaxChildrenReached, ListenQueue: f.ListenQueue, Accepted: f.Accepted,
 			SlowRequests: f.SlowRequests, Uptime: f.Since,
@@ -904,6 +961,12 @@ func (p *Panel) handlePHPStatus(e *core.RequestEvent) error {
 		_ = p.Commands.Cancel(command.Id, "The panel stopped waiting for it.")
 		return e.Error(http.StatusGatewayTimeout, "The server did not answer in time.", nil)
 	}
+	// a read the page makes every minute: once answered, it is no history
+	defer func() {
+		if err := p.App.Delete(done); err != nil {
+			p.Log.Warn("failed to remove a read PHP status", "command", done.Id, "error", err)
+		}
+	}()
 	if done.GetString("status") != schema.CommandSucceeded {
 		message := done.GetString("error")
 		if message == "" {

@@ -180,7 +180,11 @@ function SiteForm({
                 php: {
                   version: phpForm.version || versions?.default || "",
                   template: phpForm.template,
-                  docroot: phpForm.docroot.trim().replace(/^\/+|\/+$/g, ""),
+                  // a placeholder's page is the release itself
+                  docroot:
+                    values.source === "empty"
+                      ? ""
+                      : phpForm.docroot.trim().replace(/^\/+|\/+$/g, ""),
                   ...(dbServer
                     ? {
                         database_server: dbServer,
@@ -310,16 +314,20 @@ function SiteForm({
                 </select>
               </Field>
             </div>
-            <Field label={t("phpSite.webRoot")} htmlFor="new-site-docroot">
-              <input
-                id="new-site-docroot"
-                className="input mono"
-                placeholder={t("siteNew.docrootNone")}
-                value={phpForm.docroot}
-                onChange={(event) => setPhp({ docroot: event.target.value })}
-              />
-            </Field>
-            <p className="muted small">{t("siteNew.docrootNote")}</p>
+            {values.source !== "empty" && (
+              <>
+                <Field label={t("phpSite.webRoot")} htmlFor="new-site-docroot">
+                  <input
+                    id="new-site-docroot"
+                    className="input mono"
+                    placeholder={t("siteNew.docrootNone")}
+                    value={phpForm.docroot}
+                    onChange={(event) => setPhp({ docroot: event.target.value })}
+                  />
+                </Field>
+                <p className="muted small">{t("siteNew.docrootNote")}</p>
+              </>
+            )}
             <div className="form-row">
               <Field label={t("phpSite.database")} htmlFor="new-site-db-server">
                 <select
@@ -1041,7 +1049,7 @@ function stepDetail(row: Row, step: Command, t: Translate, plan: string): string
       // the next row's
       const stage = step.progress?.step ?? "";
       if (step.status !== "succeeded") {
-        return stage === "source" || stage === "build" ? progress : t("siteNew.plan.build");
+        return stage === "source" || stage === "build" ? progress : plan;
       }
       return [String(result.generator ?? ""), formatDuration(Number(result.build_ms ?? 0) / 1000)]
         .filter(Boolean)
@@ -1049,7 +1057,7 @@ function stepDetail(row: Row, step: Command, t: Translate, plan: string): string
     }
     case "release":
       if (step.status !== "succeeded") {
-        return progress && step.progress?.step === "release" ? progress : t("siteNew.plan.release");
+        return progress && step.progress?.step === "release" ? progress : plan;
       }
       return [
         "site.deploy",

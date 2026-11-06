@@ -365,6 +365,9 @@ message SiteDeploy {
   // the release keeps shared_paths in `shared/`, release_hook runs in it
   // before it goes live, and the site's PHP-FPM container reloads after.
   SitePhpDeploy php = 17;
+  // commit is the commit of the branch to build rather than its newest, as
+  // when a PHP site's live release is built again for another PHP version.
+  string commit = 18;
 }
 
 // SitePhpDeploy is how a PHP site's release is built and made live.
@@ -390,6 +393,9 @@ message SitePhpDeploy {
   // apply_first applies the new PHP-FPM before the switch: a newer PHP runs
   // the release served now, and an older one would not run the new release.
   bool apply_first = 8;
+  // masked are the secrets' own values, which the release hook's output
+  // hides wherever they appear in it, as within a longer variable.
+  repeated string masked = 9 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.
@@ -400,6 +406,11 @@ message SiteRollback {
   int32 deployment = 2;
   // php reloads the site's PHP-FPM container after the switch (#50).
   bool php = 3;
+  // apply changes the site's PHP-FPM for a release built for another PHP
+  // version: before the switch when that version is newer, so that a failure
+  // leaves the site as it was, and after it when older.
+  SitePhpApply apply = 4;
+  bool apply_first = 5;
 }
 
 // SiteRemove removes a site's files and containers.

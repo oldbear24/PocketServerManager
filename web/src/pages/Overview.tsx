@@ -96,7 +96,8 @@ export function OverviewPage() {
   });
   // opening a log or a terminal is a command too, but no one is waiting in a queue for it
   const commands = useLiveList<Command>("commands", {
-    filter: "type !~ 'logs.%' && type !~ 'exec.%'",
+    // reads, such as a PHP site's status, are no work of the queue
+    filter: "type !~ 'logs.%' && type !~ 'exec.%' && type != 'site.php.status'",
     sort: "-created",
     perPage: 8,
   });

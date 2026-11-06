@@ -96,14 +96,30 @@ export function usePhpSite(site: Site, enabled = true): PhpSiteData {
         })
         .catch((reason: unknown) => {
           if (live && !(reason as { isAbort?: boolean }).isAbort) {
+            // what was read before is no longer how it is
+            setStatus(null);
             setStatusError(errorMessage(reason));
           }
         });
     void load();
-    const timer = window.setInterval(() => void load(), statusEvery);
+    // each read is a command on the server: none while the page is hidden
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        void load();
+      }
+    }, statusEvery);
+    const visible = () => {
+      if (!document.hidden) {
+        void load();
+      }
+    };
+    document.addEventListener("visibilitychange", visible);
     return () => {
       live = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", visible);
+      setStatus(null);
+      setStatusError("");
     };
     // a new apply restarts the container: its status is read again
   }, [site.id, running, applied]);
@@ -122,10 +138,11 @@ function fpmOf(settings: SitePhp | null): FpmSettings {
   return { ...defaultFpm, ...(settings?.fpm ?? {}) };
 }
 
-/** "repo:8.4-fpm · sha256:94a71dd6" for an image the agent pinned by its digest. */
-function imageText(image: string, version: string): string {
-  const [repository, digest] = image.split("@");
-  return digest ? `${repository}:${version}-fpm · ${digest.slice(0, 15)}` : image;
+/** "repo:8.4-fpm · sha256:94a71dd6" for the image the container runs, as
+ * the panel keeps it: its tag pinned by its digest. */
+function imageText(image: string): string {
+  const [reference, digest] = image.split("@");
+  return digest ? `${reference} · ${digest.slice(0, 15)}` : image;
 }
 
 function percent(value: number): string {
@@ -148,12 +165,16 @@ export function PhpKpis({ data, requests }: { data: PhpSiteData; requests: SiteR
           <span>{t("phpSite.workers")}</span>
         </div>
         <div className="kpi-value mono">
-          {status ? `${status.workers.active} / ${status.workers.max || fpm.max_children}` : "–"}
+          {status?.workers
+            ? `${status.workers.active} / ${status.workers.max || fpm.max_children}`
+            : "–"}
         </div>
         <div className="kpi-note">
-          {status
+          {status?.workers
             ? t("phpSite.workersNote", { pm: fpm.pm, queue: status.workers.listen_queue })
-            : statusError || t(`phpSite.state.${settings?.state || "pending"}`)}
+            : status?.errors?.length
+              ? status.errors.join(" ")
+              : statusError || t(`phpSite.state.${settings?.state || "pending"}`)}
         </div>
       </div>
       <div className="card kpi">
@@ -253,7 +274,7 @@ export function PhpRuntimeCard({
       side={
         <span className="runtime-state">
           <StatusPill tone={state === "running" ? "ok" : state === "failed" ? "err" : "info"} dot>
-            {status
+            {status?.workers
               ? t("phpSite.healthyFor", {
                   container,
                   uptime: formatDuration(status.workers.uptime),
@@ -274,7 +295,7 @@ export function PhpRuntimeCard({
       <dl className="facts">
         <dt>{t("phpSite.image")}</dt>
         <dd className="mono break" title={settings.image}>
-          {settings.image ? imageText(settings.image, settings.php_version) : "–"}
+          {settings.image ? imageText(settings.image) : "–"}
         </dd>
         <dt>FastCGI</dt>
         <dd className="mono">{t("phpSite.fastcgi", { upstream: `${container}:9000` })}</dd>
@@ -460,7 +481,9 @@ function VersionDialog({
 }) {
   const { t } = useTranslation();
   const choices = versions.filter((version) => version.version !== settings.php_version);
-  const [version, setVersion] = useState(suggested ?? choices[0]?.version ?? "");
+  const [picked, setVersion] = useState("");
+  // the versions may arrive after the dialog opened
+  const version = picked || suggested || choices[0]?.version || "";
   const { busy, error, save } = useSave(site, onApplied, onClose);
   const chosen = versions.find((item) => item.version === version);
   return (
@@ -528,6 +551,12 @@ function SettingsDialog({
   const set = (change: Partial<typeof values>) =>
     setValues((current) => ({ ...current, ...change }));
   const { busy, error, save } = useSave(site, onApplied, onClose);
+  // an empty field is no number, and 0 would mean no limit at all
+  const positive = (value: string) => value.trim() !== "" && Number(value) > 0;
+  const valid =
+    [values.children, values.timeout, values.cpu, values.memory].every(positive) &&
+    values.requests.trim() !== "" &&
+    Number(values.requests) >= 0;
   const submit = () =>
     void save({
       docroot: values.docroot.trim().replace(/^\/+|\/+$/g, ""),
@@ -551,7 +580,7 @@ function SettingsDialog({
       open
       title={t("phpSite.settingsTitle", { name: site.name })}
       confirmLabel={t("phpSite.saveApply")}
-      confirmDisabled={busy}
+      confirmDisabled={busy || !valid}
       onCancel={onClose}
       onConfirm={submit}
     >
@@ -882,14 +911,16 @@ function SecretsDialog({
   const change: Record<string, string | null> = Object.fromEntries(
     removed.map((item) => [item, null]),
   );
-  if (name.trim()) {
+  // a name without a value would replace a secret with nothing
+  const named = name.trim() !== "";
+  if (named && value !== "") {
     change[name.trim()] = value;
   }
   const save = async () => {
     setBusy(true);
     setError("");
     try {
-      const applied = await phpApi.secrets(site.id, change as Record<string, string>);
+      const applied = await phpApi.secrets(site.id, change);
       toast.success(t("phpSite.applyStarted"));
       onApplied(applied, t("phpSite.applyTitle", { name: site.name }));
       onClose();
@@ -904,7 +935,7 @@ function SecretsDialog({
       open
       title={t("phpSite.secretsTitle", { name: site.name })}
       confirmLabel={t("phpSite.saveApply")}
-      confirmDisabled={busy || Object.keys(change).length === 0}
+      confirmDisabled={busy || Object.keys(change).length === 0 || (named && value === "")}
       onCancel={onClose}
       onConfirm={() => void save()}
     >
@@ -918,6 +949,10 @@ function SecretsDialog({
                   <span className={`mono${gone ? " struck" : ""}`}>{item}</span>
                   <Button
                     size="small"
+                    aria-pressed={gone}
+                    aria-label={t(gone ? "phpSite.keepSecretNamed" : "phpSite.removeSecretNamed", {
+                      name: item,
+                    })}
                     onClick={() =>
                       setRemoved((current) =>
                         gone ? current.filter((other) => other !== item) : [...current, item],

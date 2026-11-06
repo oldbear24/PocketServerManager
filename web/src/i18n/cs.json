@@ -398,7 +398,8 @@
       "databases": "databázi",
       "scheduled_tasks": "plánovanou úlohu",
       "api_tokens": "API token",
-      "alert_rules": "pravidlo upozornění"
+      "alert_rules": "pravidlo upozornění",
+      "site_php": "nastavení PHP"
     },
     "actionName": {
       "create": "Vytvořeno",
@@ -1735,7 +1736,7 @@
     },
     "noDatabase": "bez databáze",
     "runtime": "PHP runtime",
-    "healthyFor": "{{container}} · healthy · {{uptime}}",
+    "healthyFor": "{{container}} · v pořádku · {{uptime}}",
     "settings": "Nastavení",
     "image": "Image",
     "fastcgi": "{{upstream}} ← Caddy php_fastcgi",
@@ -1803,6 +1804,8 @@
     "secretsNote": "Tajemství panel zapečetí a nikomu neukáže; prostředí se na něj odkazuje jako ${secret:název}. Tajemství, na které se prostředí odkazuje, nelze odebrat.",
     "keepSecret": "Ponechat",
     "removeSecret": "Odebrat",
-    "errorLog": "PHP error log"
+    "errorLog": "Chybový log PHP",
+    "keepSecretNamed": "Ponechat {{name}}",
+    "removeSecretNamed": "Odebrat {{name}}"
   }
 }

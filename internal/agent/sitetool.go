@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -72,6 +73,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	kind := flags.String("kind", "", "the source: git, upload or empty")
 	repo := flags.String("url", "", "the Git repository")
 	branch := flags.String("branch", "", "the Git branch")
+	commit := flags.String("commit", "", "the commit of the branch to build, rather than its newest")
 	generator := flags.String("generator", sites.GeneratorAuto, "how to build the source")
 	image := flags.String("image", "", "the build image")
 	command := flags.String("command", "", "the build command")
@@ -98,7 +100,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	var result any
 	switch op {
 	case "source":
-		found, err := siteSource(ctx, *root, *site, *n, *kind, *repo, *branch, env["GIT_TOKEN"], stderr)
+		found, err := siteSource(ctx, *root, *site, *n, *kind, gitSource{*repo, *branch, *commit, env["GIT_TOKEN"]}, stderr)
 		if err != nil {
 			return err
 		}
@@ -237,14 +239,19 @@ func describeGenerator(generator string) string {
 // siteSource makes the deployment's directories and puts its source there.
 // An upload is already in the build directory, put there before the tool
 // started.
-func siteSource(ctx context.Context, root, site string, n int, kind, repo, branch, token string, log io.Writer) (sourceResult, error) {
+// gitSource is where a Git source is: a branch, and a commit of it or its newest.
+type gitSource struct {
+	repo, branch, commit, token string
+}
+
+func siteSource(ctx context.Context, root, site string, n int, kind string, git gitSource, log io.Writer) (sourceResult, error) {
 	src := sites.SourceDir(root, site, n)
 	if err := sites.Prepare(root, site, n); err != nil {
 		return sourceResult{}, err
 	}
 	switch kind {
 	case sites.SourceGit:
-		return gitClone(ctx, repo, branch, token, src, log)
+		return gitClone(ctx, git, src, log)
 	case sites.SourceUpload:
 		upload := filepath.Join(sites.BuildDir(root, site, n), sites.UploadName)
 		fmt.Fprintln(log, "Unpacking the upload.")
@@ -261,8 +268,9 @@ func siteSource(ctx context.Context, root, site string, n int, kind, repo, branc
 // gitClone checks out the newest commit of a branch, with its submodules
 // (Hugo themes often are). A token goes to Git in its environment, not on its
 // command line, and is never written out.
-func gitClone(ctx context.Context, repo, branch, token, src string, log io.Writer) (sourceResult, error) {
-	env, err := gitEnv(repo, token)
+func gitClone(ctx context.Context, git gitSource, src string, log io.Writer) (sourceResult, error) {
+	repo, branch := git.repo, git.branch
+	env, err := gitEnv(repo, git.token)
 	if err != nil {
 		return sourceResult{}, err
 	}
@@ -280,6 +288,11 @@ func gitClone(ctx context.Context, repo, branch, token, src string, log io.Write
 	if err := clone.Run(); err != nil {
 		return sourceResult{}, fmt.Errorf("git could not clone %s: %w", repo, err)
 	}
+	if git.commit != "" {
+		if err := gitCheckout(ctx, env, src, git.commit, log); err != nil {
+			return sourceResult{}, err
+		}
+	}
 
 	show := exec.CommandContext(ctx, "git", "-C", src, "log", "-1", "--format=%H%n%s") //nolint:gosec // the deployment's own checkout
 	show.Env = env
@@ -291,6 +304,36 @@ func gitClone(ctx context.Context, repo, branch, token, src string, log io.Write
 	fmt.Fprintf(log, "Commit %s: %s\n", shortCommit(commit), message)
 	return sourceResult{Commit: commit, Message: message}, nil
 }
+
+// gitCheckout moves a shallow clone to a commit of its branch: fetched by
+// itself where the server lets a client ask for one, or with the branch's
+// whole history.
+func gitCheckout(ctx context.Context, env []string, src, commit string, log io.Writer) error {
+	if !commitID.MatchString(commit) {
+		return fmt.Errorf("%q is not a commit", commit)
+	}
+	fmt.Fprintf(log, "$ git checkout %s\n", shortCommit(commit))
+	git := func(args ...string) error {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", src}, args...)...) //nolint:gosec // the deployment's own checkout
+		command.Env = env
+		command.Stdout = log
+		command.Stderr = log
+		return command.Run()
+	}
+	if git("fetch", "--depth", "1", "--no-tags", "origin", commit) != nil {
+		// the clone fetches its one branch
+		if err := git("fetch", "--unshallow", "--no-tags", "origin"); err != nil {
+			return fmt.Errorf("git could not fetch the commit %s: %w", shortCommit(commit), err)
+		}
+	}
+	if err := git("checkout", "--quiet", "--detach", commit); err != nil {
+		return fmt.Errorf("git could not check out the commit %s: %w", shortCommit(commit), err)
+	}
+	return git("submodule", "update", "--init", "--recursive", "--depth", "1")
+}
+
+// commitID is a commit's full SHA-1 or SHA-256 name.
+var commitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // gitEnv is the environment of Git: no prompts, and a token, if any, as a
 // header for the repository's own server only, so a submodule elsewhere or one

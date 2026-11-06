@@ -2254,7 +2254,10 @@ type SiteDeploy struct {
 	// php is set for a PHP site (#50): the build runs in its runtime image,
 	// the release keeps shared_paths in `shared/`, release_hook runs in it
 	// before it goes live, and the site's PHP-FPM container reloads after.
-	Php           *SitePhpDeploy `protobuf:"bytes,17,opt,name=php,proto3" json:"php,omitempty"`
+	Php *SitePhpDeploy `protobuf:"bytes,17,opt,name=php,proto3" json:"php,omitempty"`
+	// commit is the commit of the branch to build rather than its newest, as
+	// when a PHP site's live release is built again for another PHP version.
+	Commit        string `protobuf:"bytes,18,opt,name=commit,proto3" json:"commit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2408,6 +2411,13 @@ func (x *SiteDeploy) GetPhp() *SitePhpDeploy {
 	return nil
 }
 
+func (x *SiteDeploy) GetCommit() string {
+	if x != nil {
+		return x.Commit
+	}
+	return ""
+}
+
 // SitePhpDeploy is how a PHP site's release is built and made live.
 type SitePhpDeploy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2431,7 +2441,10 @@ type SitePhpDeploy struct {
 	Apply *SitePhpApply `protobuf:"bytes,7,opt,name=apply,proto3" json:"apply,omitempty"`
 	// apply_first applies the new PHP-FPM before the switch: a newer PHP runs
 	// the release served now, and an older one would not run the new release.
-	ApplyFirst    bool `protobuf:"varint,8,opt,name=apply_first,json=applyFirst,proto3" json:"apply_first,omitempty"`
+	ApplyFirst bool `protobuf:"varint,8,opt,name=apply_first,json=applyFirst,proto3" json:"apply_first,omitempty"`
+	// masked are the secrets' own values, which the release hook's output
+	// hides wherever they appear in it, as within a longer variable.
+	Masked        []string `protobuf:"bytes,9,rep,name=masked,proto3" json:"masked,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2522,6 +2535,13 @@ func (x *SitePhpDeploy) GetApplyFirst() bool {
 	return false
 }
 
+func (x *SitePhpDeploy) GetMasked() []string {
+	if x != nil {
+		return x.Masked
+	}
+	return nil
+}
+
 // SiteRollback switches a site's `current` symlink to an older release.
 type SiteRollback struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2530,7 +2550,12 @@ type SiteRollback struct {
 	// deployment is the release to activate.
 	Deployment int32 `protobuf:"varint,2,opt,name=deployment,proto3" json:"deployment,omitempty"`
 	// php reloads the site's PHP-FPM container after the switch (#50).
-	Php           bool `protobuf:"varint,3,opt,name=php,proto3" json:"php,omitempty"`
+	Php bool `protobuf:"varint,3,opt,name=php,proto3" json:"php,omitempty"`
+	// apply changes the site's PHP-FPM for a release built for another PHP
+	// version: before the switch when that version is newer, so that a failure
+	// leaves the site as it was, and after it when older.
+	Apply         *SitePhpApply `protobuf:"bytes,4,opt,name=apply,proto3" json:"apply,omitempty"`
+	ApplyFirst    bool          `protobuf:"varint,5,opt,name=apply_first,json=applyFirst,proto3" json:"apply_first,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2582,6 +2607,20 @@ func (x *SiteRollback) GetDeployment() int32 {
 func (x *SiteRollback) GetPhp() bool {
 	if x != nil {
 		return x.Php
+	}
+	return false
+}
+
+func (x *SiteRollback) GetApply() *SitePhpApply {
+	if x != nil {
+		return x.Apply
+	}
+	return nil
+}
+
+func (x *SiteRollback) GetApplyFirst() bool {
+	if x != nil {
+		return x.ApplyFirst
 	}
 	return false
 }
@@ -5530,7 +5569,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\")\n" +
 	"\bExecStop\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xb1\x04\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xc9\x04\n" +
 	"\n" +
 	"SiteDeploy\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x1e\n" +
@@ -5555,7 +5594,8 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\tgenerator\x18\x0e \x01(\tR\tgenerator\x12\x1b\n" +
 	"\tcpu_limit\x18\x0f \x01(\x01R\bcpuLimit\x12&\n" +
 	"\x0fmem_limit_bytes\x18\x10 \x01(\x03R\rmemLimitBytes\x125\n" +
-	"\x03php\x18\x11 \x01(\v2#.pocketcloud.agent.v1.SitePhpDeployR\x03php\"\xd6\x03\n" +
+	"\x03php\x18\x11 \x01(\v2#.pocketcloud.agent.v1.SitePhpDeployR\x03php\x12\x16\n" +
+	"\x06commit\x18\x12 \x01(\tR\x06commit\"\xf4\x03\n" +
 	"\rSitePhpDeploy\x12\x14\n" +
 	"\x05image\x18\x01 \x01(\tR\x05image\x12\x18\n" +
 	"\adocroot\x18\x02 \x01(\tR\adocroot\x12\x18\n" +
@@ -5565,19 +5605,23 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\bnetworks\x18\x06 \x03(\tR\bnetworks\x128\n" +
 	"\x05apply\x18\a \x01(\v2\".pocketcloud.agent.v1.SitePhpApplyR\x05apply\x12\x1f\n" +
 	"\vapply_first\x18\b \x01(\bR\n" +
-	"applyFirst\x1a6\n" +
+	"applyFirst\x12\x1c\n" +
+	"\x06masked\x18\t \x03(\tB\x04\xc0\xf3\x18\x01R\x06masked\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
 	"\fSecretsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"T\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x01\n" +
 	"\fSiteRollback\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x02 \x01(\x05R\n" +
 	"deployment\x12\x10\n" +
-	"\x03php\x18\x03 \x01(\bR\x03php\" \n" +
+	"\x03php\x18\x03 \x01(\bR\x03php\x128\n" +
+	"\x05apply\x18\x04 \x01(\v2\".pocketcloud.agent.v1.SitePhpApplyR\x05apply\x12\x1f\n" +
+	"\vapply_first\x18\x05 \x01(\bR\n" +
+	"applyFirst\" \n" +
 	"\n" +
 	"SiteRemove\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\"\xeb\x03\n" +
@@ -5993,37 +6037,38 @@ var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
 	65, // 63: pocketcloud.agent.v1.SitePhpDeploy.env:type_name -> pocketcloud.agent.v1.SitePhpDeploy.EnvEntry
 	66, // 64: pocketcloud.agent.v1.SitePhpDeploy.secrets:type_name -> pocketcloud.agent.v1.SitePhpDeploy.SecretsEntry
 	24, // 65: pocketcloud.agent.v1.SitePhpDeploy.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
-	67, // 66: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	68, // 67: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	69, // 68: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	30, // 69: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 70: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 71: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 72: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 73: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 74: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 75: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 76: pocketcloud.agent.v1.DbServerMove.source:type_name -> pocketcloud.agent.v1.DbConnection
-	30, // 77: pocketcloud.agent.v1.DbServerMove.target:type_name -> pocketcloud.agent.v1.DbConnection
-	41, // 78: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
-	70, // 79: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
-	71, // 80: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	47, // 81: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 82: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	72, // 83: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	47, // 84: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 85: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 86: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 87: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 88: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	47, // 89: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	0,  // 90: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
-	62, // 91: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
-	92, // [92:92] is the sub-list for method output_type
-	92, // [92:92] is the sub-list for method input_type
-	92, // [92:92] is the sub-list for extension type_name
-	92, // [92:92] is the sub-list for extension extendee
-	0,  // [0:92] is the sub-list for field type_name
+	24, // 66: pocketcloud.agent.v1.SiteRollback.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
+	67, // 67: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	68, // 68: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	69, // 69: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	30, // 70: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 71: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 72: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 73: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 74: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 75: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 76: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 77: pocketcloud.agent.v1.DbServerMove.source:type_name -> pocketcloud.agent.v1.DbConnection
+	30, // 78: pocketcloud.agent.v1.DbServerMove.target:type_name -> pocketcloud.agent.v1.DbConnection
+	41, // 79: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
+	70, // 80: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
+	71, // 81: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
+	47, // 82: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 83: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	72, // 84: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	47, // 85: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 86: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 87: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 88: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 89: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	47, // 90: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	0,  // 91: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
+	62, // 92: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
+	93, // [93:93] is the sub-list for method output_type
+	93, // [93:93] is the sub-list for method input_type
+	93, // [93:93] is the sub-list for extension type_name
+	93, // [93:93] is the sub-list for extension extendee
+	0,  // [0:93] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }

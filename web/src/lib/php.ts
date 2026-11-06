@@ -74,6 +74,7 @@ export type SitePhpChange = Partial<
 /** How a site's PHP-FPM is doing, as its server reads it. */
 export type PhpStatus = {
   php_version: string;
+  /** none when FPM's status page could not be read: errors say why */
   workers: {
     active: number;
     idle: number;
@@ -85,7 +86,7 @@ export type PhpStatus = {
     accepted: number;
     slow_requests: number;
     uptime: number;
-  };
+  } | null;
   opcache: {
     enabled: boolean;
     hit_rate: number;
@@ -107,8 +108,9 @@ export const phpApi = {
   versions: () => pb.send<PhpVersions>("/api/pc/php/versions", {}),
   settings: (site: string, change: SitePhpChange) =>
     pb.send<PhpApplied>(`/api/pc/sites/${site}/php`, { method: "PUT", body: change }),
-  /** replaces the site's secrets: a name with an empty value keeps its value */
-  secrets: (site: string, secrets: Record<string, string>) =>
+  /** sets the site's secrets: a name with a value sets it, one with null
+   * removes it, and those left out stay */
+  secrets: (site: string, secrets: Record<string, string | null>) =>
     pb.send<PhpApplied & { secret_names: string[] }>(`/api/pc/sites/${site}/php/secrets`, {
       method: "PUT",
       body: secrets,

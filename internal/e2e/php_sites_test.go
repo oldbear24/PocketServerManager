@@ -255,12 +255,18 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	if done := s.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed); done.GetString("status") != schema.CommandSucceeded {
 		t.Fatalf("rollback: %s", done.GetString("error"))
 	}
-	if version := s.phpSettings(siteID).GetString("php_version"); version != first {
-		t.Errorf("the version after the rollback: %s", version)
-	}
+	// the settings take the version once the rollback succeeded
+	s.waitFor("the settings to go back to PHP "+first, func() bool {
+		return s.phpSettings(siteID).GetString("php_version") == first
+	})
 	// an older PHP-FPM follows the switch, as the newer one runs the old release
 	s.waitFor("PHP-FPM to go back to "+first, func() bool {
-		image, _ := s.docker.Find("shop-php").Config["Image"].(string)
+		// it is renamed for a moment while its successor starts
+		container := s.docker.Find("shop-php")
+		if container == nil {
+			return false
+		}
+		image, _ := container.Config["Image"].(string)
 		return image == php.Image+":"+first+"-fpm"
 	})
 	if current := sites.Current(s.sites, "shop"); current != 1 {
@@ -536,5 +542,40 @@ func TestThePageOfAPHPSiteShowsItsWorkersAndHowFastItAnswers(t *testing.T) {
 	p95, _ := latency["p95_ms"].(float64)
 	if latency["errors"] != float64(2) || p50 <= 25 || p50 > 50 || p95 <= 100 || p95 > 250 {
 		t.Errorf("the durations: %v", latency)
+	}
+}
+
+// TestAContainerOfTheSiteNameThatIsNotItsPHPFPMStays: a container someone
+// runs as <site>-php is not the site's PHP-FPM, which the agent knows by its
+// labels: removing a static site of that name leaves it, and a PHP site of
+// that name says why it cannot start rather than replacing it (#50).
+func TestAContainerOfTheSiteNameThatIsNotItsPHPFPMStays(t *testing.T) {
+	s := newSitesHarness(t)
+	s.docker.AddContainer("docs-php", "nginx:1", nil)
+	docs := s.newSite(map[string]any{"name": "docs", "source": sites.SourceUpload})
+	s.upload(docs, map[string]string{"index.html": "docs"})
+	if status, _ := testutil.Do(t, s.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/collections/sites/records/" + docs, Token: s.operator}); status != http.StatusNoContent {
+		t.Fatalf("remove: %d", status)
+	}
+	s.waitFor("the site to be removed", func() bool {
+		removal, err := s.app.FindFirstRecordByFilter(schema.Commands, "type='site.remove'")
+		return err == nil && removal.GetString("status") == schema.CommandSucceeded
+	})
+	if s.docker.Find("docs-php") == nil {
+		t.Error("removing the static site removed another container")
+	}
+
+	s.docker.AddContainer("shop-php", "php:8.4-fpm", nil)
+	siteID := s.newSite(map[string]any{"name": "shop", "type": schema.SitePHPApp, "source": sites.SourceUpload})
+	status, out := s.request(http.MethodPost, "/api/pc/sites/"+siteID+"/php/apply", s.operator, nil)
+	if status != http.StatusOK {
+		t.Fatalf("apply: %d %v", status, out)
+	}
+	done := s.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed)
+	if done.GetString("status") != schema.CommandFailed || !strings.Contains(done.GetString("error"), "is not the site's PHP-FPM") {
+		t.Errorf("apply: %s %s", done.GetString("status"), done.GetString("error"))
+	}
+	if container := s.docker.Find("shop-php"); container == nil || container.Config["Image"] != "php:8.4-fpm" {
+		t.Error("the other container was replaced")
 	}
 }

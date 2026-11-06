@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -1050,12 +1051,24 @@ func promLabel(labels, name string) string {
 // and counts from 0.
 func latencySince(before, now map[string]hostHistogram) map[string]*agentv1.HostLatency {
 	since := map[string]*agentv1.HostLatency{}
-	for host, current := range now {
-		if len(since) >= maxReportedHosts {
-			break
-		}
+	for _, host := range slices.Sorted(maps.Keys(now)) {
+		current := now[host]
 		previous, known := before[host]
-		if known && current.cumulative[len(latencyBounds)-1] < previous.cumulative[len(latencyBounds)-1] {
+		if len(since) >= maxReportedHosts {
+			// left for the next report: the reading becomes the next one's
+			// baseline, so a host left out keeps its own
+			if known {
+				now[host] = previous
+			} else {
+				delete(now, host)
+			}
+			continue
+		}
+		// Caddy starts its counters again with every new config it loads, not
+		// only when it restarts: any of them going down means that
+		if known && (current.errors < previous.errors || slices.ContainsFunc(latencyIndexes, func(i int) bool {
+			return current.cumulative[i] < previous.cumulative[i]
+		})) {
 			known = false
 		}
 		delta := func(now, then float64) uint64 {
@@ -1081,6 +1094,15 @@ func latencySince(before, now map[string]hostHistogram) map[string]*agentv1.Host
 	}
 	return since
 }
+
+// latencyIndexes are the indexes of latencyBounds.
+var latencyIndexes = func() []int {
+	indexes := make([]int, len(latencyBounds))
+	for i := range indexes {
+		indexes[i] = i
+	}
+	return indexes
+}()
 
 // countRequests adds up the requests in Caddy's metrics, in all and per
 // hostname; a request of a name no route has counts as _other, in all only.

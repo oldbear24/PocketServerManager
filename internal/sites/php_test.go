@@ -139,3 +139,53 @@ func TestAPHPSiteIsBuiltWithComposerOrItsOwnCommand(t *testing.T) {
 		t.Errorf("%+v", plan)
 	}
 }
+
+// TestALinkInSharedCannotLeadIntoAnotherSite: shared/ is the site's PHP's to
+// write, and the site tool runs as root with every site: a link there that
+// leads out of the site moves nothing anywhere (#50).
+func TestALinkInSharedCannotLeadIntoAnotherSite(t *testing.T) {
+	root := t.TempDir()
+	for _, site := range []string{"a", "b"} {
+		if err := PreparePHP(root, site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	victim := filepath.Join(root, "b/releases/1/public")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// a's PHP swapped shared/wp-content for a link into b's release
+	if err := os.Symlink(filepath.Join(root, "b/releases/1/public"), filepath.Join(root, "a/shared/wp-content")); err != nil {
+		t.Fatal(err)
+	}
+	uploads := filepath.Join(root, "a/releases/1/wp-content/uploads")
+	if err := os.MkdirAll(uploads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(uploads, "shell.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := LinkShared(root, "a", 1, []string{"wp-content/uploads"}); err == nil {
+		t.Error("linked through a link out of the site")
+	}
+	entries, _ := os.ReadDir(victim)
+	if len(entries) != 0 {
+		t.Errorf("b's release has %v", entries)
+	}
+	// a link that stays in the site is followed, as before
+	if err := os.Remove(filepath.Join(root, "a/shared/wp-content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "a/shared/content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("content", filepath.Join(root, "a/shared/wp-content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := LinkShared(root, "a", 1, []string{"wp-content/uploads"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a/shared/content/uploads/shell.php")); err != nil {
+		t.Errorf("the upload did not move into shared/: %v", err)
+	}
+}

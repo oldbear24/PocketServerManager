@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -82,6 +84,11 @@ func (a *Agent) handleSitePHPStatus(ctx context.Context, command *agentv1.Comman
 		}
 		return nil, fmt.Errorf("the status tool said: %.200s", out.String())
 	}
+	// each worker's last request, with its query string, is the site's
+	// visitors' business, and viewers read commands
+	if fpm, ok := status["fpm"].(map[string]any); ok {
+		delete(fpm, "processes")
+	}
 	// a result is a protobuf Struct, of JSON's types only
 	extensions := []any{}
 	for _, name := range a.phpExtensions(ctx, site) {
@@ -124,7 +131,8 @@ const sharedSizesWait = 10 * time.Second
 // PHP-FPM container, which mounts shared/. A path that is missing, or took
 // too long, has no size.
 func (a *Agent) sharedSizes(ctx context.Context, site string, paths []string) map[string]int64 {
-	args := []string{"sh", "-c", `for p; do du -sk -- "$p"; done`, "sh"}
+	// du stops by itself too: the exec's end does not end it in the container
+	args := []string{"sh", "-c", `for p; do timeout -s KILL 10 du -sk -- "$p"; done`, "sh"}
 	for _, shared := range paths {
 		if sites.ValidSharedPath(shared) == nil {
 			args = append(args, sites.Root+"/"+site+"/shared/"+path.Clean(shared))
@@ -192,14 +200,32 @@ func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply,
 	if err != nil {
 		return nil, err
 	}
-	config := phpContainerConfig(payload, mounts)
+	seccomp, err := phpSeccomp()
+	if err != nil {
+		return nil, fmt.Errorf("the seccomp profile of PHP: %w", err)
+	}
+	config := phpContainerConfig(payload, mounts, seccomp)
 	name := sites.PHPContainer(site)
 
-	current, err := a.Docker.Inspect(ctx, name)
-	if err != nil && !dockerapi.IsNotFound(err) {
+	current, err := a.sitePHP(ctx, site, name)
+	if err != nil {
 		return nil, err
 	}
-	if current != nil && checkMounts(current, mounts, "the PHP-FPM container") == nil {
+	if current == nil {
+		// a swap cut short after the rename: the old container is the one
+		// that served, and it serves on until its replacement answers
+		if current, err = a.sitePHP(ctx, site, name+"-old"); err != nil {
+			return nil, err
+		}
+		if current != nil {
+			if err := a.Docker.Rename(ctx, current.ID, name); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// a container that was created and never started may lack its settings,
+	// which are copied in before the start
+	if current != nil && current.State.Status != "created" && checkMounts(current, mounts, "the PHP-FPM container") == nil {
 		labels, _ := current.Config["Labels"].(map[string]any)
 		if labels[phpSpecLabel] == config["Labels"].(map[string]string)[phpSpecLabel] {
 			if !current.State.Running {
@@ -212,6 +238,10 @@ func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply,
 				return nil, err
 			}
 			if err := a.waitPHPReady(ctx, current.ID); err != nil {
+				return nil, err
+			}
+			// one a swap cut short left behind answers to the alias too
+			if err := a.removeOldPHP(ctx, site, name+"-old"); err != nil {
 				return nil, err
 			}
 			fmt.Fprintf(reporter, "%s runs as it should: nothing to change.\n", name)
@@ -235,11 +265,9 @@ func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply,
 func (a *Agent) replacePHP(ctx context.Context, current *dockerapi.ContainerInspect, name string, config map[string]any,
 	mounts []map[string]any, payload *agentv1.SitePhpApply, output io.Writer) (string, error) {
 	oldName := name + "-old"
-	// a swap that was cut short left this
-	if leftover, err := a.Docker.Inspect(ctx, oldName); err == nil {
-		if err := a.Docker.Remove(ctx, leftover.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
-			return "", err
-		}
+	// a swap that was cut short left this, next to the container that serves
+	if err := a.removeOldPHP(ctx, payload.GetSite(), oldName); err != nil {
+		return "", err
 	}
 	// putting the old one back must work after a cancel too
 	ctx = context.WithoutCancel(ctx)
@@ -320,7 +348,7 @@ func (a *Agent) replacePHP(ctx context.Context, current *dockerapi.ContainerInsp
 // phpContainerConfig is a site's PHP-FPM container. Its spec label is a
 // digest of all of it, the settings files and secrets included, so that any
 // change makes a new container.
-func phpContainerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any) map[string]any {
+func phpContainerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any, seccomp string) map[string]any {
 	site := payload.GetSite()
 	names := []string{}
 	values := map[string]string{}
@@ -342,7 +370,7 @@ func phpContainerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any) 
 		"RestartPolicy": map[string]any{"Name": "unless-stopped"},
 		"PidsLimit":     phpPids,
 		"CapDrop":       []string{"ALL"},
-		"SecurityOpt":   []string{"no-new-privileges"},
+		"SecurityOpt":   []string{"no-new-privileges", seccomp},
 		"LogConfig":     map[string]any{"Type": "json-file", "Config": map[string]string{"max-size": "10m", "max-file": "3"}},
 	}
 	if cpus := payload.GetCpuLimit(); cpus > 0 {
@@ -365,7 +393,8 @@ func phpContainerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any) 
 	}
 
 	spec, _ := json.Marshal(config)
-	sum := sha256.New()
+	// keyed: the spec holds the site's secrets, and viewers see the labels
+	sum := hmac.New(sha256.New, specKey)
 	sum.Write(spec)
 	sum.Write([]byte(payload.GetFpmConf()))
 	sum.Write([]byte{0})
@@ -482,11 +511,16 @@ func (a *Agent) waitPHPReady(ctx context.Context, id string) error {
 // switch: the running requests finish first.
 func (a *Agent) reloadPHP(ctx context.Context, site string, output io.Writer) {
 	name := sites.PHPContainer(site)
-	if err := a.Docker.Kill(ctx, name, "USR2"); err != nil {
-		if dockerapi.IsNotFound(err) {
-			fmt.Fprintf(output, "%s does not exist yet: the new release is served once it starts.\n", name)
-			return
-		}
+	current, err := a.sitePHP(ctx, site, name)
+	switch {
+	case err != nil:
+		fmt.Fprintf(output, "%s could not be reloaded: %v\n", name, err)
+		return
+	case current == nil:
+		fmt.Fprintf(output, "%s does not exist yet: the new release is served once it starts.\n", name)
+		return
+	}
+	if err := a.Docker.Kill(ctx, current.ID, "USR2"); err != nil {
 		fmt.Fprintf(output, "%s could not be reloaded: %v\n", name, err)
 		return
 	}
@@ -497,15 +531,76 @@ func (a *Agent) reloadPHP(ctx context.Context, site string, output io.Writer) {
 func (a *Agent) removePHP(ctx context.Context, site string) error {
 	name := sites.PHPContainer(site)
 	for _, container := range []string{name, name + "-old"} {
-		if err := a.Docker.Remove(ctx, container, false, true); err != nil && !dockerapi.IsNotFound(err) {
+		// what is not the site's, such as a container of the same name that a
+		// static site's owner runs, stays
+		info, err := a.Docker.Inspect(ctx, container)
+		if dockerapi.IsNotFound(err) || (err == nil && !ownedPHP(info, site)) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := a.Docker.Remove(ctx, info.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
 			return err
 		}
 	}
 	network := sites.Network(site)
+	if info, err := a.Docker.InspectNetwork(ctx, network); dockerapi.IsNotFound(err) ||
+		(err == nil && (info.Labels["pocketcloud.role"] != "site-network" || info.Labels[siteLabel] != site)) {
+		return nil
+	}
 	if err := a.Docker.DisconnectNetwork(ctx, network, edgeName, true); err != nil && !dockerapi.IsNotFound(err) {
 		a.Log.Warn("the edge could not leave a removed site's network", "network", network, "error", err)
 	}
 	if err := a.Docker.RemoveNetwork(ctx, network); err != nil && !dockerapi.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// specKey keys the digest of a PHP-FPM container's settings in its label: a
+// new one at every start of the agent, which replaces a container once more
+// at most.
+var specKey = func() []byte {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return key
+}()
+
+// ownedPHP says whether a container is the PHP-FPM of a site, as the agent
+// labels it: a container of the same name that someone else runs is left as
+// it is.
+func ownedPHP(info *dockerapi.ContainerInspect, site string) bool {
+	labels, _ := info.Config["Labels"].(map[string]any)
+	return labels["pocketcloud.role"] == "site" && labels[siteLabel] == site
+}
+
+// sitePHP is a site's PHP-FPM container by its name, nil when there is none;
+// one of that name that is not the site's is an error.
+func (a *Agent) sitePHP(ctx context.Context, site, name string) (*dockerapi.ContainerInspect, error) {
+	info, err := a.Docker.Inspect(ctx, name)
+	if dockerapi.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !ownedPHP(info, site) {
+		return nil, fmt.Errorf("a container named %s is not the site's PHP-FPM: rename or remove it", name)
+	}
+	return info, nil
+}
+
+// removeOldPHP stops and removes the container a replacement left behind.
+func (a *Agent) removeOldPHP(ctx context.Context, site, name string) error {
+	old, err := a.sitePHP(ctx, site, name)
+	if err != nil || old == nil {
+		return err
+	}
+	if err := a.Docker.Stop(ctx, old.ID, phpStopSeconds); err != nil && !dockerapi.IsNotFound(err) {
+		a.Log.Warn("failed to stop a leftover PHP-FPM container", "container", name, "error", err)
+	}
+	if err := a.Docker.Remove(ctx, old.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
 		return err
 	}
 	return nil

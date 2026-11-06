@@ -93,48 +93,63 @@ func ValidSharedPath(path string) error {
 // already is dropped. A path neither has becomes an empty directory. The
 // links are relative, so that the edge and PHP-FPM, which mount the site in
 // different places, both follow them.
+//
+// The site tool runs this as root with the whole sites volume, while shared/
+// is the site's PHP's to write: so it works inside the site's directory only,
+// and a link in shared/ that leads out of it is an error rather than a way
+// into another site's files.
 func LinkShared(root, site string, n int, paths []string) error {
-	release, shared := ReleaseDir(root, site, n), SharedDir(root, site)
+	dir, err := os.OpenRoot(Dir(root, site))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	release := filepath.Join("releases", strconv.Itoa(n))
 	for _, path := range paths {
 		if err := ValidSharedPath(path); err != nil {
 			return err
 		}
 		path = filepath.Clean(path)
-		inRelease, inShared := filepath.Join(release, path), filepath.Join(shared, path)
-		if err := insideReal(release, filepath.Dir(inRelease)); err != nil {
+		inRelease, inShared := filepath.Join(release, path), filepath.Join("shared", path)
+		if err := insideReal(ReleaseDir(root, site, n), filepath.Dir(filepath.Join(ReleaseDir(root, site, n), path))); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(inShared), 0o755); err != nil { //nolint:gosec // served by the edge
+		if err := dir.MkdirAll(filepath.Dir(inShared), 0o755); err != nil { //nolint:gosec // served by the edge
 			return err
 		}
-		_, releaseErr := os.Lstat(inRelease)
-		_, sharedErr := os.Lstat(inShared)
+		_, releaseErr := dir.Lstat(inRelease)
+		_, sharedErr := dir.Lstat(inShared)
+		for _, err := range []error{releaseErr, sharedErr} {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+		}
 		switch {
-		case releaseErr == nil && errors.Is(sharedErr, fs.ErrNotExist):
-			if err := os.Rename(inRelease, inShared); err != nil {
+		case releaseErr == nil && sharedErr != nil:
+			if err := dir.Rename(inRelease, inShared); err != nil {
 				return err
 			}
 		case releaseErr == nil:
-			if err := os.RemoveAll(inRelease); err != nil {
+			if err := dir.RemoveAll(inRelease); err != nil {
 				return err
 			}
-		case errors.Is(sharedErr, fs.ErrNotExist):
-			if err := os.MkdirAll(inShared, 0o755); err != nil { //nolint:gosec // served by the edge
+		case sharedErr != nil:
+			if err := dir.MkdirAll(inShared, 0o755); err != nil { //nolint:gosec // served by the edge
 				return err
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(inRelease), 0o755); err != nil { //nolint:gosec // served by the edge
+		if err := dir.MkdirAll(filepath.Dir(inRelease), 0o755); err != nil { //nolint:gosec // served by the edge
 			return err
 		}
 		target, err := filepath.Rel(filepath.Dir(inRelease), inShared)
 		if err != nil {
 			return err
 		}
-		if err := os.Symlink(target, inRelease); err != nil {
+		if err := dir.Symlink(target, inRelease); err != nil {
 			return err
 		}
 	}
-	return Chown(shared)
+	return Chown(SharedDir(root, site))
 }
 
 // insideReal checks that dir, once its symlinks are followed, is still inside

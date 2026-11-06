@@ -288,7 +288,8 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
             )}
             {php && phpData.settings && (
               <StatusPill tone="info" dot={false}>
-                PHP {phpData.settings.php_version}
+                {/* the live release's, while a change of version deploys */}
+                PHP {active?.php_version || phpData.settings.php_version}
               </StatusPill>
             )}
             {php && phpData.settings && phpData.settings.template !== "custom" && (
