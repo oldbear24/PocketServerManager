@@ -1441,7 +1441,9 @@
     "serverDegraded": "Server degraded",
     "expired": "Expired",
     "requestsKeys": "Requests per hour; the arrow keys move along the hours",
-    "internalRenews": "Internal CA · renews by itself"
+    "internalRenews": "Internal CA · renews by itself",
+    "composerDefault": "composer install, when the source has composer.json",
+    "phpBuildNote": "The build runs in the site's PHP image as www-data, so the dependencies match the PHP that runs them."
   },
   "siteNew": {
     "title": "New site",
@@ -1450,7 +1452,6 @@
     "static": "Static site",
     "staticNote": "HTML · Hugo, MkDocs, Astro…",
     "php": "PHP application",
-    "phpLater": "Comes with PHP sites",
     "sourceTitle": "2 · Content",
     "sourceNote": {
       "git": "built on every push",
@@ -1491,10 +1492,18 @@
         "dns": "DNS records set",
         "propagation": "DNS propagation checked",
         "certificate": "Certificate issued",
-        "check": "Availability check"
+        "check": "Availability check",
+        "php": {
+          "apply": "PHP-FPM started"
+        }
       },
       "build": "Build",
-      "release": "Release through the agent"
+      "release": "Release through the agent",
+      "db": {
+        "database": {
+          "create": "Database created"
+        }
+      }
     },
     "plan": {
       "site": {
@@ -1502,10 +1511,18 @@
         "dns": "A + AAAA, and a CNAME for www",
         "propagation": "public resolvers and the zone's name servers",
         "certificate": "ACME, one certificate for every name",
-        "check": "HTTPS at the server's public address"
+        "check": "HTTPS at the server's public address",
+        "php": {
+          "apply": "PHP-FPM container on the site's own network"
+        }
       },
       "build": "in a job container on the server",
-      "release": "site.deploy · atomic switch"
+      "release": "site.deploy · atomic switch",
+      "db": {
+        "database": {
+          "create": "a database and its user"
+        }
+      }
     },
     "state": {
       "done": "done",
@@ -1536,6 +1553,26 @@
       "propagation": "none: the DNS server of the LAN answers at once",
       "certificate": "the internal CA, one certificate for every name",
       "check": "HTTPS at the server's address on its network"
+    },
+    "phpNote": "PHP-FPM · WordPress, Laravel, Nette…",
+    "phpTitle": "3 · PHP runtime",
+    "phpVersion": "PHP version",
+    "recommended": "recommended",
+    "application": "Application",
+    "templateLater": "{{name}} (comes with application templates)",
+    "docrootNone": "the release itself",
+    "docrootNote": "The directory the edge serves, inside the release: public for Laravel, www for Nette. Its .php scripts go to the site's PHP-FPM; its other files are served directly.",
+    "noDatabase": "No database",
+    "databaseName": "Database name",
+    "noDatabaseServer": "This server has no database server yet.",
+    "databaseNote": "The database gets a user with rights on it only; DB_HOST, DB_NAME, DB_USER and DB_PASSWORD reach PHP, the password as a secret.",
+    "noDatabaseNote": "A database can be added later, on the Databases page.",
+    "domainTitlePhp": "4 · Domain and server",
+    "certificateTitlePhp": "5 · Certificate",
+    "databaseMade": "{{database}} · user {{user}}",
+    "planPhp": {
+      "build": "composer install in the PHP image, as www-data",
+      "release": "shared paths · release hook · switch · PHP-FPM reload"
     }
   },
   "ca": {
@@ -1590,5 +1627,106 @@
       }
     },
     "windowsAdmin": "Or in PowerShell, run as administrator:"
+  },
+  "phpSite": {
+    "description": "PHP application · on {{server}} · code {{root}}",
+    "descriptionDb": "PHP application · on {{server}} · code {{root}} · database on {{database}}",
+    "deploymentsNote": "the code is read-only · persistent data is linked into every release",
+    "template": {
+      "custom": "Custom application",
+      "wordpress": "WordPress",
+      "laravel": "Laravel",
+      "nette": "Nette"
+    },
+    "workers": "PHP-FPM workers",
+    "workersNote": "pm {{pm}} · queue {{queue}}",
+    "state": {
+      "pending": "starting",
+      "running": "running",
+      "failed": "failed"
+    },
+    "latency": "Response p50 / p95",
+    "latencyValue": "{{p50}} / {{p95}} ms",
+    "opcacheHits": "OPcache {{rate}} hits",
+    "noRequests": "no requests in 24 h",
+    "errors24h": "5xx errors in 24 h",
+    "errorsOf_one": "{{errors}} of {{requests}} request",
+    "errorsOf_other": "{{errors}} of {{requests}} requests",
+    "database": "Database",
+    "serverKind": {
+      "shared": "shared server",
+      "dedicated": "dedicated server"
+    },
+    "noDatabase": "no database",
+    "runtime": "PHP runtime",
+    "healthyFor": "{{container}} · healthy · {{uptime}}",
+    "settings": "Settings",
+    "image": "Image",
+    "fastcgi": "{{upstream}} ← Caddy php_fastcgi",
+    "pool": "FPM pool",
+    "poolValue": "pm {{pm}} · max_children {{children}} · max_requests {{requests}}",
+    "limits": "Limits",
+    "limitsValue": "{{cpu}} vCPU · {{memory}} RAM · user www-data, no Docker socket",
+    "webRoot": "Web root",
+    "mode": "Code",
+    "modeKind": {
+      "releases": "Releases: read-only, switched at once",
+      "classic": "Classic: one writable copy"
+    },
+    "modeNote": {
+      "releases": "Every deployment is a new release; PHP may write only in the shared paths, and a rollback takes seconds.",
+      "classic": "For applications that write into their own code, such as WordPress updating its plugins: the site's directory stays writable and keeps one release."
+    },
+    "extensions": "Extensions",
+    "ownIni": "php.ini – own values",
+    "noOwnIni": "The image's defaults, with no values of the site's own.",
+    "editIni": "Edit php.ini",
+    "switchTo": "Switch to PHP {{version}}…",
+    "switchVersion": "Change PHP version…",
+    "switchNote": "A change of version deploys as a new release – back in one click.",
+    "versionStarted": "A deployment on the new PHP version started.",
+    "applyStarted": "The change is applied to PHP-FPM.",
+    "applyTitle": "PHP-FPM of {{name}}",
+    "iniTitle": "php.ini of {{name}}",
+    "saveApply": "Save and apply",
+    "iniNote": "Lines such as memory_limit = 256M, after the image's own. PHP-FPM restarts with them without dropping requests.",
+    "versionTitle": "PHP version of {{name}}",
+    "switchConfirm": "Switch to PHP {{version}}",
+    "version": "Version",
+    "upgradeNote": "The live release is deployed again on PHP {{to}}: built with its composer, then PHP-FPM is replaced before the switch. Going back to PHP {{from}} is a rollback.",
+    "downgradeNote": "The live release is deployed again on PHP {{to}}: the switch comes first, then PHP-FPM is replaced, so the code always runs on a PHP it was built for.",
+    "settingsTitle": "Settings of {{name}}",
+    "pm": "Process manager",
+    "timeout": "Request time limit (s)",
+    "cpu": "CPUs",
+    "memory": "Memory (MB)",
+    "sharedPaths": "Persistent data",
+    "sharedPathsNote": "Paths in the release, one per line, kept in shared/ across releases and linked into each: uploads, storage, sessions.",
+    "releaseHook": "Release hook",
+    "releaseHookNote": "Runs in the new release before it goes live, with the site's environment and database, such as php artisan migrate --force. If it fails, the release does not go live.",
+    "dbServer": "Server",
+    "dbName": "Database",
+    "dbUser": "User",
+    "dbUserValue": "{{name}} · rights on {{name}} only",
+    "dbPassword": "Password",
+    "dbPasswordValue": "•••••••• · in DB_PASSWORD through a secret",
+    "noDatabaseText": "The site has no database.",
+    "toDatabases": "Databases",
+    "shared": "Persistent data",
+    "noShared": "No paths survive the releases: everything comes from the source.",
+    "sharedNote": "outside the releases (shared/)",
+    "env": "Environment",
+    "secrets": "Secrets",
+    "noEnv": "No variables of the site's own.",
+    "noSecrets": "No secrets of the site's own.",
+    "envTitle": "Environment of {{name}}",
+    "envNote": "NAME=value lines that PHP reads with getenv(). A value may refer to a secret as ${secret:name}, which only PHP-FPM sees.",
+    "secretsTitle": "Secrets of {{name}}",
+    "secretName": "New secret",
+    "secretValue": "Value",
+    "secretsNote": "A secret is sealed by the panel and shown to nobody; the environment refers to it as ${secret:name}. One the environment refers to cannot be removed.",
+    "keepSecret": "Keep",
+    "removeSecret": "Remove",
+    "errorLog": "PHP error log"
   }
 }

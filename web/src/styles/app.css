@@ -2576,3 +2576,96 @@ td .row-actions {
   display: grid;
   gap: 6px;
 }
+
+/* PHP sites (#50) */
+.runtime-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.section-label {
+  margin: 18px 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.chip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.php-ini {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--nav);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.runtime-actions {
+  align-items: center;
+}
+
+.button.accent-soft {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.button.accent-soft:hover:not(:disabled) {
+  background: var(--accent-bg);
+  border-color: var(--accent-hover);
+}
+
+.shared-list,
+.secret-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shared-list li + li {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.shared-row,
+.secret-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.secret-list li + li {
+  margin-top: 8px;
+}
+
+.struck {
+  text-decoration: line-through;
+  color: var(--text-3);
+}

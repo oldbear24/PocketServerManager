@@ -9,7 +9,9 @@ import { Banner, Button, Card, Field, ProgressBar, StatusPill, Table } from "../
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import { directoryId, type AcmeAccount, type Challenge } from "../lib/certificates";
+import { serverLabel, type DbServer } from "../lib/databases";
 import { formatBytes, formatDuration, formatNumber, parseDate } from "../lib/format";
+import { phpApi, type PhpTemplate, type PhpVersions } from "../lib/php";
 import { useLiveList, useLiveRecord } from "../lib/realtime";
 import { provisionApi, type DnsPreview, type PreviewRecord, type SiteSource } from "../lib/sites";
 import type { Command, Host } from "../lib/types";
@@ -40,6 +42,8 @@ function SiteWizard({ setup, onStarted }: { setup: string; onStarted: (id: strin
     sort: "created,id",
     enabled: Boolean(setup),
   });
+  // the form's choice of type shapes the timeline before the setup starts
+  const [plan, setPlan] = useState<Plan>({ php: false, database: false });
 
   return (
     <>
@@ -63,11 +67,12 @@ function SiteWizard({ setup, onStarted }: { setup: string; onStarted: (id: strin
               accounts={accounts.items}
               canAct={canAct}
               onStarted={onStarted}
+              onPlan={setPlan}
             />
           )}
         </div>
         <div className="column-side wizard-side">
-          <Timeline setup={setup} parent={parent} steps={steps.items} canAct={canAct} />
+          <Timeline setup={setup} parent={parent} steps={steps.items} canAct={canAct} plan={plan} />
         </div>
       </div>
     </>
@@ -80,15 +85,31 @@ function SiteForm({
   accounts,
   canAct,
   onStarted,
+  onPlan,
 }: {
   edges: Host[];
   loading: boolean;
   accounts: AcmeAccount[];
   canAct: boolean;
   onStarted: (id: string) => void;
+  onPlan: (plan: Plan) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  // a PHP application (#50) runs in a PHP-FPM container of its own
+  const [kind, setKind] = useState<"static" | "php">("static");
+  const [phpForm, setPhpForm] = useState({
+    version: "",
+    template: "custom" as PhpTemplate,
+    docroot: "public",
+    dbServer: "",
+    database: "",
+  });
+  const setPhp = (change: Partial<typeof phpForm>) =>
+    setPhpForm((current) => ({ ...current, ...change }));
+  const versions = usePhpVersions(kind === "php");
+  const dbServers = useLiveList<DbServer>("db_servers", { sort: "name", enabled: kind === "php" });
+  const php = kind === "php";
   const [name, setName] = useState("");
   const [hostname, setHostname] = useState("");
   const [host, setHost] = useState("");
@@ -111,6 +132,11 @@ function SiteForm({
   const set = (change: Partial<BuildValues>) => setValues((current) => ({ ...current, ...change }));
 
   const server = host || edges[0]?.id || "";
+  const serversHere = dbServers.items.filter((item) => item.host === server);
+  const dbServer = serversHere.some((item) => item.id === phpForm.dbServer) ? phpForm.dbServer : "";
+  useEffect(() => {
+    onPlan({ php, database: php && dbServer !== "" });
+  }, [php, dbServer, onPlan]);
   const name_ = hostname.trim().toLowerCase();
   const withWww = www && !name_.startsWith("www.");
   const preview = useDnsPreview(name_, server, withWww);
@@ -118,23 +144,25 @@ function SiteForm({
   const lan = preview.data?.lan === true;
   const primary = accounts.find((account) => account.role === "primary");
 
-  const builds = values.source !== "empty" && values.generator !== "none";
+  const builds = values.source !== "empty" && (php || values.generator !== "none");
   const start = async () => {
     setBusy(true);
     setErrors({});
     try {
+      const siteName = (name.trim() || name_.split(".")[0] || "").toLowerCase();
       const site: Record<string, unknown> = {
-        name: (name.trim() || name_.split(".")[0] || "").toLowerCase(),
+        name: siteName,
         host: server,
+        type: kind,
         source: values.source,
         repo_url: values.source === "git" ? values.repo_url.trim() : "",
         branch: values.source === "git" ? values.branch.trim() : "",
         // a placeholder is built by nobody: the hidden fields go back to their
         // defaults, as does what "as it is" does not build
-        generator: values.source === "empty" ? "auto" : values.generator,
-        build_image: builds ? values.build_image.trim() : "",
+        generator: values.source === "empty" || php ? "auto" : values.generator,
+        build_image: builds && !php ? values.build_image.trim() : "",
         build_cmd: builds ? values.build_cmd.trim() : "",
-        output_dir: values.source === "empty" ? "" : values.output_dir.trim(),
+        output_dir: values.source === "empty" || php ? "" : values.output_dir.trim(),
         https_redirect: true,
         compress: true,
         ...(values.source === "git" && values.token.trim()
@@ -142,7 +170,27 @@ function SiteForm({
           : {}),
       };
       const started = await provisionApi.start(
-        { site, hostname: name_, www: withWww, challenge },
+        {
+          site,
+          hostname: name_,
+          www: withWww,
+          challenge,
+          ...(php
+            ? {
+                php: {
+                  version: phpForm.version || versions?.default || "",
+                  template: phpForm.template,
+                  docroot: phpForm.docroot.trim().replace(/^\/+|\/+$/g, ""),
+                  ...(dbServer
+                    ? {
+                        database_server: dbServer,
+                        database: phpForm.database.trim() || siteName.replace(/-/g, "_"),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        },
         values.source === "upload" && file ? file : undefined,
       );
       toast.success(t("siteNew.started", { hostname: name_ }));
@@ -157,7 +205,9 @@ function SiteForm({
   // errors of fields the form does not show now still say why
   const shown = new Set(["hostname", "host", "name", "file"]);
   if (values.source !== "empty") {
-    for (const field of ["generator", "build_image", "build_cmd", "output_dir"]) {
+    for (const field of php
+      ? ["build_cmd"]
+      : ["generator", "build_image", "build_cmd", "output_dir"]) {
       shown.add(field);
     }
   }
@@ -184,16 +234,11 @@ function SiteForm({
       <Card title={t("siteNew.typeTitle")}>
         <ChoiceGroup
           label={t("siteNew.typeTitle")}
-          value="static"
-          onChange={() => {}}
+          value={kind}
+          onChange={(value) => setKind(value as "static" | "php")}
           options={[
             { value: "static", title: t("siteNew.static"), note: t("siteNew.staticNote") },
-            {
-              value: "php",
-              title: t("siteNew.php"),
-              note: t("siteNew.phpLater"),
-              disabled: true,
-            },
+            { value: "php", title: t("siteNew.php"), note: t("siteNew.phpNote") },
           ]}
         />
       </Card>
@@ -222,12 +267,104 @@ function SiteForm({
             </Field>
           )}
           {values.source !== "empty" && (
-            <BuildFields values={values} set={set} errors={errors} idPrefix="wizard" />
+            <BuildFields values={values} set={set} errors={errors} idPrefix="wizard" php={php} />
           )}
         </div>
       </Card>
 
-      <Card title={t("siteNew.domainTitle")}>
+      {php && (
+        <Card title={t("siteNew.phpTitle")}>
+          <div className="dialog-form">
+            <div className="form-row">
+              <Field label={t("siteNew.phpVersion")} htmlFor="new-site-php">
+                <select
+                  id="new-site-php"
+                  className="select"
+                  value={phpForm.version || versions?.default || ""}
+                  onChange={(event) => setPhp({ version: event.target.value })}
+                >
+                  {(versions?.versions ?? []).map((item) => (
+                    <option
+                      key={item.version}
+                      value={item.version}
+                      disabled={item.state === "ended"}
+                    >
+                      {`PHP ${item.version} · ${t(`php.state.${item.state}`)}${item.version === versions?.default ? ` · ${t("siteNew.recommended")}` : ""}`}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={t("siteNew.application")} htmlFor="new-site-template">
+                <select
+                  id="new-site-template"
+                  className="select"
+                  value={phpForm.template}
+                  onChange={(event) => setPhp({ template: event.target.value as PhpTemplate })}
+                >
+                  <option value="custom">{t("phpSite.template.custom")}</option>
+                  {(["wordpress", "laravel", "nette"] as const).map((template) => (
+                    <option key={template} value={template} disabled>
+                      {t("siteNew.templateLater", { name: t(`phpSite.template.${template}`) })}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <Field label={t("phpSite.webRoot")} htmlFor="new-site-docroot">
+              <input
+                id="new-site-docroot"
+                className="input mono"
+                placeholder={t("siteNew.docrootNone")}
+                value={phpForm.docroot}
+                onChange={(event) => setPhp({ docroot: event.target.value })}
+              />
+            </Field>
+            <p className="muted small">{t("siteNew.docrootNote")}</p>
+            <div className="form-row">
+              <Field label={t("phpSite.database")} htmlFor="new-site-db-server">
+                <select
+                  id="new-site-db-server"
+                  className="select"
+                  value={dbServer}
+                  onChange={(event) => setPhp({ dbServer: event.target.value })}
+                >
+                  <option value="">{t("siteNew.noDatabase")}</option>
+                  {serversHere.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {`${item.name} · ${serverLabel(item)}`}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {dbServer && (
+                <Field label={t("siteNew.databaseName")} htmlFor="new-site-db-name">
+                  <input
+                    id="new-site-db-name"
+                    className="input mono"
+                    placeholder={(name.trim() || name_.split(".")[0] || "shop").replace(/-/g, "_")}
+                    value={phpForm.database}
+                    onChange={(event) => setPhp({ database: event.target.value })}
+                  />
+                </Field>
+              )}
+            </div>
+            <p className="muted small">
+              {serversHere.length === 0 && !dbServers.loading ? (
+                <>
+                  {t("siteNew.noDatabaseServer")}{" "}
+                  <Link to="/databases">{t("phpSite.toDatabases")}</Link>
+                </>
+              ) : dbServer ? (
+                t("siteNew.databaseNote")
+              ) : (
+                t("siteNew.noDatabaseNote")
+              )}
+            </p>
+          </div>
+        </Card>
+      )}
+
+      <Card title={t(php ? "siteNew.domainTitlePhp" : "siteNew.domainTitle")}>
         <div className="dialog-form">
           {!loading && edges.length === 0 && <Banner tone="warn">{t("site.noEdge")}</Banner>}
           <div className="form-row">
@@ -290,7 +427,7 @@ function SiteForm({
         </div>
       </Card>
 
-      <Card title={t("siteNew.certificateTitle")}>
+      <Card title={t(php ? "siteNew.certificateTitlePhp" : "siteNew.certificateTitle")}>
         <div className="dialog-form">
           <div className="form-row">
             <Field label={t("acme.ca")} htmlFor="new-site-ca">
@@ -509,7 +646,38 @@ function RecordsTable({ records, label }: { records: PreviewRecord[]; label: str
   );
 }
 
-type SetupPayload = { site: string; site_name: string; hostname: string; www?: string };
+type SetupPayload = {
+  site: string;
+  site_name: string;
+  hostname: string;
+  www?: string;
+  /** a PHP site's runtime (#50) */
+  php?: { version: string; database_server?: string; database?: string };
+};
+
+/** What a setup runs: a PHP site's database and PHP-FPM come before its release. */
+type Plan = { php: boolean; database: boolean };
+
+/** The PHP versions of the runtime images, once the form asks for them. */
+function usePhpVersions(enabled: boolean): PhpVersions | null {
+  const [versions, setVersions] = useState<PhpVersions | null>(null);
+  useEffect(() => {
+    if (!enabled || versions) {
+      return;
+    }
+    let live = true;
+    phpApi
+      .versions()
+      .then((answer) => live && setVersions(answer))
+      .catch(() => {
+        // the panel picks its default
+      });
+    return () => {
+      live = false;
+    };
+  }, [enabled, versions]);
+  return versions;
+}
 
 /** What a setup under way was asked for, in place of the form. */
 function SetupSummary({ parent: record, steps }: { parent: Command | null; steps: Command[] }) {
@@ -557,18 +725,32 @@ function SummaryCard({ record, payload }: { record: Command; payload: SetupPaylo
   );
 }
 
-/** The rows of the timeline: the six steps, the deployment split into its
- * build and its release. */
-const rows = [
-  "site.create",
-  "site.dns",
-  "site.propagation",
-  "build",
-  "release",
-  "site.certificate",
-  "site.check",
-] as const;
-type Row = (typeof rows)[number];
+/** The rows of the timeline: the steps, the deployment split into its build
+ * and its release. A PHP site's database and PHP-FPM come before them. */
+type Row =
+  | "site.create"
+  | "site.dns"
+  | "site.propagation"
+  | "db.database.create"
+  | "site.php.apply"
+  | "build"
+  | "release"
+  | "site.certificate"
+  | "site.check";
+
+function rowsOf(plan: Plan): Row[] {
+  return [
+    "site.create",
+    "site.dns",
+    "site.propagation",
+    ...(plan.php && plan.database ? (["db.database.create"] as const) : []),
+    ...(plan.php ? (["site.php.apply"] as const) : []),
+    "build",
+    "release",
+    "site.certificate",
+    "site.check",
+  ];
+}
 
 type RowState = "done" | "running" | "failed" | "waiting";
 
@@ -577,11 +759,13 @@ function Timeline({
   parent,
   steps,
   canAct,
+  plan,
 }: {
   setup: string;
   parent: Command | null;
   steps: Command[];
   canAct: boolean;
+  plan: Plan;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -597,6 +781,11 @@ function Timeline({
     return byType;
   }, [steps]);
 
+  const payload = (parent?.payload ?? {}) as SetupPayload;
+  const php = setup ? Boolean(payload.php) : plan.php;
+  const rows = rowsOf(
+    setup ? { php: Boolean(payload.php), database: Boolean(payload.php?.database_server) } : plan,
+  );
   const states = rows.map((row) => rowState(row, latest));
   // the DNS step says whether the name is one of the LAN
   const lan = Boolean((latest.get("site.dns")?.result as { lan?: boolean } | null)?.lan);
@@ -605,7 +794,6 @@ function Timeline({
     states.findIndex((state) => state !== "done"),
     rows.length - 1,
   );
-  const payload = (parent?.payload ?? {}) as SetupPayload;
   const finished = parent?.status === "succeeded";
   const ended =
     parent &&
@@ -674,7 +862,9 @@ function Timeline({
                     {step && state !== "waiting" && <StepTime step={step} state={state} />}
                   </div>
                   <div className="timeline-detail mono">
-                    {step ? stepDetail(row, step, t, planOf(row, lan, t)) : planOf(row, lan, t)}
+                    {step
+                      ? stepDetail(row, step, t, planOf(row, lan, php, t))
+                      : planOf(row, lan, php, t)}
                   </div>
                   {state === "failed" && step?.error && <p className="field-error">{step.error}</p>}
                   {state === "failed" && paused && canAct && (
@@ -802,9 +992,12 @@ type Translate = ReturnType<typeof useTranslation>["t"];
 
 /** One line under a step: what it did, or what it waits for. */
 /** What a step does before it ran: a name of the LAN skips the world (#26). */
-function planOf(row: Row, lan: boolean, t: Translate): string {
+function planOf(row: Row, lan: boolean, php: boolean, t: Translate): string {
   if (lan && (row === "site.propagation" || row === "site.certificate" || row === "site.check")) {
     return t(`siteNew.planLan.${row.slice("site.".length)}`);
+  }
+  if (php && (row === "build" || row === "release")) {
+    return t(`siteNew.planPhp.${row}`);
   }
   return t(`siteNew.plan.${row}`);
 }
@@ -826,6 +1019,15 @@ function stepDetail(row: Row, step: Command, t: Translate, plan: string): string
         ? t("siteNew.dnsManual", { types })
         : t("siteNew.dnsAutomatic", { types, provider: String(result.provider ?? "") });
     }
+    case "db.database.create":
+      return t("siteNew.databaseMade", {
+        database: String(result.database ?? ""),
+        user: String(result.user ?? ""),
+      });
+    case "site.php.apply":
+      return [String(result.image ?? ""), String(result.container ?? "").slice(0, 12)]
+        .filter(Boolean)
+        .join(" · ");
     case "site.propagation":
       if (result.lan) {
         return t("siteNew.lanAnswered", { provider: String(result.lan) });

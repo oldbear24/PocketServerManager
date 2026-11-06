@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../components/toast";
 import { AuthProvider } from "../lib/auth";
 import { pb, type User } from "../lib/pb";
+import { phpApi, type PhpVersion } from "../lib/php";
 import { provisionApi } from "../lib/sites";
 import { SiteNewPage } from "./SiteNew";
 
@@ -115,7 +116,7 @@ describe("the new-site wizard", () => {
     renderAt("/sites/new");
 
     expect(screen.getByRole("heading", { name: "New site" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /PHP application/ })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /PHP application/ })).not.toBeDisabled();
     expect(screen.getByLabelText("Certificate authority")).toHaveValue("Let's Encrypt");
     // a step-by-step plan before anything runs
     expect(screen.getByText("DNS propagation checked")).toBeInTheDocument();
@@ -143,6 +144,7 @@ describe("the new-site wizard", () => {
       site: {
         name: "docs",
         host: "h1",
+        type: "static",
         source: "git",
         repo_url: "https://git.example.com/me/docs.git",
         branch: "main",
@@ -160,6 +162,117 @@ describe("the new-site wizard", () => {
       challenge: "auto",
     });
     expect(start.mock.calls[0][1]).toBeUndefined();
+  });
+
+  it("sets up a PHP application with its version, web root and database (#50)", async () => {
+    signInAs("operator");
+    lists.hosts = [edge];
+    lists.db_servers = [
+      {
+        id: "d1",
+        host: "h1",
+        name: "db-main",
+        engine: "mariadb",
+        version: "11.8.3-MariaDB",
+        image: "mariadb:11.8",
+        kind: "shared",
+        extensions: null,
+      },
+      {
+        id: "d2",
+        host: "h2",
+        name: "elsewhere",
+        engine: "postgres",
+        version: "17.6",
+        image: "postgres:17",
+        kind: "shared",
+        extensions: null,
+      },
+    ];
+    const version = (name: string, state: PhpVersion["state"]): PhpVersion => ({
+      version: name,
+      image: `ghcr.io/oldbear24/pocketcloud-php:${name}-fpm`,
+      released: "2024-11-21",
+      active_support_until: "2026-12-31",
+      security_support_until: "2028-12-31",
+      state,
+      days_left: 700,
+    });
+    vi.spyOn(phpApi, "versions").mockResolvedValue({
+      warn_days: 90,
+      default: "8.4",
+      versions: [version("8.5", "supported"), version("8.4", "supported"), version("8.1", "ended")],
+    });
+    vi.spyOn(provisionApi, "preview").mockResolvedValue({
+      hostname: "shop.example.org",
+      zone: "example.org",
+      provider: "Cloudflare",
+      kind: "cloudflare",
+      mode: "automatic",
+      records: [{ type: "A", name: "shop.example.org", value: "203.0.114.24", ttl: 300 }],
+      taken: [],
+    });
+    const start = vi
+      .spyOn(provisionApi, "start")
+      .mockResolvedValue({ provision: "p1", site: "s1" });
+    renderAt("/sites/new");
+
+    fireEvent.click(screen.getByRole("radio", { name: /PHP application/ }));
+    expect(
+      await screen.findByRole("option", { name: "PHP 8.4 · Supported · recommended" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("PHP version")).toHaveValue("8.4");
+    expect(screen.getByRole("option", { name: /PHP 8\.1/ })).toBeDisabled();
+    expect(screen.getByRole("option", { name: /WordPress/ })).toBeDisabled();
+    // a PHP site builds in its own image: no generator, image or output
+    expect(screen.queryByLabelText("Generator")).toBeNull();
+    expect(screen.queryByLabelText("Build image")).toBeNull();
+    // only the database servers of the chosen server
+    expect(screen.queryByRole("option", { name: /elsewhere/ })).toBeNull();
+    expect(screen.queryByText("Database created")).toBeNull();
+    expect(screen.getByText("PHP-FPM started")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Database"), { target: { value: "d1" } });
+    expect(screen.getByText("Database created")).toBeInTheDocument();
+    expect(screen.getByLabelText("Database name")).toHaveAttribute("placeholder", "shop");
+
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "shop.example.org" } });
+    expect(await screen.findByText(/PocketCloud sets the DNS records/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Repository"), {
+      target: { value: "https://git.example.org/me/shop.git" },
+    });
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "composer install --no-dev && npm ci && npm run build" },
+    });
+    fireEvent.change(screen.getByLabelText("Web root"), { target: { value: "/public/" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and deploy" }));
+
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    expect(start.mock.calls[0][0]).toEqual({
+      site: {
+        name: "shop",
+        host: "h1",
+        type: "php",
+        source: "git",
+        repo_url: "https://git.example.org/me/shop.git",
+        branch: "main",
+        generator: "auto",
+        build_image: "",
+        build_cmd: "composer install --no-dev && npm ci && npm run build",
+        output_dir: "",
+        https_redirect: true,
+        compress: true,
+      },
+      hostname: "shop.example.org",
+      www: true,
+      challenge: "auto",
+      php: {
+        version: "8.4",
+        template: "custom",
+        docroot: "public",
+        database_server: "d1",
+        database: "shop",
+      },
+    });
   });
 
   it("moves the source with the arrow keys, and builds nothing for a placeholder", async () => {
