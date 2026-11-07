@@ -169,8 +169,13 @@ func TestAPHPSitesTaskRunsOnItsSchedule(t *testing.T) {
 		record.GetInt("last_exit_code") != 1 {
 		t.Errorf("a failed run: %v", record.PublicExport())
 	}
-	failing, _ := s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failing'", "", 0, 0)
-	failed, _ := s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failed'", "", 0, 0)
+	// the events follow the task's own record
+	var failing, failed []*core.Record
+	s.waitFor("the events of the failures", func() bool {
+		failing, _ = s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failing'", "", 0, 0)
+		failed, _ = s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failed'", "", 0, 0)
+		return len(failing) >= 1 && len(failed) >= 3
+	})
 	if len(failing) != 1 || len(failed) != 3 || failing[0].GetString("severity") != schema.SeverityCritical {
 		t.Errorf("events: %d failing, %d failed", len(failing), len(failed))
 	}
@@ -193,8 +198,13 @@ func TestAPHPSitesTaskRunsOnItsSchedule(t *testing.T) {
 	if output := s.task(taskID).GetString("last_output"); !strings.Contains(output, "past its timeout of 1s and was killed") {
 		t.Errorf("the hung run: %q", output)
 	}
-	if timedOut, _ := s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failed' && message ~ 'timeout'", "", 0, 0); len(timedOut) != 1 {
-		t.Errorf("the timeout is not in the events: %d", len(timedOut))
+	var timedOut []*core.Record
+	s.waitFor("the timeout in the events", func() bool {
+		timedOut, _ = s.app.FindRecordsByFilter(schema.Events, "kind = 'task.failed' && message ~ 'timeout'", "", 0, 0)
+		return len(timedOut) >= 1
+	})
+	if len(timedOut) != 1 {
+		t.Errorf("the timeout is in the events %d times", len(timedOut))
 	}
 
 	// a run never starts next to one still going
