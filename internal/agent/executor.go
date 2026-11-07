@@ -84,8 +84,13 @@ func newExecutor(store *commandStore, log *slog.Logger) *Executor {
 	}
 }
 
-// Handle registers the handler of a command type.
+// Handle registers the handler of a command type; a nil handler drops it, and
+// the agent no longer offers the type.
 func (x *Executor) Handle(commandType string, handler Handler) {
+	if handler == nil {
+		delete(x.handlers, commandType)
+		return
+	}
 	x.handlers[commandType] = handler
 }
 
