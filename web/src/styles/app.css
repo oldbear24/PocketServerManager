@@ -2669,3 +2669,72 @@ td .row-actions {
   text-decoration: line-through;
   color: var(--text-3);
 }
+
+/* Scheduled tasks and mail (#51) */
+.task-list ul {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.task + .task {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.task-command {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.task-actions {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.task-note {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.task-output summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+
+.task-output pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--nav);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.mail-failures {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.mail-failures li + li {
+  margin-top: 6px;
+}

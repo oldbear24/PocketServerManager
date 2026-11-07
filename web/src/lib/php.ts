@@ -101,6 +101,15 @@ export type PhpStatus = {
   read_at: string;
 };
 
+/** The mail a PHP site sent through the panel's relay in the last day (#51). */
+export type PhpMail = {
+  relay: { host: string; port: number } | null;
+  sent: number;
+  failed: number;
+  last_sent_at: string;
+  failures: { at: string; recipients: string; error: string }[];
+};
+
 /** A change applied to a site's PHP-FPM, or the deployment a new version takes. */
 export type PhpApplied = { command?: string; deployment?: string; settings?: SitePhp };
 
@@ -117,6 +126,8 @@ export const phpApi = {
     }),
   apply: (site: string) =>
     pb.send<PhpApplied>(`/api/pc/sites/${site}/php/apply`, { method: "POST" }),
+  mail: (site: string) =>
+    pb.send<PhpMail>(`/api/pc/sites/${site}/php/mail`, { requestKey: `php-mail-${site}` }),
   status: (site: string) =>
     pb.send<PhpStatus>(`/api/pc/sites/${site}/php/status`, { requestKey: `php-status-${site}` }),
 };

@@ -52,6 +52,7 @@ import {
   PhpKpis,
   PhpLogCard,
   PhpRuntimeCard,
+  PhpCronMailCard,
   PhpSharedCard,
   usePhpSite,
   type OnApplied,
@@ -407,6 +408,7 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
             <>
               <PhpDatabaseCard data={phpData} />
               <PhpSharedCard data={phpData} />
+              <PhpCronMailCard site={site} canAct={canAct} />
               <PhpEnvCard site={site} data={phpData} canAct={canAct} onApplied={onApplied} />
             </>
           )}

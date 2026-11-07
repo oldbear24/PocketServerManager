@@ -17,6 +17,12 @@ type PanelSettings = RecordModel & {
   public_url: string;
   audit_retention_days: number;
   command_queue_ttl_s: number;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_tls: "" | "starttls" | "tls" | "off";
+  smtp_user: string;
+  smtp_password_set: boolean;
+  smtp_from: string;
 };
 
 export function SettingsPage() {
@@ -31,6 +37,7 @@ export function SettingsPage() {
         <div className="column-wide">
           {hasRole(user, "admin") && <PanelSettingsCard />}
           {hasRole(user, "admin") && <AcmeAccountsCard />}
+          {hasRole(user, "admin") && <SmtpCard />}
           <PhpVersionsCard />
           <AboutCard />
         </div>
@@ -141,6 +148,168 @@ function PanelSettingsCard() {
           <Button type="submit" variant="primary" disabled={busy}>
             {t("common.save")}
           </Button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+/** The SMTP relay of PHP sites' mail() (#51): every running PHP site takes a
+ * change at once. */
+function SmtpCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [loaded, setLoaded] = useState(false);
+  const [passwordSet, setPasswordSet] = useState(false);
+  const [values, setValues] = useState({
+    host: "",
+    port: "587",
+    tls: "starttls",
+    user: "",
+    password: "",
+    from: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (change: Partial<typeof values>) =>
+    setValues((current) => ({ ...current, ...change }));
+
+  useEffect(() => {
+    let cancelled = false;
+    pb.collection("settings")
+      .getFirstListItem<PanelSettings>("")
+      .then((record) => {
+        if (!cancelled) {
+          setValues({
+            host: record.smtp_host ?? "",
+            port: String(record.smtp_port || 587),
+            tls: record.smtp_tls || "starttls",
+            user: record.smtp_user ?? "",
+            password: "",
+            from: record.smtp_from ?? "",
+          });
+          setPasswordSet(Boolean(record.smtp_password_set));
+          setLoaded(true);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          toast.error(err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
+
+  if (!loaded) {
+    return null;
+  }
+
+  const save = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      const saved = await pb.send<{ password_set: boolean; applied: number }>(
+        "/api/pc/settings/smtp",
+        { method: "PUT", body },
+      );
+      setPasswordSet(saved.password_set);
+      set({ password: "" });
+      toast.success(t("settings.smtpSaved", { count: saved.applied }));
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    void save({
+      host: values.host.trim(),
+      port: Number(values.port),
+      tls: values.tls,
+      user: values.user.trim(),
+      from: values.from.trim(),
+      // an empty field keeps the password
+      ...(values.password ? { password: values.password } : {}),
+    });
+  };
+
+  return (
+    <Card title={t("settings.smtp")} note={t("settings.smtpNote")}>
+      <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+        <div className="form-grid">
+          <Field label={t("settings.smtpHost")} htmlFor="smtp-host">
+            <input
+              id="smtp-host"
+              className="input mono"
+              placeholder="smtp.example.org"
+              value={values.host}
+              onChange={(event) => set({ host: event.target.value })}
+            />
+          </Field>
+          <Field label={t("settings.smtpPort")} htmlFor="smtp-port">
+            <input
+              id="smtp-port"
+              className="input"
+              type="number"
+              min={1}
+              max={65535}
+              value={values.port}
+              onChange={(event) => set({ port: event.target.value })}
+            />
+          </Field>
+          <Field label="TLS" htmlFor="smtp-tls">
+            <select
+              id="smtp-tls"
+              className="select"
+              value={values.tls}
+              onChange={(event) => set({ tls: event.target.value })}
+            >
+              <option value="starttls">STARTTLS</option>
+              <option value="tls">TLS</option>
+              <option value="off">{t("settings.smtpTlsOff")}</option>
+            </select>
+          </Field>
+          <Field label={t("settings.smtpFrom")} htmlFor="smtp-from">
+            <input
+              id="smtp-from"
+              className="input mono"
+              placeholder="noreply@example.org"
+              value={values.from}
+              onChange={(event) => set({ from: event.target.value })}
+            />
+          </Field>
+          <Field label={t("settings.smtpUser")} htmlFor="smtp-user">
+            <input
+              id="smtp-user"
+              className="input mono"
+              autoComplete="off"
+              value={values.user}
+              onChange={(event) => set({ user: event.target.value })}
+            />
+          </Field>
+          <Field label={t("settings.smtpPassword")} htmlFor="smtp-password">
+            <input
+              id="smtp-password"
+              className="input mono"
+              type="password"
+              autoComplete="new-password"
+              placeholder={passwordSet ? t("settings.smtpPasswordKept") : ""}
+              value={values.password}
+              onChange={(event) => set({ password: event.target.value })}
+            />
+          </Field>
+        </div>
+        <p className="muted small">{t("settings.smtpFromNote")}</p>
+        <div className="button-row">
+          <Button type="submit" variant="primary" disabled={busy}>
+            {t("common.save")}
+          </Button>
+          {passwordSet && (
+            <Button disabled={busy} onClick={() => void save({ password: "" })}>
+              {t("settings.smtpRemovePassword")}
+            </Button>
+          )}
         </div>
       </form>
     </Card>

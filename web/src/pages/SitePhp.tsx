@@ -3,16 +3,19 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
 import { LogViewer } from "../components/LogViewer";
+import { TaskList } from "../components/TaskList";
 import { useToast } from "../components/toast";
 import { Banner, Button, Card, ConfirmDialog, Field, StatusPill } from "../components/ui";
 import { errorMessage } from "../lib/api";
+import { hasRole, useAuth } from "../lib/auth";
 import { serverLabel, type Database, type DbServer } from "../lib/databases";
-import { formatBytes, formatDuration, formatNumber } from "../lib/format";
+import { formatBytes, formatDuration, formatNumber, formatTime } from "../lib/format";
 import { pb } from "../lib/pb";
 import {
   phpApi,
   type FpmSettings,
   type PhpApplied,
+  type PhpMail,
   type PhpStatus,
   type PhpVersion,
   type PhpVersions,
@@ -1004,5 +1007,86 @@ export function PhpLogCard({ site }: { site: Site }) {
       fileName={`${site.name}-php.log`}
       title={t("phpSite.errorLog")}
     />
+  );
+}
+
+/** How often the page counts the site's mail. */
+const mailEvery = 5 * 60_000;
+
+/** The site's scheduled tasks and its outgoing mail, as the design's "Cron &
+ * e-mail" card has them (#51). */
+export function PhpCronMailCard({ site, canAct }: { site: Site; canAct: boolean }) {
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const [mail, setMail] = useState<PhpMail | null>(null);
+  const [mailError, setMailError] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      if (document.hidden) {
+        return;
+      }
+      phpApi
+        .mail(site.id)
+        .then((answer) => {
+          if (live) {
+            setMail(answer);
+            setMailError("");
+          }
+        })
+        .catch((reason: unknown) => {
+          if (live && !(reason as { isAbort?: boolean }).isAbort) {
+            setMailError(errorMessage(reason));
+          }
+        });
+    };
+    load();
+    const timer = window.setInterval(load, mailEvery);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [site.id]);
+
+  return (
+    <Card title={t("phpSite.cronMail")}>
+      <TaskList target={{ kind: "site", id: site.id }} canAct={canAct} />
+      <h3 className="section-label">{t("phpSite.mail")}</h3>
+      {mailError ? (
+        <p className="muted small">{mailError}</p>
+      ) : !mail ? (
+        <p className="muted small">{t("common.loading")}</p>
+      ) : !mail.relay ? (
+        <p className="muted small">
+          {t("phpSite.noRelay")}{" "}
+          {hasRole(user, "admin") && <Link to="/settings">{t("phpSite.toSettings")}</Link>}
+        </p>
+      ) : (
+        <>
+          <div className="small">{t("phpSite.relayVia")}</div>
+          <div className="mono small">
+            {`${mail.relay.host}:${mail.relay.port} · `}
+            {t("phpSite.mailToday", { count: mail.sent, formatted: formatNumber(mail.sent) })}
+            {mail.failed > 0 && (
+              <span className="err-text">
+                {` · ${t("phpSite.mailFailed", { count: mail.failed, formatted: formatNumber(mail.failed) })}`}
+              </span>
+            )}
+          </div>
+          {mail.failures.length > 0 && (
+            <ul className="mail-failures">
+              {mail.failures.map((failure) => (
+                <li key={`${failure.at} ${failure.recipients}`}>
+                  <span className="mono">{formatTime(failure.at).slice(0, 5)}</span>{" "}
+                  <span className="mono">{failure.recipients}</span>
+                  <div className="muted small">{failure.error}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
