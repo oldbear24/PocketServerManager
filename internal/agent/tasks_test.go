@@ -59,7 +59,7 @@ func waitFor(t *testing.T, condition func() bool) {
 }
 
 // TestATaskThatIsCancelledIsKilled: docker exec cannot stop what it started,
-// so a run that is cancelled is killed by the process id it left, as root,
+// so a run that is cancelled is killed by the process id it left, as its user,
 // and a second run of a task never starts next to the first (#51).
 func TestATaskThatIsCancelledIsKilled(t *testing.T) {
 	engine := fakedocker.New(t)
@@ -108,7 +108,7 @@ func TestATaskThatIsCancelledIsKilled(t *testing.T) {
 		t.Fatal("a cancelled run did not end")
 	}
 	kill := engine.LastExec("blog-php")
-	if kill == run || kill.User != "0" || len(kill.Cmd) != 5 || kill.Cmd[3] != "pocketcloud-task-kill" || kill.Cmd[4] != "/tmp/pocketcloud-task-task1.pid" {
+	if kill == run || kill.User != "www-data" || len(kill.Cmd) != 5 || kill.Cmd[3] != "pocketcloud-task-kill" || kill.Cmd[4] != "/tmp/pocketcloud-task-task1.pid" {
 		t.Errorf("kill: %+v", kill)
 	}
 	if _, running := a.tasks.Load("task1"); running {

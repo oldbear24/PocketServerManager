@@ -31,18 +31,35 @@ const (
 )
 
 // taskScript runs a task's command with its output and errors as one stream,
-// and kills it with its children at its timeout where the container has a
-// timeout command (coreutils, busybox), which signals its process group. Its
-// arguments are the timeout in seconds, a file for its process id, which a
-// cancel kills, and the command.
+// in a process group of its own (setsid, where the container has it, or
+// timeout's own), and kills it at its timeout where the container has a
+// timeout command (coreutils, busybox), with what it started: busybox's kills
+// the command alone, so the rest of the group goes after it. Its arguments
+// are the timeout in seconds, a file for the process id of the run, which a
+// cancel kills and only the user reads, and the command. The file goes when
+// the run ends.
 const taskScript = `t=$1; f=$2; shift 2
-echo $$ > "$f" 2>/dev/null
-if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL "$t" sh -c "$1" 2>&1; fi
-exec sh -c "$1" 2>&1`
+g=; command -v setsid >/dev/null 2>&1 && g=setsid
+if command -v timeout >/dev/null 2>&1; then $g timeout -s KILL "$t" sh -c "$1" 2>&1 & else $g sh -c "$1" 2>&1 & fi
+p=$!
+(umask 077; echo "$p" > "$f") 2>/dev/null
+wait "$p"; s=$?
+if [ "$s" -eq 124 ] || [ "$s" -eq 137 ]; then kill -KILL "-$p" 2>/dev/null; fi
+rm -f "$f"
+exit "$s"`
 
 // taskKill kills a run that was cancelled or given up on: its process group,
-// as timeout leads one, or else its process.
-const taskKill = `p=$(cat "$1" 2>/dev/null) && [ -n "$p" ] && { kill -KILL -- "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; }; rm -f "$1"`
+// as timeout leads one, or else its process. It runs as the task's user, who
+// may signal its own processes where the container has no capabilities, and
+// no others, and trusts the file only when it is the user's own, as another
+// user of the container may have put one there. A run that has just started
+// is given a moment to write it. dash's kill takes no "--".
+const taskKill = `for _ in 1 2 3 4 5; do [ -s "$1" ] && break; sleep 0.2 2>/dev/null || sleep 1; done
+[ -O "$1" ] || exit 0
+p=$(cat "$1" 2>/dev/null)
+case $p in '' | *[!0-9]* | 0 | 1) exit 0 ;; esac
+kill -KILL "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null
+rm -f "$1"`
 
 // taskID is a scheduled task's record id.
 var taskID = regexp.MustCompile(`^[a-z0-9]{1,32}$`)
@@ -85,7 +102,7 @@ func (a *Agent) handleTaskRun(ctx context.Context, command *agentv1.Command, _ *
 	if err != nil && runCtx.Err() != nil {
 		// docker exec cannot stop what it started: the run is killed here, so
 		// that the next one never starts next to it
-		a.killTask(container, pidFile)
+		a.killTask(container, payload.GetUser(), pidFile)
 	}
 	switch {
 	case err != nil && dockerapi.IsNotFound(err):
@@ -110,12 +127,12 @@ func (a *Agent) handleTaskRun(ctx context.Context, command *agentv1.Command, _ *
 	return result, nil
 }
 
-// killTask kills a run by the process id it left, as root in its container.
-func (a *Agent) killTask(container, pidFile string) {
+// killTask kills a run by the process id it left, as its user.
+func (a *Agent) killTask(container, user, pidFile string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := a.Docker.Run(ctx, container, dockerapi.ExecOptions{
-		Cmd: []string{"sh", "-c", taskKill, "pocketcloud-task-kill", pidFile}, User: "0",
+		Cmd: []string{"sh", "-c", taskKill, "pocketcloud-task-kill", pidFile}, User: user,
 	}, io.Discard); err != nil {
 		a.Log.Warn("a task that was given up on could not be killed", "container", container, "error", err)
 	}
