@@ -1052,41 +1052,42 @@ export function PhpCronMailCard({ site, canAct }: { site: Site; canAct: boolean 
   return (
     <Card title={t("phpSite.cronMail")}>
       <TaskList target={{ kind: "site", id: site.id }} canAct={canAct} />
-      <h3 className="section-label">{t("phpSite.mail")}</h3>
-      {mailError ? (
-        <p className="muted small">{mailError}</p>
-      ) : !mail ? (
-        <p className="muted small">{t("common.loading")}</p>
-      ) : !mail.relay ? (
-        <p className="muted small">
-          {t("phpSite.noRelay")}{" "}
-          {hasRole(user, "admin") && <Link to="/settings">{t("phpSite.toSettings")}</Link>}
-        </p>
-      ) : (
-        <>
-          <div className="small">{t("phpSite.relayVia")}</div>
-          <div className="mono small">
-            {`${mail.relay.host}:${mail.relay.port} · `}
-            {t("phpSite.mailToday", { count: mail.sent, formatted: formatNumber(mail.sent) })}
-            {mail.failed > 0 && (
-              <span className="err-text">
-                {` · ${t("phpSite.mailFailed", { count: mail.failed, formatted: formatNumber(mail.failed) })}`}
-              </span>
+      <div className="mail-block" aria-label={t("phpSite.mail")}>
+        {mailError ? (
+          <p className="muted small">{mailError}</p>
+        ) : !mail ? (
+          <p className="muted small">{t("common.loading")}</p>
+        ) : !mail.relay ? (
+          <p className="muted small">
+            {t("phpSite.noRelay")}{" "}
+            {hasRole(user, "admin") && <Link to="/settings">{t("phpSite.toSettings")}</Link>}
+          </p>
+        ) : (
+          <>
+            <div className="small">{t("phpSite.relayVia")}</div>
+            <div className="mono small">
+              {`${mail.relay.host}:${mail.relay.port} · `}
+              {t("phpSite.mailToday", { count: mail.sent, formatted: formatNumber(mail.sent) })}
+              {mail.failed > 0 && (
+                <span className="err-text">
+                  {` · ${t("phpSite.mailFailed", { count: mail.failed, formatted: formatNumber(mail.failed) })}`}
+                </span>
+              )}
+            </div>
+            {mail.failures.length > 0 && (
+              <ul className="mail-failures">
+                {mail.failures.map((failure) => (
+                  <li key={`${failure.at} ${failure.recipients}`}>
+                    <span className="mono">{formatTime(failure.at).slice(0, 5)}</span>{" "}
+                    <span className="mono">{failure.recipients}</span>
+                    <div className="muted small">{failure.error}</div>
+                  </li>
+                ))}
+              </ul>
             )}
-          </div>
-          {mail.failures.length > 0 && (
-            <ul className="mail-failures">
-              {mail.failures.map((failure) => (
-                <li key={`${failure.at} ${failure.recipients}`}>
-                  <span className="mono">{formatTime(failure.at).slice(0, 5)}</span>{" "}
-                  <span className="mono">{failure.recipients}</span>
-                  <div className="muted small">{failure.error}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
+          </>
+        )}
+      </div>
     </Card>
   );
 }

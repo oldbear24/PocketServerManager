@@ -3,12 +3,12 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { errorMessage } from "../lib/api";
-import { formatDuration, formatTime } from "../lib/format";
+import { formatDuration, formatNumber, formatTime } from "../lib/format";
 import { pb } from "../lib/pb";
 import { useLiveList } from "../lib/realtime";
 import { describeSchedule, schedulePresets, tasksApi, type ScheduledTask } from "../lib/tasks";
 import { useToast } from "./toast";
-import { Button, ConfirmDialog, Field, IconButton, StatusPill, type Tone } from "./ui";
+import { Button, ConfirmDialog, Field, IconButton, type Tone } from "./ui";
 
 /** Where a task runs: a PHP site, or a stack whose services it picks from. */
 export type TaskTarget =
@@ -57,8 +57,9 @@ export function TaskList({ target, canAct }: { target: TaskTarget; canAct: boole
         <ul>
           {tasks.items.map((task) => (
             <li key={task.id} className="task">
-              <div className="task-head">
-                <code className="mono task-command">{task.command}</code>
+              <code className="mono task-command">{task.command}</code>
+              <div className="task-meta">
+                <TaskNote task={task} />
                 {canAct && (
                   <span className="task-actions">
                     <IconButton
@@ -89,7 +90,6 @@ export function TaskList({ target, canAct }: { target: TaskTarget; canAct: boole
                   </span>
                 )}
               </div>
-              <TaskNote task={task} />
               {task.last_output && task.last_status !== "succeeded" && (
                 <details className="task-output">
                   <summary>{t("task.output")}</summary>
@@ -135,6 +135,11 @@ const statusTone: Record<string, Tone> = {
   skipped: "warn",
 };
 
+/** A run's duration: tenths of a second for a short one, as most are. */
+function taskDuration(ms: number): string {
+  return ms < 60_000 ? `${formatNumber(ms / 1000, 1)} s` : formatDuration(ms / 1000);
+}
+
 /** When a task runs, and how its last run went: every 5 min · OK 13:45 · 0.8 s. */
 function TaskNote({ task }: { task: ScheduledTask }) {
   const { t } = useTranslation();
@@ -148,12 +153,12 @@ function TaskNote({ task }: { task: ScheduledTask }) {
       {task.last_status && (
         <>
           {" · "}
-          <StatusPill tone={statusTone[task.last_status] ?? "off"} dot={false}>
+          <span className={`task-status ${statusTone[task.last_status] ?? "off"}`}>
             {t(`task.status.${task.last_status}`)}
             {task.last_run_at ? ` ${formatTime(task.last_run_at).slice(0, 5)}` : ""}
-          </StatusPill>
+          </span>
           {task.last_status !== "running" && task.last_duration_ms > 0 && (
-            <span>{` · ${formatDuration(task.last_duration_ms / 1000)}`}</span>
+            <span>{` · ${taskDuration(task.last_duration_ms)}`}</span>
           )}
           {task.failures > 1 && <span>{` · ${t("task.failures", { count: task.failures })}`}</span>}
         </>

@@ -2683,16 +2683,39 @@ td .row-actions {
   border-top: 1px solid var(--border);
 }
 
-.task-head {
+.task-meta {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
 }
 
 .task-command {
+  display: block;
   font-size: 13px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+
+.task-status.ok {
+  color: var(--ok-text);
+}
+
+.task-status.err {
+  color: var(--err-text);
+}
+
+.task-status.warn {
+  color: var(--warn-text);
+}
+
+.task-status.info {
+  color: var(--text);
+}
+
+.mail-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .task-actions {
