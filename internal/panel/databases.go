@@ -153,21 +153,27 @@ func (p *Panel) secretResolver(stack *core.Record) func(string) (string, error) 
 			return p.sealed(server, "admin_password")
 		}
 
-		if _, ok := strings.CutPrefix(name, "db/"); ok {
-			users, err := p.App.FindRecordsByFilter(schema.DBUsers, "secret_name={:secret} && server.host={:host}", "", 1, 0,
-				dbx.Params{"secret": name, "host": hostID})
-			if err != nil || len(users) == 0 {
-				return "", fmt.Errorf("%s: no database of this server has it: %w", name, stacks.ErrUnknownSecret)
-			}
-			password, err := p.sealed(users[0], "password")
-			if err == nil && password == "" {
-				err = fmt.Errorf("%s has no password yet: %w", name, stacks.ErrUnknownSecret)
-			}
-			return password, err
+		if strings.HasPrefix(name, "db/") {
+			return p.databaseSecret(hostID, name)
 		}
 
 		return "", fmt.Errorf("%s: %w", name, stacks.ErrUnknownSecret)
 	}
+}
+
+// databaseSecret is `db/<database>`: the password of a database on a server of
+// the host, which its stacks and sites may refer to.
+func (p *Panel) databaseSecret(hostID, name string) (string, error) {
+	users, err := p.App.FindRecordsByFilter(schema.DBUsers, "secret_name={:secret} && server.host={:host}", "", 1, 0,
+		dbx.Params{"secret": name, "host": hostID})
+	if err != nil || len(users) == 0 {
+		return "", fmt.Errorf("%s: no database of this server has it: %w", name, stacks.ErrUnknownSecret)
+	}
+	password, err := p.sealed(users[0], "password")
+	if err == nil && password == "" {
+		err = fmt.Errorf("%s has no password yet: %w", name, stacks.ErrUnknownSecret)
+	}
+	return password, err
 }
 
 // stackOverride generates the second Compose file of a deploy, which puts a stack on
@@ -374,6 +380,18 @@ func (p *Panel) databaseCreateFinished(record *core.Record) {
 			if err := p.connectStack(context.Background(), dbActor, record.GetString("requested_by"), server, database, stack); err != nil {
 				p.Log.Error("failed to connect a stack to its database", "database", database.Id, "error", err)
 				database.Set("last_error", "The database is ready, but connecting "+stack.GetString("name")+" failed: "+err.Error())
+			}
+		}
+	}
+
+	// a database for a site is ready once the site is connected to it (#50);
+	// one made by a new site's setup leaves the applying to its next step
+	if siteID := database.GetString("site"); siteID != "" {
+		if site, err := p.App.FindRecordById(schema.Sites, siteID); err == nil {
+			request := databaseRequest{Actor: dbActor, UserID: record.GetString("requested_by")}
+			if err := p.connectSite(context.Background(), request, server, database, site, record.GetString("parent") == ""); err != nil {
+				p.Log.Error("failed to connect a site to its database", "database", database.Id, "error", err)
+				database.Set("last_error", "The database is ready, but connecting "+site.GetString("name")+" failed: "+err.Error())
 			}
 		}
 	}

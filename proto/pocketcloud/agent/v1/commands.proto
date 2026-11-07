@@ -72,6 +72,8 @@ message Command {
     SiteRemove site_remove = 152;
     // site_php_apply creates or updates the PHP-FPM container of a site.
     SitePhpApply site_php_apply = 153;
+    // site_php_status reads the state of a site's PHP-FPM (#50).
+    SitePhpStatus site_php_status = 154;
 
     // task_run runs a scheduled task.
     TaskRun task_run = 160;
@@ -359,6 +361,41 @@ message SiteDeploy {
   double cpu_limit = 15;
   // mem_limit_bytes is the build's memory limit; 0 for the default.
   int64 mem_limit_bytes = 16;
+  // php is set for a PHP site (#50): the build runs in its runtime image,
+  // the release keeps shared_paths in `shared/`, release_hook runs in it
+  // before it goes live, and the site's PHP-FPM container reloads after.
+  SitePhpDeploy php = 17;
+  // commit is the commit of the branch to build rather than its newest, as
+  // when a PHP site's live release is built again for another PHP version.
+  string commit = 18;
+}
+
+// SitePhpDeploy is how a PHP site's release is built and made live.
+message SitePhpDeploy {
+  // image is the runtime image of the site's PHP version: the build and the
+  // release hook run in it, as PHP-FPM does.
+  string image = 1;
+  // docroot is the directory the edge serves, in the release, such as public.
+  string docroot = 2;
+  // classic keeps one release, which PHP-FPM may write, instead of a history.
+  bool classic = 3;
+  // env holds the release hook's environment without secrets.
+  map<string, string> env = 4;
+  // secrets holds the release hook's resolved secret environment variables.
+  map<string, string> secrets = 5 [(pocketcloud.options.v1.sensitive) = true];
+  // networks are the database networks the release hook joins.
+  repeated string networks = 6;
+  // apply is the site's PHP-FPM for this release, as for a new PHP version:
+  // it is applied with the release, before the switch when apply_first is
+  // set and after it otherwise, so that the release that is served never runs
+  // on a PHP older than the one it was built for (#50).
+  SitePhpApply apply = 7;
+  // apply_first applies the new PHP-FPM before the switch: a newer PHP runs
+  // the release served now, and an older one would not run the new release.
+  bool apply_first = 8;
+  // masked are the secrets' own values, which the release hook's output
+  // hides wherever they appear in it, as within a longer variable.
+  repeated string masked = 9 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.
@@ -367,6 +404,13 @@ message SiteRollback {
   string site = 1;
   // deployment is the release to activate.
   int32 deployment = 2;
+  // php reloads the site's PHP-FPM container after the switch (#50).
+  bool php = 3;
+  // apply changes the site's PHP-FPM for a release built for another PHP
+  // version: before the switch when that version is newer, so that a failure
+  // leaves the site as it was, and after it when older.
+  SitePhpApply apply = 4;
+  bool apply_first = 5;
 }
 
 // SiteRemove removes a site's files and containers.
@@ -393,6 +437,21 @@ message SitePhpApply {
   double cpu_limit = 7;
   // mem_limit_bytes is the memory limit.
   uint64 mem_limit_bytes = 8;
+  // networks are the database networks the container joins besides its own.
+  repeated string networks = 9;
+  // classic lets PHP-FPM write the site's code, for an application that
+  // updates itself; otherwise only `shared/` is writable (#50).
+  bool classic = 10;
+}
+
+// SitePhpStatus reads a site's PHP-FPM: its pool's workers and queue, OPcache
+// and PHP's version, as pocketcloud-php-status reports them in its container.
+message SitePhpStatus {
+  // site is the site name.
+  string site = 1;
+  // shared_paths are the site's paths in shared/, whose sizes the agent
+  // reports.
+  repeated string shared_paths = 2;
 }
 
 // TaskRun runs a scheduled task with `docker exec`.

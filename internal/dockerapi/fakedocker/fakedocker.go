@@ -29,6 +29,8 @@ type Container struct {
 	Host    map[string]any
 	Started time.Time
 	Restart int32
+	// Signals are those sent with kill, in order.
+	Signals []string
 
 	// CPUPercent and MemBytes are what the statistics report.
 	CPUPercent float64
@@ -544,6 +546,14 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		e.stopping(container)
 		container.Status = "exited"
 		e.broadcast("container", "die", container.ID, nil)
+		w.WriteHeader(http.StatusNoContent)
+
+	case action == "kill" && r.Method == http.MethodPost:
+		if container.Status != "running" {
+			writeError(w, http.StatusConflict, "container "+container.ID+" is not running")
+			return
+		}
+		container.Signals = append(container.Signals, r.URL.Query().Get("signal"))
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "restart":

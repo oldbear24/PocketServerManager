@@ -46,6 +46,16 @@ import {
 } from "../lib/sites";
 import type { Host } from "../lib/types";
 import { tlsText } from "./EdgeProxy";
+import {
+  PhpDatabaseCard,
+  PhpEnvCard,
+  PhpKpis,
+  PhpLogCard,
+  PhpRuntimeCard,
+  PhpSharedCard,
+  usePhpSite,
+  type OnApplied,
+} from "./SitePhp";
 
 /** The errors of a record the API refused, by field. */
 export function fieldErrors(reason: unknown): Record<string, string> {
@@ -168,6 +178,14 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
   );
   const [requests, setRequests] = useState<SiteRequests | null>(null);
   const [watching, setWatching] = useState<{ command: string; title: string } | null>(null);
+  // a PHP site's runtime, database and status (#50)
+  const php = site.type === "php";
+  const phpData = usePhpSite(site, php);
+  const onApplied: OnApplied = (applied, title) => {
+    if (applied.command) {
+      setWatching({ command: applied.command, title });
+    }
+  };
   const [busy, setBusy] = useState(false);
   const upload = useRef<HTMLInputElement>(null);
 
@@ -268,13 +286,32 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
                 HTTPS
               </StatusPill>
             )}
+            {php && phpData.settings && (
+              <StatusPill tone="info" dot={false}>
+                {/* the live release's, while a change of version deploys */}
+                PHP {active?.php_version || phpData.settings.php_version}
+              </StatusPill>
+            )}
+            {php && phpData.settings && phpData.settings.template !== "custom" && (
+              <StatusPill tone="off" dot={false}>
+                {t(`phpSite.template.${phpData.settings.template}`)}
+              </StatusPill>
+            )}
           </>
         }
-        description={t("site.description", {
-          generator: t(`site.generator.${generator}`),
-          server: server?.name ?? "–",
-          root: `/srv/sites/${site.name}`,
-        })}
+        description={
+          php
+            ? t(phpData.dbServer ? "phpSite.descriptionDb" : "phpSite.description", {
+                server: server?.name ?? "–",
+                root: `/srv/sites/${site.name}/current`,
+                database: phpData.dbServer?.name ?? "",
+              })
+            : t("site.description", {
+                generator: t(`site.generator.${generator}`),
+                server: server?.name ?? "–",
+                root: `/srv/sites/${site.name}`,
+              })
+        }
         actions={
           <>
             {first && (
@@ -328,17 +365,26 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
         />
       )}
 
-      <SiteKpis
-        site={site}
-        active={active}
-        requests={requests}
-        routes={routes}
-        domains={domains.items}
-      />
+      {php ? (
+        <PhpKpis data={phpData} requests={requests} />
+      ) : (
+        <SiteKpis
+          site={site}
+          active={active}
+          requests={requests}
+          routes={routes}
+          domains={domains.items}
+        />
+      )}
 
       <div className="columns">
         <div className="column-wide">
-          <SiteDomainsCard site={site} domains={domains.items} routes={routes} canAct={canAct} />
+          {php && (
+            <PhpRuntimeCard site={site} data={phpData} canAct={canAct} onApplied={onApplied} />
+          )}
+          {!php && (
+            <SiteDomainsCard site={site} domains={domains.items} routes={routes} canAct={canAct} />
+          )}
           <DeploymentsCard
             site={site}
             deployments={deployments.items}
@@ -352,11 +398,22 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
               })
             }
           />
+          {php && (
+            <SiteDomainsCard site={site} domains={domains.items} routes={routes} canAct={canAct} />
+          )}
         </div>
         <div className="column-side">
+          {php && (
+            <>
+              <PhpDatabaseCard data={phpData} />
+              <PhpSharedCard data={phpData} />
+              <PhpEnvCard site={site} data={phpData} canAct={canAct} onApplied={onApplied} />
+            </>
+          )}
           <SourceCard site={site} active={active} canAct={canAct} />
         </div>
       </div>
+      {php && phpData.settings && <PhpLogCard site={site} />}
     </>
   );
 }
@@ -632,7 +689,11 @@ function DeploymentsCard({
   };
 
   return (
-    <Card title={t("site.deployments")} note={t("site.deploymentsNote")} flush>
+    <Card
+      title={t("site.deployments")}
+      note={t(site.type === "php" ? "phpSite.deploymentsNote" : "site.deploymentsNote")}
+      flush
+    >
       {deployments.length === 0 ? (
         <p className="muted card-body">{t("site.noDeployments")}</p>
       ) : (
@@ -663,7 +724,10 @@ function DeploymentsCard({
                   </td>
                   <td>
                     <div>{deployment.message || t(`site.trigger.${deployment.trigger}`)}</div>
-                    <div className="muted small mono">{origin(deployment)}</div>
+                    <div className="muted small mono">
+                      {origin(deployment)}
+                      {deployment.php_version ? ` · PHP ${deployment.php_version}` : ""}
+                    </div>
                     {deployment.status === "failed" && deployment.error && (
                       <div className="field-error small">{deployment.error.split("\n")[0]}</div>
                     )}
@@ -740,8 +804,12 @@ function SourceCard({
     }
   };
 
+  const php = site.type === "php";
   const image = site.build_image || active?.image;
-  const command = site.build_cmd || active?.build_cmd;
+  // a PHP site's own build is composer, whose command says less than its name
+  const command = site.build_cmd || (php ? t("site.composerDefault") : active?.build_cmd);
+  // a PHP application routes its own paths (#50)
+  const options = servingOptions.filter((field) => !php || field !== "spa");
   return (
     <Card
       title={t("site.sourceAndBuild")}
@@ -774,8 +842,12 @@ function SourceCard({
             </dd>
           </>
         )}
-        <dt>{t("site.generatorLabel")}</dt>
-        <dd>{t(`site.generator.${site.generator}`)}</dd>
+        {!php && (
+          <>
+            <dt>{t("site.generatorLabel")}</dt>
+            <dd>{t(`site.generator.${site.generator}`)}</dd>
+          </>
+        )}
         <dt>{t("site.buildImage")}</dt>
         <dd className="mono break">{image || t("site.noBuild")}</dd>
         {command && (
@@ -784,12 +856,16 @@ function SourceCard({
             <dd className="mono break">{command}</dd>
           </>
         )}
-        <dt>{t("site.output")}</dt>
-        <dd className="mono">{site.output_dir || t("site.outputAuto")}</dd>
+        {!php && (
+          <>
+            <dt>{t("site.output")}</dt>
+            <dd className="mono">{site.output_dir || t("site.outputAuto")}</dd>
+          </>
+        )}
       </dl>
 
       <ul className="site-options">
-        {servingOptions.map((field) => (
+        {options.map((field) => (
           <li key={field}>
             <label className="check-line">
               <input
@@ -829,46 +905,39 @@ export function BuildFields({
   set,
   errors,
   idPrefix,
+  php = false,
 }: {
   values: BuildValues;
   set: (change: Partial<BuildValues>) => void;
   errors: Record<string, string>;
   idPrefix: string;
+  /** a PHP site builds in its runtime image: only its command may change (#50) */
+  php?: boolean;
 }) {
   const { t } = useTranslation();
+  if (php) {
+    return (
+      <>
+        {values.source === "git" && (
+          <GitFields values={values} set={set} errors={errors} idPrefix={idPrefix} />
+        )}
+        <Field label={t("site.command")} htmlFor={`${idPrefix}-command`} error={errors.build_cmd}>
+          <input
+            id={`${idPrefix}-command`}
+            className="input mono"
+            placeholder={t("site.composerDefault")}
+            value={values.build_cmd}
+            onChange={(event) => set({ build_cmd: event.target.value })}
+          />
+        </Field>
+        <p className="muted small">{t("site.phpBuildNote")}</p>
+      </>
+    );
+  }
   return (
     <>
       {values.source === "git" && (
-        <>
-          <Field label={t("site.repository")} htmlFor={`${idPrefix}-repo`} error={errors.repo_url}>
-            <input
-              id={`${idPrefix}-repo`}
-              className="input mono"
-              placeholder="https://github.com/me/blog.git"
-              value={values.repo_url}
-              onChange={(event) => set({ repo_url: event.target.value })}
-            />
-          </Field>
-          <Field label={t("site.branch")} htmlFor={`${idPrefix}-branch`} error={errors.branch}>
-            <input
-              id={`${idPrefix}-branch`}
-              className="input mono"
-              value={values.branch}
-              onChange={(event) => set({ branch: event.target.value })}
-            />
-          </Field>
-          <Field label={t("site.token")} htmlFor={`${idPrefix}-token`} error={errors.git_token}>
-            <input
-              id={`${idPrefix}-token`}
-              className="input mono"
-              type="password"
-              autoComplete="off"
-              placeholder={values.tokenSet ? t("site.tokenKept") : t("site.tokenNone")}
-              value={values.token}
-              onChange={(event) => set({ token: event.target.value })}
-            />
-          </Field>
-        </>
+        <GitFields values={values} set={set} errors={errors} idPrefix={idPrefix} />
       )}
       <Field
         label={t("site.generatorLabel")}
@@ -929,6 +998,53 @@ export function BuildFields({
   );
 }
 
+/** Where a site's Git source is, and the token that reads it. */
+function GitFields({
+  values,
+  set,
+  errors,
+  idPrefix,
+}: {
+  values: BuildValues;
+  set: (change: Partial<BuildValues>) => void;
+  errors: Record<string, string>;
+  idPrefix: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <Field label={t("site.repository")} htmlFor={`${idPrefix}-repo`} error={errors.repo_url}>
+        <input
+          id={`${idPrefix}-repo`}
+          className="input mono"
+          placeholder="https://github.com/me/blog.git"
+          value={values.repo_url}
+          onChange={(event) => set({ repo_url: event.target.value })}
+        />
+      </Field>
+      <Field label={t("site.branch")} htmlFor={`${idPrefix}-branch`} error={errors.branch}>
+        <input
+          id={`${idPrefix}-branch`}
+          className="input mono"
+          value={values.branch}
+          onChange={(event) => set({ branch: event.target.value })}
+        />
+      </Field>
+      <Field label={t("site.token")} htmlFor={`${idPrefix}-token`} error={errors.git_token}>
+        <input
+          id={`${idPrefix}-token`}
+          className="input mono"
+          type="password"
+          autoComplete="off"
+          placeholder={values.tokenSet ? t("site.tokenKept") : t("site.tokenNone")}
+          value={values.token}
+          onChange={(event) => set({ token: event.target.value })}
+        />
+      </Field>
+    </>
+  );
+}
+
 export type BuildValues = {
   source: SiteSource;
   repo_url: string;
@@ -960,6 +1076,7 @@ function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const set = (change: Partial<BuildValues>) => setValues((current) => ({ ...current, ...change }));
+  const php = site.type === "php";
 
   const save = async () => {
     setBusy(true);
@@ -970,11 +1087,11 @@ function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }
         repo_url: values.source === "git" ? values.repo_url.trim() : site.repo_url,
         branch: values.source === "git" ? values.branch.trim() : site.branch,
         generator: values.generator,
-        build_image: values.generator === "none" ? "" : values.build_image.trim(),
-        build_cmd: values.generator === "none" ? "" : values.build_cmd.trim(),
-        output_dir: values.output_dir.trim(),
+        build_image: php || values.generator === "none" ? "" : values.build_image.trim(),
+        build_cmd: !php && values.generator === "none" ? "" : values.build_cmd.trim(),
+        output_dir: php ? "" : values.output_dir.trim(),
         keep_releases: Number(keep),
-        not_found: notFound.trim(),
+        not_found: php ? "" : notFound.trim(),
         ...(values.source === "git" && values.token.trim()
           ? { git_token: values.token.trim() }
           : {}),
@@ -1007,7 +1124,7 @@ function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }
             label: t(`site.sourceKind.${source}`),
           }))}
         />
-        <BuildFields values={values} set={set} errors={errors} idPrefix="edit-site" />
+        <BuildFields values={values} set={set} errors={errors} idPrefix="edit-site" php={php} />
         {values.source === "git" && values.tokenSet && (
           <Button
             size="small"
@@ -1024,15 +1141,17 @@ function EditSourceDialog({ site, onClose }: { site: Site; onClose: () => void }
             {t("site.removeToken")}
           </Button>
         )}
-        <Field label={t("site.notFoundPage")} htmlFor="edit-site-404" error={errors.not_found}>
-          <input
-            id="edit-site-404"
-            className="input mono"
-            placeholder="/404.html"
-            value={notFound}
-            onChange={(event) => setNotFound(event.target.value)}
-          />
-        </Field>
+        {!php && (
+          <Field label={t("site.notFoundPage")} htmlFor="edit-site-404" error={errors.not_found}>
+            <input
+              id="edit-site-404"
+              className="input mono"
+              placeholder="/404.html"
+              value={notFound}
+              onChange={(event) => setNotFound(event.target.value)}
+            />
+          </Field>
+        )}
         <Field label={t("site.keepReleases")} htmlFor="edit-site-keep" error={errors.keep_releases}>
           <input
             id="edit-site-keep"

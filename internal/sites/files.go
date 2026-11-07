@@ -192,6 +192,17 @@ type Release struct {
 // that compress, which the edge sends to browsers that take it. built says
 // whether a build ran, which must leave an output of its own.
 func MakeRelease(root, site string, n int, output string, built bool) (Release, error) {
+	return makeRelease(root, site, n, output, built, true)
+}
+
+// MakePHPRelease moves a PHP site's built source into release n: all of it,
+// as the release hook and PHP-FPM need its dependencies, and without gzip
+// copies, which a release of vendor/ would have thousands of (#50).
+func MakePHPRelease(root, site string, n int) (Release, error) {
+	return makeRelease(root, site, n, ".", true, false)
+}
+
+func makeRelease(root, site string, n int, output string, built, compress bool) (Release, error) {
 	src := SourceDir(root, site, n)
 	dir, err := FindOutput(src, output, built)
 	if err != nil {
@@ -238,6 +249,9 @@ func MakeRelease(root, site string, n int, output string, built bool) (Release, 
 		}
 		result.Files++
 		result.SizeBytes += info.Size()
+		if !compress {
+			return nil
+		}
 		return precompress(path, info.Size())
 	})
 	return result, err

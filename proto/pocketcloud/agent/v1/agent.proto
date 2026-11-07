@@ -325,6 +325,20 @@ message EdgeStatus {
   // requests_by_host counts the requests of each hostname since the previous
   // heartbeat, for the sites' request charts.
   map<string, uint64> requests_by_host = 7;
+  // latency_by_host is how long the requests of each hostname took, and how
+  // many failed, since the previous heartbeat (#50).
+  map<string, HostLatency> latency_by_host = 8;
+}
+
+// HostLatency are the requests of a hostname by how long they took, in the
+// buckets of Caddy's histogram, and the requests answered with a 5xx.
+message HostLatency {
+  // buckets count the requests that took up to 5 ms, 10 ms, 25 ms, 50 ms,
+  // 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s, 10 s, and longer: each request in
+  // one bucket, not the cumulative counts of Prometheus.
+  repeated uint64 buckets = 1;
+  // errors counts the requests answered with a status of 500 to 599.
+  uint64 errors = 2;
 }
 
 // HeartbeatResponse carries the panel's clock and hints for the agent.

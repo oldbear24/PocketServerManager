@@ -398,7 +398,8 @@
       "databases": "databázi",
       "scheduled_tasks": "plánovanou úlohu",
       "api_tokens": "API token",
-      "alert_rules": "pravidlo upozornění"
+      "alert_rules": "pravidlo upozornění",
+      "site_php": "nastavení PHP"
     },
     "actionName": {
       "create": "Vytvořeno",
@@ -1511,7 +1512,9 @@
     "serverDegraded": "Server s potížemi",
     "expired": "Vypršel",
     "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách",
-    "internalRenews": "Interní CA · obnoví se sám"
+    "internalRenews": "Interní CA · obnoví se sám",
+    "composerDefault": "composer install, má-li zdroj composer.json",
+    "phpBuildNote": "Build běží v PHP image webu jako www-data, takže závislosti odpovídají PHP, které je spouští."
   },
   "siteNew": {
     "title": "Nový web",
@@ -1520,7 +1523,6 @@
     "static": "Statický web",
     "staticNote": "HTML · Hugo, MkDocs, Astro…",
     "php": "PHP aplikace",
-    "phpLater": "Přijde s PHP weby",
     "sourceTitle": "2 · Zdroj obsahu",
     "sourceNote": {
       "git": "build při každém push",
@@ -1561,10 +1563,18 @@
         "dns": "DNS záznamy vytvořeny",
         "propagation": "Propagace DNS ověřena",
         "certificate": "Certifikát vydán",
-        "check": "Kontrola dostupnosti"
+        "check": "Kontrola dostupnosti",
+        "php": {
+          "apply": "PHP-FPM spuštěno"
+        }
       },
       "build": "Build obsahu",
-      "release": "Nasazení přes agenta"
+      "release": "Nasazení přes agenta",
+      "db": {
+        "database": {
+          "create": "Databáze vytvořena"
+        }
+      }
     },
     "plan": {
       "site": {
@@ -1572,10 +1582,18 @@
         "dns": "A + AAAA a CNAME pro www",
         "propagation": "veřejné resolvery a autoritativní NS zóny",
         "certificate": "ACME, jeden certifikát pro všechny názvy",
-        "check": "HTTPS na veřejné adrese serveru"
+        "check": "HTTPS na veřejné adrese serveru",
+        "php": {
+          "apply": "PHP-FPM kontejner ve vlastní síti webu"
+        }
       },
       "build": "v jednorázovém kontejneru na serveru",
-      "release": "site.deploy · atomické přepnutí"
+      "release": "site.deploy · atomické přepnutí",
+      "db": {
+        "database": {
+          "create": "databáze a její uživatel"
+        }
+      }
     },
     "state": {
       "done": "hotovo",
@@ -1610,6 +1628,26 @@
       "propagation": "žádné: DNS server v LAN odpovídá hned",
       "certificate": "interní CA, jeden certifikát pro všechna jména",
       "check": "HTTPS na adrese serveru v jeho síti"
+    },
+    "phpNote": "PHP-FPM · WordPress, Laravel, Nette…",
+    "phpTitle": "3 · PHP runtime",
+    "phpVersion": "Verze PHP",
+    "recommended": "doporučeno",
+    "application": "Aplikace",
+    "templateLater": "{{name}} (přijde se šablonami aplikací)",
+    "docrootNone": "samotné vydání",
+    "docrootNote": "Složka vydání, kterou edge obsluhuje: public pro Laravel, www pro Nette. Skripty .php jdou do PHP-FPM webu, ostatní soubory edge posílá rovnou.",
+    "noDatabase": "Bez databáze",
+    "databaseName": "Název databáze",
+    "noDatabaseServer": "Tento server zatím nemá databázový server.",
+    "databaseNote": "Databáze dostane uživatele s právy jen na ni; PHP dostane DB_HOST, DB_NAME, DB_USER a DB_PASSWORD, heslo jako tajemství.",
+    "noDatabaseNote": "Databázi lze přidat později na stránce Databáze.",
+    "domainTitlePhp": "4 · Doména a server",
+    "certificateTitlePhp": "5 · Certifikát",
+    "databaseMade": "{{database}} · uživatel {{user}}",
+    "planPhp": {
+      "build": "composer install v PHP image jako www-data",
+      "release": "trvalá data · release hook · přepnutí · reload PHP-FPM"
     }
   },
   "ca": {
@@ -1664,5 +1702,110 @@
       }
     },
     "windowsAdmin": "Nebo v PowerShellu spuštěném jako správce:"
+  },
+  "phpSite": {
+    "description": "PHP aplikace · na {{server}} · kód {{root}}",
+    "descriptionDb": "PHP aplikace · na {{server}} · kód {{root}} · databáze na {{database}}",
+    "deploymentsNote": "kód je jen pro čtení · trvalá data se připojují do každého vydání",
+    "template": {
+      "custom": "Vlastní aplikace",
+      "wordpress": "WordPress",
+      "laravel": "Laravel",
+      "nette": "Nette"
+    },
+    "workers": "PHP-FPM workery",
+    "workersNote": "pm {{pm}} · fronta {{queue}}",
+    "state": {
+      "pending": "spouští se",
+      "running": "běží",
+      "failed": "selhalo"
+    },
+    "latency": "Odezva p50 / p95",
+    "latencyValue": "{{p50}} / {{p95}} ms",
+    "opcacheHits": "OPcache {{rate}} zásahů",
+    "noRequests": "za 24 h žádné požadavky",
+    "errors24h": "Chyby 5xx za 24 h",
+    "errorsOf_one": "{{errors}} z {{requests}} požadavku",
+    "errorsOf_few": "{{errors}} z {{requests}} požadavků",
+    "errorsOf_many": "{{errors}} z {{requests}} požadavku",
+    "errorsOf_other": "{{errors}} z {{requests}} požadavků",
+    "database": "Databáze",
+    "serverKind": {
+      "shared": "sdílený server",
+      "dedicated": "vyhrazený server"
+    },
+    "noDatabase": "bez databáze",
+    "runtime": "PHP runtime",
+    "healthyFor": "{{container}} · v pořádku · {{uptime}}",
+    "settings": "Nastavení",
+    "image": "Image",
+    "fastcgi": "{{upstream}} ← Caddy php_fastcgi",
+    "pool": "FPM pool",
+    "poolValue": "pm {{pm}} · max_children {{children}} · max_requests {{requests}}",
+    "limits": "Limity",
+    "limitsValue": "{{cpu}} vCPU · {{memory}} RAM · uživatel www-data, bez Docker socketu",
+    "webRoot": "Kořen webu",
+    "mode": "Kód",
+    "modeKind": {
+      "releases": "Vydání: jen pro čtení, přepnutí naráz",
+      "classic": "Klasicky: jedna zapisovatelná kopie"
+    },
+    "modeNote": {
+      "releases": "Každé nasazení je nové vydání; PHP smí zapisovat jen do trvalých dat a vrácení trvá sekundy.",
+      "classic": "Pro aplikace, které zapisují do vlastního kódu, třeba WordPress při aktualizaci pluginů: složka webu zůstane zapisovatelná a drží jedno vydání."
+    },
+    "extensions": "Rozšíření",
+    "ownIni": "php.ini – vlastní hodnoty",
+    "noOwnIni": "Výchozí hodnoty image, žádné vlastní.",
+    "editIni": "Upravit php.ini",
+    "switchTo": "Přejít na PHP {{version}}…",
+    "switchVersion": "Změnit verzi PHP…",
+    "switchNote": "Změna verze se nasadí jako nové vydání – zpět jedním klikem.",
+    "versionStarted": "Nasazení na nové verzi PHP začalo.",
+    "applyStarted": "Změna se aplikuje na PHP-FPM.",
+    "applyTitle": "PHP-FPM webu {{name}}",
+    "iniTitle": "php.ini webu {{name}}",
+    "saveApply": "Uložit a aplikovat",
+    "iniNote": "Řádky jako memory_limit = 256M, po hodnotách image. PHP-FPM se s nimi restartuje bez ztráty požadavků.",
+    "versionTitle": "Verze PHP webu {{name}}",
+    "switchConfirm": "Přejít na PHP {{version}}",
+    "version": "Verze",
+    "upgradeNote": "Živé vydání se znovu nasadí na PHP {{to}}: sestaví se jeho composerem a PHP-FPM se vymění před přepnutím. Návrat na PHP {{from}} je vrácení vydání.",
+    "downgradeNote": "Živé vydání se znovu nasadí na PHP {{to}}: nejdřív přepnutí, pak výměna PHP-FPM, takže kód vždy běží na PHP, pro které byl sestaven.",
+    "settingsTitle": "Nastavení webu {{name}}",
+    "pm": "Správce procesů",
+    "timeout": "Limit požadavku (s)",
+    "cpu": "Procesory",
+    "memory": "Paměť (MB)",
+    "sharedPaths": "Trvalá data",
+    "sharedPathsNote": "Cesty ve vydání, jedna na řádek, uložené ve shared/ napříč vydáními a připojené do každého: nahrané soubory, storage, sessions.",
+    "releaseHook": "Release hook",
+    "releaseHookNote": "Spustí se v novém vydání před přepnutím, s prostředím a databází webu, třeba php artisan migrate --force. Když selže, vydání se nepřepne.",
+    "dbServer": "Server",
+    "dbName": "Databáze",
+    "dbUser": "Uživatel",
+    "dbUserValue": "{{name}} · práva jen na {{name}}",
+    "dbPassword": "Heslo",
+    "dbPasswordValue": "•••••••• · v DB_PASSWORD přes tajemství",
+    "noDatabaseText": "Web nemá databázi.",
+    "toDatabases": "Databáze",
+    "shared": "Trvalá data",
+    "noShared": "Žádné cesty nepřežívají vydání: vše pochází ze zdroje.",
+    "sharedNote": "mimo vydání (shared/)",
+    "env": "Prostředí",
+    "secrets": "Tajemství",
+    "noEnv": "Žádné vlastní proměnné.",
+    "noSecrets": "Žádná vlastní tajemství.",
+    "envTitle": "Prostředí webu {{name}}",
+    "envNote": "Řádky NÁZEV=hodnota, které PHP čte přes getenv(). Hodnota se může odkázat na tajemství jako ${secret:název}; vidí ho jen PHP-FPM.",
+    "secretsTitle": "Tajemství webu {{name}}",
+    "secretName": "Nové tajemství",
+    "secretValue": "Hodnota",
+    "secretsNote": "Tajemství panel zapečetí a nikomu neukáže; prostředí se na něj odkazuje jako ${secret:název}. Tajemství, na které se prostředí odkazuje, nelze odebrat.",
+    "keepSecret": "Ponechat",
+    "removeSecret": "Odebrat",
+    "errorLog": "Chybový log PHP",
+    "keepSecretNamed": "Ponechat {{name}}",
+    "removeSecretNamed": "Odebrat {{name}}"
   }
 }

@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS requests (
 	count INTEGER NOT NULL,
 	PRIMARY KEY (host, name, hour)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS latency (
+	host   TEXT NOT NULL,
+	name   TEXT NOT NULL,
+	hour   INTEGER NOT NULL,
+	bucket INTEGER NOT NULL,
+	count  INTEGER NOT NULL,
+	PRIMARY KEY (host, name, hour, bucket)
+) WITHOUT ROWID;
 `
 
 // KeepRequests is how long the hourly request counts of hostnames are kept.
@@ -292,6 +300,9 @@ func (s *Store) Rollup() error {
 	if _, err := tx.Exec(`DELETE FROM requests WHERE hour < ?`, now.Add(-KeepRequests).Unix()); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM latency WHERE hour < ?`, now.Add(-KeepRequests).Unix()); err != nil {
+		return err
+	}
 
 	// containers come and go; their series end with their last sample
 	result, err := tx.Exec(`DELETE FROM series WHERE NOT EXISTS (SELECT 1 FROM samples WHERE samples.series = series.id)`)
@@ -366,6 +377,9 @@ func (s *Store) DeleteHost(hostID string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM requests WHERE host = ?`, hostID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM latency WHERE host = ?`, hostID); err != nil {
 		return err
 	}
 
@@ -583,6 +597,138 @@ func (s *Store) AddRequests(hostID string, counts map[string]uint64) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// LatencyBounds are the upper bounds of the latency buckets, in milliseconds,
+// as Caddy's histogram has them; the last bucket has none.
+var LatencyBounds = []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
+
+// errorsBucket holds a hostname's requests answered with a 5xx.
+const errorsBucket = -1
+
+// HostLatency is a hostname's requests by how long they took, one bucket each,
+// and those answered with a 5xx.
+type HostLatency struct {
+	Buckets []uint64
+	Errors  uint64
+}
+
+// AddLatency adds the durations of the requests an edge served for each
+// hostname to those of the current hour (#50).
+func (s *Store) AddLatency(hostID string, byName map[string]HostLatency) error {
+	if len(byName) == 0 {
+		return nil
+	}
+	hour := s.Now().Truncate(time.Hour).Unix()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // a no-op after the commit
+
+	add := func(name string, bucket int, count uint64) error {
+		if count == 0 {
+			return nil
+		}
+		_, err := tx.Exec(`INSERT INTO latency (host, name, hour, bucket, count) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (host, name, hour, bucket) DO UPDATE SET count = count + excluded.count`,
+			hostID, strings.ToLower(name), hour, bucket, int64(min(count, math.MaxInt64)))
+		return err
+	}
+	for name, latency := range byName {
+		for bucket, count := range latency.Buckets {
+			if bucket > len(LatencyBounds) {
+				break
+			}
+			if err := add(name, bucket, count); err != nil {
+				return err
+			}
+		}
+		if err := add(name, errorsBucket, latency.Errors); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Latency is what the requests of hostnames took in the last hours, with the
+// same names as Requests: how many there were, their 50th and 95th percentile
+// in milliseconds, estimated within their buckets, and how many failed.
+type Latency struct {
+	Requests int64   `json:"requests"`
+	Errors   int64   `json:"errors"`
+	P50Ms    float64 `json:"p50_ms"`
+	P95Ms    float64 `json:"p95_ms"`
+}
+
+// Latency adds up the durations of the requests of hostnames served by a
+// host's edge in the last hours.
+func (s *Store) Latency(hostID string, names, exact []string, hours int) (Latency, error) {
+	var latency Latency
+	if len(names) == 0 || hours <= 0 {
+		return latency, nil
+	}
+	first := s.Now().Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour).Unix()
+	rows, err := s.db.Query(`SELECT name, bucket, count FROM latency WHERE host = ? AND hour >= ?`, hostID, first)
+	if err != nil {
+		return latency, err
+	}
+	defer rows.Close()
+	buckets := make([]int64, len(LatencyBounds)+1)
+	for rows.Next() {
+		var name string
+		var bucket, count int64
+		if err := rows.Scan(&name, &bucket, &count); err != nil {
+			return latency, err
+		}
+		if !matchesAny(names, exact, name) {
+			continue
+		}
+		switch {
+		case bucket == errorsBucket:
+			latency.Errors += count
+		case bucket >= 0 && bucket < int64(len(buckets)):
+			buckets[bucket] += count
+			latency.Requests += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return latency, err
+	}
+	latency.P50Ms = percentile(buckets, latency.Requests, 0.5)
+	latency.P95Ms = percentile(buckets, latency.Requests, 0.95)
+	return latency, nil
+}
+
+// percentile estimates a percentile from bucket counts, linearly within its
+// bucket; one in the last bucket, which has no bound, is its lower bound.
+func percentile(buckets []int64, total int64, p float64) float64 {
+	if total == 0 {
+		return 0
+	}
+	rank := p * float64(total)
+	var seen float64
+	for i, count := range buckets {
+		if count == 0 {
+			continue
+		}
+		if seen+float64(count) >= rank {
+			lower := 0.0
+			if i > 0 {
+				lower = LatencyBounds[i-1]
+			}
+			if i >= len(LatencyBounds) {
+				return lower
+			}
+			return lower + (LatencyBounds[i]-lower)*(rank-seen)/float64(count)
+		}
+		seen += float64(count)
+	}
+	return LatencyBounds[len(LatencyBounds)-1]
 }
 
 // Requests are the requests of hostnames served by a host's edge in each of the

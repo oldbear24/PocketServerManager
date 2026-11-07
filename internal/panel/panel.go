@@ -162,6 +162,7 @@ func (p *Panel) Register() {
 	p.registerACME()
 	p.registerLabels()
 	p.registerSites()
+	p.registerPHPSites()
 	p.registerProvision()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
@@ -271,6 +272,7 @@ func (p *Panel) startGateway() error {
 	p.Gateway.BindHostRemoval()
 	p.Gateway.OnEdgeStatus = p.onEdgeStatus
 	p.Gateway.OnRequests = p.onRequests
+	p.Gateway.OnLatency = p.onLatency
 	p.Gateway.Fetch = p.fetchArtifact
 
 	for _, observe := range p.Observers {

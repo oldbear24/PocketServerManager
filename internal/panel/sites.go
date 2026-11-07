@@ -31,6 +31,8 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
+	"github.com/oldbear24/PocketServerManager/internal/metrics"
+	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
@@ -66,13 +68,27 @@ func (p *Panel) registerSites() {
 	p.App.OnRecordValidate(schema.Sites).BindFunc(p.validateSite)
 	p.App.OnRecordAfterCreateSuccess(schema.Sites).BindFunc(func(e *core.RecordEvent) error {
 		site := e.Record
+		// a new PHP site's settings exist before anything is sent for it (#50)
+		if site.GetString("type") == schema.SitePHPApp {
+			if _, err := p.phpSettings(e.App, site); err != nil {
+				p.Log.Error("failed to make a PHP site's settings", "site", site.GetString("name"), "error", err)
+			}
+		}
 		// a new site's setup deploys it as one of its steps
 		if _, setup := p.provision.noFirstDeploy.LoadAndDelete(site.Id); setup {
 			return e.Next()
 		}
 		if source := site.GetString("source"); source == sites.SourceGit || source == sites.SourceEmpty {
+			request := deploymentRequest{Trigger: schema.TriggerCreate, Requester: "panel"}
+			if site.GetString("type") == schema.SitePHPApp {
+				// its PHP-FPM starts before its first release (#50)
+				request.BeforeSend = func(ctx context.Context) error {
+					_, err := p.applyPHP(ctx, site, commands.Options{Requester: "panel"})
+					return err
+				}
+			}
 			p.later.after(0, func() {
-				if _, err := p.startDeployment(context.Background(), site, deploymentRequest{Trigger: schema.TriggerCreate, Requester: "panel"}); err != nil {
+				if _, err := p.startDeployment(context.Background(), site, request); err != nil {
 					p.Log.Error("failed to start a site's first deployment", "site", site.GetString("name"), "error", err)
 				}
 			})
@@ -120,6 +136,12 @@ func (p *Panel) bindSiteRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	group.GET("/sites/{id}/webhook", p.handleSiteWebhookInfo).BindFunc(operators)
 	group.POST("/sites/{id}/webhook", p.handleSiteWebhookRotate).BindFunc(operators)
 	group.GET("/sites/{id}/requests", p.handleSiteRequests).BindFunc(everyone)
+	// PHP sites (#50)
+	group.PUT("/sites/{id}/php", p.handlePHPSettings).BindFunc(operators)
+	group.PUT("/sites/{id}/php/secrets", p.handlePHPSecrets).BindFunc(operators)
+	group.POST("/sites/{id}/php/apply", p.handlePHPApply).BindFunc(operators)
+	group.GET("/sites/{id}/php/status", p.handlePHPStatus).BindFunc(everyone)
+	group.GET("/sites/{id}/php/logs", p.handlePHPLogs).BindFunc(everyone)
 }
 
 // takeSiteSecrets sets the Git token and the passwords from the request, so a
@@ -210,6 +232,12 @@ func (p *Panel) validateSite(e *core.RecordEvent) error {
 		if stored.GetString("host") != site.GetString("host") {
 			set("host", "validation_site_host_fixed", "A site stays on its server.")
 		}
+		if stored.GetString("type") != site.GetString("type") {
+			set("type", "validation_site_type_fixed", "A site keeps its type: make a new site for the other kind.")
+		}
+	}
+	if site.GetString("type") == schema.SitePHPApp && (site.GetBool("spa") || site.GetString("not_found") != "") {
+		set("spa", "validation_php_spa", "A PHP application routes its own paths and answers its own 404s.")
 	}
 	// a site keeps its server, so this is checked where the server is chosen;
 	// the panel's own saves of the site must not fail on it later
@@ -345,6 +373,18 @@ func (p *Panel) siteRoute(route *edge.Route, site *core.Record) error {
 	if err != nil {
 		return err
 	}
+	if site.GetString("type") == schema.SitePHPApp {
+		// a PHP site's scripts go to its PHP-FPM, from its web root (#50)
+		settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+		if err != nil {
+			return fmt.Errorf("the PHP site %s has no settings", site.GetString("name"))
+		}
+		if docroot := settings.GetString("docroot"); docroot != "" {
+			options.Root += "/" + docroot
+		}
+		options.FastCGI = sites.FastCGIUpstream(site.GetString("name"))
+		options.SPA, options.NotFound = false, ""
+	}
 	route.Kind = edge.KindSite
 	route.Site = options
 	route.HSTS = site.GetBool("hsts")
@@ -382,6 +422,19 @@ type deploymentRequest struct {
 	// Hold records the deployment without sending it: the flow sends it with
 	// sendDeployment when its turn comes.
 	Hold bool
+	// Message describes a deployment that is not from a push or an upload.
+	Message string
+	// BeforeSend sends what must reach the server first, such as the PHP-FPM
+	// of a new PHP site: commands of a site run in the order they were made.
+	BeforeSend func(ctx context.Context) error
+	// Again builds a deployment's source once more, its commit or its upload,
+	// rather than the newest, as for a PHP site's live release on a new PHP
+	// version (#50).
+	Again *core.Record
+	// PHPApply changes a PHP site's PHP-FPM with the release, as for a new
+	// PHP version, which is newer or older than PHPFrom (#50).
+	PHPApply bool
+	PHPFrom  string
 }
 
 // startDeployment records a deployment and sends it to the site's server.
@@ -392,7 +445,17 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 
 	source := site.GetString("source")
 	artifact := ""
-	if request.Upload != nil {
+	if again := request.Again; again != nil && again.GetString("source") == sites.SourceUpload {
+		// its own upload, or the one it deployed again
+		last, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s} && upload!='' && number<={:n}", "-number", 1, 0,
+			dbx.Params{"s": site.Id, "n": again.GetInt("number")})
+		if err != nil || len(last) == 0 {
+			return nil, errNoUpload
+		}
+		source, artifact = sites.SourceUpload, last[0].Id
+	} else if again != nil {
+		source = again.GetString("source")
+	} else if request.Upload != nil {
 		source = sites.SourceUpload
 	} else if source == sites.SourceUpload {
 		// deploy again: the newest upload
@@ -423,11 +486,24 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 		deployment.Set("branch", site.GetString("branch"))
 		deployment.Set("commit_sha", request.Push.Commit)
 		deployment.Set("message", truncate(request.Push.Message, 1000))
+		if again := request.Again; again != nil {
+			deployment.Set("branch", again.GetString("branch"))
+			deployment.Set("commit_sha", again.GetString("commit_sha"))
+		}
 	}
 	if request.Upload != nil {
 		deployment.Set("upload", request.Upload)
 		deployment.Set("upload_sha256", request.UploadSHA)
 		deployment.Set("message", truncate(request.Upload.OriginalName, 1000))
+	}
+	if request.Message != "" {
+		deployment.Set("message", truncate(request.Message, 1000))
+	}
+	if site.GetString("type") == schema.SitePHPApp {
+		// a rollback to it goes back to its PHP version
+		if settings, err := p.phpSettings(p.App, site); err == nil {
+			deployment.Set("php_version", settings.GetString("php_version"))
+		}
 	}
 	if err := p.App.SaveWithContext(ctx, deployment); err != nil {
 		return nil, err
@@ -437,6 +513,12 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 	}
 	if request.Hold {
 		return deployment, nil
+	}
+	if request.BeforeSend != nil {
+		if err := request.BeforeSend(ctx); err != nil {
+			p.setFields(deployment, map[string]any{"status": schema.DeploymentFailed, "error": truncate(err.Error(), 4096), "finished_at": types.NowDateTime()})
+			return deployment, err
+		}
 	}
 	return deployment, p.sendDeploymentLocked(ctx, site, deployment, artifact, request)
 }
@@ -459,6 +541,27 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 	number := deployment.GetInt("number")
 	source := deployment.GetString("source")
 	memory := int64(site.GetInt("build_memory_mb")) << 20
+	var phpDeploy *agentv1.SitePhpDeploy
+	var shared []string
+	var hook string
+	if site.GetString("type") == schema.SitePHPApp {
+		var err error
+		if phpDeploy, shared, hook, err = p.phpDeploy(site, deployment); err == nil && request.PHPApply {
+			var settings *core.Record
+			if phpDeploy.Apply, settings, err = p.phpApplyPayload(site); err == nil {
+				// a newer PHP runs the release served now; an older one the new release
+				phpDeploy.ApplyFirst = php.Compare(settings.GetString("php_version"), request.PHPFrom) > 0
+			}
+		}
+		if err != nil {
+			p.setFields(deployment, map[string]any{"status": schema.DeploymentFailed, "error": truncate(err.Error(), 4096), "finished_at": types.NowDateTime()})
+			return err
+		}
+	}
+	branch, commit := site.GetString("branch"), ""
+	if again := request.Again; again != nil && again.GetString("source") == sites.SourceGit {
+		branch, commit = again.GetString("branch"), again.GetString("commit_sha")
+	}
 	command, err := p.Commands.Create(ctx, commands.Options{
 		Host:        site.GetString("host"),
 		Label:       fmt.Sprintf("%s #%d", site.GetString("name"), number),
@@ -471,7 +574,8 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 			Deployment:    int32(number), //nolint:gosec // a counter
 			Source:        source,
 			RepoUrl:       site.GetString("repo_url"),
-			Branch:        site.GetString("branch"),
+			Branch:        branch,
+			Commit:        commit,
 			ArtifactId:    artifact,
 			Generator:     site.GetString("generator"),
 			BuildImage:    site.GetString("build_image"),
@@ -480,6 +584,9 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 			KeepReleases:  int32(site.GetInt("keep_releases")), //nolint:gosec // at most 50
 			CpuLimit:      site.GetFloat("build_cpus"),
 			MemLimitBytes: memory,
+			Php:           phpDeploy,
+			SharedPaths:   shared,
+			ReleaseHook:   hook,
 		}}},
 	})
 	if err != nil {
@@ -503,12 +610,31 @@ func truncate(text string, limit int) string {
 // it is never stored with the command.
 func (p *Panel) enrichSiteDeploy(record *core.Record, command *agentv1.Command) error {
 	payload := command.GetSiteDeploy()
-	if payload.GetSource() != sites.SourceGit {
+	if payload.GetSource() != sites.SourceGit && payload.GetPhp() == nil {
 		return nil
 	}
 	site, err := p.App.FindFirstRecordByFilter(schema.Sites, "host={:h} && name={:n}", dbx.Params{"h": record.GetString("host"), "n": payload.GetSite()})
 	if err != nil {
 		return errors.New("the site was removed")
+	}
+	// a PHP site's release hook gets the site's secrets (#50)
+	if payload.GetPhp() != nil {
+		settings, err := p.phpSettings(p.App, site)
+		if err != nil {
+			return err
+		}
+		secrets, masked, err := p.phpSecretValues(site, settings)
+		if err != nil {
+			return err
+		}
+		payload.Php.Masked = masked
+		payload.Php.Secrets = secrets
+		if payload.Php.Apply != nil {
+			payload.Php.Apply.Secrets = secrets
+		}
+	}
+	if payload.GetSource() != sites.SourceGit {
+		return nil
 	}
 	if sealed := site.GetString("git_token"); sealed != "" {
 		token, err := p.Box.OpenString(sealed)
@@ -586,6 +712,14 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 	}
 	label := fmt.Sprintf("%s #%d", site.GetString("name"), deployment.GetInt("number"))
 
+	// a new PHP version's PHP-FPM may have been applied, with the release or
+	// before a switch that failed (#50)
+	if site.GetString("type") == schema.SitePHPApp {
+		p.phpDeployApplied(site, command)
+		if command.GetString("status") != schema.CommandSucceeded {
+			p.keepLivePHPVersion(site, deployment)
+		}
+	}
 	if command.GetString("status") != schema.CommandSucceeded {
 		fields["status"] = schema.DeploymentFailed
 		fields["error"] = truncate(command.GetString("error"), 4096)
@@ -685,6 +819,20 @@ func (p *Panel) siteRollbackFinished(command *core.Record) {
 		return
 	}
 	p.setFields(site, map[string]any{"active_deployment": deployment.Id})
+	// the PHP version it went back to, once its PHP-FPM runs (#50)
+	var result struct {
+		PHP map[string]any `json:"php"`
+	}
+	raw, _ = json.Marshal(command.Get("result"))
+	_ = json.Unmarshal(raw, &result)
+	if version := deployment.GetString("php_version"); len(result.PHP) > 0 && version != "" {
+		if settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id); err == nil {
+			p.setFields(settings, map[string]any{"php_version": version})
+		}
+	}
+	if site.GetString("type") == schema.SitePHPApp {
+		p.phpDeployApplied(site, command)
+	}
 	events.Log(p.App, site.GetString("host"), "site.rolled_back", schema.SeverityInfo,
 		fmt.Sprintf("%s is back on deployment #%d.", site.GetString("name"), number), map[string]any{"site": site.Id, "deployment": deployment.Id})
 }
@@ -757,6 +905,20 @@ func (p *Panel) onRequests(hostID string, byHost map[string]uint64) {
 	}
 	if err := p.Metrics.AddRequests(hostID, byHost); err != nil {
 		p.Log.Error("failed to store request counts", "host", hostID, "error", err)
+	}
+}
+
+// onLatency keeps how long the requests of each hostname took (#50).
+func (p *Panel) onLatency(hostID string, byHost map[string]*agentv1.HostLatency) {
+	if p.Metrics == nil {
+		return
+	}
+	latency := make(map[string]metrics.HostLatency, len(byHost))
+	for name, host := range byHost {
+		latency[name] = metrics.HostLatency{Buckets: host.GetBuckets(), Errors: host.GetErrors()}
+	}
+	if err := p.Metrics.AddLatency(hostID, latency); err != nil {
+		p.Log.Error("failed to store request durations", "host", hostID, "error", err)
 	}
 }
 
@@ -852,6 +1014,30 @@ func (p *Panel) handleSiteRollback(e *core.RequestEvent) error {
 		return e.BadRequestError("The site serves this release already.", nil)
 	}
 	id, label := requester(e)
+	isPHP := site.GetString("type") == schema.SitePHPApp
+	var apply *agentv1.SitePhpApply
+	applyFirst := false
+	if isPHP {
+		// a release built for another PHP version goes back to it, in the same
+		// command, which the agent orders: the settings keep the version once
+		// the rollback succeeded (#50)
+		settings, err := p.phpSettings(e.App, site)
+		if err != nil {
+			return e.InternalServerError("", err)
+		}
+		if version := deployment.GetString("php_version"); version != "" && version != settings.GetString("php_version") &&
+			settings.GetString("mode") != schema.PHPClassic {
+			current := settings.GetString("php_version")
+			settings.Set("php_version", version)
+			if apply, _, err = p.phpApplyPayloadOf(site, settings); err != nil {
+				return e.BadRequestError(capitalize(err.Error())+".", nil)
+			}
+			// a newer PHP-FPM first, as it runs the release served now; an
+			// older one after the switch, as the current one runs the release
+			// it goes back to
+			applyFirst = php.Compare(version, current) > 0
+		}
+	}
 	command, err := p.Commands.Create(e.Request.Context(), commands.Options{
 		Host:        site.GetString("host"),
 		Label:       fmt.Sprintf("%s #%d", site.GetString("name"), deployment.GetInt("number")),
@@ -859,6 +1045,7 @@ func (p *Panel) handleSiteRollback(e *core.RequestEvent) error {
 		Requester:   label,
 		Command: &agentv1.Command{Payload: &agentv1.Command_SiteRollback{SiteRollback: &agentv1.SiteRollback{
 			Site: site.GetString("name"), Deployment: int32(deployment.GetInt("number")), //nolint:gosec // a counter
+			Php: isPHP, Apply: apply, ApplyFirst: applyFirst,
 		}}},
 	})
 	if err != nil {
@@ -1014,6 +1201,12 @@ func (p *Panel) handleSiteRequests(e *core.RequestEvent) error {
 	for _, count := range counts {
 		total += count
 	}
+	var latency metrics.Latency
+	if p.Metrics != nil {
+		if latency, err = p.Metrics.Latency(site.GetString("host"), names, exact, requestHours); err != nil {
+			return e.InternalServerError("Failed to read the requests' durations.", err)
+		}
+	}
 	from := time.Now().UTC().Truncate(time.Hour).Add(-(requestHours - 1) * time.Hour)
-	return e.JSON(http.StatusOK, map[string]any{"from": from.Format(time.RFC3339), "hours": counts, "total": total})
+	return e.JSON(http.StatusOK, map[string]any{"from": from.Format(time.RFC3339), "hours": counts, "total": total, "latency": latency})
 }

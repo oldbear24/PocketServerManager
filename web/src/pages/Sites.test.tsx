@@ -7,17 +7,23 @@ import { ToastProvider } from "../components/toast";
 import { AuthProvider } from "../lib/auth";
 import { edgeApi } from "../lib/edge";
 import { pb, type User } from "../lib/pb";
+import { phpApi, type PhpStatus, type SitePhp } from "../lib/php";
 import { sitesApi, type Deployment, type Site } from "../lib/sites";
 import { SitesPage } from "./Sites";
 
 const lists: Record<string, unknown[]> = {};
+const records: Record<string, unknown> = {};
 
 vi.mock("../lib/realtime", () => ({
   useLiveList: (collection: string) => {
     const items = lists[collection] ?? [];
     return { items, total: items.length, loading: false, error: null, reload: () => {} };
   },
-  useLiveRecord: () => ({ record: null, loading: false, error: null }),
+  useLiveRecord: (collection: string, id?: string) => ({
+    record: id ? (records[`${collection}/${id}`] ?? null) : null,
+    loading: false,
+    error: null,
+  }),
   useNow: () => Date.parse("2026-11-05T12:00:00Z"),
 }));
 
@@ -120,10 +126,148 @@ afterEach(() => {
   for (const key of Object.keys(lists)) {
     delete lists[key];
   }
+  for (const key of Object.keys(records)) {
+    delete records[key];
+  }
   pb.authStore.clear();
 });
 
+const phpSettings = {
+  id: "p1",
+  site: "s2",
+  php_version: "8.4",
+  template: "custom",
+  docroot: "public",
+  mode: "releases",
+  fpm: { pm: "dynamic", max_children: 10, max_requests: 500, request_terminate_timeout: 60 },
+  php_ini: "memory_limit = 256M\nupload_max_filesize = 64M",
+  env: "APP_ENV=production\nAPP_KEY=${secret:app-key}",
+  secret_names: ["app-key"],
+  cpu_limit: 1,
+  mem_limit_mb: 512,
+  shared_paths: ["storage", "public/uploads"],
+  release_hook: "php artisan migrate --force",
+  database: "db1",
+  state: "running",
+  image: "ghcr.io/oldbear24/pocketcloud-php:8.4-fpm",
+  applied_at: "2026-11-05 10:00:00.000Z",
+  last_error: "",
+} as unknown as SitePhp;
+
+const phpStatus: PhpStatus = {
+  php_version: "8.4.27",
+  workers: {
+    active: 4,
+    idle: 2,
+    total: 6,
+    max: 10,
+    max_active: 6,
+    max_children_reached: 0,
+    listen_queue: 0,
+    accepted: 406,
+    slow_requests: 0,
+    uptime: 6 * 86_400,
+  },
+  opcache: {
+    enabled: true,
+    hit_rate: 96.2,
+    used_bytes: 44_000_000,
+    free_bytes: 89_000_000,
+    cached_scripts: 859,
+    full: false,
+  },
+  extensions: ["gd", "intl", "redis"],
+  shared: [
+    { path: "storage", bytes: 3_100_000_000 },
+    { path: "public/uploads", bytes: null },
+  ],
+  read_at: "2026-11-05 12:00:00.000Z",
+};
+
 describe("the sites page", () => {
+  it("shows a PHP site's runtime, figures and database, and changes its PHP (#50)", async () => {
+    signInAs("operator");
+    lists.sites = [{ ...site, id: "s2", name: "shop", type: "php", active_deployment: "d5" }];
+    lists.hosts = [{ id: "h1", name: "vps-wedos", roles: ["docker", "edge"], status: "online" }];
+    lists.site_php = [phpSettings];
+    lists.deployments = [
+      deployment({ id: "d5", site: "s2", number: 23, message: "Cart", php_version: "8.4" }),
+    ];
+    records["databases/db1"] = { id: "db1", server: "srv1", name: "shop", size_bytes: 412_000_000 };
+    records["db_servers/srv1"] = {
+      id: "srv1",
+      host: "h1",
+      name: "db-main",
+      engine: "mariadb",
+      version: "11.8.3-MariaDB",
+      image: "mariadb:11.8",
+      kind: "shared",
+      extensions: null,
+    };
+    vi.spyOn(sitesApi, "requests").mockResolvedValue({
+      from: "2026-11-04T13:00:00Z",
+      hours: Array(24).fill(0),
+      total: 7040,
+      latency: { requests: 7040, errors: 21, p50_ms: 142.4, p95_ms: 610 },
+    });
+    vi.spyOn(phpApi, "status").mockResolvedValue(phpStatus);
+    vi.spyOn(phpApi, "versions").mockResolvedValue({
+      warn_days: 90,
+      default: "8.4",
+      versions: [
+        {
+          version: "8.5",
+          image: "ghcr.io/oldbear24/pocketcloud-php:8.5-fpm",
+          released: "2025-11-20",
+          active_support_until: "2027-12-31",
+          security_support_until: "2029-12-31",
+          state: "supported",
+          days_left: 1000,
+        },
+      ],
+    });
+    const settings = vi.spyOn(phpApi, "settings").mockResolvedValue({ command: "c7" });
+    renderAt("/sites/s2");
+
+    expect(
+      screen.getByText(
+        "PHP application · on vps-wedos · code /srv/sites/shop/current · database on db-main",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("PHP 8.4")).toBeInTheDocument();
+    expect(await screen.findByText("4 / 10")).toBeInTheDocument();
+    expect(screen.getByText("pm dynamic · queue 0")).toBeInTheDocument();
+    expect(await screen.findByText("142 / 610 ms")).toBeInTheDocument();
+    expect(screen.getByText("OPcache 96 % hits")).toBeInTheDocument();
+    expect(screen.getByText("0.3 %")).toBeInTheDocument();
+    expect(screen.getByText("21 of 7,040 requests")).toBeInTheDocument();
+    expect(screen.getAllByText("shop · 412 MB")).toHaveLength(2);
+    expect(screen.getByText("shop-php:9000 ← Caddy php_fastcgi")).toBeInTheDocument();
+    expect(screen.getByText("shop-php · healthy · 6 d")).toBeInTheDocument();
+    const extensions = screen.getByRole("list", { name: "Extensions" });
+    expect(
+      within(extensions)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["opcache", "gd", "intl", "redis"]);
+    expect(screen.getByText("3.1 GB")).toBeInTheDocument();
+    // the deployment says which PHP it was built for
+    expect(screen.getByText(/· PHP 8\.4$/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit php.ini" }));
+    fireEvent.change(screen.getByLabelText("php.ini – own values"), {
+      target: { value: "memory_limit = 512M" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save and apply" }));
+    await waitFor(() =>
+      expect(settings).toHaveBeenCalledWith("s2", { php_ini: "memory_limit = 512M" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch to PHP 8.5…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Switch to PHP 8.5" }));
+    await waitFor(() => expect(settings).toHaveBeenLastCalledWith("s2", { php_version: "8.5" }));
+  });
+
   it("offers a new site when there is none, in the wizard", () => {
     signInAs("operator");
     renderAt("/sites");

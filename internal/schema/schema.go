@@ -37,13 +37,14 @@ const (
 	ACMEAccounts      = "acme_accounts"
 	Sites             = "sites"
 	Deployments       = "deployments"
+	SitePHP           = "site_php"
 )
 
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"site_php", "scheduled_tasks",
+	"scheduled_tasks",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -119,8 +120,36 @@ const (
 	TargetSite      = "site"
 )
 
-// Types of a site; PHP comes with #24.
-const SiteStatic = "static"
+// Types of a site: static files (#21), or a PHP application served by a
+// PHP-FPM container of its own (#50).
+const (
+	SiteStatic = "static"
+	SitePHPApp = "php"
+)
+
+// Modes of a PHP site: releases keep its code read-only in releases, with
+// rollback; classic keeps one writable copy, for applications that update
+// themselves, without release history.
+const (
+	PHPReleases = "releases"
+	PHPClassic  = "classic"
+)
+
+// Templates of a PHP site. custom is code of one's own; the frameworks come
+// with #52.
+const (
+	PHPCustom    = "custom"
+	PHPWordPress = "wordpress"
+	PHPLaravel   = "laravel"
+	PHPNette     = "nette"
+)
+
+// States of a PHP site's PHP-FPM container.
+const (
+	PHPPending = "pending"
+	PHPRunning = "running"
+	PHPFailed  = "failed"
+)
 
 // States of a site's deployment.
 const (
@@ -215,7 +244,7 @@ var Encrypted = map[string][]string{
 	InternalCA:              {"root_key", "agent_intermediate_key", "server_key", "lan_intermediate_key"},
 	"notification_channels": {"config"},
 	Sites:                   {"webhook_secret", "basic_auth", "git_token"},
-	"site_php":              {"secrets"},
+	SitePHP:                 {"secrets"},
 	DNSProviders:            {"credentials"},
 	Domains:                 {"basic_auth"},
 	ACMEAccounts:            {"key", "eab_hmac"},
@@ -266,7 +295,7 @@ var Audited = []AuditedCollection{
 	{Name: "alert_rules", Label: "kind"},
 	{Name: "notification_channels", Label: "kind"},
 	{Name: Sites, Label: "name", Host: "host", Ignore: []string{"active_deployment"}, Redact: []string{"basic_auth_users"}},
-	{Name: "site_php", Label: "site"},
+	{Name: SitePHP, Label: "site", Ignore: []string{"state", "image", "applied_at", "last_error"}},
 	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
 	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error", "label_removed"}},
 	{Name: DNSProviders, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},

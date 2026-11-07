@@ -6,6 +6,7 @@
 package fakecaddy
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +45,7 @@ type Server struct {
 
 	requests float64
 	byHost   map[string]float64
+	timed    map[timedKey][]float64
 }
 
 // Start listens on a Unix socket. With an autosave path the fake resumes from it
@@ -245,10 +249,42 @@ func (s *Server) ServeHost(host string, count float64) {
 	s.byHost[host] += count
 }
 
+// durationBounds are the upper bounds of Caddy's request_duration buckets, in
+// seconds.
+var durationBounds = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+
+// ServeTimed counts a request for a hostname that took a while and answered
+// with a status code, in Caddy's request_duration histogram.
+func (s *Server) ServeTimed(host string, took time.Duration, code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.timed == nil {
+		s.timed = map[timedKey][]float64{}
+	}
+	key := timedKey{host, code}
+	buckets := s.timed[key]
+	if buckets == nil {
+		buckets = make([]float64, len(durationBounds)+1)
+	}
+	for i, bound := range durationBounds {
+		if took.Seconds() <= bound {
+			buckets[i]++
+		}
+	}
+	buckets[len(durationBounds)]++
+	s.timed[key] = buckets
+}
+
+type timedKey struct {
+	host string
+	code int
+}
+
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	requests := s.requests
 	byHost := maps.Clone(s.byHost)
+	timed := maps.Clone(s.timed)
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	// as Caddy 2.11 counts: once per request, under the first handler of its
@@ -257,5 +293,18 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"headers\",host=\"_other\",server=\"http\"} %g\n", requests)
 	for _, host := range slices.Sorted(maps.Keys(byHost)) {
 		_, _ = fmt.Fprintf(w, "caddy_http_requests_total{handler=\"encode\",host=%q,server=\"https\"} %g\n", host, byHost[host])
+	}
+	_, _ = fmt.Fprintf(w, "# TYPE caddy_http_request_duration_seconds histogram\n")
+	keys := slices.SortedFunc(maps.Keys(timed), func(a, b timedKey) int {
+		return cmp.Or(strings.Compare(a.host, b.host), a.code-b.code)
+	})
+	for _, key := range keys {
+		labels := fmt.Sprintf("code=%q,handler=\"encode\",host=%q,method=\"GET\",server=\"https\"", strconv.Itoa(key.code), key.host)
+		buckets := timed[key]
+		for i, bound := range durationBounds {
+			_, _ = fmt.Fprintf(w, "caddy_http_request_duration_seconds_bucket{%s,le=%q} %g\n", labels, strconv.FormatFloat(bound, 'g', -1, 64), buckets[i])
+		}
+		_, _ = fmt.Fprintf(w, "caddy_http_request_duration_seconds_bucket{%s,le=\"+Inf\"} %g\n", labels, buckets[len(durationBounds)])
+		_, _ = fmt.Fprintf(w, "caddy_http_request_duration_seconds_count{%s} %g\n", labels, buckets[len(durationBounds)])
 	}
 }

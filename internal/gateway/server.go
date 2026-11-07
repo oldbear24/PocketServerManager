@@ -75,6 +75,9 @@ type Server struct {
 	// OnRequests is told how many requests each hostname of a host's edge had
 	// since its previous heartbeat.
 	OnRequests func(hostID string, byHost map[string]uint64)
+	// OnLatency is told how long each hostname's requests took, and how many
+	// failed, since the previous heartbeat (#50).
+	OnLatency func(hostID string, byHost map[string]*agentv1.HostLatency)
 	// OnStopping is called when the gateway begins to shut down.
 	OnStopping func()
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -29,7 +30,12 @@ import (
 //	             --output)
 //	release      move the built site into its release (--built: a build ran
 //	             and left an output of its own), switch the site to it, keep
-//	             --keep releases and clean up the deployment
+//	             --keep releases and clean up the deployment; --php keeps the
+//	             whole source, links --shared paths from shared/ and gives the
+//	             release to www-data; --no-switch leaves the switch to activate
+//	activate     serve release --n and keep --keep releases, once a PHP
+//	             site's release hook ran in it
+//	php-prepare  make a PHP site's directories, which its PHP-FPM mounts
 //	switch       serve release --n
 //	clean        remove what deployment --n left, its release too unless the
 //	             site serves it
@@ -67,12 +73,16 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	kind := flags.String("kind", "", "the source: git, upload or empty")
 	repo := flags.String("url", "", "the Git repository")
 	branch := flags.String("branch", "", "the Git branch")
+	commit := flags.String("commit", "", "the commit of the branch to build, rather than its newest")
 	generator := flags.String("generator", sites.GeneratorAuto, "how to build the source")
 	image := flags.String("image", "", "the build image")
 	command := flags.String("command", "", "the build command")
 	output := flags.String("output", "", "where the build leaves the site")
 	keep := flags.Int("keep", 5, "how many releases to keep")
 	built := flags.Bool("built", false, "a build ran")
+	php := flags.Bool("php", false, "a PHP site (#50)")
+	shared := flags.String("shared", "", "a PHP site's shared paths, separated by commas")
+	noSwitch := flags.Bool("no-switch", false, "leave the switch to activate")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -82,7 +92,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	if err := sites.ValidName(*site); err != nil {
 		return err
 	}
-	needsDeployment := op != "remove" && op != "sweep"
+	needsDeployment := op != "remove" && op != "sweep" && op != "php-prepare"
 	if needsDeployment && *n < 1 {
 		return errors.New("site-tool: --n names the deployment")
 	}
@@ -90,11 +100,17 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	var result any
 	switch op {
 	case "source":
-		found, err := siteSource(ctx, *root, *site, *n, *kind, *repo, *branch, env["GIT_TOKEN"], stderr)
+		found, err := siteSource(ctx, *root, *site, *n, *kind, gitSource{*repo, *branch, *commit, env["GIT_TOKEN"]}, stderr)
 		if err != nil {
 			return err
 		}
 		switch chosen := *generator; {
+		case *php:
+			// a PHP site's build runs as www-data, who must write its vendor/
+			found.Plan = sites.PHPPlan(*image, *command)
+			if err := sites.Chown(sites.SourceDir(*root, *site, *n)); err != nil {
+				return err
+			}
 		case *kind == sites.SourceEmpty:
 			// the placeholder is a page of its own, not a source to build
 			found.Plan = sites.Plan{Generator: sites.GeneratorNone}
@@ -107,9 +123,23 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 		}
 		result = found
 	case "release":
-		release, err := sites.MakeRelease(*root, *site, *n, *output, *built)
+		var release sites.Release
+		var err error
+		if *php {
+			release, err = phpRelease(*root, *site, *n, *shared)
+		} else {
+			release, err = sites.MakeRelease(*root, *site, *n, *output, *built)
+		}
 		if err != nil {
 			return err
+		}
+		if *noSwitch {
+			if err := sites.Clean(*root, *site, *n); err != nil {
+				fmt.Fprintf(stderr, "The build directory could not be removed: %v\n", err)
+			}
+			fmt.Fprintf(stderr, "Release %d is ready: %d files, %d bytes.\n", *n, release.Files, release.SizeBytes)
+			result = releaseResult{Release: release, Releases: sites.Releases(*root, *site)}
+			break
 		}
 		if err := sites.Switch(*root, *site, *n); err != nil {
 			return err
@@ -128,6 +158,20 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 			return err
 		}
 		result = map[string]int{"release": *n}
+	case "activate":
+		if err := sites.Switch(*root, *site, *n); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Release %d is live.\n", *n)
+		if _, err := sites.Prune(*root, *site, max(*keep, 1)); err != nil {
+			fmt.Fprintf(stderr, "Old releases could not all be removed: %v\n", err)
+		}
+		result = releaseResult{Release: sites.Release{Number: *n}, Releases: sites.Releases(*root, *site)}
+	case "php-prepare":
+		if err := sites.PreparePHP(*root, *site); err != nil {
+			return err
+		}
+		result = map[string]int{}
 	case "clean":
 		if err := sites.Clean(*root, *site, *n); err != nil {
 			return err
@@ -155,6 +199,29 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	return err
 }
 
+// phpRelease makes a PHP site's release: its whole source, with its shared
+// paths linked from shared/, given to www-data, who runs its release hook
+// and PHP-FPM.
+func phpRelease(root, site string, n int, shared string) (sites.Release, error) {
+	release, err := sites.MakePHPRelease(root, site, n)
+	if err != nil {
+		return release, err
+	}
+	if err := sites.PreparePHP(root, site); err != nil {
+		return release, err
+	}
+	paths := []string{}
+	for _, path := range strings.Split(shared, ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if err := sites.LinkShared(root, site, n, paths); err != nil {
+		return release, err
+	}
+	return release, sites.Chown(sites.ReleaseDir(root, site, n))
+}
+
 func describeGenerator(generator string) string {
 	switch generator {
 	case sites.GeneratorHugo:
@@ -172,14 +239,19 @@ func describeGenerator(generator string) string {
 // siteSource makes the deployment's directories and puts its source there.
 // An upload is already in the build directory, put there before the tool
 // started.
-func siteSource(ctx context.Context, root, site string, n int, kind, repo, branch, token string, log io.Writer) (sourceResult, error) {
+// gitSource is where a Git source is: a branch, and a commit of it or its newest.
+type gitSource struct {
+	repo, branch, commit, token string
+}
+
+func siteSource(ctx context.Context, root, site string, n int, kind string, git gitSource, log io.Writer) (sourceResult, error) {
 	src := sites.SourceDir(root, site, n)
 	if err := sites.Prepare(root, site, n); err != nil {
 		return sourceResult{}, err
 	}
 	switch kind {
 	case sites.SourceGit:
-		return gitClone(ctx, repo, branch, token, src, log)
+		return gitClone(ctx, git, src, log)
 	case sites.SourceUpload:
 		upload := filepath.Join(sites.BuildDir(root, site, n), sites.UploadName)
 		fmt.Fprintln(log, "Unpacking the upload.")
@@ -196,8 +268,9 @@ func siteSource(ctx context.Context, root, site string, n int, kind, repo, branc
 // gitClone checks out the newest commit of a branch, with its submodules
 // (Hugo themes often are). A token goes to Git in its environment, not on its
 // command line, and is never written out.
-func gitClone(ctx context.Context, repo, branch, token, src string, log io.Writer) (sourceResult, error) {
-	env, err := gitEnv(repo, token)
+func gitClone(ctx context.Context, git gitSource, src string, log io.Writer) (sourceResult, error) {
+	repo, branch := git.repo, git.branch
+	env, err := gitEnv(repo, git.token)
 	if err != nil {
 		return sourceResult{}, err
 	}
@@ -215,6 +288,11 @@ func gitClone(ctx context.Context, repo, branch, token, src string, log io.Write
 	if err := clone.Run(); err != nil {
 		return sourceResult{}, fmt.Errorf("git could not clone %s: %w", repo, err)
 	}
+	if git.commit != "" {
+		if err := gitCheckout(ctx, env, src, git.commit, log); err != nil {
+			return sourceResult{}, err
+		}
+	}
 
 	show := exec.CommandContext(ctx, "git", "-C", src, "log", "-1", "--format=%H%n%s") //nolint:gosec // the deployment's own checkout
 	show.Env = env
@@ -226,6 +304,36 @@ func gitClone(ctx context.Context, repo, branch, token, src string, log io.Write
 	fmt.Fprintf(log, "Commit %s: %s\n", shortCommit(commit), message)
 	return sourceResult{Commit: commit, Message: message}, nil
 }
+
+// gitCheckout moves a shallow clone to a commit of its branch: fetched by
+// itself where the server lets a client ask for one, or with the branch's
+// whole history.
+func gitCheckout(ctx context.Context, env []string, src, commit string, log io.Writer) error {
+	if !commitID.MatchString(commit) {
+		return fmt.Errorf("%q is not a commit", commit)
+	}
+	fmt.Fprintf(log, "$ git checkout %s\n", shortCommit(commit))
+	git := func(args ...string) error {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", src}, args...)...) //nolint:gosec // the deployment's own checkout
+		command.Env = env
+		command.Stdout = log
+		command.Stderr = log
+		return command.Run()
+	}
+	if git("fetch", "--depth", "1", "--no-tags", "origin", commit) != nil {
+		// the clone fetches its one branch
+		if err := git("fetch", "--unshallow", "--no-tags", "origin"); err != nil {
+			return fmt.Errorf("git could not fetch the commit %s: %w", shortCommit(commit), err)
+		}
+	}
+	if err := git("checkout", "--quiet", "--detach", commit); err != nil {
+		return fmt.Errorf("git could not check out the commit %s: %w", shortCommit(commit), err)
+	}
+	return git("submodule", "update", "--init", "--recursive", "--depth", "1")
+}
+
+// commitID is a commit's full SHA-1 or SHA-256 name.
+var commitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // gitEnv is the environment of Git: no prompts, and a token, if any, as a
 // header for the repository's own server only, so a submodule elsewhere or one

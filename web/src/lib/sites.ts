@@ -6,7 +6,7 @@ import { pb } from "./pb";
 export type Site = RecordModel & {
   name: string;
   host: string;
-  type: "static";
+  type: "static" | "php";
   source: SiteSource;
   repo_url: string;
   branch: string;
@@ -60,12 +60,24 @@ export type Deployment = RecordModel & {
   size_bytes: number;
   files: number;
   error: string;
+  /** the PHP version a PHP site's release was built for (#50) */
+  php_version: string;
   /** its release is still on the server, so the site can go back to it */
   on_server: boolean;
   upload: string;
 };
 
+/** How a site's requests went over the last 24 hours, by the edge's
+ * histogram of their durations (#50). */
+export type SiteLatency = {
+  requests: number;
+  errors: number;
+  p50_ms: number;
+  p95_ms: number;
+};
+
 export type SiteRequests = {
+  latency?: SiteLatency;
   /** the start of the first hour */
   from: string;
   /** requests in each of the last 24 hours, oldest first */
@@ -119,6 +131,14 @@ export type ProvisionBody = {
   hostname: string;
   www: boolean;
   challenge: "auto" | "http-01" | "dns-01";
+  /** a PHP site's runtime (#50) */
+  php?: {
+    version: string;
+    docroot: string;
+    template: string;
+    database_server?: string;
+    database?: string;
+  };
 };
 
 /** The steps of a new site's setup, in order: each is a command. */
@@ -126,6 +146,8 @@ export const provisionSteps = [
   "site.create",
   "site.dns",
   "site.propagation",
+  "db.database.create",
+  "site.php.apply",
   "site.deploy",
   "site.certificate",
   "site.check",

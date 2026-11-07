@@ -130,6 +130,9 @@ func (c *Client) Run(ctx context.Context, container string, options ExecOptions,
 	if err != nil {
 		return ExecResult{}, err
 	}
+	// reading a hijacked connection does not end with the context by itself
+	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stop()
 
 	stderr := &limitedBuffer{limit: maxExecStderr}
 	var writeErr error

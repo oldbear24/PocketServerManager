@@ -38,6 +38,7 @@ describe("PHP versions", () => {
   it("warns about PHP 8.2 before its security support ends", async () => {
     vi.spyOn(phpApi, "versions").mockResolvedValue({
       warn_days: 90,
+      default: "8.4",
       versions: [
         version({ version: "8.5", image: "ghcr.io/oldbear24/pocketcloud-php:8.5-fpm" }),
         version({}),

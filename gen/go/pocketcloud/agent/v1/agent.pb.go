@@ -1363,8 +1363,11 @@ type EdgeStatus struct {
 	// requests_by_host counts the requests of each hostname since the previous
 	// heartbeat, for the sites' request charts.
 	RequestsByHost map[string]uint64 `protobuf:"bytes,7,rep,name=requests_by_host,json=requestsByHost,proto3" json:"requests_by_host,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// latency_by_host is how long the requests of each hostname took, and how
+	// many failed, since the previous heartbeat (#50).
+	LatencyByHost map[string]*HostLatency `protobuf:"bytes,8,rep,name=latency_by_host,json=latencyByHost,proto3" json:"latency_by_host,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EdgeStatus) Reset() {
@@ -1446,6 +1449,71 @@ func (x *EdgeStatus) GetRequestsByHost() map[string]uint64 {
 	return nil
 }
 
+func (x *EdgeStatus) GetLatencyByHost() map[string]*HostLatency {
+	if x != nil {
+		return x.LatencyByHost
+	}
+	return nil
+}
+
+// HostLatency are the requests of a hostname by how long they took, in the
+// buckets of Caddy's histogram, and the requests answered with a 5xx.
+type HostLatency struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// buckets count the requests that took up to 5 ms, 10 ms, 25 ms, 50 ms,
+	// 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s, 10 s, and longer: each request in
+	// one bucket, not the cumulative counts of Prometheus.
+	Buckets []uint64 `protobuf:"varint,1,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
+	// errors counts the requests answered with a status of 500 to 599.
+	Errors        uint64 `protobuf:"varint,2,opt,name=errors,proto3" json:"errors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostLatency) Reset() {
+	*x = HostLatency{}
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostLatency) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostLatency) ProtoMessage() {}
+
+func (x *HostLatency) ProtoReflect() protoreflect.Message {
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostLatency.ProtoReflect.Descriptor instead.
+func (*HostLatency) Descriptor() ([]byte, []int) {
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *HostLatency) GetBuckets() []uint64 {
+	if x != nil {
+		return x.Buckets
+	}
+	return nil
+}
+
+func (x *HostLatency) GetErrors() uint64 {
+	if x != nil {
+		return x.Errors
+	}
+	return 0
+}
+
 // HeartbeatResponse carries the panel's clock and hints for the agent.
 type HeartbeatResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1459,7 +1527,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[15]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1471,7 +1539,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[15]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1484,7 +1552,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *HeartbeatResponse) GetServerTime() *timestamppb.Timestamp {
@@ -1518,7 +1586,7 @@ type PortMapping struct {
 
 func (x *PortMapping) Reset() {
 	*x = PortMapping{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[16]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1530,7 +1598,7 @@ func (x *PortMapping) String() string {
 func (*PortMapping) ProtoMessage() {}
 
 func (x *PortMapping) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[16]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1543,7 +1611,7 @@ func (x *PortMapping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortMapping.ProtoReflect.Descriptor instead.
 func (*PortMapping) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PortMapping) GetPrivatePort() uint32 {
@@ -1603,7 +1671,7 @@ type ContainerInfo struct {
 
 func (x *ContainerInfo) Reset() {
 	*x = ContainerInfo{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[17]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1615,7 +1683,7 @@ func (x *ContainerInfo) String() string {
 func (*ContainerInfo) ProtoMessage() {}
 
 func (x *ContainerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[17]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1628,7 +1696,7 @@ func (x *ContainerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContainerInfo.ProtoReflect.Descriptor instead.
 func (*ContainerInfo) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ContainerInfo) GetDockerId() string {
@@ -1718,7 +1786,7 @@ type VolumeInfo struct {
 
 func (x *VolumeInfo) Reset() {
 	*x = VolumeInfo{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[18]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1730,7 +1798,7 @@ func (x *VolumeInfo) String() string {
 func (*VolumeInfo) ProtoMessage() {}
 
 func (x *VolumeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[18]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1743,7 +1811,7 @@ func (x *VolumeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeInfo.ProtoReflect.Descriptor instead.
 func (*VolumeInfo) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *VolumeInfo) GetName() string {
@@ -1791,7 +1859,7 @@ type NetworkInfo struct {
 
 func (x *NetworkInfo) Reset() {
 	*x = NetworkInfo{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[19]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1803,7 +1871,7 @@ func (x *NetworkInfo) String() string {
 func (*NetworkInfo) ProtoMessage() {}
 
 func (x *NetworkInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[19]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1816,7 +1884,7 @@ func (x *NetworkInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkInfo.ProtoReflect.Descriptor instead.
 func (*NetworkInfo) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *NetworkInfo) GetName() string {
@@ -1864,7 +1932,7 @@ type ReportInventoryRequest struct {
 
 func (x *ReportInventoryRequest) Reset() {
 	*x = ReportInventoryRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[20]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1876,7 +1944,7 @@ func (x *ReportInventoryRequest) String() string {
 func (*ReportInventoryRequest) ProtoMessage() {}
 
 func (x *ReportInventoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[20]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1889,7 +1957,7 @@ func (x *ReportInventoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportInventoryRequest.ProtoReflect.Descriptor instead.
 func (*ReportInventoryRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{20}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReportInventoryRequest) GetContainers() []*ContainerInfo {
@@ -1929,7 +1997,7 @@ type ReportInventoryResponse struct {
 
 func (x *ReportInventoryResponse) Reset() {
 	*x = ReportInventoryResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[21]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1941,7 +2009,7 @@ func (x *ReportInventoryResponse) String() string {
 func (*ReportInventoryResponse) ProtoMessage() {}
 
 func (x *ReportInventoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[21]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1954,7 +2022,7 @@ func (x *ReportInventoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportInventoryResponse.ProtoReflect.Descriptor instead.
 func (*ReportInventoryResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{21}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{22}
 }
 
 // ReportEventsRequest is one incremental inventory change.
@@ -1979,7 +2047,7 @@ type ReportEventsRequest struct {
 
 func (x *ReportEventsRequest) Reset() {
 	*x = ReportEventsRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[22]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1991,7 +2059,7 @@ func (x *ReportEventsRequest) String() string {
 func (*ReportEventsRequest) ProtoMessage() {}
 
 func (x *ReportEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[22]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2004,7 +2072,7 @@ func (x *ReportEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportEventsRequest.ProtoReflect.Descriptor instead.
 func (*ReportEventsRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{22}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ReportEventsRequest) GetChange() isReportEventsRequest_Change {
@@ -2130,7 +2198,7 @@ type ReportEventsResponse struct {
 
 func (x *ReportEventsResponse) Reset() {
 	*x = ReportEventsResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[23]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2142,7 +2210,7 @@ func (x *ReportEventsResponse) String() string {
 func (*ReportEventsResponse) ProtoMessage() {}
 
 func (x *ReportEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[23]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2155,7 +2223,7 @@ func (x *ReportEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportEventsResponse.ProtoReflect.Descriptor instead.
 func (*ReportEventsResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{23}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{24}
 }
 
 // MetricSample is one host or container sample.
@@ -2189,7 +2257,7 @@ type MetricSample struct {
 
 func (x *MetricSample) Reset() {
 	*x = MetricSample{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[24]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2201,7 +2269,7 @@ func (x *MetricSample) String() string {
 func (*MetricSample) ProtoMessage() {}
 
 func (x *MetricSample) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[24]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2214,7 +2282,7 @@ func (x *MetricSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricSample.ProtoReflect.Descriptor instead.
 func (*MetricSample) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{24}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *MetricSample) GetTs() *timestamppb.Timestamp {
@@ -2313,7 +2381,7 @@ type DiskUsage struct {
 
 func (x *DiskUsage) Reset() {
 	*x = DiskUsage{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[25]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2325,7 +2393,7 @@ func (x *DiskUsage) String() string {
 func (*DiskUsage) ProtoMessage() {}
 
 func (x *DiskUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[25]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2338,7 +2406,7 @@ func (x *DiskUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiskUsage.ProtoReflect.Descriptor instead.
 func (*DiskUsage) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{25}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DiskUsage) GetMount() string {
@@ -2387,7 +2455,7 @@ type PushMetricsRequest struct {
 
 func (x *PushMetricsRequest) Reset() {
 	*x = PushMetricsRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[26]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2399,7 +2467,7 @@ func (x *PushMetricsRequest) String() string {
 func (*PushMetricsRequest) ProtoMessage() {}
 
 func (x *PushMetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[26]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2412,7 +2480,7 @@ func (x *PushMetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushMetricsRequest.ProtoReflect.Descriptor instead.
 func (*PushMetricsRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{26}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PushMetricsRequest) GetSamples() []*MetricSample {
@@ -2431,7 +2499,7 @@ type PushMetricsResponse struct {
 
 func (x *PushMetricsResponse) Reset() {
 	*x = PushMetricsResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2443,7 +2511,7 @@ func (x *PushMetricsResponse) String() string {
 func (*PushMetricsResponse) ProtoMessage() {}
 
 func (x *PushMetricsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2456,7 +2524,7 @@ func (x *PushMetricsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushMetricsResponse.ProtoReflect.Descriptor instead.
 func (*PushMetricsResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{28}
 }
 
 // StreamLogsRequest is one chunk of log lines of a followed container or stack.
@@ -2472,7 +2540,7 @@ type StreamLogsRequest struct {
 
 func (x *StreamLogsRequest) Reset() {
 	*x = StreamLogsRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2484,7 +2552,7 @@ func (x *StreamLogsRequest) String() string {
 func (*StreamLogsRequest) ProtoMessage() {}
 
 func (x *StreamLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2497,7 +2565,7 @@ func (x *StreamLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamLogsRequest.ProtoReflect.Descriptor instead.
 func (*StreamLogsRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *StreamLogsRequest) GetSessionId() string {
@@ -2533,7 +2601,7 @@ type LogLine struct {
 
 func (x *LogLine) Reset() {
 	*x = LogLine{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2545,7 +2613,7 @@ func (x *LogLine) String() string {
 func (*LogLine) ProtoMessage() {}
 
 func (x *LogLine) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2558,7 +2626,7 @@ func (x *LogLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogLine.ProtoReflect.Descriptor instead.
 func (*LogLine) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{29}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *LogLine) GetTs() *timestamppb.Timestamp {
@@ -2605,7 +2673,7 @@ type StreamLogsResponse struct {
 
 func (x *StreamLogsResponse) Reset() {
 	*x = StreamLogsResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2617,7 +2685,7 @@ func (x *StreamLogsResponse) String() string {
 func (*StreamLogsResponse) ProtoMessage() {}
 
 func (x *StreamLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2630,7 +2698,7 @@ func (x *StreamLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamLogsResponse.ProtoReflect.Descriptor instead.
 func (*StreamLogsResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{31}
 }
 
 // ExecRequest is a message from the agent on a terminal session.
@@ -2652,7 +2720,7 @@ type ExecRequest struct {
 
 func (x *ExecRequest) Reset() {
 	*x = ExecRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2664,7 +2732,7 @@ func (x *ExecRequest) String() string {
 func (*ExecRequest) ProtoMessage() {}
 
 func (x *ExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2677,7 +2745,7 @@ func (x *ExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecRequest.ProtoReflect.Descriptor instead.
 func (*ExecRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ExecRequest) GetSessionId() string {
@@ -2730,7 +2798,7 @@ type ExecResponse struct {
 
 func (x *ExecResponse) Reset() {
 	*x = ExecResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2742,7 +2810,7 @@ func (x *ExecResponse) String() string {
 func (*ExecResponse) ProtoMessage() {}
 
 func (x *ExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2755,7 +2823,7 @@ func (x *ExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecResponse.ProtoReflect.Descriptor instead.
 func (*ExecResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ExecResponse) GetInput() []byte {
@@ -2792,7 +2860,7 @@ type TerminalSize struct {
 
 func (x *TerminalSize) Reset() {
 	*x = TerminalSize{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2804,7 +2872,7 @@ func (x *TerminalSize) String() string {
 func (*TerminalSize) ProtoMessage() {}
 
 func (x *TerminalSize) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2817,7 +2885,7 @@ func (x *TerminalSize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalSize.ProtoReflect.Descriptor instead.
 func (*TerminalSize) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{33}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TerminalSize) GetCols() uint32 {
@@ -2847,7 +2915,7 @@ type FetchArtifactRequest struct {
 
 func (x *FetchArtifactRequest) Reset() {
 	*x = FetchArtifactRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2859,7 +2927,7 @@ func (x *FetchArtifactRequest) String() string {
 func (*FetchArtifactRequest) ProtoMessage() {}
 
 func (x *FetchArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2872,7 +2940,7 @@ func (x *FetchArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchArtifactRequest.ProtoReflect.Descriptor instead.
 func (*FetchArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{34}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *FetchArtifactRequest) GetArtifactId() string {
@@ -2904,7 +2972,7 @@ type FetchArtifactResponse struct {
 
 func (x *FetchArtifactResponse) Reset() {
 	*x = FetchArtifactResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2916,7 +2984,7 @@ func (x *FetchArtifactResponse) String() string {
 func (*FetchArtifactResponse) ProtoMessage() {}
 
 func (x *FetchArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2929,7 +2997,7 @@ func (x *FetchArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchArtifactResponse.ProtoReflect.Descriptor instead.
 func (*FetchArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{35}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *FetchArtifactResponse) GetData() []byte {
@@ -2969,7 +3037,7 @@ type UploadArtifactRequest struct {
 
 func (x *UploadArtifactRequest) Reset() {
 	*x = UploadArtifactRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2981,7 +3049,7 @@ func (x *UploadArtifactRequest) String() string {
 func (*UploadArtifactRequest) ProtoMessage() {}
 
 func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2994,7 +3062,7 @@ func (x *UploadArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactRequest.ProtoReflect.Descriptor instead.
 func (*UploadArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{36}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *UploadArtifactRequest) GetPart() isUploadArtifactRequest_Part {
@@ -3057,7 +3125,7 @@ type UploadArtifactHeader struct {
 
 func (x *UploadArtifactHeader) Reset() {
 	*x = UploadArtifactHeader{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3069,7 +3137,7 @@ func (x *UploadArtifactHeader) String() string {
 func (*UploadArtifactHeader) ProtoMessage() {}
 
 func (x *UploadArtifactHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3082,7 +3150,7 @@ func (x *UploadArtifactHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactHeader.ProtoReflect.Descriptor instead.
 func (*UploadArtifactHeader) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{37}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *UploadArtifactHeader) GetCommandId() string {
@@ -3126,7 +3194,7 @@ type UploadArtifactResponse struct {
 
 func (x *UploadArtifactResponse) Reset() {
 	*x = UploadArtifactResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3138,7 +3206,7 @@ func (x *UploadArtifactResponse) String() string {
 func (*UploadArtifactResponse) ProtoMessage() {}
 
 func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3151,7 +3219,7 @@ func (x *UploadArtifactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadArtifactResponse.ProtoReflect.Descriptor instead.
 func (*UploadArtifactResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{38}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *UploadArtifactResponse) GetArtifactId() string {
@@ -3190,7 +3258,7 @@ type RelayRequest struct {
 
 func (x *RelayRequest) Reset() {
 	*x = RelayRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3202,7 +3270,7 @@ func (x *RelayRequest) String() string {
 func (*RelayRequest) ProtoMessage() {}
 
 func (x *RelayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3215,7 +3283,7 @@ func (x *RelayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelayRequest.ProtoReflect.Descriptor instead.
 func (*RelayRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{39}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RelayRequest) GetSessionId() string {
@@ -3271,7 +3339,7 @@ type RelayResponse struct {
 
 func (x *RelayResponse) Reset() {
 	*x = RelayResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[40]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3283,7 +3351,7 @@ func (x *RelayResponse) String() string {
 func (*RelayResponse) ProtoMessage() {}
 
 func (x *RelayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[40]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3296,7 +3364,7 @@ func (x *RelayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelayResponse.ProtoReflect.Descriptor instead.
 func (*RelayResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{40}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *RelayResponse) GetData() []byte {
@@ -3338,7 +3406,7 @@ type RenewCertificateRequest struct {
 
 func (x *RenewCertificateRequest) Reset() {
 	*x = RenewCertificateRequest{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[41]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3350,7 +3418,7 @@ func (x *RenewCertificateRequest) String() string {
 func (*RenewCertificateRequest) ProtoMessage() {}
 
 func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[41]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3363,7 +3431,7 @@ func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RenewCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{41}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RenewCertificateRequest) GetCsrPem() []byte {
@@ -3386,7 +3454,7 @@ type RenewCertificateResponse struct {
 
 func (x *RenewCertificateResponse) Reset() {
 	*x = RenewCertificateResponse{}
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[42]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3398,7 +3466,7 @@ func (x *RenewCertificateResponse) String() string {
 func (*RenewCertificateResponse) ProtoMessage() {}
 
 func (x *RenewCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[42]
+	mi := &file_pocketcloud_agent_v1_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3411,7 +3479,7 @@ func (x *RenewCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateResponse.ProtoReflect.Descriptor instead.
 func (*RenewCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{42}
+	return file_pocketcloud_agent_v1_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *RenewCertificateResponse) GetCertificatePem() []byte {
@@ -3539,7 +3607,7 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\rclock_skew_ms\x18\x06 \x01(\x01R\vclockSkewMs\x12@\n" +
 	"\vself_checks\x18\a \x03(\v2\x1f.pocketcloud.agent.v1.SelfCheckR\n" +
 	"selfChecks\x124\n" +
-	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\"\xde\x02\n" +
+	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\"\xa0\x04\n" +
 	"\n" +
 	"EdgeStatus\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x1a\n" +
@@ -3548,10 +3616,17 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12$\n" +
 	"\x0erequests_per_s\x18\x05 \x01(\x01R\frequestsPerS\x12#\n" +
 	"\rcaddy_version\x18\x06 \x01(\tR\fcaddyVersion\x12^\n" +
-	"\x10requests_by_host\x18\a \x03(\v24.pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntryR\x0erequestsByHost\x1aA\n" +
+	"\x10requests_by_host\x18\a \x03(\v24.pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntryR\x0erequestsByHost\x12[\n" +
+	"\x0flatency_by_host\x18\b \x03(\v23.pocketcloud.agent.v1.EdgeStatus.LatencyByHostEntryR\rlatencyByHost\x1aA\n" +
 	"\x13RequestsByHostEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"}\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1ac\n" +
+	"\x12LatencyByHostEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
+	"\x05value\x18\x02 \x01(\v2!.pocketcloud.agent.v1.HostLatencyR\x05value:\x028\x01\"?\n" +
+	"\vHostLatency\x12\x18\n" +
+	"\abuckets\x18\x01 \x03(\x04R\abuckets\x12\x16\n" +
+	"\x06errors\x18\x02 \x01(\x04R\x06errors\"}\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vserver_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12+\n" +
@@ -3747,7 +3822,7 @@ func file_pocketcloud_agent_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_pocketcloud_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pocketcloud_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_pocketcloud_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_pocketcloud_agent_v1_agent_proto_goTypes = []any{
 	(CommandState)(0),                   // 0: pocketcloud.agent.v1.CommandState
 	(*EnrollRequest)(nil),               // 1: pocketcloud.agent.v1.EnrollRequest
@@ -3765,116 +3840,120 @@ var file_pocketcloud_agent_v1_agent_proto_goTypes = []any{
 	(*SelfCheck)(nil),                   // 13: pocketcloud.agent.v1.SelfCheck
 	(*HeartbeatRequest)(nil),            // 14: pocketcloud.agent.v1.HeartbeatRequest
 	(*EdgeStatus)(nil),                  // 15: pocketcloud.agent.v1.EdgeStatus
-	(*HeartbeatResponse)(nil),           // 16: pocketcloud.agent.v1.HeartbeatResponse
-	(*PortMapping)(nil),                 // 17: pocketcloud.agent.v1.PortMapping
-	(*ContainerInfo)(nil),               // 18: pocketcloud.agent.v1.ContainerInfo
-	(*VolumeInfo)(nil),                  // 19: pocketcloud.agent.v1.VolumeInfo
-	(*NetworkInfo)(nil),                 // 20: pocketcloud.agent.v1.NetworkInfo
-	(*ReportInventoryRequest)(nil),      // 21: pocketcloud.agent.v1.ReportInventoryRequest
-	(*ReportInventoryResponse)(nil),     // 22: pocketcloud.agent.v1.ReportInventoryResponse
-	(*ReportEventsRequest)(nil),         // 23: pocketcloud.agent.v1.ReportEventsRequest
-	(*ReportEventsResponse)(nil),        // 24: pocketcloud.agent.v1.ReportEventsResponse
-	(*MetricSample)(nil),                // 25: pocketcloud.agent.v1.MetricSample
-	(*DiskUsage)(nil),                   // 26: pocketcloud.agent.v1.DiskUsage
-	(*PushMetricsRequest)(nil),          // 27: pocketcloud.agent.v1.PushMetricsRequest
-	(*PushMetricsResponse)(nil),         // 28: pocketcloud.agent.v1.PushMetricsResponse
-	(*StreamLogsRequest)(nil),           // 29: pocketcloud.agent.v1.StreamLogsRequest
-	(*LogLine)(nil),                     // 30: pocketcloud.agent.v1.LogLine
-	(*StreamLogsResponse)(nil),          // 31: pocketcloud.agent.v1.StreamLogsResponse
-	(*ExecRequest)(nil),                 // 32: pocketcloud.agent.v1.ExecRequest
-	(*ExecResponse)(nil),                // 33: pocketcloud.agent.v1.ExecResponse
-	(*TerminalSize)(nil),                // 34: pocketcloud.agent.v1.TerminalSize
-	(*FetchArtifactRequest)(nil),        // 35: pocketcloud.agent.v1.FetchArtifactRequest
-	(*FetchArtifactResponse)(nil),       // 36: pocketcloud.agent.v1.FetchArtifactResponse
-	(*UploadArtifactRequest)(nil),       // 37: pocketcloud.agent.v1.UploadArtifactRequest
-	(*UploadArtifactHeader)(nil),        // 38: pocketcloud.agent.v1.UploadArtifactHeader
-	(*UploadArtifactResponse)(nil),      // 39: pocketcloud.agent.v1.UploadArtifactResponse
-	(*RelayRequest)(nil),                // 40: pocketcloud.agent.v1.RelayRequest
-	(*RelayResponse)(nil),               // 41: pocketcloud.agent.v1.RelayResponse
-	(*RenewCertificateRequest)(nil),     // 42: pocketcloud.agent.v1.RenewCertificateRequest
-	(*RenewCertificateResponse)(nil),    // 43: pocketcloud.agent.v1.RenewCertificateResponse
-	nil,                                 // 44: pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
-	nil,                                 // 45: pocketcloud.agent.v1.ContainerInfo.LabelsEntry
-	nil,                                 // 46: pocketcloud.agent.v1.VolumeInfo.LabelsEntry
-	nil,                                 // 47: pocketcloud.agent.v1.NetworkInfo.LabelsEntry
-	(*timestamppb.Timestamp)(nil),       // 48: google.protobuf.Timestamp
-	(*Command)(nil),                     // 49: pocketcloud.agent.v1.Command
-	(*structpb.Struct)(nil),             // 50: google.protobuf.Struct
-	(*durationpb.Duration)(nil),         // 51: google.protobuf.Duration
+	(*HostLatency)(nil),                 // 16: pocketcloud.agent.v1.HostLatency
+	(*HeartbeatResponse)(nil),           // 17: pocketcloud.agent.v1.HeartbeatResponse
+	(*PortMapping)(nil),                 // 18: pocketcloud.agent.v1.PortMapping
+	(*ContainerInfo)(nil),               // 19: pocketcloud.agent.v1.ContainerInfo
+	(*VolumeInfo)(nil),                  // 20: pocketcloud.agent.v1.VolumeInfo
+	(*NetworkInfo)(nil),                 // 21: pocketcloud.agent.v1.NetworkInfo
+	(*ReportInventoryRequest)(nil),      // 22: pocketcloud.agent.v1.ReportInventoryRequest
+	(*ReportInventoryResponse)(nil),     // 23: pocketcloud.agent.v1.ReportInventoryResponse
+	(*ReportEventsRequest)(nil),         // 24: pocketcloud.agent.v1.ReportEventsRequest
+	(*ReportEventsResponse)(nil),        // 25: pocketcloud.agent.v1.ReportEventsResponse
+	(*MetricSample)(nil),                // 26: pocketcloud.agent.v1.MetricSample
+	(*DiskUsage)(nil),                   // 27: pocketcloud.agent.v1.DiskUsage
+	(*PushMetricsRequest)(nil),          // 28: pocketcloud.agent.v1.PushMetricsRequest
+	(*PushMetricsResponse)(nil),         // 29: pocketcloud.agent.v1.PushMetricsResponse
+	(*StreamLogsRequest)(nil),           // 30: pocketcloud.agent.v1.StreamLogsRequest
+	(*LogLine)(nil),                     // 31: pocketcloud.agent.v1.LogLine
+	(*StreamLogsResponse)(nil),          // 32: pocketcloud.agent.v1.StreamLogsResponse
+	(*ExecRequest)(nil),                 // 33: pocketcloud.agent.v1.ExecRequest
+	(*ExecResponse)(nil),                // 34: pocketcloud.agent.v1.ExecResponse
+	(*TerminalSize)(nil),                // 35: pocketcloud.agent.v1.TerminalSize
+	(*FetchArtifactRequest)(nil),        // 36: pocketcloud.agent.v1.FetchArtifactRequest
+	(*FetchArtifactResponse)(nil),       // 37: pocketcloud.agent.v1.FetchArtifactResponse
+	(*UploadArtifactRequest)(nil),       // 38: pocketcloud.agent.v1.UploadArtifactRequest
+	(*UploadArtifactHeader)(nil),        // 39: pocketcloud.agent.v1.UploadArtifactHeader
+	(*UploadArtifactResponse)(nil),      // 40: pocketcloud.agent.v1.UploadArtifactResponse
+	(*RelayRequest)(nil),                // 41: pocketcloud.agent.v1.RelayRequest
+	(*RelayResponse)(nil),               // 42: pocketcloud.agent.v1.RelayResponse
+	(*RenewCertificateRequest)(nil),     // 43: pocketcloud.agent.v1.RenewCertificateRequest
+	(*RenewCertificateResponse)(nil),    // 44: pocketcloud.agent.v1.RenewCertificateResponse
+	nil,                                 // 45: pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
+	nil,                                 // 46: pocketcloud.agent.v1.EdgeStatus.LatencyByHostEntry
+	nil,                                 // 47: pocketcloud.agent.v1.ContainerInfo.LabelsEntry
+	nil,                                 // 48: pocketcloud.agent.v1.VolumeInfo.LabelsEntry
+	nil,                                 // 49: pocketcloud.agent.v1.NetworkInfo.LabelsEntry
+	(*timestamppb.Timestamp)(nil),       // 50: google.protobuf.Timestamp
+	(*Command)(nil),                     // 51: pocketcloud.agent.v1.Command
+	(*structpb.Struct)(nil),             // 52: google.protobuf.Struct
+	(*durationpb.Duration)(nil),         // 53: google.protobuf.Duration
 }
 var file_pocketcloud_agent_v1_agent_proto_depIdxs = []int32{
 	10, // 0: pocketcloud.agent.v1.EnrollRequest.facts:type_name -> pocketcloud.agent.v1.HostFacts
-	48, // 1: pocketcloud.agent.v1.EnrollResponse.expires_at:type_name -> google.protobuf.Timestamp
+	50, // 1: pocketcloud.agent.v1.EnrollResponse.expires_at:type_name -> google.protobuf.Timestamp
 	4,  // 2: pocketcloud.agent.v1.SubscribeCommandsRequest.recently_finished:type_name -> pocketcloud.agent.v1.FinishedCommand
 	0,  // 3: pocketcloud.agent.v1.FinishedCommand.state:type_name -> pocketcloud.agent.v1.CommandState
-	48, // 4: pocketcloud.agent.v1.FinishedCommand.finished_at:type_name -> google.protobuf.Timestamp
-	49, // 5: pocketcloud.agent.v1.SubscribeCommandsResponse.command:type_name -> pocketcloud.agent.v1.Command
+	50, // 4: pocketcloud.agent.v1.FinishedCommand.finished_at:type_name -> google.protobuf.Timestamp
+	51, // 5: pocketcloud.agent.v1.SubscribeCommandsResponse.command:type_name -> pocketcloud.agent.v1.Command
 	6,  // 6: pocketcloud.agent.v1.SubscribeCommandsResponse.cancel:type_name -> pocketcloud.agent.v1.CommandCancel
 	0,  // 7: pocketcloud.agent.v1.ReportCommandUpdateRequest.state:type_name -> pocketcloud.agent.v1.CommandState
 	8,  // 8: pocketcloud.agent.v1.ReportCommandUpdateRequest.progress:type_name -> pocketcloud.agent.v1.CommandProgress
-	50, // 9: pocketcloud.agent.v1.ReportCommandUpdateRequest.result:type_name -> google.protobuf.Struct
-	51, // 10: pocketcloud.agent.v1.HostVitals.uptime:type_name -> google.protobuf.Duration
-	48, // 11: pocketcloud.agent.v1.SelfCheck.checked_at:type_name -> google.protobuf.Timestamp
-	48, // 12: pocketcloud.agent.v1.HeartbeatRequest.sent_at:type_name -> google.protobuf.Timestamp
+	52, // 9: pocketcloud.agent.v1.ReportCommandUpdateRequest.result:type_name -> google.protobuf.Struct
+	53, // 10: pocketcloud.agent.v1.HostVitals.uptime:type_name -> google.protobuf.Duration
+	50, // 11: pocketcloud.agent.v1.SelfCheck.checked_at:type_name -> google.protobuf.Timestamp
+	50, // 12: pocketcloud.agent.v1.HeartbeatRequest.sent_at:type_name -> google.protobuf.Timestamp
 	10, // 13: pocketcloud.agent.v1.HeartbeatRequest.facts:type_name -> pocketcloud.agent.v1.HostFacts
 	11, // 14: pocketcloud.agent.v1.HeartbeatRequest.vitals:type_name -> pocketcloud.agent.v1.HostVitals
 	12, // 15: pocketcloud.agent.v1.HeartbeatRequest.runtime:type_name -> pocketcloud.agent.v1.AgentRuntime
 	13, // 16: pocketcloud.agent.v1.HeartbeatRequest.self_checks:type_name -> pocketcloud.agent.v1.SelfCheck
 	15, // 17: pocketcloud.agent.v1.HeartbeatRequest.edge:type_name -> pocketcloud.agent.v1.EdgeStatus
-	44, // 18: pocketcloud.agent.v1.EdgeStatus.requests_by_host:type_name -> pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
-	48, // 19: pocketcloud.agent.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
-	17, // 20: pocketcloud.agent.v1.ContainerInfo.ports:type_name -> pocketcloud.agent.v1.PortMapping
-	45, // 21: pocketcloud.agent.v1.ContainerInfo.labels:type_name -> pocketcloud.agent.v1.ContainerInfo.LabelsEntry
-	48, // 22: pocketcloud.agent.v1.ContainerInfo.started_at:type_name -> google.protobuf.Timestamp
-	46, // 23: pocketcloud.agent.v1.VolumeInfo.labels:type_name -> pocketcloud.agent.v1.VolumeInfo.LabelsEntry
-	47, // 24: pocketcloud.agent.v1.NetworkInfo.labels:type_name -> pocketcloud.agent.v1.NetworkInfo.LabelsEntry
-	18, // 25: pocketcloud.agent.v1.ReportInventoryRequest.containers:type_name -> pocketcloud.agent.v1.ContainerInfo
-	19, // 26: pocketcloud.agent.v1.ReportInventoryRequest.volumes:type_name -> pocketcloud.agent.v1.VolumeInfo
-	20, // 27: pocketcloud.agent.v1.ReportInventoryRequest.networks:type_name -> pocketcloud.agent.v1.NetworkInfo
-	48, // 28: pocketcloud.agent.v1.ReportInventoryRequest.collected_at:type_name -> google.protobuf.Timestamp
-	18, // 29: pocketcloud.agent.v1.ReportEventsRequest.container_updated:type_name -> pocketcloud.agent.v1.ContainerInfo
-	19, // 30: pocketcloud.agent.v1.ReportEventsRequest.volume_updated:type_name -> pocketcloud.agent.v1.VolumeInfo
-	20, // 31: pocketcloud.agent.v1.ReportEventsRequest.network_updated:type_name -> pocketcloud.agent.v1.NetworkInfo
-	48, // 32: pocketcloud.agent.v1.ReportEventsRequest.occurred_at:type_name -> google.protobuf.Timestamp
-	48, // 33: pocketcloud.agent.v1.MetricSample.ts:type_name -> google.protobuf.Timestamp
-	26, // 34: pocketcloud.agent.v1.MetricSample.mounts:type_name -> pocketcloud.agent.v1.DiskUsage
-	25, // 35: pocketcloud.agent.v1.PushMetricsRequest.samples:type_name -> pocketcloud.agent.v1.MetricSample
-	30, // 36: pocketcloud.agent.v1.StreamLogsRequest.lines:type_name -> pocketcloud.agent.v1.LogLine
-	48, // 37: pocketcloud.agent.v1.LogLine.ts:type_name -> google.protobuf.Timestamp
-	34, // 38: pocketcloud.agent.v1.ExecResponse.resize:type_name -> pocketcloud.agent.v1.TerminalSize
-	38, // 39: pocketcloud.agent.v1.UploadArtifactRequest.header:type_name -> pocketcloud.agent.v1.UploadArtifactHeader
-	48, // 40: pocketcloud.agent.v1.RenewCertificateResponse.expires_at:type_name -> google.protobuf.Timestamp
-	1,  // 41: pocketcloud.agent.v1.AgentService.Enroll:input_type -> pocketcloud.agent.v1.EnrollRequest
-	3,  // 42: pocketcloud.agent.v1.AgentService.SubscribeCommands:input_type -> pocketcloud.agent.v1.SubscribeCommandsRequest
-	7,  // 43: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:input_type -> pocketcloud.agent.v1.ReportCommandUpdateRequest
-	14, // 44: pocketcloud.agent.v1.AgentService.Heartbeat:input_type -> pocketcloud.agent.v1.HeartbeatRequest
-	21, // 45: pocketcloud.agent.v1.AgentService.ReportInventory:input_type -> pocketcloud.agent.v1.ReportInventoryRequest
-	23, // 46: pocketcloud.agent.v1.AgentService.ReportEvents:input_type -> pocketcloud.agent.v1.ReportEventsRequest
-	27, // 47: pocketcloud.agent.v1.AgentService.PushMetrics:input_type -> pocketcloud.agent.v1.PushMetricsRequest
-	29, // 48: pocketcloud.agent.v1.AgentService.StreamLogs:input_type -> pocketcloud.agent.v1.StreamLogsRequest
-	32, // 49: pocketcloud.agent.v1.AgentService.Exec:input_type -> pocketcloud.agent.v1.ExecRequest
-	35, // 50: pocketcloud.agent.v1.AgentService.FetchArtifact:input_type -> pocketcloud.agent.v1.FetchArtifactRequest
-	37, // 51: pocketcloud.agent.v1.AgentService.UploadArtifact:input_type -> pocketcloud.agent.v1.UploadArtifactRequest
-	40, // 52: pocketcloud.agent.v1.AgentService.Relay:input_type -> pocketcloud.agent.v1.RelayRequest
-	42, // 53: pocketcloud.agent.v1.AgentService.RenewCertificate:input_type -> pocketcloud.agent.v1.RenewCertificateRequest
-	2,  // 54: pocketcloud.agent.v1.AgentService.Enroll:output_type -> pocketcloud.agent.v1.EnrollResponse
-	5,  // 55: pocketcloud.agent.v1.AgentService.SubscribeCommands:output_type -> pocketcloud.agent.v1.SubscribeCommandsResponse
-	9,  // 56: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:output_type -> pocketcloud.agent.v1.ReportCommandUpdateResponse
-	16, // 57: pocketcloud.agent.v1.AgentService.Heartbeat:output_type -> pocketcloud.agent.v1.HeartbeatResponse
-	22, // 58: pocketcloud.agent.v1.AgentService.ReportInventory:output_type -> pocketcloud.agent.v1.ReportInventoryResponse
-	24, // 59: pocketcloud.agent.v1.AgentService.ReportEvents:output_type -> pocketcloud.agent.v1.ReportEventsResponse
-	28, // 60: pocketcloud.agent.v1.AgentService.PushMetrics:output_type -> pocketcloud.agent.v1.PushMetricsResponse
-	31, // 61: pocketcloud.agent.v1.AgentService.StreamLogs:output_type -> pocketcloud.agent.v1.StreamLogsResponse
-	33, // 62: pocketcloud.agent.v1.AgentService.Exec:output_type -> pocketcloud.agent.v1.ExecResponse
-	36, // 63: pocketcloud.agent.v1.AgentService.FetchArtifact:output_type -> pocketcloud.agent.v1.FetchArtifactResponse
-	39, // 64: pocketcloud.agent.v1.AgentService.UploadArtifact:output_type -> pocketcloud.agent.v1.UploadArtifactResponse
-	41, // 65: pocketcloud.agent.v1.AgentService.Relay:output_type -> pocketcloud.agent.v1.RelayResponse
-	43, // 66: pocketcloud.agent.v1.AgentService.RenewCertificate:output_type -> pocketcloud.agent.v1.RenewCertificateResponse
-	54, // [54:67] is the sub-list for method output_type
-	41, // [41:54] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	45, // 18: pocketcloud.agent.v1.EdgeStatus.requests_by_host:type_name -> pocketcloud.agent.v1.EdgeStatus.RequestsByHostEntry
+	46, // 19: pocketcloud.agent.v1.EdgeStatus.latency_by_host:type_name -> pocketcloud.agent.v1.EdgeStatus.LatencyByHostEntry
+	50, // 20: pocketcloud.agent.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
+	18, // 21: pocketcloud.agent.v1.ContainerInfo.ports:type_name -> pocketcloud.agent.v1.PortMapping
+	47, // 22: pocketcloud.agent.v1.ContainerInfo.labels:type_name -> pocketcloud.agent.v1.ContainerInfo.LabelsEntry
+	50, // 23: pocketcloud.agent.v1.ContainerInfo.started_at:type_name -> google.protobuf.Timestamp
+	48, // 24: pocketcloud.agent.v1.VolumeInfo.labels:type_name -> pocketcloud.agent.v1.VolumeInfo.LabelsEntry
+	49, // 25: pocketcloud.agent.v1.NetworkInfo.labels:type_name -> pocketcloud.agent.v1.NetworkInfo.LabelsEntry
+	19, // 26: pocketcloud.agent.v1.ReportInventoryRequest.containers:type_name -> pocketcloud.agent.v1.ContainerInfo
+	20, // 27: pocketcloud.agent.v1.ReportInventoryRequest.volumes:type_name -> pocketcloud.agent.v1.VolumeInfo
+	21, // 28: pocketcloud.agent.v1.ReportInventoryRequest.networks:type_name -> pocketcloud.agent.v1.NetworkInfo
+	50, // 29: pocketcloud.agent.v1.ReportInventoryRequest.collected_at:type_name -> google.protobuf.Timestamp
+	19, // 30: pocketcloud.agent.v1.ReportEventsRequest.container_updated:type_name -> pocketcloud.agent.v1.ContainerInfo
+	20, // 31: pocketcloud.agent.v1.ReportEventsRequest.volume_updated:type_name -> pocketcloud.agent.v1.VolumeInfo
+	21, // 32: pocketcloud.agent.v1.ReportEventsRequest.network_updated:type_name -> pocketcloud.agent.v1.NetworkInfo
+	50, // 33: pocketcloud.agent.v1.ReportEventsRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	50, // 34: pocketcloud.agent.v1.MetricSample.ts:type_name -> google.protobuf.Timestamp
+	27, // 35: pocketcloud.agent.v1.MetricSample.mounts:type_name -> pocketcloud.agent.v1.DiskUsage
+	26, // 36: pocketcloud.agent.v1.PushMetricsRequest.samples:type_name -> pocketcloud.agent.v1.MetricSample
+	31, // 37: pocketcloud.agent.v1.StreamLogsRequest.lines:type_name -> pocketcloud.agent.v1.LogLine
+	50, // 38: pocketcloud.agent.v1.LogLine.ts:type_name -> google.protobuf.Timestamp
+	35, // 39: pocketcloud.agent.v1.ExecResponse.resize:type_name -> pocketcloud.agent.v1.TerminalSize
+	39, // 40: pocketcloud.agent.v1.UploadArtifactRequest.header:type_name -> pocketcloud.agent.v1.UploadArtifactHeader
+	50, // 41: pocketcloud.agent.v1.RenewCertificateResponse.expires_at:type_name -> google.protobuf.Timestamp
+	16, // 42: pocketcloud.agent.v1.EdgeStatus.LatencyByHostEntry.value:type_name -> pocketcloud.agent.v1.HostLatency
+	1,  // 43: pocketcloud.agent.v1.AgentService.Enroll:input_type -> pocketcloud.agent.v1.EnrollRequest
+	3,  // 44: pocketcloud.agent.v1.AgentService.SubscribeCommands:input_type -> pocketcloud.agent.v1.SubscribeCommandsRequest
+	7,  // 45: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:input_type -> pocketcloud.agent.v1.ReportCommandUpdateRequest
+	14, // 46: pocketcloud.agent.v1.AgentService.Heartbeat:input_type -> pocketcloud.agent.v1.HeartbeatRequest
+	22, // 47: pocketcloud.agent.v1.AgentService.ReportInventory:input_type -> pocketcloud.agent.v1.ReportInventoryRequest
+	24, // 48: pocketcloud.agent.v1.AgentService.ReportEvents:input_type -> pocketcloud.agent.v1.ReportEventsRequest
+	28, // 49: pocketcloud.agent.v1.AgentService.PushMetrics:input_type -> pocketcloud.agent.v1.PushMetricsRequest
+	30, // 50: pocketcloud.agent.v1.AgentService.StreamLogs:input_type -> pocketcloud.agent.v1.StreamLogsRequest
+	33, // 51: pocketcloud.agent.v1.AgentService.Exec:input_type -> pocketcloud.agent.v1.ExecRequest
+	36, // 52: pocketcloud.agent.v1.AgentService.FetchArtifact:input_type -> pocketcloud.agent.v1.FetchArtifactRequest
+	38, // 53: pocketcloud.agent.v1.AgentService.UploadArtifact:input_type -> pocketcloud.agent.v1.UploadArtifactRequest
+	41, // 54: pocketcloud.agent.v1.AgentService.Relay:input_type -> pocketcloud.agent.v1.RelayRequest
+	43, // 55: pocketcloud.agent.v1.AgentService.RenewCertificate:input_type -> pocketcloud.agent.v1.RenewCertificateRequest
+	2,  // 56: pocketcloud.agent.v1.AgentService.Enroll:output_type -> pocketcloud.agent.v1.EnrollResponse
+	5,  // 57: pocketcloud.agent.v1.AgentService.SubscribeCommands:output_type -> pocketcloud.agent.v1.SubscribeCommandsResponse
+	9,  // 58: pocketcloud.agent.v1.AgentService.ReportCommandUpdate:output_type -> pocketcloud.agent.v1.ReportCommandUpdateResponse
+	17, // 59: pocketcloud.agent.v1.AgentService.Heartbeat:output_type -> pocketcloud.agent.v1.HeartbeatResponse
+	23, // 60: pocketcloud.agent.v1.AgentService.ReportInventory:output_type -> pocketcloud.agent.v1.ReportInventoryResponse
+	25, // 61: pocketcloud.agent.v1.AgentService.ReportEvents:output_type -> pocketcloud.agent.v1.ReportEventsResponse
+	29, // 62: pocketcloud.agent.v1.AgentService.PushMetrics:output_type -> pocketcloud.agent.v1.PushMetricsResponse
+	32, // 63: pocketcloud.agent.v1.AgentService.StreamLogs:output_type -> pocketcloud.agent.v1.StreamLogsResponse
+	34, // 64: pocketcloud.agent.v1.AgentService.Exec:output_type -> pocketcloud.agent.v1.ExecResponse
+	37, // 65: pocketcloud.agent.v1.AgentService.FetchArtifact:output_type -> pocketcloud.agent.v1.FetchArtifactResponse
+	40, // 66: pocketcloud.agent.v1.AgentService.UploadArtifact:output_type -> pocketcloud.agent.v1.UploadArtifactResponse
+	42, // 67: pocketcloud.agent.v1.AgentService.Relay:output_type -> pocketcloud.agent.v1.RelayResponse
+	44, // 68: pocketcloud.agent.v1.AgentService.RenewCertificate:output_type -> pocketcloud.agent.v1.RenewCertificateResponse
+	56, // [56:69] is the sub-list for method output_type
+	43, // [43:56] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_agent_proto_init() }
@@ -3887,7 +3966,7 @@ func file_pocketcloud_agent_v1_agent_proto_init() {
 		(*SubscribeCommandsResponse_Command)(nil),
 		(*SubscribeCommandsResponse_Cancel)(nil),
 	}
-	file_pocketcloud_agent_v1_agent_proto_msgTypes[22].OneofWrappers = []any{
+	file_pocketcloud_agent_v1_agent_proto_msgTypes[23].OneofWrappers = []any{
 		(*ReportEventsRequest_ContainerUpdated)(nil),
 		(*ReportEventsRequest_ContainerRemoved)(nil),
 		(*ReportEventsRequest_VolumeUpdated)(nil),
@@ -3895,7 +3974,7 @@ func file_pocketcloud_agent_v1_agent_proto_init() {
 		(*ReportEventsRequest_NetworkUpdated)(nil),
 		(*ReportEventsRequest_NetworkRemoved)(nil),
 	}
-	file_pocketcloud_agent_v1_agent_proto_msgTypes[36].OneofWrappers = []any{
+	file_pocketcloud_agent_v1_agent_proto_msgTypes[37].OneofWrappers = []any{
 		(*UploadArtifactRequest_Header)(nil),
 		(*UploadArtifactRequest_Chunk)(nil),
 	}
@@ -3905,7 +3984,7 @@ func file_pocketcloud_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_agent_proto_rawDesc), len(file_pocketcloud_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   47,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
