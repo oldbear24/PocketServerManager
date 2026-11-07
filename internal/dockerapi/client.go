@@ -637,7 +637,9 @@ type ExecOptions struct {
 	Cmd  []string
 	User string
 	Env  []string
-	TTY  bool
+	// WorkingDir is where the process starts; empty for the container's own.
+	WorkingDir string
+	TTY        bool
 	// Stdin attaches the process's standard input.
 	Stdin bool
 }
@@ -655,6 +657,7 @@ func (c *Client) ExecCreate(ctx context.Context, container string, options ExecO
 		"Cmd":          options.Cmd,
 		"User":         options.User,
 		"Env":          options.Env,
+		"WorkingDir":   options.WorkingDir,
 	}, &created)
 	return created.ID, err
 }

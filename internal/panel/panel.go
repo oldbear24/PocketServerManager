@@ -163,6 +163,7 @@ func (p *Panel) Register() {
 	p.registerLabels()
 	p.registerSites()
 	p.registerPHPSites()
+	p.registerTasks()
 	p.registerProvision()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
@@ -204,6 +205,7 @@ func (p *Panel) Register() {
 		p.bindACMERoutes(group)
 		p.bindLabelRoutes(group)
 		p.bindSiteRoutes(group)
+		p.bindTaskRoutes(group)
 		p.bindProvisionRoutes(group)
 		p.bindLANRoutes(group)
 		// setups of new sites that a restart interrupted go on

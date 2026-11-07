@@ -2868,7 +2868,10 @@ type TaskRun struct {
 	// command is the shell command.
 	Command string `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	// timeout_s is when the task gets killed.
-	TimeoutS      int32 `protobuf:"varint,5,opt,name=timeout_s,json=timeoutS,proto3" json:"timeout_s,omitempty"`
+	TimeoutS int32 `protobuf:"varint,5,opt,name=timeout_s,json=timeoutS,proto3" json:"timeout_s,omitempty"`
+	// working_dir is where the command starts, such as a PHP site's live
+	// release; empty for the container's own.
+	WorkingDir    string `protobuf:"bytes,6,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2936,6 +2939,13 @@ func (x *TaskRun) GetTimeoutS() int32 {
 		return x.TimeoutS
 	}
 	return 0
+}
+
+func (x *TaskRun) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
 }
 
 // DbServerCreate creates a shared database server as a PocketCloud-owned stack.
@@ -5645,13 +5655,15 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"F\n" +
 	"\rSitePhpStatus\x12\x12\n" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12!\n" +
-	"\fshared_paths\x18\x02 \x03(\tR\vsharedPaths\"\x90\x01\n" +
+	"\fshared_paths\x18\x02 \x03(\tR\vsharedPaths\"\xb1\x01\n" +
 	"\aTaskRun\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12!\n" +
 	"\fcontainer_id\x18\x02 \x01(\tR\vcontainerId\x12\x12\n" +
 	"\x04user\x18\x03 \x01(\tR\x04user\x12\x18\n" +
 	"\acommand\x18\x04 \x01(\tR\acommand\x12\x1b\n" +
-	"\ttimeout_s\x18\x05 \x01(\x05R\btimeoutS\"\xbb\x02\n" +
+	"\ttimeout_s\x18\x05 \x01(\x05R\btimeoutS\x12\x1f\n" +
+	"\vworking_dir\x18\x06 \x01(\tR\n" +
+	"workingDir\"\xbb\x02\n" +
 	"\x0eDbServerCreate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06engine\x18\x02 \x01(\tR\x06engine\x12\x14\n" +

@@ -466,6 +466,9 @@ message TaskRun {
   string command = 4;
   // timeout_s is when the task gets killed.
   int32 timeout_s = 5;
+  // working_dir is where the command starts, such as a PHP site's live
+  // release; empty for the container's own.
+  string working_dir = 6;
 }
 
 // DbServerCreate creates a shared database server as a PocketCloud-owned stack.

@@ -51,6 +51,7 @@ func (a *Agent) registerHandlers() {
 	a.registerEdgeHandlers()
 	a.registerSiteHandlers()
 	a.registerPHPHandlers()
+	a.registerTaskHandlers()
 	a.registerRewriteHandlers()
 }
 
