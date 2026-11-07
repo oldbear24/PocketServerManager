@@ -98,6 +98,10 @@ func smtpTLS(settings *core.Record) string {
 	if tls := settings.GetString("smtp_tls"); tls != "" {
 		return tls
 	}
+	// port 465 speaks TLS from the start, the others STARTTLS
+	if smtpPort(settings) == 465 {
+		return "tls"
+	}
 	return "starttls"
 }
 
@@ -158,6 +162,11 @@ func (p *Panel) handleSMTPSettings(e *core.RequestEvent) error {
 		settings.Set("smtp_password", *body.Password)
 		settings.Set("smtp_password_set", *body.Password != "")
 	}
+	// the envelope sender: msmtp of the runtime image cannot take it from
+	// each message, and a relay refuses mail without one
+	if settings.GetString("smtp_host") != "" && settings.GetString("smtp_from") == "" {
+		return e.BadRequestError("A relay needs a sender, such as noreply@example.org.", nil)
+	}
 	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
 		return e.BadRequestError("The relay could not be saved: "+err.Error(), nil)
 	}
@@ -165,8 +174,10 @@ func (p *Panel) handleSMTPSettings(e *core.RequestEvent) error {
 	// PHP-FPM reads the relay when it starts
 	id, label := requester(e)
 	applied := 0
-	running, _ := e.App.FindRecordsByFilter(schema.SitePHP, "state = 'running' || state = 'pending'", "", 0, 0)
-	for _, php := range running {
+	// every PHP site's, including one whose last apply failed while its old
+	// container serves on
+	all, _ := e.App.FindRecordsByFilter(schema.SitePHP, "", "", 0, 0)
+	for _, php := range all {
 		site, err := e.App.FindRecordById(schema.Sites, php.GetString("site"))
 		if err != nil {
 			continue
@@ -229,6 +240,7 @@ func (p *Panel) handlePHPMail(e *core.RequestEvent) error {
 		Failed     int           `json:"failed"`
 		LastSentAt string        `json:"last_sent_at"`
 		Failures   []mailFailure `json:"failures"`
+		Since      string        `json:"since"`
 	}
 	raw, _ := json.Marshal(done.Get("result"))
 	_ = json.Unmarshal(raw, &result)
@@ -237,6 +249,6 @@ func (p *Panel) handlePHPMail(e *core.RequestEvent) error {
 	}
 	return e.JSON(http.StatusOK, map[string]any{
 		"relay": relay, "sent": result.Sent, "failed": result.Failed,
-		"last_sent_at": result.LastSentAt, "failures": result.Failures,
+		"last_sent_at": result.LastSentAt, "failures": result.Failures, "since": result.Since,
 	})
 }

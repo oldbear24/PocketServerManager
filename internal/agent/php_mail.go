@@ -27,6 +27,11 @@ const (
 	mailLogLimit = 64 << 20
 )
 
+// msmtpLine is msmtp's own line after Docker's timestamp: its date, then the
+// relay. A line the site's PHP wrote to its log, as with a visitor's text in
+// it, is not one.
+var msmtpLine = regexp.MustCompile(`^\S+ [A-Z][a-z]{2} [ 0-9]\d \d\d:\d\d:\d\d host=\S+ `)
+
 // msmtpField is a field of msmtp's log line: name=value or name='value'.
 var msmtpField = regexp.MustCompile(`(\w+)=('([^']*)'|\S+)`)
 
@@ -57,7 +62,12 @@ func (a *Agent) handleSitePHPMail(ctx context.Context, command *agentv1.Command,
 	if current == nil {
 		return nil, fmt.Errorf("%s does not run", sites.PHPContainer(site))
 	}
-	logs, err := a.Docker.Logs(ctx, current.ID, dockerapi.LogOptions{Tail: -1, Timestamps: true, Since: time.Now().Add(-mailWindow)})
+	// the counts start with the container: a replaced one starts a new log
+	since := time.Now().Add(-mailWindow)
+	if started := current.State.StartedAt; started.After(since) {
+		since = started
+	}
+	logs, err := a.Docker.Logs(ctx, current.ID, dockerapi.LogOptions{Tail: -1, Timestamps: true, Since: since})
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +92,7 @@ func (a *Agent) handleSitePHPMail(ctx context.Context, command *agentv1.Command,
 	}
 	return map[string]any{
 		"sent": float64(counts.Sent), "failed": float64(counts.Failed),
-		"last_sent_at": counts.LastSentAt, "failures": failures,
+		"last_sent_at": counts.LastSentAt, "failures": failures, "since": since.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -95,7 +105,7 @@ func countMail(log io.Reader) mailCounts {
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.Contains(line, " exitcode=") || !strings.Contains(line, " recipients=") {
+		if !msmtpLine.MatchString(line) || !strings.Contains(line, " exitcode=") || !strings.Contains(line, " recipients=") {
 			continue
 		}
 		at, _, _ := strings.Cut(line, " ")

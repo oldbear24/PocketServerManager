@@ -478,6 +478,9 @@ message TaskRun {
   // working_dir is where the command starts, such as a PHP site's live
   // release; empty for the container's own.
   string working_dir = 6;
+  // masked are the values of the secrets in the container's environment,
+  // which the output hides: viewers read it.
+  repeated string masked = 7 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // DbServerCreate creates a shared database server as a PocketCloud-owned stack.

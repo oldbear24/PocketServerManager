@@ -16,7 +16,7 @@ export type ScheduledTask = RecordModel & {
   timeout_s: number;
   enabled: boolean;
   last_run_at: string;
-  last_status: "" | "running" | "succeeded" | "failed" | "timed_out" | "skipped";
+  last_status: "" | "running" | "succeeded" | "failed" | "timed_out" | "skipped" | "cancelled";
   last_exit_code: number;
   last_duration_ms: number;
   last_output: string;
@@ -63,7 +63,8 @@ export function describeSchedule(schedule: string, t: Translate): string {
     if (minute === "*") {
       return t("task.every.minutes", { count: 1 });
     }
-    if (step) {
+    // */7 runs at :00, :07 … :56 and again at :00, which is no "every 7 min"
+    if (step && Number(step[1]) >= 1 && Number(step[1]) < 60 && 60 % Number(step[1]) === 0) {
       return t("task.every.minutes", { count: Number(step[1]) });
     }
     if (number.test(minute)) {

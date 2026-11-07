@@ -1043,11 +1043,22 @@ export function PhpCronMailCard({ site, canAct }: { site: Site; canAct: boolean 
     };
     load();
     const timer = window.setInterval(load, mailEvery);
+    // a tab that comes back reads at once, not at the next interval
+    const visible = () => {
+      if (!document.hidden) {
+        load();
+      }
+    };
+    document.addEventListener("visibilitychange", visible);
     return () => {
       live = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [site.id]);
+  // PHP-FPM younger than a day: its log, and so the count, starts with it
+  const since =
+    mail?.since && Date.now() - Date.parse(mail.since) < 23 * 60 * 60 * 1000 ? mail.since : "";
 
   return (
     <Card title={t("phpSite.cronMail")}>
@@ -1067,7 +1078,13 @@ export function PhpCronMailCard({ site, canAct }: { site: Site; canAct: boolean 
             <div className="small">{t("phpSite.relayVia")}</div>
             <div className="mono small">
               {`${mail.relay.host}:${mail.relay.port} · `}
-              {t("phpSite.mailToday", { count: mail.sent, formatted: formatNumber(mail.sent) })}
+              {since
+                ? t("phpSite.mailSince", {
+                    count: mail.sent,
+                    formatted: formatNumber(mail.sent),
+                    time: formatTime(since).slice(0, 5),
+                  })
+                : t("phpSite.mailToday", { count: mail.sent, formatted: formatNumber(mail.sent) })}
               {mail.failed > 0 && (
                 <span className="err-text">
                   {` · ${t("phpSite.mailFailed", { count: mail.failed, formatted: formatNumber(mail.failed) })}`}

@@ -60,6 +60,9 @@ describe("scheduled tasks (#51)", () => {
     expect(describeSchedule("@weekly", t)).toBe("Sundays 00:00 UTC");
     expect(describeSchedule("0 4 1 * *", t)).toBe("monthly on the 1. 04:00 UTC");
     expect(describeSchedule("5 4 * 2 1-5", t)).toBe("5 4 * 2 1-5");
+    // runs at :56 and again at :00, so not every 7 min
+    expect(describeSchedule("*/7 * * * *", t)).toBe("*/7 * * * *");
+    expect(describeSchedule("*/90 * * * *", t)).toBe("*/90 * * * *");
     await i18n.changeLanguage("cs");
     expect(describeSchedule("*/5 * * * *", t)).toBe("každých 5 min");
     expect(describeSchedule("*/2 * * * *", t)).toBe("každé 2 min");
@@ -119,6 +122,47 @@ describe("scheduled tasks (#51)", () => {
         site: "s1",
       }),
     );
+  });
+
+  it("picks a stack's service, and keeps a task's own one that has no container now", async () => {
+    await i18n.changeLanguage("en");
+    lists.scheduled_tasks = [
+      task({ id: "t3", target_kind: "stack", stack: "st1", service: "worker", user: "" }),
+    ];
+    const create = vi
+      .spyOn(pb.collection("scheduled_tasks"), "create")
+      .mockResolvedValue({} as never);
+    // the stack's containers are not known yet
+    const view = render(
+      <ToastProvider>
+        <TaskList target={{ kind: "stack", id: "st1", services: [] }} canAct />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add a task" }));
+    view.rerender(
+      <ToastProvider>
+        <TaskList target={{ kind: "stack", id: "st1", services: ["app", "db"] }} canAct />
+      </ToastProvider>,
+    );
+    expect(screen.getByLabelText("Service")).toHaveValue("app");
+    fireEvent.change(screen.getByLabelText("Command"), {
+      target: { value: "php occ background:cron" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ service: "app", target_kind: "stack", stack: "st1" }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit wp cron event run --due-now" }));
+    const service = screen.getByLabelText("Service");
+    expect(service).toHaveValue("worker");
+    expect(
+      within(service)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["worker", "app", "db"]);
   });
 
   it("offers no changes to a viewer", async () => {

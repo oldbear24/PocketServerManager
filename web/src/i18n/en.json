@@ -572,7 +572,7 @@
     "smtpUser": "User",
     "smtpPassword": "Password",
     "smtpPasswordKept": "kept: type to change",
-    "smtpFromNote": "Without a sender, the From header of each message is the envelope sender. Every running PHP site restarts its PHP-FPM with the change, without dropping requests; an empty relay turns mail off.",
+    "smtpFromNote": "A relay needs a sender: the envelope sender of every message, and its From header where the site sets none. Every PHP site restarts its PHP-FPM with the change, without dropping requests; an empty relay turns mail off.",
     "smtpRemovePassword": "Remove the password",
     "smtpSaved_one": "The relay was saved; {{count}} PHP site takes it.",
     "smtpSaved_other": "The relay was saved; {{count}} PHP sites take it."
@@ -1751,6 +1751,8 @@
     "relayVia": "Outgoing mail through the SMTP relay",
     "mailToday_one": "{{formatted}} e-mail in 24 h",
     "mailToday_other": "{{formatted}} e-mails in 24 h",
+    "mailSince_one": "{{formatted}} e-mail since {{time}}",
+    "mailSince_other": "{{formatted}} e-mails since {{time}}",
     "mailFailed_one": "{{formatted}} failed",
     "mailFailed_other": "{{formatted}} failed"
   },
@@ -1777,7 +1779,8 @@
       "succeeded": "OK",
       "failed": "failed",
       "timed_out": "timed out",
-      "skipped": "skipped"
+      "skipped": "skipped",
+      "cancelled": "cancelled"
     },
     "failures_one": "{{count}} failure in a row",
     "failures_other": "{{count}} failures in a row",

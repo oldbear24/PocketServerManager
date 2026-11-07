@@ -30,7 +30,9 @@ func TestAPHPSitesMailGoesThroughThePanelsRelay(t *testing.T) {
 	if status, _ := s.request(http.MethodPut, "/api/pc/settings/smtp", s.operator, relay); status != http.StatusForbidden {
 		t.Errorf("an operator set the relay: %d", status)
 	}
-	for _, bad := range []map[string]any{{"host": "relay example"}, {"port": 70000}, {"tls": "maybe"}, {"user": `sh"op`}} {
+	for _, bad := range []map[string]any{{"host": "relay example"}, {"port": 70000}, {"tls": "maybe"}, {"user": `sh"op`},
+		// msmtp needs an envelope sender
+		{"host": "relay.example.org"}, {"host": "relay.example.org", "from": ""}} {
 		if status, _ := s.request(http.MethodPut, "/api/pc/settings/smtp", admin, bad); status != http.StatusBadRequest {
 			t.Errorf("%v was taken: %d", bad, status)
 		}

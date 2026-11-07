@@ -239,6 +239,7 @@ describe("the sites page", () => {
           error: "recipient address bob@example.org not accepted by the server",
         },
       ],
+      since: "2026-11-04T11:50:00Z",
     });
     renderAt("/sites/s2");
 

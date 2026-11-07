@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
+	"github.com/oldbear24/PocketServerManager/internal/stacks"
 )
 
 // Scheduled tasks (#51): commands that the panel runs on a cron schedule in a
@@ -54,6 +56,7 @@ var errTaskRunning = errors.New("the previous run of this task is still going")
 func (p *Panel) registerTasks() {
 	p.App.OnRecordValidate(schema.ScheduledTasks).BindFunc(p.validateTask)
 	p.Commands.OnFinish("task.run", p.taskFinished)
+	p.Commands.RegisterEnricher("task.run", p.enrichTaskRun)
 	p.App.Cron().MustAdd("pocketcloud_tasks", "* * * * *", func() { p.RunDueTasks(time.Now()) })
 	p.App.Cron().MustAdd("pocketcloud_task_runs_retention", "20 4 * * *", p.pruneTaskRuns)
 }
@@ -107,7 +110,8 @@ func (p *Panel) validateTask(e *core.RecordEvent) error {
 		} else {
 			host = stack.GetString("host")
 		}
-		if strings.TrimSpace(task.GetString("service")) == "" {
+		task.Set("service", strings.TrimSpace(task.GetString("service")))
+		if task.GetString("service") == "" {
 			set("service", "validation_task_service", "Name the service whose container runs the task.")
 		}
 		if user := task.GetString("user"); user != "" && !taskUser.MatchString(user) {
@@ -139,8 +143,7 @@ func (p *Panel) RunDueTasks(now time.Time) {
 	}
 	moment := cron.NewMoment(now.UTC())
 	for _, task := range tasks {
-		schedule, err := cron.NewSchedule(task.GetString("schedule"))
-		if err != nil || !schedule.IsDue(moment) {
+		if !taskDue(task.GetString("schedule"), moment) {
 			continue
 		}
 		if _, err := p.startTask(context.Background(), task, commands.Options{Requester: "schedule"}); err != nil && !errors.Is(err, errTaskRunning) {
@@ -162,11 +165,12 @@ func (p *Panel) startTask(ctx context.Context, task *core.Record, options comman
 	}
 	run, err := p.taskRun(task)
 	if err != nil {
+		failures := task.GetInt("failures") + 1
 		p.setFields(task, map[string]any{
 			"last_status": schema.TaskFailed, "last_run_at": types.NowDateTime(), "last_output": truncate(err.Error(), 4096),
-			"last_exit_code": 0, "last_duration_ms": 0, "failures": task.GetInt("failures") + 1,
+			"last_exit_code": 0, "last_duration_ms": 0, "failures": failures,
 		})
-		p.taskFailed(task, task.GetInt("failures")+1, err.Error())
+		p.taskFailed(task, failures, err.Error())
 		return nil, err
 	}
 	options.Host = task.GetString("host")
@@ -218,6 +222,65 @@ func (p *Panel) taskRun(task *core.Record) (*agentv1.TaskRun, error) {
 	return run, nil
 }
 
+// enrichTaskRun adds the values of the secrets in the container's
+// environment when the run is delivered, so that its output, which viewers
+// read, hides them: a PHP site's own and its database's, the relay's
+// password, or a stack's. They are never stored in the command.
+func (p *Panel) enrichTaskRun(_ *core.Record, command *agentv1.Command) error {
+	run := command.GetTaskRun()
+	task, err := p.App.FindRecordById(schema.ScheduledTasks, run.GetTaskId())
+	if err != nil {
+		return fmt.Errorf("the task is gone: %w", err)
+	}
+	values := []string{}
+	switch task.GetString("target_kind") {
+	case schema.TaskTargetSite:
+		site, err := p.App.FindRecordById(schema.Sites, task.GetString("site"))
+		if err != nil {
+			return fmt.Errorf("the site is gone: %w", err)
+		}
+		settings, err := p.phpSettings(p.App, site)
+		if err != nil {
+			return err
+		}
+		resolved, masked, err := p.phpSecretValues(site, settings)
+		if err != nil {
+			return err
+		}
+		values = append(values, masked...)
+		smtp, err := p.smtpSecret(maps.Clone(resolved))
+		if err != nil {
+			return err
+		}
+		for _, value := range smtp {
+			values = append(values, value)
+		}
+	case schema.TaskTargetStack:
+		stack, err := p.App.FindRecordById(schema.Stacks, task.GetString("stack"))
+		if err != nil {
+			return fmt.Errorf("the stack is gone: %w", err)
+		}
+		own, err := p.openStackSecrets(stack)
+		if err != nil {
+			return err
+		}
+		for _, value := range own {
+			values = append(values, value)
+		}
+		// what its variables take from elsewhere, such as a database's password
+		resolve := p.secretResolver(stack)
+		_, _, _ = stacks.ResolveEnv(stack.GetString("env"), func(name string) (string, error) {
+			value, err := resolve(name)
+			if err == nil {
+				values = append(values, value)
+			}
+			return value, err
+		})
+	}
+	run.Masked = values
+	return nil
+}
+
 // handleRunTask runs a task now, whatever its schedule.
 func (p *Panel) handleRunTask(e *core.RequestEvent) error {
 	task, err := p.App.FindRecordById(schema.ScheduledTasks, e.Request.PathValue("id"))
@@ -256,10 +319,17 @@ func (p *Panel) taskFinished(command *core.Record) {
 	_ = json.Unmarshal(raw, &result)
 
 	status := schema.TaskFailed
-	switch {
-	case command.GetString("status") == schema.CommandSucceeded:
+	switch commandStatus := command.GetString("status"); {
+	case commandStatus == schema.CommandSucceeded:
 		status = schema.TaskSucceeded
-	case result.TimedOut || command.GetString("status") == schema.CommandTimedOut:
+	case result.TimedOut:
+		status = schema.TaskTimedOut
+	case commandStatus == schema.CommandCancelled:
+		status = schema.TaskCancelled
+	case commandStatus == schema.CommandTimedOut && command.GetString("started_at") == "":
+		// never delivered, as to a server that stayed offline: no run of the task
+		status = schema.TaskCancelled
+	case commandStatus == schema.CommandTimedOut:
 		status = schema.TaskTimedOut
 	}
 	output := result.Output
@@ -271,7 +341,11 @@ func (p *Panel) taskFinished(command *core.Record) {
 		exitCode = int(*result.ExitCode)
 	}
 	failures := 0
-	if status != schema.TaskSucceeded {
+	switch status {
+	case schema.TaskCancelled:
+		failures = task.GetInt("failures")
+	case schema.TaskSucceeded:
+	default:
 		failures = task.GetInt("failures") + 1
 	}
 	before := task.GetInt("failures")
@@ -286,8 +360,9 @@ func (p *Panel) taskFinished(command *core.Record) {
 	p.setFields(task, fields)
 
 	switch {
+	case status == schema.TaskCancelled:
 	case status == schema.TaskTimedOut:
-		p.taskFailed(task, failures, fmt.Sprintf("it ran past its timeout of %d s and was stopped", task.GetInt("timeout_s")))
+		p.taskFailed(task, failures, fmt.Sprintf("it ran past its timeout of %d s and was killed", task.GetInt("timeout_s")))
 	case status == schema.TaskFailed:
 		reason := command.GetString("error")
 		if reason == "" {
@@ -316,11 +391,27 @@ func (p *Panel) taskFailed(task *core.Record, failures int, reason string) {
 func (p *Panel) pruneTaskRuns() {
 	cutoff := types.NowDateTime().Add(-keepTaskRuns)
 	_, err := p.App.DB().NewQuery(
-		"DELETE FROM " + schema.Commands + " WHERE type = 'task.run' AND created < {:cutoff} AND status IN ('succeeded', 'failed', 'timed_out', 'cancelled')",
+		"DELETE FROM " + schema.Commands + " WHERE type = 'task.run' AND created < {:cutoff} AND status IN ('succeeded', 'failed', 'timed_out', 'cancelled')" +
+			// a task's last run stays: the task points at it
+			" AND id NOT IN (SELECT last_command FROM " + schema.ScheduledTasks + " WHERE last_command != '')",
 	).Bind(dbx.Params{"cutoff": cutoff.String()}).Execute()
 	if err != nil {
 		p.Log.Error("failed to remove old task runs", "error", err)
 	}
+}
+
+// taskDue says whether a schedule is due at a moment, as cron has it: when
+// both the day of the month and the day of the week are restricted, either
+// one matching is enough, where PocketBase's schedule asks for both.
+func taskDue(expr string, moment *cron.Moment) bool {
+	fields := strings.Fields(expr)
+	if len(fields) == 5 && fields[2] != "*" && fields[4] != "*" {
+		byDay, err1 := cron.NewSchedule(strings.Join([]string{fields[0], fields[1], fields[2], fields[3], "*"}, " "))
+		byWeekday, err2 := cron.NewSchedule(strings.Join([]string{fields[0], fields[1], "*", fields[3], fields[4]}, " "))
+		return err1 == nil && err2 == nil && (byDay.IsDue(moment) || byWeekday.IsDue(moment))
+	}
+	schedule, err := cron.NewSchedule(expr)
+	return err == nil && schedule.IsDue(moment)
 }
 
 // taskLabel names a task in events and commands: its target and its command.

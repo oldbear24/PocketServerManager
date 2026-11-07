@@ -54,7 +54,7 @@ func upScheduledTasks(app core.App) error {
 		// the last run, as the panel keeps it
 		&core.DateField{Name: "last_run_at"},
 		&core.SelectField{Name: "last_status", MaxSelect: 1, Values: []string{
-			schema.TaskRunning, schema.TaskSucceeded, schema.TaskFailed, schema.TaskTimedOut, schema.TaskSkipped,
+			schema.TaskRunning, schema.TaskSucceeded, schema.TaskFailed, schema.TaskTimedOut, schema.TaskSkipped, schema.TaskCancelled,
 		}},
 		&core.NumberField{Name: "last_exit_code", OnlyInt: true},
 		&core.NumberField{Name: "last_duration_ms", OnlyInt: true},

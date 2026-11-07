@@ -760,7 +760,11 @@ func (m *Manager) settle(hostID string, finished *agentv1.FinishedCommand) {
 		return
 	}
 
-	m.finish(record, status, finished.GetError(), nil)
+	var result map[string]any
+	if finished.GetResult() != nil {
+		result = finished.GetResult().AsMap()
+	}
+	m.finish(record, status, finished.GetError(), result)
 }
 
 func statusOf(state agentv1.CommandState) string {

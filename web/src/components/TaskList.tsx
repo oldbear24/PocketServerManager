@@ -1,5 +1,5 @@
 import { Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { errorMessage } from "../lib/api";
@@ -178,13 +178,13 @@ function TaskDialog({
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const services = target.kind === "stack" ? target.services : [];
+  const known = target.kind === "stack" ? target.services : [];
   const [values, setValues] = useState({
     command: task?.command ?? "",
     schedule: task?.schedule ?? schedulePresets[0],
     timeout: String(task?.timeout_s ?? 300),
     enabled: task?.enabled ?? true,
-    service: task?.service ?? services[0] ?? "",
+    service: task?.service ?? known[0] ?? "",
     user: task?.user ?? "",
   });
   const preset = (schedulePresets as readonly string[]).includes(values.schedule)
@@ -195,13 +195,27 @@ function TaskDialog({
   const [busy, setBusy] = useState(false);
   const set = (change: Partial<typeof values>) =>
     setValues((current) => ({ ...current, ...change }));
+  // the task's own service stays a choice when it has no container now
+  const services =
+    values.service.trim() !== "" &&
+    !known.includes(values.service) &&
+    task?.service === values.service
+      ? [values.service, ...known]
+      : known;
+  // the stack's services may arrive after the dialog opened
+  const first = known[0] ?? "";
+  useEffect(() => {
+    if (first !== "") {
+      setValues((current) => (current.service === "" ? { ...current, service: first } : current));
+    }
+  }, [first]);
   const timeout = Number(values.timeout);
   const valid =
     values.command.trim() !== "" &&
     values.schedule.trim() !== "" &&
     Number.isInteger(timeout) &&
     timeout >= 1 &&
-    (target.kind === "site" || values.service !== "");
+    (target.kind === "site" || values.service.trim() !== "");
 
   const save = async () => {
     setBusy(true);
@@ -211,7 +225,9 @@ function TaskDialog({
       schedule: values.schedule.trim(),
       timeout_s: timeout,
       enabled: values.enabled,
-      ...(target.kind === "stack" ? { service: values.service, user: values.user.trim() } : {}),
+      ...(target.kind === "stack"
+        ? { service: values.service.trim(), user: values.user.trim() }
+        : {}),
     };
     try {
       if (task) {

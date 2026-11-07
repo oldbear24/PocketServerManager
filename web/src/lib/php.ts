@@ -108,6 +108,8 @@ export type PhpMail = {
   failed: number;
   last_sent_at: string;
   failures: { at: string; recipients: string; error: string }[];
+  /** Where the count starts: a day ago, or when PHP-FPM last started. */
+  since: string;
 };
 
 /** A change applied to a site's PHP-FPM, or the deployment a new version takes. */

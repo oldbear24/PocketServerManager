@@ -127,6 +127,8 @@ message FinishedCommand {
   string error = 3;
   // finished_at is when the command finished on the agent.
   google.protobuf.Timestamp finished_at = 4;
+  // result is what the command returned, as in its final report.
+  google.protobuf.Struct result = 5;
 }
 
 // SubscribeCommandsResponse is one message on the command stream.

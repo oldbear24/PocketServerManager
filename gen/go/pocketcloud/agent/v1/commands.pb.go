@@ -2935,7 +2935,10 @@ type TaskRun struct {
 	TimeoutS int32 `protobuf:"varint,5,opt,name=timeout_s,json=timeoutS,proto3" json:"timeout_s,omitempty"`
 	// working_dir is where the command starts, such as a PHP site's live
 	// release; empty for the container's own.
-	WorkingDir    string `protobuf:"bytes,6,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	WorkingDir string `protobuf:"bytes,6,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	// masked are the values of the secrets in the container's environment,
+	// which the output hides: viewers read it.
+	Masked        []string `protobuf:"bytes,7,rep,name=masked,proto3" json:"masked,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3010,6 +3013,13 @@ func (x *TaskRun) GetWorkingDir() string {
 		return x.WorkingDir
 	}
 	return ""
+}
+
+func (x *TaskRun) GetMasked() []string {
+	if x != nil {
+		return x.Masked
+	}
+	return nil
 }
 
 // DbServerCreate creates a shared database server as a PocketCloud-owned stack.
@@ -5722,7 +5732,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x04site\x18\x01 \x01(\tR\x04site\x12!\n" +
 	"\fshared_paths\x18\x02 \x03(\tR\vsharedPaths\"!\n" +
 	"\vSitePhpMail\x12\x12\n" +
-	"\x04site\x18\x01 \x01(\tR\x04site\"\xb1\x01\n" +
+	"\x04site\x18\x01 \x01(\tR\x04site\"\xcf\x01\n" +
 	"\aTaskRun\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12!\n" +
 	"\fcontainer_id\x18\x02 \x01(\tR\vcontainerId\x12\x12\n" +
@@ -5730,7 +5740,8 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\acommand\x18\x04 \x01(\tR\acommand\x12\x1b\n" +
 	"\ttimeout_s\x18\x05 \x01(\x05R\btimeoutS\x12\x1f\n" +
 	"\vworking_dir\x18\x06 \x01(\tR\n" +
-	"workingDir\"\xbb\x02\n" +
+	"workingDir\x12\x1c\n" +
+	"\x06masked\x18\a \x03(\tB\x04\xc0\xf3\x18\x01R\x06masked\"\xbb\x02\n" +
 	"\x0eDbServerCreate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06engine\x18\x02 \x01(\tR\x06engine\x12\x14\n" +

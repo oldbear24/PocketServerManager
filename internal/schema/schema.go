@@ -54,6 +54,8 @@ const (
 	TaskFailed    = "failed"
 	TaskTimedOut  = "timed_out"
 	TaskSkipped   = "skipped"
+	// TaskCancelled is a run stopped by hand or never delivered: no failure of the task.
+	TaskCancelled = "cancelled"
 )
 
 // Reserved names of collections that land with later features. They are listed

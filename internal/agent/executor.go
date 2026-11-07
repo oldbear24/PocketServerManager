@@ -33,6 +33,8 @@ var perTypeLimits = map[string]int{
 	"site.deploy": 2,
 	"backup.":     2,
 	"db.":         3,
+	// scheduled tasks may run for hours: they never take every worker
+	"task.": 4,
 }
 
 // errHandedOver is returned by a handler that started work which outlives this

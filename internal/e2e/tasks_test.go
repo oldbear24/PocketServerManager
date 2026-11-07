@@ -22,18 +22,22 @@ import (
 type taskRuns struct {
 	mu   sync.Mutex
 	runs []*fakedocker.ExecCall
+	// env is what env prints, as the container's variables
+	env string
 }
 
 func (r *taskRuns) answer(call *fakedocker.ExecCall, _ []byte) fakedocker.ExecResult {
-	if len(call.Cmd) < 6 || call.Cmd[3] != "pocketcloud-task" {
+	if len(call.Cmd) < 7 || call.Cmd[3] != "pocketcloud-task" {
 		return fakedocker.ExecResult{}
 	}
 	r.mu.Lock()
 	r.runs = append(r.runs, call)
 	r.mu.Unlock()
-	switch command := call.Cmd[5]; {
+	switch command := call.Cmd[6]; {
 	case strings.HasPrefix(command, "wp cron"):
 		return fakedocker.ExecResult{Stdout: "Executed the cron event 'wp_version_check'.\nSuccess: Executed a total of 2 cron events.\n"}
+	case command == "env":
+		return fakedocker.ExecResult{Stdout: r.env}
 	case strings.HasPrefix(command, "sleep"):
 		// as timeout reports a command it killed, at the timeout
 		time.Sleep(1100 * time.Millisecond)
@@ -107,11 +111,45 @@ func TestAPHPSitesTaskRunsOnItsSchedule(t *testing.T) {
 		t.Errorf("the last run: %v", record.PublicExport())
 	}
 	call := runs.runs[0]
-	if call.User != "www-data" || call.WorkingDir != "/srv/sites/blog/current" || call.Cmd[4] != "300" || call.Cmd[5] != "wp cron event run --due-now" {
+	if call.User != "www-data" || call.WorkingDir != "/srv/sites/blog/current" || call.Cmd[4] != "300" || call.Cmd[6] != "wp cron event run --due-now" {
 		t.Errorf("the run: user %q, dir %q, %v", call.User, call.WorkingDir, call.Cmd)
 	}
 	if found := s.docker.Find("blog-php"); found == nil || call.Container != found.ID {
 		t.Errorf("ran in %s", call.Container)
+	}
+
+	// the output, which viewers read, hides the site's secrets, and no
+	// command keeps them
+	const secret = "base64:task-sekrit-5150"
+	status, out = s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/php/secrets", s.operator, map[string]any{"app-key": secret})
+	if status != http.StatusOK {
+		t.Fatalf("secrets: %d %v", status, out)
+	}
+	s.appliedPHP(out)
+	status, out = s.request(http.MethodPut, "/api/pc/sites/"+siteID+"/php", s.operator, map[string]any{"env": "APP_KEY=${secret:app-key}"})
+	if status != http.StatusOK {
+		t.Fatalf("settings: %d %v", status, out)
+	}
+	s.appliedPHP(out)
+	runs.env = "HOME=/var/www\nAPP_KEY=" + secret + "\n"
+	status, out = s.request(http.MethodPatch, "/api/collections/scheduled_tasks/records/"+taskID, s.operator, map[string]any{"command": "env"})
+	if status != http.StatusOK {
+		t.Fatalf("edit: %d %v", status, out)
+	}
+	status, out = s.request(http.MethodPost, "/api/pc/tasks/"+taskID+"/run", s.operator, nil)
+	if status != http.StatusOK {
+		t.Fatalf("run: %d %v", status, out)
+	}
+	s.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed)
+	s.waitFor("the run to be kept", func() bool {
+		task := s.task(taskID)
+		return task.GetString("last_command") == out["command"] && task.GetString("last_status") != schema.TaskRunning
+	})
+	if output := s.task(taskID).GetString("last_output"); strings.Contains(output, secret) || !strings.Contains(output, "APP_KEY=***") {
+		t.Errorf("the output shows the secret: %q", output)
+	}
+	if _, raw := testutil.Do(t, s.handler, testutil.Request{URL: "/api/collections/commands/records?perPage=200", Token: s.operator}); strings.Contains(raw, secret) {
+		t.Error("a command shows the secret")
 	}
 
 	// a failing command, three times in a row: each is an event, the third an alert
@@ -233,6 +271,29 @@ func TestAStacksTaskRunsInItsServicesContainer(t *testing.T) {
 	h.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed)
 	if runs.count() != 1 || runs.runs[0].Container != app || runs.runs[0].User != "www-data" || runs.runs[0].WorkingDir != "" {
 		t.Fatalf("the runs: %d", runs.count())
+	}
+
+	// the output hides the stack's secrets
+	const secret = "stack-sekrit-7788"
+	if status, out := request(http.MethodPost, "/api/pc/stacks/"+stack+"/save", `{"secrets":{"set":{"DB_PASS":"`+secret+`"}}}`); status != http.StatusOK {
+		t.Fatalf("secrets: %d %v", status, out)
+	}
+	runs.env = "DB_PASS=" + secret + "\n"
+	if status, out := request(http.MethodPatch, "/api/collections/scheduled_tasks/records/"+taskID, `{"command":"env"}`); status != http.StatusOK {
+		t.Fatalf("edit: %d %v", status, out)
+	}
+	status, out = request(http.MethodPost, "/api/pc/tasks/"+taskID+"/run", "")
+	if status != http.StatusOK {
+		t.Fatalf("run: %d %v", status, out)
+	}
+	h.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed)
+	h.waitFor("the run to be kept", func() bool {
+		task, err := h.app.FindRecordById(schema.ScheduledTasks, taskID)
+		return err == nil && task.GetString("last_command") == out["command"] && task.GetString("last_status") != schema.TaskRunning
+	})
+	if task, _ := h.app.FindRecordById(schema.ScheduledTasks, taskID); strings.Contains(task.GetString("last_output"), secret) ||
+		!strings.Contains(task.GetString("last_output"), "DB_PASS=***") {
+		t.Errorf("the output shows the secret: %q", task.GetString("last_output"))
 	}
 
 	// a service without a running container says so

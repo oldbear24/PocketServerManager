@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
@@ -168,12 +169,19 @@ func (s *commandStore) recentlyFinished() []*agentv1.FinishedCommand {
 		if !entry.finished() {
 			continue
 		}
-		finished = append(finished, &agentv1.FinishedCommand{
+		command := &agentv1.FinishedCommand{
 			CommandId:  entry.ID,
 			State:      entry.protoState(),
 			Error:      entry.Error,
 			FinishedAt: timestamppb.New(entry.FinishedAt),
-		})
+		}
+		// a final report lost on the way keeps its result, such as a task's
+		if entry.Result != nil {
+			if encoded, err := structpb.NewStruct(entry.Result); err == nil {
+				command.Result = encoded
+			}
+		}
+		finished = append(finished, command)
 	}
 
 	return finished

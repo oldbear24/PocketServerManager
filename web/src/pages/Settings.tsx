@@ -275,6 +275,7 @@ function SmtpCard() {
               id="smtp-from"
               className="input mono"
               placeholder="noreply@example.org"
+              required={values.host.trim() !== ""}
               value={values.from}
               onChange={(event) => set({ from: event.target.value })}
             />
