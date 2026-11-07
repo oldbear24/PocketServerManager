@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -630,7 +631,9 @@ func (p *Panel) enrichSiteDeploy(record *core.Record, command *agentv1.Command) 
 		payload.Php.Masked = masked
 		payload.Php.Secrets = secrets
 		if payload.Php.Apply != nil {
-			payload.Php.Apply.Secrets = secrets
+			if payload.Php.Apply.Secrets, err = p.smtpSecret(maps.Clone(secrets)); err != nil {
+				return err
+			}
 		}
 	}
 	if payload.GetSource() != sites.SourceGit {

@@ -58,6 +58,7 @@ const (
 func (a *Agent) registerPHPHandlers() {
 	a.Executor.Handle("site.php.apply", a.handleSitePHPApply)
 	a.Executor.Handle("site.php.status", a.handleSitePHPStatus)
+	a.Executor.Handle("site.php.mail", a.handleSitePHPMail)
 }
 
 // handleSitePHPStatus reads a site's PHP-FPM with the runtime image's status

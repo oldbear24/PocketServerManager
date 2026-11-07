@@ -379,7 +379,7 @@ func (p *Panel) phpApplyPayloadOf(site, settings *core.Record) (*agentv1.SitePhp
 		Image:         p.phpImage(settings.GetString("php_version")),
 		FpmConf:       fpmConf(site.GetString("name"), fpmOf(settings)),
 		PhpIni:        phpIni(settings),
-		Env:           plain,
+		Env:           p.smtpEnv(plain),
 		CpuLimit:      settings.GetFloat("cpu_limit"),
 		MemLimitBytes: uint64(max(settings.GetInt("mem_limit_mb"), 0)) << 20, //nolint:gosec // checked above 0
 		Networks:      p.siteNetworks(site),
@@ -453,7 +453,9 @@ func (p *Panel) enrichPHPApply(record *core.Record, command *agentv1.Command) er
 	if err != nil {
 		return err
 	}
-	payload.Secrets = secrets
+	if payload.Secrets, err = p.smtpSecret(secrets); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -472,7 +474,10 @@ func (p *Panel) enrichRollbackPHP(record *core.Record, command *agentv1.Command)
 	if err != nil {
 		return err
 	}
-	apply.Secrets, err = p.phpSecrets(site, settings)
+	if apply.Secrets, err = p.phpSecrets(site, settings); err != nil {
+		return err
+	}
+	apply.Secrets, err = p.smtpSecret(apply.Secrets)
 	return err
 }
 

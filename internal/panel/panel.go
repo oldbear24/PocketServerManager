@@ -206,6 +206,7 @@ func (p *Panel) Register() {
 		p.bindLabelRoutes(group)
 		p.bindSiteRoutes(group)
 		p.bindTaskRoutes(group)
+		p.bindMailRoutes(group)
 		p.bindProvisionRoutes(group)
 		p.bindLANRoutes(group)
 		// setups of new sites that a restart interrupted go on

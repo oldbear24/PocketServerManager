@@ -161,6 +161,7 @@ var Specs = map[string]Spec{
 	"site.php.apply": {Timeout: 5 * time.Minute, Resource: site},
 	// a read, which waits for no deployment
 	"site.php.status": {Timeout: 30 * time.Second},
+	"site.php.mail":   {Timeout: 30 * time.Second},
 
 	"task.run": {Timeout: time.Hour},
 

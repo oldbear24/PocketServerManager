@@ -544,6 +544,8 @@ type LogOptions struct {
 	Tail       int
 	Follow     bool
 	Timestamps bool
+	// Since leaves out what was logged before it; zero for everything.
+	Since time.Time
 }
 
 // Logs opens the log stream of a container. For a container without a TTY the
@@ -557,6 +559,9 @@ func (c *Client) Logs(ctx context.Context, id string, options LogOptions) (io.Re
 	}
 	if options.Tail >= 0 {
 		query.Set("tail", strconv.Itoa(options.Tail))
+	}
+	if !options.Since.IsZero() {
+		query.Set("since", strconv.FormatInt(options.Since.Unix(), 10))
 	}
 
 	res, err := c.request(ctx, http.MethodGet, "/containers/"+id+"/logs", query, nil, nil)

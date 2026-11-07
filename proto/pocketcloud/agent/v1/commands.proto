@@ -74,6 +74,8 @@ message Command {
     SitePhpApply site_php_apply = 153;
     // site_php_status reads the state of a site's PHP-FPM (#50).
     SitePhpStatus site_php_status = 154;
+    // site_php_mail counts the mail a PHP site sent through the relay (#51).
+    SitePhpMail site_php_mail = 155;
 
     // task_run runs a scheduled task.
     TaskRun task_run = 160;
@@ -452,6 +454,13 @@ message SitePhpStatus {
   // shared_paths are the site's paths in shared/, whose sizes the agent
   // reports.
   repeated string shared_paths = 2;
+}
+
+// SitePhpMail counts the mail a PHP site sent in the last day, from msmtp's
+// lines in its PHP-FPM container's log.
+message SitePhpMail {
+  // site is the site name.
+  string site = 1;
 }
 
 // TaskRun runs a scheduled task with `docker exec`.
