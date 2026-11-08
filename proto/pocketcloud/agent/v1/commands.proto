@@ -772,6 +772,17 @@ message BackupRepository {
   map<string, string> env = 2 [(pocketcloud.options.v1.sensitive) = true];
   // password is the repository password.
   string password = 3 [(pocketcloud.options.v1.sensitive) = true];
+  // target_id is the `backup_targets` record; the panel adds the secrets
+  // when it delivers the command (#28).
+  string target_id = 4;
+  // options are restic's `-o` options, such as `sftp.command`.
+  map<string, string> options = 5;
+  // ssh_key is an SFTP target's private key.
+  string ssh_key = 6 [(pocketcloud.options.v1.sensitive) = true];
+  // known_hosts pins an SFTP server's host key.
+  string known_hosts = 7;
+  // mount is the server's directory of a local target, mounted at /repo.
+  string mount = 8;
 }
 
 // BackupInit initialises a restic repository, if it does not exist yet.

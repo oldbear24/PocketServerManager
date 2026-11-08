@@ -4586,7 +4586,18 @@ type BackupRepository struct {
 	// env holds the storage credentials for restic's environment.
 	Env map[string]string `protobuf:"bytes,2,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// password is the repository password.
-	Password      string `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	Password string `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	// target_id is the `backup_targets` record; the panel adds the secrets
+	// when it delivers the command (#28).
+	TargetId string `protobuf:"bytes,4,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	// options are restic's `-o` options, such as `sftp.command`.
+	Options map[string]string `protobuf:"bytes,5,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// ssh_key is an SFTP target's private key.
+	SshKey string `protobuf:"bytes,6,opt,name=ssh_key,json=sshKey,proto3" json:"ssh_key,omitempty"`
+	// known_hosts pins an SFTP server's host key.
+	KnownHosts string `protobuf:"bytes,7,opt,name=known_hosts,json=knownHosts,proto3" json:"known_hosts,omitempty"`
+	// mount is the server's directory of a local target, mounted at /repo.
+	Mount         string `protobuf:"bytes,8,opt,name=mount,proto3" json:"mount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4638,6 +4649,41 @@ func (x *BackupRepository) GetEnv() map[string]string {
 func (x *BackupRepository) GetPassword() string {
 	if x != nil {
 		return x.Password
+	}
+	return ""
+}
+
+func (x *BackupRepository) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *BackupRepository) GetOptions() map[string]string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *BackupRepository) GetSshKey() string {
+	if x != nil {
+		return x.SshKey
+	}
+	return ""
+}
+
+func (x *BackupRepository) GetKnownHosts() string {
+	if x != nil {
+		return x.KnownHosts
+	}
+	return ""
+}
+
+func (x *BackupRepository) GetMount() string {
+	if x != nil {
+		return x.Mount
 	}
 	return ""
 }
@@ -6025,12 +6071,21 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12+\n" +
 	"\x11key_authorization\x18\x02 \x01(\tR\x10keyAuthorization\",\n" +
 	"\x14AcmeChallengeCleanup\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token\"\xc7\x01\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"\xc5\x03\n" +
 	"\x10BackupRepository\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12G\n" +
 	"\x03env\x18\x02 \x03(\v2/.pocketcloud.agent.v1.BackupRepository.EnvEntryB\x04\xc0\xf3\x18\x01R\x03env\x12 \n" +
-	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\x1a6\n" +
+	"\bpassword\x18\x03 \x01(\tB\x04\xc0\xf3\x18\x01R\bpassword\x12\x1b\n" +
+	"\ttarget_id\x18\x04 \x01(\tR\btargetId\x12M\n" +
+	"\aoptions\x18\x05 \x03(\v23.pocketcloud.agent.v1.BackupRepository.OptionsEntryR\aoptions\x12\x1d\n" +
+	"\assh_key\x18\x06 \x01(\tB\x04\xc0\xf3\x18\x01R\x06sshKey\x12\x1f\n" +
+	"\vknown_hosts\x18\a \x01(\tR\n" +
+	"knownHosts\x12\x14\n" +
+	"\x05mount\x18\b \x01(\tR\x05mount\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
+	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"T\n" +
 	"\n" +
@@ -6146,7 +6201,7 @@ func file_pocketcloud_agent_v1_commands_proto_rawDescGZIP() []byte {
 }
 
 var file_pocketcloud_agent_v1_commands_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
 var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(DnsRewriteOp)(0),              // 0: pocketcloud.agent.v1.DnsRewriteOp
 	(*Command)(nil),                // 1: pocketcloud.agent.v1.Command
@@ -6223,11 +6278,12 @@ var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	nil,                            // 72: pocketcloud.agent.v1.DbServerCreate.TuningEntry
 	nil,                            // 73: pocketcloud.agent.v1.EdgeApply.SecretsEntry
 	nil,                            // 74: pocketcloud.agent.v1.BackupRepository.EnvEntry
-	nil,                            // 75: pocketcloud.agent.v1.BackupRun.EnvEntry
-	(*timestamppb.Timestamp)(nil),  // 76: google.protobuf.Timestamp
+	nil,                            // 75: pocketcloud.agent.v1.BackupRepository.OptionsEntry
+	nil,                            // 76: pocketcloud.agent.v1.BackupRun.EnvEntry
+	(*timestamppb.Timestamp)(nil),  // 77: google.protobuf.Timestamp
 }
 var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
-	76, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
+	77, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
 	2,  // 1: pocketcloud.agent.v1.Command.container_start:type_name -> pocketcloud.agent.v1.ContainerStart
 	3,  // 2: pocketcloud.agent.v1.Command.container_stop:type_name -> pocketcloud.agent.v1.ContainerStop
 	4,  // 3: pocketcloud.agent.v1.Command.container_restart:type_name -> pocketcloud.agent.v1.ContainerRestart
@@ -6312,22 +6368,23 @@ var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
 	43, // 82: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
 	73, // 83: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
 	74, // 84: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	49, // 85: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 86: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	75, // 87: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	49, // 88: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 89: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 90: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 91: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 92: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 93: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	0,  // 94: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
-	64, // 95: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
-	96, // [96:96] is the sub-list for method output_type
-	96, // [96:96] is the sub-list for method input_type
-	96, // [96:96] is the sub-list for extension type_name
-	96, // [96:96] is the sub-list for extension extendee
-	0,  // [0:96] is the sub-list for field type_name
+	75, // 85: pocketcloud.agent.v1.BackupRepository.options:type_name -> pocketcloud.agent.v1.BackupRepository.OptionsEntry
+	49, // 86: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 87: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	76, // 88: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	49, // 89: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 90: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 91: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 92: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 93: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49, // 94: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	0,  // 95: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
+	64, // 96: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
+	97, // [97:97] is the sub-list for method output_type
+	97, // [97:97] is the sub-list for method input_type
+	97, // [97:97] is the sub-list for extension type_name
+	97, // [97:97] is the sub-list for extension extendee
+	0,  // [0:97] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }
@@ -6399,7 +6456,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_commands_proto_rawDesc), len(file_pocketcloud_agent_v1_commands_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   75,
+			NumMessages:   76,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
