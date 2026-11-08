@@ -878,7 +878,8 @@ func (p *Panel) provisionCertificate(names []string, internal bool) *core.Record
 	var found *core.Record
 	for _, record := range records {
 		covered := certificateNames(record)
-		if (record.GetString("issuer") == schema.IssuerInternal) != internal {
+		// the panel's own never reaches an edge (#63)
+		if record.GetBool("panel") || (record.GetString("issuer") == schema.IssuerInternal) != internal {
 			continue
 		}
 		if !slices.ContainsFunc(names, func(name string) bool { return !edge.Covers(covered, name) }) {
