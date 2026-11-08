@@ -1,0 +1,70 @@
+# Laravel (#52), from Git or an upload. The site's environment is the
+# application's: the panel writes it into .env at every release, as the
+# environment of every container of the site has it too, and Laravel caches
+# its configuration at the release, so a change of the environment deploys
+# the live release again.
+name: laravel
+title: Laravel
+detect: [artisan]
+docroot: public
+# Laravel's own health route (Laravel 11 and later)
+health: /up
+release_hook: |
+  set -e
+  if [ -n "${DB_HOST:-}" ]; then
+    php artisan migrate --force
+  fi
+  php artisan optimize
+# made by PocketCloud as `php artisan storage:link` would, as PHP of a site
+# cannot make links
+links:
+  - path: public/storage
+    target: storage/app/public
+shared:
+  - path: storage
+backup_exclude: [storage/framework/cache, storage/framework/views, storage/logs]
+env_file: .env
+redeploy_on_env: true
+php_ini:
+  - memory_limit = 256M
+env:
+  - name: APP_ENV
+    value: production
+  - name: APP_DEBUG
+    value: "false"
+  - name: APP_URL
+    value: "{{.URL}}"
+  - name: APP_KEY
+    value: "${secret:app-key}"
+  # the container's log, which the site's page shows
+  - name: LOG_CHANNEL
+    value: stderr
+  # without a database, what Laravel keeps there by default goes to storage/
+  - name: SESSION_DRIVER
+    value: file
+    without_database: true
+  - name: CACHE_STORE
+    value: file
+    without_database: true
+  - name: QUEUE_CONNECTION
+    value: sync
+    without_database: true
+# the names of Laravel's configuration for the site's database
+database_env:
+  - name: DB_CONNECTION
+    value: '{{if eq .Engine "postgres"}}pgsql{{else}}mysql{{end}}'
+  - name: DB_DATABASE
+    value: "{{.Database}}"
+  - name: DB_USERNAME
+    value: "{{.User}}"
+secrets:
+  - name: app-key
+    kind: laravel-key
+tasks:
+  - schedule: "* * * * *"
+    command: php artisan schedule:run
+    timeout_s: 3600
+# a container of its own, from the same image and release, when the site's
+# settings ask for one
+worker:
+  command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600

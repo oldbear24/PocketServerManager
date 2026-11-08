@@ -1,0 +1,13 @@
+# Nette (#52), from Git or an upload, laid out as nette/web-project is.
+name: nette
+title: Nette
+detect: [app/Bootstrap.php, app/bootstrap.php]
+docroot: www
+health: /
+shared:
+  - path: log
+  # Nette's caches: of no use in a backup, and emptied once a new release is
+  # live, as they may hold what the old code compiled
+  - path: temp
+    backup: false
+    clear: true
