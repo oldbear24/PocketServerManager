@@ -128,10 +128,11 @@ func TestAPHPSiteRunsInAPHPFPMContainerOfItsOwn(t *testing.T) {
 	own, shared := mounts[0].(map[string]any), mounts[1].(map[string]any)
 	ownOptions, _ := own["VolumeOptions"].(map[string]any)
 	sharedOptions, _ := shared["VolumeOptions"].(map[string]any)
-	if own["Target"] != "/srv/sites/shop" || own["ReadOnly"] != true || ownOptions["Subpath"] != "shop" {
+	if own["Target"] != "/srv/sites/shop" || own["ReadOnly"] != true || ownOptions["Subpath"] != "shop" || ownOptions["NoCopy"] != true {
 		t.Errorf("the site's own directory: %v", own)
 	}
-	if shared["Target"] != "/srv/sites/shop/shared" || shared["ReadOnly"] == true || sharedOptions["Subpath"] != "shop/shared" {
+	// an empty shared/ keeps its owner: the engine copies nothing into it
+	if shared["Target"] != "/srv/sites/shop/shared" || shared["ReadOnly"] == true || sharedOptions["Subpath"] != "shop/shared" || sharedOptions["NoCopy"] != true {
 		t.Errorf("shared/: %v", shared)
 	}
 	pool := string(s.docker.File("shop-php", "/usr/local/etc/php-fpm.d/zz-pocketcloud-site.conf"))

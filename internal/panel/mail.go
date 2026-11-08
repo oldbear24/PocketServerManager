@@ -205,7 +205,8 @@ func (p *Panel) handlePHPMail(e *core.RequestEvent) error {
 	if site.GetString("type") != schema.SitePHPApp {
 		return e.BadRequestError("This is not a PHP site.", nil)
 	}
-	relay := map[string]any(nil)
+	// null without a relay: a nil map would be {}, which the page takes for one
+	var relay any
 	if settings, err := p.settingsRecord(); err == nil && settings.GetString("smtp_host") != "" {
 		relay = map[string]any{"host": settings.GetString("smtp_host"), "port": smtpPort(settings)}
 	}

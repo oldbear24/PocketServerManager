@@ -1,0 +1,72 @@
+# WordPress (#52). Its code is WordPress's own, from a fresh install with
+# WP-CLI or from Git or an upload; its settings come from the site's
+# environment through the wp-config.php below, which a source without one gets.
+name: wordpress
+title: WordPress
+# a source with any of these is WordPress
+detect: [wp-load.php, wp-includes/version.php, wp-config.php]
+# WordPress serves from the root of its release
+docroot: ""
+# WordPress keeps its data in its database, MariaDB's or MySQL's: it needs one
+database: required
+database_engines: [mariadb]
+health: /
+# a site without a source of its own: WP-CLI downloads WordPress in the
+# build, in the language chosen; the release hook installs it
+fresh:
+  build: wp core download --locale={{.Locale}}
+files:
+  - path: wp-config.php
+    from: wordpress/wp-config.php
+# a fresh install is done with what the wizard asked for, which only its
+# first deployment has; a site from Git or an upload is installed from
+# /wp-admin/install.php if its database is empty
+release_hook: |
+  set -e
+  if wp core is-installed; then
+    wp core update-db
+  elif [ -n "${POCKETCLOUD_INSTALL_ADMIN_USER:-}" ]; then
+    wp core install --url="$WP_HOME" --title="$POCKETCLOUD_INSTALL_TITLE" --admin_user="$POCKETCLOUD_INSTALL_ADMIN_USER" \
+      --admin_email="$POCKETCLOUD_INSTALL_ADMIN_EMAIL" --admin_password="$POCKETCLOUD_INSTALL_ADMIN_PASSWORD" \
+      --locale="${POCKETCLOUD_INSTALL_LOCALE:-en_US}" --skip-email
+  else
+    echo "WordPress is not installed yet: open /wp-admin/install.php to install it."
+  fi
+shared:
+  - path: wp-content/uploads
+backup_exclude: [wp-content/cache, wp-content/upgrade]
+php_ini:
+  - upload_max_filesize = 64M
+  - post_max_size = 64M
+  - memory_limit = 256M
+env:
+  - name: WP_HOME
+    value: "{{.URL}}"
+  - name: WP_SITEURL
+    value: "{{.URL}}"
+  # every key and salt of wp-config.php is derived from it
+  - name: WP_SALT
+    value: "${secret:wp-salt}"
+secrets:
+  - name: wp-salt
+    kind: random
+# wp-config.php turns WordPress's own cron off in releases mode: the panel runs it
+tasks:
+  - schedule: "*/5 * * * *"
+    command: wp cron event run --due-now
+    timeout_s: 300
+# "Update WordPress": a new release, a copy of the live one with these run in
+# it before the release hook, so a broken update is one rollback away
+update:
+  # what WordPress last learnt of updates is forgotten first: it asks again
+  # only every 12 hours, and an update would miss what came out since
+  command: |
+    set -e
+    wp transient delete update_core --network
+    wp transient delete update_plugins --network
+    wp transient delete update_themes --network
+    wp core update
+    wp plugin update --all
+    wp theme update --all
+  add_plugin: wp plugin install --activate
+  add_theme: wp theme install

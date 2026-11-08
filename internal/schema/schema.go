@@ -152,8 +152,8 @@ const (
 	PHPClassic  = "classic"
 )
 
-// Templates of a PHP site. custom is code of one's own; the frameworks come
-// with #52.
+// Templates of a PHP site. custom is code of one's own; the frameworks'
+// templates are internal/phpapps' (#52).
 const (
 	PHPCustom    = "custom"
 	PHPWordPress = "wordpress"
@@ -182,6 +182,8 @@ const (
 	TriggerManual = "manual"
 	TriggerPush   = "push"
 	TriggerUpload = "upload"
+	// TriggerUpdate is an update of a PHP application, such as WordPress's (#52)
+	TriggerUpdate = "update"
 )
 
 // TLS of a domain: auto serves it over HTTPS with a certificate that is not

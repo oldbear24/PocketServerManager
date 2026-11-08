@@ -23,6 +23,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/php"
+	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 	"github.com/oldbear24/PocketServerManager/internal/stacks"
@@ -88,6 +89,9 @@ type phpSettingsBody struct {
 	MemLimitMB  *int         `json:"mem_limit_mb"`
 	SharedPaths *[]string    `json:"shared_paths"`
 	ReleaseHook *string      `json:"release_hook"`
+	// of a template's (#52)
+	QueueWorker *bool   `json:"queue_worker"`
+	HealthPath  *string `json:"health_path"`
 }
 
 var (
@@ -101,6 +105,7 @@ func (p *Panel) registerPHPSites() {
 	p.Commands.RegisterEnricher("site.php.apply", p.enrichPHPApply)
 	p.Commands.RegisterEnricher("site.rollback", p.enrichRollbackPHP)
 	p.Commands.OnFinish("site.php.apply", p.phpApplyFinished)
+	p.Commands.RegisterEnricher("site.detect", p.enrichSiteDetect)
 }
 
 // phpImage is the runtime image of a PHP version.
@@ -213,6 +218,17 @@ func checkPHPSettings(settings *core.Record) error {
 	}
 	if len(settings.GetString("release_hook")) > 4096 {
 		return errors.New("the release hook is a command of up to 4096 characters")
+	}
+	if template := settings.GetString("template"); template != schema.PHPCustom && template != "" {
+		if _, ok := phpapps.Get(template); !ok {
+			return fmt.Errorf("the application is custom or one of %s", strings.Join(phpapps.Names(), ", "))
+		}
+	}
+	if health := settings.GetString("health_path"); health != "" && (!strings.HasPrefix(health, "/") || len(health) > 255 || strings.ContainsAny(health, " #\r\n\t")) {
+		return errors.New("the health check is a path of the site, such as /up, or empty for none")
+	}
+	if t, ok := templateOf(settings); settings.GetBool("queue_worker") && (!ok || t.Worker == nil) {
+		return errors.New("only an application whose template has a worker, such as Laravel, gets one")
 	}
 	return nil
 }
@@ -374,12 +390,17 @@ func (p *Panel) phpApplyPayloadOf(site, settings *core.Record) (*agentv1.SitePhp
 	if err != nil {
 		return nil, nil, err
 	}
+	if plain == nil {
+		plain = map[string]string{}
+	}
+	plain[envMode] = modeOf(settings)
 	return &agentv1.SitePhpApply{
 		Site:          site.GetString("name"),
 		Image:         p.phpImage(settings.GetString("php_version")),
 		FpmConf:       fpmConf(site.GetString("name"), fpmOf(settings)),
 		PhpIni:        phpIni(settings),
 		Env:           p.smtpEnv(plain),
+		WorkerCommand: workerCommand(settings),
 		CpuLimit:      settings.GetFloat("cpu_limit"),
 		MemLimitBytes: uint64(max(settings.GetInt("mem_limit_mb"), 0)) << 20, //nolint:gosec // checked above 0
 		Networks:      p.siteNetworks(site),
@@ -420,13 +441,15 @@ func (p *Panel) phpDeploy(site, deployment *core.Record) (*agentv1.SitePhpDeploy
 	if deployment != nil && deployment.GetString("php_version") != "" {
 		version = deployment.GetString("php_version")
 	}
-	return &agentv1.SitePhpDeploy{
+	deploy := &agentv1.SitePhpDeploy{
 		Image:    p.phpImage(version),
 		Docroot:  settings.GetString("docroot"),
 		Classic:  settings.GetString("mode") == schema.PHPClassic,
 		Env:      plain,
 		Networks: p.siteNetworks(site),
-	}, sharedPathsOf(settings), settings.GetString("release_hook"), nil
+	}
+	templateDeploy(deploy, settings, deployment)
+	return deploy, sharedPathsOf(settings), settings.GetString("release_hook"), nil
 }
 
 // siteOfCommand finds the site a command of a host names.
@@ -594,6 +617,7 @@ func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
 	}
 	before := settings.GetString("php_version")
 	beforeRoot := settings.GetString("docroot")
+	beforeEnv := settings.GetString("env")
 	set := func(field string, value any) { settings.Set(field, value) }
 	if body.PHPVersion != nil {
 		set("php_version", strings.TrimSpace(*body.PHPVersion))
@@ -628,6 +652,12 @@ func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
 	if body.ReleaseHook != nil {
 		set("release_hook", strings.TrimSpace(*body.ReleaseHook))
 	}
+	if body.QueueWorker != nil {
+		set("queue_worker", *body.QueueWorker)
+	}
+	if body.HealthPath != nil {
+		set("health_path", strings.TrimSpace(*body.HealthPath))
+	}
 	if err := checkPHPSettings(settings); err != nil {
 		return e.BadRequestError(capitalize(err.Error())+".", nil)
 	}
@@ -652,6 +682,13 @@ func (p *Panel) handlePHPSettings(e *core.RequestEvent) error {
 			Trigger: schema.TriggerManual, RequestedBy: id, Requester: label,
 			Message: fmt.Sprintf("PHP %s → %s", before, version), PHPApply: true, PHPFrom: before, Again: live,
 		})
+		if err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+		result["deployment"] = deployment.Id
+	} else if live, redeploys := p.redeploysOnEnv(site, settings); redeploys && settings.GetString("env") != beforeEnv {
+		// the application caches its environment at the release (#52)
+		deployment, err := p.redeployForEnv(e.Request.Context(), site, settings, live, commands.Options{RequestedBy: id, Requester: label})
 		if err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
 		}
@@ -689,15 +726,9 @@ func (p *Panel) handlePHPSecrets(e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError("", err)
 	}
-	own := map[string]string{}
-	if sealed := settings.GetString("secrets"); sealed != "" {
-		plain, err := p.Box.OpenString(sealed)
-		if err != nil {
-			return e.InternalServerError("The site's secrets cannot be opened.", err)
-		}
-		if err := json.Unmarshal([]byte(plain), &own); err != nil {
-			return e.InternalServerError("", err)
-		}
+	own, err := p.ownSecrets(settings)
+	if err != nil {
+		return e.InternalServerError("The site's secrets cannot be opened.", err)
 	}
 	for name, value := range body {
 		if !secretName.MatchString(name) {
@@ -709,18 +740,10 @@ func (p *Panel) handlePHPSecrets(e *core.RequestEvent) error {
 			own[name] = *value
 		}
 	}
-	raw, _ := json.Marshal(own)
-	names := make([]string, 0, len(own))
-	for name := range own {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	sealed, err := p.Box.SealString(string(raw))
-	if err != nil {
+	if err := p.setOwnSecrets(settings, own); err != nil {
 		return e.InternalServerError("", err)
 	}
-	settings.Set("secrets", sealed)
-	settings.Set("secret_names", names)
+	names := settings.GetStringSlice("secret_names")
 	// a secret the environment refers to stays
 	if _, err := p.phpSecrets(site, settings); err != nil {
 		return e.BadRequestError(capitalize(err.Error())+".", nil)
@@ -729,6 +752,14 @@ func (p *Panel) handlePHPSecrets(e *core.RequestEvent) error {
 		return e.BadRequestError("The secrets could not be saved: "+err.Error(), nil)
 	}
 	id, label := requester(e)
+	if live, redeploys := p.redeploysOnEnv(site, settings); redeploys {
+		// the application caches its environment, secrets and all (#52)
+		deployment, err := p.redeployForEnv(e.Request.Context(), site, settings, live, commands.Options{RequestedBy: id, Requester: label})
+		if err != nil {
+			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+		return e.JSON(http.StatusOK, map[string]any{"deployment": deployment.Id, "secret_names": names})
+	}
 	command, err := p.applyPHP(e.Request.Context(), site, commands.Options{RequestedBy: id, Requester: label})
 	if err != nil {
 		return e.InternalServerError("The secrets were saved, but not applied.", err)
@@ -796,7 +827,8 @@ func (p *Panel) connectSite(ctx context.Context, request databaseRequest, server
 		return err
 	}
 	connection := databases.Connection{Engine: engine, Server: server.GetString("name"), Database: database.GetString("name"), User: account.GetString("name")}
-	env, _ := databases.AddEnv(settings.GetString("env"), connection.EnvLines())
+	// and the names the site's application gives them, as Laravel's (#52)
+	env, _ := databases.AddEnv(settings.GetString("env"), append(connection.EnvLines(), templateDatabaseEnv(settings, connection)...))
 	settings.Set("env", env)
 	settings.Set("database", database.Id)
 	if err := p.App.SaveWithContext(audit.WithActor(ctx, request.Actor), settings); err != nil {
@@ -815,7 +847,12 @@ func (p *Panel) connectSite(ctx context.Context, request databaseRequest, server
 		return err
 	}
 	if apply {
-		_, err = p.applyPHP(ctx, site, commands.Options{RequestedBy: request.UserID, Requester: request.Label})
+		options := commands.Options{RequestedBy: request.UserID, Requester: request.Label}
+		if live, redeploys := p.redeploysOnEnv(site, settings); redeploys {
+			_, err = p.redeployForEnv(ctx, site, settings, live, options)
+		} else {
+			_, err = p.applyPHP(ctx, site, options)
+		}
 	}
 	return err
 }

@@ -21,6 +21,7 @@ import (
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
+	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
 
@@ -100,6 +101,30 @@ func (a *Agent) registerSiteHandlers() {
 	x.Handle("site.deploy", a.handleSiteDeploy)
 	x.Handle("site.rollback", a.handleSiteRollback)
 	x.Handle("site.remove", a.handleSiteRemove)
+	x.Handle("site.detect", a.handleSiteDetect)
+}
+
+// handleSiteDetect says which PHP application a repository is, for the
+// new-site wizard (#52): the site tool lists its files without downloading
+// them, in a job of its own.
+func (a *Agent) handleSiteDetect(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
+	payload := command.GetSiteDetect()
+	if payload.GetRepoUrl() == "" {
+		return nil, errors.New("the repository has no URL")
+	}
+	out, err := a.siteRunner().Tool(ctx, toolRun{
+		Args:    []string{"detect", "--url", payload.GetRepoUrl(), "--branch", payload.GetBranch()},
+		Env:     map[string]string{"GIT_TOKEN": payload.GetGitToken()},
+		Network: true,
+	}, reporter)
+	if err != nil {
+		return nil, err
+	}
+	var found detected
+	if err := json.Unmarshal(out, &found); err != nil {
+		return nil, fmt.Errorf("the site tool said: %s", out)
+	}
+	return map[string]any{"template": found.Template, "commit": found.Commit}, nil
 }
 
 func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
@@ -114,28 +139,41 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 	runner := a.siteRunner()
 	deployment := []string{"--site", site, "--n", strconv.Itoa(n)}
 
-	source := toolRun{Site: site, Deployment: n, Args: append([]string{"source",
-		"--kind", payload.GetSource(),
+	php := payload.GetPhp()
+	kind := payload.GetSource()
+	if php.GetFromRelease() > 0 {
+		// an update of a PHP application starts from a copy of a release (#52)
+		kind = sites.SourceRelease
+	}
+	source := toolRun{Site: site, Deployment: n, Env: map[string]string{}, Args: append([]string{"source",
+		"--kind", kind,
 		"--generator", payload.GetGenerator(),
 		"--image", payload.GetBuildImage(),
 		"--command", payload.GetBuildCmd(),
 		"--output", payload.GetOutputDir(),
 	}, deployment...)}
-	php := payload.GetPhp()
 	if php != nil {
 		if php.GetImage() == "" {
 			return nil, errors.New("the PHP site has no runtime image")
 		}
 		// built in the runtime image of the site's PHP version
 		source.Args = append(source.Args, "--php", "--image", php.GetImage())
+		// a template's files, such as WordPress's wp-config.php (#52)
+		if files := php.GetFiles(); len(files) > 0 {
+			encoded, err := json.Marshal(files)
+			if err != nil {
+				return nil, err
+			}
+			source.Env[envFiles] = string(encoded)
+		}
 	}
-	switch payload.GetSource() {
+	switch kind {
 	case sites.SourceGit:
 		source.Args = append(source.Args, "--url", payload.GetRepoUrl(), "--branch", payload.GetBranch())
 		if commit := payload.GetCommit(); commit != "" {
 			source.Args = append(source.Args, "--commit", commit)
 		}
-		source.Env = map[string]string{"GIT_TOKEN": payload.GetGitToken()}
+		source.Env["GIT_TOKEN"] = payload.GetGitToken()
 		source.Network = true
 		reporter.Progress("source", "Cloning "+payload.GetRepoUrl(), 10)
 	case sites.SourceUpload:
@@ -148,6 +186,9 @@ func (a *Agent) handleSiteDeploy(ctx context.Context, command *agentv1.Command, 
 		source.Upload = upload
 	case sites.SourceEmpty:
 		reporter.Progress("source", "Writing the placeholder page", 10)
+	case sites.SourceRelease:
+		reporter.Progress("source", fmt.Sprintf("Copying release %d", php.GetFromRelease()), 10)
+		source.Args = append(source.Args, "--from", strconv.Itoa(int(php.GetFromRelease())))
 	default:
 		return nil, fmt.Errorf("unknown source %q", payload.GetSource())
 	}
@@ -252,6 +293,7 @@ func (a *Agent) handleSiteRollback(ctx context.Context, command *agentv1.Command
 	switchMs := time.Since(started).Milliseconds()
 	if payload.GetPhp() {
 		a.reloadPHP(ctx, site, reporter)
+		a.restartWorker(ctx, site, reporter)
 	}
 	result := map[string]any{"release": float64(n), "switch_ms": float64(switchMs)}
 	// an older one after the switch: the newer one runs the release until then
@@ -298,8 +340,22 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 	}
 
 	reporter.Progress("release", "Preparing the new release", 75)
-	out, err := runner.Tool(ctx, toolRun{Site: site, Deployment: n, Args: append([]string{"release", "--php", "--no-switch",
-		"--shared", strings.Join(payload.GetSharedPaths(), ",")}, deployment...)}, reporter)
+	releaseRun := toolRun{Site: site, Deployment: n, Args: append([]string{"release", "--php", "--no-switch",
+		"--shared", strings.Join(payload.GetSharedPaths(), ","),
+		"--links", strings.Join(php.GetLinks(), ",")}, deployment...)}
+	// the environment of the release's own file, such as Laravel's .env (#52)
+	if name := php.GetEnvFile(); name != "" {
+		env := maps.Clone(php.GetEnv())
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, php.GetSecrets())
+		// the application's, not PocketCloud's own, as a fresh install's
+		maps.DeleteFunc(env, func(name string, _ string) bool { return strings.HasPrefix(name, "POCKETCLOUD_") })
+		releaseRun.Args = append(releaseRun.Args, "--env-file", name)
+		releaseRun.Env = map[string]string{envEnvFile: phpapps.EnvFile(env)}
+	}
+	out, err := runner.Tool(ctx, releaseRun, reporter)
 	if err != nil {
 		return failed(err)
 	}
@@ -350,7 +406,8 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 	// believing the old release is served
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	out, err = runner.Tool(releaseCtx, toolRun{Site: site, Deployment: n, Args: append([]string{"activate", "--keep", strconv.Itoa(keep)}, deployment...)}, reporter)
+	out, err = runner.Tool(releaseCtx, toolRun{Site: site, Deployment: n, Args: append([]string{"activate", "--keep", strconv.Itoa(keep),
+		"--clear", strings.Join(php.GetClear(), ",")}, deployment...)}, reporter)
 	if err != nil {
 		return failed(err)
 	}
@@ -369,6 +426,8 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 	} else {
 		a.reloadPHP(releaseCtx, site, reporter)
 	}
+	// a worker runs the release it started in
+	a.restartWorker(releaseCtx, site, reporter)
 
 	releases := make([]any, 0, len(live.Releases))
 	for _, number := range live.Releases {
@@ -387,6 +446,7 @@ func (a *Agent) releasePHP(ctx context.Context, runner siteRunner, payload *agen
 		"build_ms":   float64(buildMs),
 		"php":        applied,
 		"php_error":  phpError,
+		"detected":   found.Detected,
 	}, nil
 }
 
@@ -728,8 +788,11 @@ func (d dockerSites) sitesMount(ctx context.Context, subpath, target string) (ma
 		return nil, err
 	}
 	if apiAtLeast(version.APIVersion, minSubpathAPI) {
+		// NoCopy: the engine would otherwise fill an empty directory with what
+		// the image has at the target, and give it the target's owner, root,
+		// as a fresh install's empty source (#52)
 		return map[string]any{"Type": "volume", "Source": sites.Volume, "Target": target,
-			"VolumeOptions": map[string]any{"Subpath": subpath}}, nil
+			"VolumeOptions": map[string]any{"Subpath": subpath, "NoCopy": true}}, nil
 	}
 	volume, err := d.a.Docker.InspectVolume(ctx, sites.Volume)
 	if err != nil {

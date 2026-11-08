@@ -47,7 +47,7 @@ func main() {
 	case "version":
 		fmt.Println(version.Version)
 	case "site-tool":
-		err = agent.SiteTool(ctx, os.Args[2:], map[string]string{"GIT_TOKEN": os.Getenv("GIT_TOKEN")}, os.Stdout, os.Stderr)
+		err = agent.SiteTool(ctx, os.Args[2:], agent.SiteToolEnv(os.Getenv), os.Stdout, os.Stderr)
 	default:
 		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics or version", command)
 	}

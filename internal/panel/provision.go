@@ -27,6 +27,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/php"
+	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
@@ -218,6 +219,13 @@ type provisionPHP struct {
 	Template       string `json:"template"`
 	DatabaseServer string `json:"database_server,omitempty"`
 	Database       string `json:"database,omitempty"`
+	// Install is a fresh install of the template's application, as
+	// WordPress's with WP-CLI, for a site without a source of its own (#52)
+	Install *freshInstall `json:"install,omitempty"`
+	// QueueWorker gives the site its template's worker, as Laravel's
+	QueueWorker bool `json:"queue_worker,omitempty"`
+	// Health is the path the availability check asks for, the template's
+	Health string `json:"health,omitempty"`
 }
 
 func payloadOf(command *core.Record) provisionPayload {
@@ -300,9 +308,17 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		return e.BadRequestError(preview.Problem, nil)
 	}
 	var phpRequest *provisionPHP
+	freshBuild := ""
 	if site.GetString("type") == schema.SitePHPApp {
 		if phpRequest, err = p.checkProvisionPHP(body.PHP, site, host); err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
+		}
+		// a fresh install's build, as WP-CLI's download (#52)
+		if install := phpRequest.Install; install != nil {
+			t, _ := phpapps.Get(phpRequest.Template)
+			if freshBuild, err = t.FreshBuild(phpapps.Vars{Locale: install.Locale}); err != nil {
+				return e.BadRequestError(capitalize(err.Error())+".", nil)
+			}
 		}
 	}
 
@@ -337,6 +353,11 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 			settings.Set("php_version", phpRequest.Version)
 			settings.Set("docroot", phpRequest.Docroot)
 			settings.Set("template", phpRequest.Template)
+			settings.Set("fresh_build", freshBuild)
+			// and the template's defaults (#52)
+			err = p.applyTemplate(settings, phpRequest, hostname)
+		}
+		if err == nil {
 			err = e.App.SaveWithContext(ctx, settings)
 		}
 		if err != nil {
@@ -350,7 +371,14 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		"site": site.Id, "site_name": site.GetString("name"), "hostname": hostname, "www": www, "challenge": challenge,
 	}
 	if phpRequest != nil {
-		payload["php"] = phpRequest
+		// the flow's record keeps no password
+		recorded := *phpRequest
+		if recorded.Install != nil {
+			install := *recorded.Install
+			install.AdminPassword = ""
+			recorded.Install = &install
+		}
+		payload["php"] = recorded
 	}
 	parent, err := p.Commands.Begin(ctx, commands.Options{
 		Host:        host.Id,
@@ -964,7 +992,12 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := "https://" + payload.Hostname + "/"
+	// the template's health check, such as Laravel's /up (#52)
+	path := "/"
+	if payload.PHP != nil && payload.PHP.Health != "" {
+		path = payload.PHP.Health
+	}
+	url := "https://" + payload.Hostname + path
 	answer, err := p.provision.siteCheck(ctx, url, address, roots)
 	problem := ""
 	switch {
@@ -1305,8 +1338,38 @@ func (p *Panel) checkProvisionPHP(request *provisionPHP, site, host *core.Record
 	if checked.Docroot != "" && (!docrootPath.MatchString(checked.Docroot) || slices.Contains(strings.Split(checked.Docroot, "/"), "..")) {
 		return nil, errors.New("the web root is a directory of the release, such as public, or empty for the release itself")
 	}
-	if !slices.Contains([]string{schema.PHPCustom, schema.PHPWordPress, schema.PHPLaravel, schema.PHPNette}, checked.Template) {
-		return nil, errors.New("the application is custom, wordpress, laravel or nette")
+	t, templated := phpapps.Get(checked.Template)
+	if !templated && checked.Template != schema.PHPCustom {
+		return nil, fmt.Errorf("the application is custom or one of %s", strings.Join(phpapps.Names(), ", "))
+	}
+	checked.Health = ""
+	if templated {
+		checked.Health = t.Health
+		if checked.Docroot == "" {
+			checked.Docroot = t.Docroot
+		}
+		if t.Database == phpapps.DatabaseRequired && checked.DatabaseServer == "" {
+			return nil, fmt.Errorf("%s keeps its data in a database: choose a database server for it", t.Title)
+		}
+	}
+	checked.QueueWorker = checked.QueueWorker && templated && t.Worker != nil
+	switch {
+	case checked.Install != nil && (!templated || t.Fresh == nil):
+		return nil, errors.New("only an application with a fresh install, such as WordPress, is installed fresh")
+	case checked.Install != nil && site.GetString("source") != sites.SourceEmpty:
+		return nil, errors.New("a fresh install has no source of its own: its source is empty")
+	case checked.Install == nil && templated && t.Fresh != nil && site.GetString("source") == sites.SourceEmpty:
+		return nil, fmt.Errorf("a new %s without a source of its own is installed fresh: give its title and administrator", t.Title)
+	case templated && t.Fresh == nil && site.GetString("source") == sites.SourceEmpty:
+		return nil, fmt.Errorf("a %s site comes from Git or an upload", t.Title)
+	case checked.Install != nil:
+		install := *checked.Install
+		if err := checkInstall(&install); err != nil {
+			return nil, err
+		}
+		checked.Install = &install
+		// the release is WordPress, whatever the wizard sent
+		checked.Docroot = t.Docroot
 	}
 	if checked.DatabaseServer == "" {
 		checked.Database = ""
@@ -1319,6 +1382,9 @@ func (p *Panel) checkProvisionPHP(request *provisionPHP, site, host *core.Record
 	engine, err := engineOfServer(server)
 	if err != nil {
 		return nil, err
+	}
+	if t, ok := phpapps.Get(checked.Template); ok && !t.TakesDatabase(engine.Name) {
+		return nil, fmt.Errorf("%s does not run on %s: choose a server of %s", t.Title, engine.Label, strings.Join(t.DatabaseEngines, " or "))
 	}
 	if checked.Database == "" {
 		checked.Database = strings.ReplaceAll(site.GetString("name"), "-", "_")
@@ -1347,6 +1413,11 @@ func (p *Panel) startProvisionPHP(parent *core.Record, step string) error {
 	}
 	ctx := context.Background()
 	if step == "site.php.apply" {
+		// the database made for the site is connected to it as it is made; a
+		// connection that failed is tried again here, and says why it fails
+		if err := p.connectProvisionDatabase(ctx, parent, site, payload.PHP); err != nil {
+			return err
+		}
 		_, err := p.applyPHP(ctx, site, commands.Options{
 			RequestedBy: parent.GetString("requested_by"), Requester: parent.GetString("requested_label"),
 			Parent: parent.Id, Correlation: parent.Id,
@@ -1380,4 +1451,33 @@ func (p *Panel) startProvisionPHP(parent *core.Record, step string) error {
 		Site: site.Id, Parent: parent.Id,
 	}, server, payload.PHP.Database, create)
 	return err
+}
+
+// connectProvisionDatabase connects a new PHP site to the database its setup
+// made, unless it is connected already.
+func (p *Panel) connectProvisionDatabase(ctx context.Context, parent, site *core.Record, request *provisionPHP) error {
+	if request.DatabaseServer == "" {
+		return nil
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return err
+	}
+	if settings.GetString("database") != "" {
+		return nil
+	}
+	server, err := p.App.FindRecordById(schema.DBServers, request.DatabaseServer)
+	if err != nil {
+		return errors.New("the database server is gone")
+	}
+	database, err := p.App.FindFirstRecordByFilter(schema.Databases, "server={:server} && name={:name} && site={:site}",
+		dbx.Params{"server": server.Id, "name": request.Database, "site": site.Id})
+	if err != nil {
+		return errors.New("the site's database is gone")
+	}
+	connect := databaseRequest{Actor: dbActor, UserID: parent.GetString("requested_by"), Label: parent.GetString("requested_label")}
+	if err := p.connectSite(ctx, connect, server, database, site, false); err != nil {
+		return fmt.Errorf("the site could not be connected to its database: %w", err)
+	}
+	return nil
 }

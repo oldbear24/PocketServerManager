@@ -2761,3 +2761,11 @@ td .row-actions {
 .mail-failures li + li {
   margin-top: 6px;
 }
+
+/* "Detected: Laravel" under a new PHP site's source (#52) */
+.detected-line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+}

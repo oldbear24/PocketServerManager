@@ -24,6 +24,10 @@ func TestAPHPSitesMailGoesThroughThePanelsRelay(t *testing.T) {
 		t.Fatalf("apply: %d %v", status, out)
 	}
 	s.waitForStatus(out["command"].(string), schema.CommandSucceeded, schema.CommandFailed)
+	// without a relay, the site page says there is none
+	if status, out := s.request(http.MethodGet, "/api/pc/sites/"+siteID+"/php/mail", s.viewer, nil); status != http.StatusOK || out["relay"] != nil {
+		t.Errorf("no relay: %d %v", status, out)
+	}
 
 	const password = "relay-sekrit-4711"
 	relay := map[string]any{"host": "relay.example.org", "port": 2525, "tls": "off", "user": "shop", "password": password, "from": "noreply@example.org"}

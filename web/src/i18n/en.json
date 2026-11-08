@@ -1433,7 +1433,8 @@
       "create": "First deployment",
       "manual": "Deployed by hand",
       "push": "Push",
-      "upload": "Upload"
+      "upload": "Upload",
+      "update": "Update"
     },
     "sourceKind": {
       "git": "Git",
@@ -1457,7 +1458,14 @@
     "requestsKeys": "Requests per hour; the arrow keys move along the hours",
     "internalRenews": "Internal CA · renews by itself",
     "composerDefault": "composer install, when the source has composer.json",
-    "phpBuildNote": "The build runs in the site's PHP image as www-data, so the dependencies match the PHP that runs them."
+    "phpBuildNote": "The build runs in the site's PHP image as www-data, so the dependencies match the PHP that runs them.",
+    "byUpdate": "update of #{{number}} · {{who}}",
+    "unhealthy": "Since release #{{number}} went live the site does not answer as it should: {{error}}",
+    "healthOk": "Health check: {{status}} at {{url}}",
+    "healthFailed": "Health check failed at {{url}}",
+    "byCopy": "copy of #{{number}} · {{who}}",
+    "answered": "{{url}} answered {{status}}.",
+    "rollbackBack": "Back to #{{number}}"
   },
   "siteNew": {
     "title": "New site",
@@ -1573,7 +1581,6 @@
     "phpVersion": "PHP version",
     "recommended": "recommended",
     "application": "Application",
-    "templateLater": "{{name}} (comes with application templates)",
     "docrootNone": "the release itself",
     "docrootNote": "The directory the edge serves, inside the release: public for Laravel, www for Nette. Its .php scripts go to the site's PHP-FPM; its other files are served directly.",
     "noDatabase": "No database",
@@ -1587,7 +1594,37 @@
     "planPhp": {
       "build": "composer install in the PHP image, as www-data",
       "release": "shared paths · release hook · switch · PHP-FPM reload"
-    }
+    },
+    "freshTitle": "Fresh install",
+    "freshNote": "{{name}} downloaded and installed",
+    "templateNote": {
+      "wordpress": "WordPress reads its settings from the site's environment through PocketCloud's wp-config.php, keeps wp-content/uploads across releases, and has its cron run by the panel. Updates are built as new releases.",
+      "laravel": "Web root public/, storage/ kept across releases and linked into public/, .env written from the site's environment with a new APP_KEY, migrations and caches at each release, and the scheduler every minute.",
+      "nette": "Web root www/, log/ and temp/ kept across releases; temp/ is emptied at each release and left out of backups."
+    },
+    "templateNeedsSource": "A {{name}} site comes from Git or an upload.",
+    "freshSiteTitle": "Site title",
+    "freshLocale": "Language",
+    "locale": {
+      "cs_CZ": "Czech",
+      "en_US": "English (US)",
+      "en_GB": "English (UK)",
+      "sk_SK": "Slovak",
+      "de_DE": "German",
+      "pl_PL": "Polish"
+    },
+    "freshAdmin": "Administrator's user name",
+    "freshEmail": "Administrator's e-mail",
+    "freshPassword": "Administrator's password",
+    "freshPasswordShort": "At least 12 characters.",
+    "freshPasswordNote": "A secret of the site until the install is done; then PocketCloud forgets it.",
+    "databaseRequired": "{{name}} keeps its data in a database: choose a database server.",
+    "queueWorker": "Queue worker",
+    "queueWorkerNote": "php artisan queue:work in a container of its own, from the same release",
+    "detecting": "Looking at the source…",
+    "detectFailed": "Not recognised: {{error}}",
+    "detectedNone": "Not one of the templates: custom code.",
+    "detected": "Detected: {{name}}"
   },
   "ca": {
     "title": "Internal CA",
@@ -1754,7 +1791,22 @@
     "mailSince_one": "{{formatted}} e-mail since {{time}}",
     "mailSince_other": "{{formatted}} e-mails since {{time}}",
     "mailFailed_one": "{{formatted}} failed",
-    "mailFailed_other": "{{formatted}} failed"
+    "mailFailed_other": "{{formatted}} failed",
+    "redeployStarted": "The application caches its environment: a copy of the live release is deployed with the new one.",
+    "healthPath": "Health check",
+    "healthPathNote": "A path of the site asked after each release, such as /up: below 400 is healthy. Empty for none.",
+    "queueWorker": "Queue worker",
+    "queueWorkerNote": "{{name}}-worker runs php artisan queue:work in the live release",
+    "sharedNoBackup": "outside the releases (shared/) · left out of backups",
+    "noBackup": "Left out of backups:",
+    "update": "Update {{name}}",
+    "updateTitle": "Update {{name}}",
+    "updateConfirm": "Build the update",
+    "updateNote": "A new release is built from a copy of the live one, with {{name}}, its plugins and its themes updated. If the update breaks the site, roll back to the release before it with one click.",
+    "updatePlugins": "Plugins to add",
+    "updateThemes": "Themes to add",
+    "updateAddNote": "Slugs of wordpress.org, such as akismet, or addresses of ZIP files, separated by commas.",
+    "updateStarted": "The update of {{name}} is being built."
   },
   "task": {
     "every": {

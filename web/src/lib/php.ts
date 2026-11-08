@@ -25,6 +25,31 @@ export type PhpVersions = {
 
 export type PhpTemplate = "custom" | "wordpress" | "laravel" | "nette";
 
+/** What the UI knows of each template (#52), as internal/phpapps has it. */
+export const phpTemplates: Record<
+  Exclude<PhpTemplate, "custom">,
+  {
+    docroot: string;
+    fresh: boolean;
+    database: boolean;
+    /** the engines its database may have; any when left out */
+    engines?: string[];
+    worker: boolean;
+    update: boolean;
+  }
+> = {
+  wordpress: {
+    docroot: "",
+    fresh: true,
+    database: true,
+    engines: ["mariadb"],
+    worker: false,
+    update: true,
+  },
+  laravel: { docroot: "public", fresh: false, database: false, worker: true, update: false },
+  nette: { docroot: "www", fresh: false, database: false, worker: false, update: false },
+};
+
 export type FpmSettings = {
   pm: "dynamic" | "ondemand" | "static";
   max_children: number;
@@ -53,6 +78,12 @@ export type SitePhp = RecordModel & {
   image: string;
   applied_at: string;
   last_error: string;
+  /** the template's worker, as Laravel's queue worker (#52) */
+  queue_worker: boolean;
+  /** the path asked after each release, such as /up; empty for none */
+  health_path: string;
+  /** paths of the site its backups leave out */
+  backup_exclude: string[] | null;
 };
 
 /** What may change of a PHP site's settings; what is left out stays. */
@@ -68,6 +99,8 @@ export type SitePhpChange = Partial<
     | "cpu_limit"
     | "mem_limit_mb"
     | "release_hook"
+    | "queue_worker"
+    | "health_path"
   >
 > & { fpm?: FpmSettings; shared_paths?: string[] };
 
@@ -128,6 +161,12 @@ export const phpApi = {
     }),
   apply: (site: string) =>
     pb.send<PhpApplied>(`/api/pc/sites/${site}/php/apply`, { method: "POST" }),
+  /** updates the application in a new release, adding plugins or themes (#52) */
+  update: (site: string, add: { plugins?: string[]; themes?: string[] }) =>
+    pb.send<{ deployment: string }>(`/api/pc/sites/${site}/php/update`, {
+      method: "POST",
+      body: add,
+    }),
   mail: (site: string) =>
     pb.send<PhpMail>(`/api/pc/sites/${site}/php/mail`, { requestKey: `php-mail-${site}` }),
   status: (site: string) =>

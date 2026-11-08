@@ -246,6 +246,9 @@ func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply,
 				return nil, err
 			}
 			fmt.Fprintf(reporter, "%s runs as it should: nothing to change.\n", name)
+			if err := a.applyWorker(ctx, payload, mounts, seccomp, reporter); err != nil {
+				return nil, err
+			}
 			return a.phpResult(ctx, current.ID, payload.GetImage()), nil
 		}
 	}
@@ -256,6 +259,9 @@ func (a *Agent) applySitePHP(ctx context.Context, payload *agentv1.SitePhpApply,
 		return nil, err
 	}
 	fmt.Fprintf(reporter, "%s answers, on the network %s.\n", name, network)
+	if err := a.applyWorker(ctx, payload, mounts, seccomp, reporter); err != nil {
+		return nil, err
+	}
 	return a.phpResult(ctx, id, payload.GetImage()), nil
 }
 
@@ -528,8 +534,12 @@ func (a *Agent) reloadPHP(ctx context.Context, site string, output io.Writer) {
 	fmt.Fprintf(output, "%s reloads its workers.\n", name)
 }
 
-// removePHP removes a site's PHP-FPM container and its network.
+// removePHP removes a site's PHP-FPM container, its worker and its network.
 func (a *Agent) removePHP(ctx context.Context, site string) error {
+	// the worker is on the site's network, which goes last
+	if err := a.removeSiteWorker(ctx, site); err != nil {
+		return fmt.Errorf("the site's worker: %w", err)
+	}
 	name := sites.PHPContainer(site)
 	for _, container := range []string{name, name + "-old"} {
 		// what is not the site's, such as a container of the same name that a

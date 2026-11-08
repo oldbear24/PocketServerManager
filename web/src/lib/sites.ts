@@ -44,7 +44,7 @@ export type Deployment = RecordModel & {
   site: string;
   number: number;
   status: "queued" | "building" | "succeeded" | "failed";
-  trigger: "create" | "manual" | "push" | "upload";
+  trigger: "create" | "manual" | "push" | "upload" | "update";
   source: SiteSource;
   branch: string;
   commit_sha: string;
@@ -65,6 +65,30 @@ export type Deployment = RecordModel & {
   /** its release is still on the server, so the site can go back to it */
   on_server: boolean;
   upload: string;
+  /** the release a copy of which it built, as an update's (#52) */
+  base_release: number;
+  /** what ran before the release hook, as an update's */
+  pre_hook: string;
+  /** how the site answered at its health check once the release was live */
+  health: DeploymentHealth | null;
+};
+
+/** How a PHP site answered at its health path after a release (#52). */
+export type DeploymentHealth = {
+  ok: boolean;
+  status: number;
+  url: string;
+  error?: string;
+  checked_at: string;
+};
+
+/** A fresh install of a template's application, as WordPress's (#52). */
+export type FreshInstall = {
+  title: string;
+  admin_user: string;
+  admin_email: string;
+  admin_password: string;
+  locale: string;
 };
 
 /** How a site's requests went over the last 24 hours, by the edge's
@@ -138,7 +162,20 @@ export type ProvisionBody = {
     template: string;
     database_server?: string;
     database?: string;
+    /** a fresh install, for a site without a source of its own (#52) */
+    install?: FreshInstall;
+    /** the template's worker, as Laravel's queue worker */
+    queue_worker?: boolean;
   };
+};
+
+/** What the wizard sends to have a new site's source looked at (#52). */
+export type DetectBody = {
+  source: "git" | "upload";
+  host?: string;
+  repo_url?: string;
+  branch?: string;
+  git_token?: string;
 };
 
 /** The steps of a new site's setup, in order: each is a command. */
@@ -167,6 +204,23 @@ export const provisionApi = {
     }
     return pb.send<{ provision: string; site: string }>("/api/pc/sites/provision", {
       method: "POST",
+      body,
+    });
+  },
+  /** which PHP application a source is: "" for none of the templates' (#52) */
+  detect: (body: DetectBody, file?: File, signal?: AbortSignal) => {
+    const options = { method: "POST", requestKey: null, signal };
+    if (file) {
+      const form = new FormData();
+      form.append("data", JSON.stringify(body));
+      form.append("file", file);
+      return pb.send<{ template: string; title: string }>("/api/pc/sites/detect", {
+        ...options,
+        body: form,
+      });
+    }
+    return pb.send<{ template: string; title: string }>("/api/pc/sites/detect", {
+      ...options,
       body,
     });
   },

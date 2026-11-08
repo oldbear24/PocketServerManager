@@ -33,6 +33,7 @@ import {
   parseDate,
 } from "../lib/format";
 import { pb } from "../lib/pb";
+import { phpTemplates, type PhpTemplate } from "../lib/php";
 import { useLiveList, useLiveRecord, useNow } from "../lib/realtime";
 import {
   generators,
@@ -54,6 +55,7 @@ import {
   PhpRuntimeCard,
   PhpCronMailCard,
   PhpSharedCard,
+  PhpUpdateButton,
   usePhpSite,
   type OnApplied,
 } from "./SitePhp";
@@ -343,6 +345,13 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
                     }
                   }}
                 />
+                {php && phpData.settings && (
+                  <PhpUpdateButton
+                    site={site}
+                    settings={phpData.settings}
+                    disabled={busy || !site.active_deployment}
+                  />
+                )}
                 <Button disabled={busy} onClick={() => upload.current?.click()}>
                   <Upload size={14} aria-hidden="true" />
                   {t("site.uploadZip")}
@@ -412,7 +421,12 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
               <PhpEnvCard site={site} data={phpData} canAct={canAct} onApplied={onApplied} />
             </>
           )}
-          <SourceCard site={site} active={active} canAct={canAct} />
+          <SourceCard
+            site={site}
+            active={active}
+            canAct={canAct}
+            template={php ? phpData.settings?.template : undefined}
+          />
         </div>
       </div>
       {php && phpData.settings && <PhpLogCard site={site} />}
@@ -680,7 +694,19 @@ function DeploymentsCard({
         return t("site.byUpload", { who: deployment.requested_by });
       case "create":
         return t("site.byCreate");
+      case "update":
+        return t("site.byUpdate", {
+          number: deployment.base_release,
+          who: deployment.requested_by,
+        });
       default:
+        // a copy of a release, as for a changed environment (#52)
+        if (deployment.base_release > 0) {
+          return t("site.byCopy", {
+            number: deployment.base_release,
+            who: deployment.requested_by,
+          });
+        }
         return deployment.commit_sha
           ? t("site.byHandGit", {
               commit: shortCommit(deployment.commit_sha),
@@ -690,12 +716,48 @@ function DeploymentsCard({
     }
   };
 
+  // a live release the site stopped answering since (#52): one rollback away
+  const live = deployments.find((deployment) => deployment.id === site.active_deployment);
+  // where to go back: the release it was a copy of, as an update's, or the
+  // newest one before it, never one that failed its own health check
+  const candidates = deployments.filter(
+    (deployment) =>
+      deployment.id !== site.active_deployment &&
+      deployment.status === "succeeded" &&
+      deployment.on_server &&
+      deployment.number < (live?.number ?? 0) &&
+      deployment.health?.ok !== false,
+  );
+  const earlier =
+    candidates.find((deployment) => deployment.number === live?.base_release) ?? candidates[0];
+
   return (
     <Card
       title={t("site.deployments")}
       note={t(site.type === "php" ? "phpSite.deploymentsNote" : "site.deploymentsNote")}
       flush
     >
+      {live?.health && !live.health.ok && (
+        <div className="card-body">
+          <Banner tone="err">
+            {t("site.unhealthy", {
+              number: live.number,
+              error:
+                live.health.status > 0
+                  ? t("site.answered", { url: live.health.url, status: live.health.status })
+                  : live.health.error,
+            })}
+          </Banner>
+          {canAct && earlier && (
+            <div className="button-row">
+              <Button size="small" disabled={busy} onClick={() => onRollback(earlier)}>
+                <RotateCcw size={13} aria-hidden="true" />
+                {t("site.rollbackBack", { number: earlier.number })}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       {deployments.length === 0 ? (
         <p className="muted card-body">{t("site.noDeployments")}</p>
       ) : (
@@ -732,6 +794,16 @@ function DeploymentsCard({
                     </div>
                     {deployment.status === "failed" && deployment.error && (
                       <div className="field-error small">{deployment.error.split("\n")[0]}</div>
+                    )}
+                    {deployment.health && (
+                      <div className={`small ${deployment.health.ok ? "ok-text" : "field-error"}`}>
+                        {deployment.health.ok
+                          ? t("site.healthOk", {
+                              status: deployment.health.status,
+                              url: deployment.health.url,
+                            })
+                          : t("site.healthFailed", { url: deployment.health.url })}
+                      </div>
                     )}
                   </td>
                   <td>
@@ -786,11 +858,19 @@ function SourceCard({
   site,
   active,
   canAct,
+  template,
 }: {
   site: Site;
   active?: Deployment;
   canAct: boolean;
+  /** a PHP site's template, whose application may be installed fresh (#52) */
+  template?: PhpTemplate;
 }) {
+  const fresh =
+    site.source === "empty" &&
+    template !== undefined &&
+    template !== "custom" &&
+    phpTemplates[template].fresh;
   const { t } = useTranslation();
   const toast = useToast();
   const [editing, setEditing] = useState(false);
@@ -825,7 +905,11 @@ function SourceCard({
     >
       <dl className="facts">
         <dt>{t("site.source")}</dt>
-        <dd>{t(`site.sourceKind.${site.source}`)}</dd>
+        <dd>
+          {fresh
+            ? `${t("siteNew.freshTitle")} · ${t(`phpSite.template.${template}`)}`
+            : t(`site.sourceKind.${site.source}`)}
+        </dd>
         {site.source === "git" && (
           <>
             <dt>{t("site.repository")}</dt>

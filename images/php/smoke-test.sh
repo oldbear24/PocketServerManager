@@ -48,7 +48,7 @@ fetch() {
 
 say "extensions and tools"
 modules=$(docker run --rm --entrypoint php "$image" -m)
-for module in bcmath exif gd imagick intl mysqli pdo_mysql pdo_pgsql redis zip 'Zend OPcache'; do
+for module in bcmath exif gd imagick intl mysqli pcntl pdo_mysql pdo_pgsql redis zip 'Zend OPcache'; do
 	printf '%s\n' "$modules" | grep -qix "$module" || fail "PHP has no $module"
 done
 docker run --rm --entrypoint sh "$image" -ec '
