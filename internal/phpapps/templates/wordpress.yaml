@@ -57,8 +57,13 @@ tasks:
 # "Update WordPress": a new release, a copy of the live one with these run in
 # it before the release hook, so a broken update is one rollback away
 update:
+  # what WordPress last learnt of updates is forgotten first: it asks again
+  # only every 12 hours, and an update would miss what came out since
   command: |
     set -e
+    wp transient delete update_core --network
+    wp transient delete update_plugins --network
+    wp transient delete update_themes --network
     wp core update
     wp plugin update --all
     wp theme update --all

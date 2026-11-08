@@ -55,6 +55,13 @@ func TestTheTemplatesAreWordPressLaravelAndNette(t *testing.T) {
 			t.Errorf("the update lacks %s", want)
 		}
 	}
+	// what WordPress cached of updates for 12 hours is asked anew
+	for _, cache := range []string{"update_core", "update_plugins", "update_themes"} {
+		if !strings.Contains(wordpress.Update.Command, "wp transient delete "+cache+" --network") ||
+			strings.Index(wordpress.Update.Command, cache) > strings.Index(wordpress.Update.Command, "wp core update") {
+			t.Errorf("the update does not forget %s first", cache)
+		}
+	}
 
 	// Laravel: storage:link, its .env, the scheduler, a worker
 	if !slices.Equal(laravel.LinkSpecs(), []string{"public/storage=storage/app/public"}) || laravel.EnvFile != ".env" ||
