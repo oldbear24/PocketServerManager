@@ -45,7 +45,9 @@ case "$1 $2" in
 	touch "$PC_TOOLS_STATE/installed"
 	echo "installed $POCKETCLOUD_INSTALL_TITLE|$POCKETCLOUD_INSTALL_ADMIN_USER|$POCKETCLOUD_INSTALL_ADMIN_EMAIL|$POCKETCLOUD_INSTALL_LOCALE" >> "$PC_TOOLS_LOG"
 	[ "$POCKETCLOUD_INSTALL_ADMIN_PASSWORD" = "$PC_TOOLS_PASSWORD" ] && echo "with the password" >> "$PC_TOOLS_LOG" ;;
-"core update") printf '<?php // WordPress, updated\n' > index.php ;;
+"core update")
+	printf '<?php // WordPress, updated\n' > index.php
+	echo "updating with POCKETCLOUD_RELEASE=$POCKETCLOUD_RELEASE" >> "$PC_TOOLS_LOG" ;;
 esac
 `,
 	}
@@ -297,6 +299,14 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 	}
 	h.mu.Unlock()
 	server := h.databaseServer("db-main")
+	// a PostgreSQL server, which WordPress does not run on
+	postgres := core.NewRecord(mustCollection(t, h.app, schema.DBServers))
+	for field, value := range map[string]any{"host": h.host.Id, "name": "db-pg", "engine": schema.EnginePostgres, "kind": schema.DBServerShared, "status": "ready", "admin_user": "postgres"} {
+		postgres.Set(field, value)
+	}
+	if err := h.app.Save(postgres); err != nil {
+		t.Fatal(err)
+	}
 
 	start := func(php map[string]any) (int, map[string]any) {
 		return h.send(http.MethodPost, "/api/pc/sites/provision", map[string]any{
@@ -311,6 +321,7 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 		"short password": {"template": "wordpress", "database_server": server.Id, "install": map[string]any{"title": "x", "admin_user": "a", "admin_email": "a@example.org", "admin_password": "short"}},
 		"bad locale":     {"template": "wordpress", "database_server": server.Id, "install": map[string]any{"title": "x", "admin_user": "a", "admin_email": "a@example.org", "admin_password": password, "locale": "cs; rm"}},
 		"not fresh":      {"template": "nette", "database_server": server.Id, "install": install},
+		"postgres":       {"template": "wordpress", "database_server": postgres.Id, "install": install},
 	} {
 		if status, out := start(php); status != http.StatusBadRequest {
 			t.Errorf("%s: %d %v", name, status, out)
@@ -405,7 +416,8 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 		t.Fatalf("the update: %v", three.PublicExport())
 	}
 	log = calls()
-	for _, want := range []string{"wp core update", "wp plugin update --all", "wp theme update --all", "wp plugin install --activate akismet https://example.org/plugin.zip", "wp core update-db"} {
+	for _, want := range []string{"wp core update", "updating with POCKETCLOUD_RELEASE=building", "wp plugin update --all", "wp theme update --all",
+		"wp plugin install --activate akismet https://example.org/plugin.zip", "wp core update-db"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("the update did not run %q:\n%s", want, log)
 		}
@@ -546,6 +558,15 @@ func (h *provisionHarness) databaseServer(name string) *core.Record {
 		h.t.Fatal(err)
 	}
 	return server
+}
+
+func mustCollection(t *testing.T, app core.App, name string) *core.Collection {
+	t.Helper()
+	collection, err := app.FindCollectionByNameOrId(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return collection
 }
 
 func mustJSON(value any) []byte {

@@ -38,6 +38,15 @@ func TestATemplatesFilesGoWhereTheSourceHasNone(t *testing.T) {
 	if err := WriteMissing(dir, map[string]string{"../x.php": "x"}); err == nil {
 		t.Error("a file outside the source was taken")
 	}
+
+	// an earlier one of the template's, as a copied release has, is replaced
+	_ = os.WriteFile(filepath.Join(dir, "old-config.php"), []byte("<?php\n/**\n * "+TemplateMarker+"\n */\n// 1.0"), 0o644)
+	if err := WriteMissing(dir, map[string]string{"old-config.php": "<?php // " + TemplateMarker + " 2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "old-config.php")); string(got) != "<?php // "+TemplateMarker+" 2.0" {
+		t.Errorf("the template's earlier file: %q", got)
+	}
 }
 
 func TestAReleaseGetsItsTemplatesLinksAndEnvironment(t *testing.T) {

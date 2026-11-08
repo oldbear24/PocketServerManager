@@ -7,8 +7,9 @@ title: WordPress
 detect: [wp-load.php, wp-includes/version.php, wp-config.php]
 # WordPress serves from the root of its release
 docroot: ""
-# WordPress keeps its data in its database: it needs one
+# WordPress keeps its data in its database, MariaDB's or MySQL's: it needs one
 database: required
+database_engines: [mariadb]
 health: /
 # a site without a source of its own: WP-CLI downloads WordPress in the
 # build, in the language chosen; the release hook installs it

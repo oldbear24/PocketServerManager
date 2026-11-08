@@ -64,6 +64,8 @@ type Template struct {
 	Docroot string `yaml:"docroot"`
 	// Database is required when the application does not run without one.
 	Database string `yaml:"database"`
+	// DatabaseEngines are the engines its database may have; any when empty.
+	DatabaseEngines []string `yaml:"database_engines"`
 	// Health is the path the panel asks after each release, which answers
 	// below 400 while the site works.
 	Health string `yaml:"health"`
@@ -252,6 +254,11 @@ func DetectDir(dir string) string {
 		}
 	}
 	return Detect(paths)
+}
+
+// TakesDatabase says whether a database of an engine suits the template.
+func (t Template) TakesDatabase(engine string) bool {
+	return len(t.DatabaseEngines) == 0 || slices.Contains(t.DatabaseEngines, engine)
 }
 
 // FreshBuild is the build of a fresh install in a language.
@@ -482,6 +489,11 @@ func (t Template) check() error {
 	}
 	if t.Database != "" && t.Database != DatabaseRequired {
 		problems = append(problems, fmt.Errorf("database is %s or left out", DatabaseRequired))
+	}
+	for _, engine := range t.DatabaseEngines {
+		if engine != "mariadb" && engine != "postgres" {
+			problems = append(problems, fmt.Errorf("%q is not a database engine: mariadb or postgres", engine))
+		}
 	}
 	if t.Health == "" || !strings.HasPrefix(t.Health, "/") || strings.ContainsAny(t.Health, " \n\r#") {
 		problems = append(problems, fmt.Errorf("health %q is a path such as /up", t.Health))

@@ -5,7 +5,10 @@
  * The panel keeps them: the database it made for the site, the site's
  * addresses and a secret from which every key and salt is derived. Change
  * them on the site's page in PocketCloud rather than here. A source with a
- * wp-config.php of its own keeps it.
+ * wp-config.php of its own keeps it; this one is written anew at every
+ * release while it carries the line below.
+ *
+ * @pocketcloud-template
  */
 
 $pocketcloud_env = static function (string $name, string $default = ''): string {
@@ -35,11 +38,13 @@ if ($pocketcloud_env('WP_SITEURL') !== '') {
 }
 
 // In releases mode the code is read-only and every change to it is a new
-// release: WordPress neither installs nor updates plugins, themes or itself
-// (WP-CLI does, in a release that is being built), and the panel runs its
-// cron rather than its visitors.
+// release: WordPress neither installs nor updates plugins, themes or itself,
+// not even from its cron (WP-CLI does, in a release that is being built,
+// which POCKETCLOUD_RELEASE says), and the panel runs its cron rather than
+// its visitors.
 $pocketcloud_releases = $pocketcloud_env('POCKETCLOUD_MODE', 'releases') === 'releases';
-define('DISALLOW_FILE_MODS', $pocketcloud_releases && !(defined('WP_CLI') && WP_CLI));
+define('DISALLOW_FILE_MODS', $pocketcloud_releases && $pocketcloud_env('POCKETCLOUD_RELEASE') !== 'building');
+define('AUTOMATIC_UPDATER_DISABLED', $pocketcloud_releases);
 define('DISABLE_WP_CRON', $pocketcloud_releases);
 define('FS_METHOD', 'direct');
 

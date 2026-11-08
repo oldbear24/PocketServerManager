@@ -17,10 +17,16 @@ import (
 // works through an os.Root of the site's directory: a link the site's code
 // left in its shared paths, or in a release it copies, leads nowhere else.
 
+// TemplateMarker marks a template's file in a source: one that still carries
+// it in its first KiB is the template's, written anew, as a copy of a release
+// for an update carries the old one forward.
+const TemplateMarker = "@pocketcloud-template"
+
 // WriteMissing puts files into a source that does not have them, such as a
 // wp-config.php that reads the site's environment: a source with its own keeps
-// it. They belong to whoever runs this; the site tool gives a PHP site's
-// source to www-data after.
+// it, and one with an earlier one of the template's gets the template's own.
+// They belong to whoever runs this; the site tool gives a PHP site's source to
+// www-data after.
 func WriteMissing(dir string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil
@@ -35,8 +41,13 @@ func WriteMissing(dir string, files map[string]string) error {
 			return err
 		}
 		name = filepath.Clean(name)
-		if _, err := root.Lstat(name); err == nil {
-			continue
+		if info, err := root.Lstat(name); err == nil {
+			if !info.Mode().IsRegular() || !templates(root, name) {
+				continue
+			}
+			if err := root.Remove(name); err != nil {
+				return err
+			}
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -48,6 +59,18 @@ func WriteMissing(dir string, files map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// templates says whether a file of a source is a template's, by its marker.
+func templates(root *os.Root, name string) bool {
+	file, err := root.Open(name)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	head := make([]byte, 1024)
+	n, _ := io.ReadFull(file, head)
+	return strings.Contains(string(head[:n]), TemplateMarker)
 }
 
 // ParseLinks reads links as the site tool gets them: path=target, separated by

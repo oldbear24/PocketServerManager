@@ -292,6 +292,16 @@ describe("the new-site wizard", () => {
         kind: "shared",
         extensions: null,
       },
+      {
+        id: "d3",
+        host: "h1",
+        name: "db-pg",
+        engine: "postgres",
+        version: "17.6",
+        image: "postgres:17",
+        kind: "shared",
+        extensions: null,
+      },
     ];
     vi.spyOn(phpApi, "versions").mockResolvedValue({ warn_days: 90, default: "8.4", versions: [] });
     vi.spyOn(provisionApi, "preview").mockResolvedValue({
@@ -327,7 +337,10 @@ describe("the new-site wizard", () => {
     expect(screen.getByText("A Laravel site comes from Git or an upload.")).toBeInTheDocument();
 
     // WordPress does: its title, administrator and language, and a database
+    // Laravel runs on PostgreSQL, WordPress does not
+    expect(screen.getByRole("option", { name: /db-pg/ })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Application"), { target: { value: "wordpress" } });
+    expect(screen.queryByRole("option", { name: /db-pg/ })).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: /Fresh install/ }));
     fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "blog.example.org" } });
     fireEvent.change(screen.getByLabelText("Site title"), { target: { value: "Můj blog" } });

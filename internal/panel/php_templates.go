@@ -70,6 +70,8 @@ const (
 	envInstallLocale   = "POCKETCLOUD_INSTALL_LOCALE"
 	// envMode says releases or classic, as WordPress's wp-config.php reads it
 	envMode = "POCKETCLOUD_MODE"
+	// envRelease says a release is being built, in its release hook only
+	envRelease = "POCKETCLOUD_RELEASE"
 )
 
 var (
@@ -220,6 +222,9 @@ func templateDeploy(deploy *agentv1.SitePhpDeploy, settings, deployment *core.Re
 		deploy.Env = map[string]string{}
 	}
 	deploy.Env[envMode] = modeOf(settings)
+	// the release hook builds a release, which may change its code, as
+	// WordPress's update does; PHP-FPM and tasks never see it
+	deploy.Env[envRelease] = "building"
 	if t, ok := templateOf(settings); ok {
 		deploy.Files = t.FileContents()
 		deploy.Links = t.LinkSpecs()

@@ -1383,6 +1383,9 @@ func (p *Panel) checkProvisionPHP(request *provisionPHP, site, host *core.Record
 	if err != nil {
 		return nil, err
 	}
+	if t, ok := phpapps.Get(checked.Template); ok && !t.TakesDatabase(engine.Name) {
+		return nil, fmt.Errorf("%s does not run on %s: choose a server of %s", t.Title, engine.Label, strings.Join(t.DatabaseEngines, " or "))
+	}
 	if checked.Database == "" {
 		checked.Database = strings.ReplaceAll(site.GetString("name"), "-", "_")
 	}

@@ -41,8 +41,17 @@ func TestTheTemplatesAreWordPressLaravelAndNette(t *testing.T) {
 	if wordpress.Database != DatabaseRequired || wordpress.Fresh == nil || wordpress.Update == nil {
 		t.Errorf("wordpress: %+v", wordpress)
 	}
+	if !wordpress.TakesDatabase("mariadb") || wordpress.TakesDatabase("postgres") || !laravel.TakesDatabase("postgres") {
+		t.Error("the engines of the databases")
+	}
 	config := wordpress.FileContents()["wp-config.php"]
-	for _, want := range []string{"getenv($name)", "'DISALLOW_FILE_MODS'", "'DISABLE_WP_CRON'", "WP_SALT", "wp-settings.php"} {
+	// written anew at every release while it is the template's
+	if !strings.Contains(config[:1024], "@pocketcloud-template") {
+		t.Error("wp-config.php lacks its marker in its first KiB")
+	}
+	// file mods only while a release is built, and no background updates
+	for _, want := range []string{"getenv($name)", "'DISALLOW_FILE_MODS', $pocketcloud_releases && $pocketcloud_env('POCKETCLOUD_RELEASE') !== 'building'",
+		"'AUTOMATIC_UPDATER_DISABLED', $pocketcloud_releases", "'DISABLE_WP_CRON'", "WP_SALT", "wp-settings.php"} {
 		if !strings.Contains(config, want) {
 			t.Errorf("wp-config.php lacks %s", want)
 		}

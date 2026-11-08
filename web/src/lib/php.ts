@@ -28,9 +28,24 @@ export type PhpTemplate = "custom" | "wordpress" | "laravel" | "nette";
 /** What the UI knows of each template (#52), as internal/phpapps has it. */
 export const phpTemplates: Record<
   Exclude<PhpTemplate, "custom">,
-  { docroot: string; fresh: boolean; database: boolean; worker: boolean; update: boolean }
+  {
+    docroot: string;
+    fresh: boolean;
+    database: boolean;
+    /** the engines its database may have; any when left out */
+    engines?: string[];
+    worker: boolean;
+    update: boolean;
+  }
 > = {
-  wordpress: { docroot: "", fresh: true, database: true, worker: false, update: true },
+  wordpress: {
+    docroot: "",
+    fresh: true,
+    database: true,
+    engines: ["mariadb"],
+    worker: false,
+    update: true,
+  },
   laravel: { docroot: "public", fresh: false, database: false, worker: true, update: false },
   nette: { docroot: "www", fresh: false, database: false, worker: false, update: false },
 };

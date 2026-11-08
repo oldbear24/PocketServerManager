@@ -141,7 +141,13 @@ function SiteForm({
   const set = (change: Partial<BuildValues>) => setValues((current) => ({ ...current, ...change }));
 
   const server = host || edges[0]?.id || "";
-  const serversHere = dbServers.items.filter((item) => item.host === server);
+  // the database servers of the chosen server, of an engine the application
+  // runs on (#52)
+  const engines =
+    phpForm.template === "custom" ? undefined : phpTemplates[phpForm.template].engines;
+  const serversHere = dbServers.items.filter(
+    (item) => item.host === server && (!engines || engines.includes(item.engine)),
+  );
   const dbServer = serversHere.some((item) => item.id === phpForm.dbServer) ? phpForm.dbServer : "";
   useEffect(() => {
     onPlan({ php, database: php && dbServer !== "" });
