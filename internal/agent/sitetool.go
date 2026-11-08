@@ -62,7 +62,20 @@ type sourceResult struct {
 const (
 	envFiles   = "POCKETCLOUD_FILES"
 	envEnvFile = "POCKETCLOUD_ENV_FILE"
+	envToken   = "GIT_TOKEN"
 )
+
+// SiteToolEnv is what the site tool reads of its job's environment: the
+// agent passes these to the job, and the job's binary to the tool.
+func SiteToolEnv(getenv func(string) string) map[string]string {
+	env := map[string]string{}
+	for _, name := range []string{envToken, envFiles, envEnvFile} {
+		if value := getenv(name); value != "" {
+			env[name] = value
+		}
+	}
+	return env
+}
 
 // releaseResult is what the release op made.
 type releaseResult struct {
@@ -106,7 +119,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 		return sweepBuilds(*root, stdout, stderr)
 	}
 	if op == "detect" {
-		found, err := detectRepo(ctx, gitSource{repo: *repo, branch: *branch, token: env["GIT_TOKEN"]}, stderr)
+		found, err := detectRepo(ctx, gitSource{repo: *repo, branch: *branch, token: env[envToken]}, stderr)
 		if err != nil {
 			return err
 		}
@@ -131,7 +144,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 		// a PHP site without a source of its own whose template installs it
 		// fresh, as WordPress with WP-CLI, starts from nothing (#52)
 		fresh := *php && *kind == sites.SourceEmpty && *command != ""
-		found, err := siteSource(ctx, *root, *site, *n, *kind, *from, fresh, gitSource{*repo, *branch, *commit, env["GIT_TOKEN"]}, stderr)
+		found, err := siteSource(ctx, *root, *site, *n, *kind, *from, fresh, gitSource{*repo, *branch, *commit, env[envToken]}, stderr)
 		if err != nil {
 			return err
 		}
