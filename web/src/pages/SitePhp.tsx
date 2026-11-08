@@ -13,6 +13,7 @@ import { formatBytes, formatDuration, formatNumber, formatTime } from "../lib/fo
 import { pb } from "../lib/pb";
 import {
   phpApi,
+  phpTemplates,
   type FpmSettings,
   type PhpApplied,
   type PhpMail,
@@ -414,7 +415,13 @@ function useSave(site: Site, onApplied: OnApplied, onClose: () => void) {
     setError("");
     try {
       const applied = await phpApi.settings(site.id, change);
-      toast.success(applied.deployment ? t("phpSite.versionStarted") : t("phpSite.applyStarted"));
+      toast.success(
+        !applied.deployment
+          ? t("phpSite.applyStarted")
+          : change.php_version !== undefined
+            ? t("phpSite.versionStarted")
+            : t("phpSite.redeployStarted"),
+      );
       onApplied(applied, t("phpSite.applyTitle", { name: site.name }));
       onClose();
     } catch (reason) {
@@ -550,7 +557,11 @@ function SettingsDialog({
     memory: String(settings.mem_limit_mb || 512),
     shared: (settings.shared_paths ?? []).join("\n"),
     hook: settings.release_hook,
+    health: settings.health_path ?? "",
+    worker: settings.queue_worker === true,
   });
+  // a template's worker, as Laravel's queue worker (#52)
+  const template = settings.template === "custom" ? null : phpTemplates[settings.template];
   const set = (change: Partial<typeof values>) =>
     setValues((current) => ({ ...current, ...change }));
   const { busy, error, save } = useSave(site, onApplied, onClose);
@@ -577,6 +588,8 @@ function SettingsDialog({
         .map((line) => line.trim())
         .filter(Boolean),
       release_hook: values.hook.trim(),
+      health_path: values.health.trim(),
+      ...(template?.worker ? { queue_worker: values.worker } : {}),
     });
   return (
     <ConfirmDialog
@@ -705,6 +718,32 @@ function SettingsDialog({
           />
         </Field>
         <p className="muted small">{t("phpSite.releaseHookNote")}</p>
+        <Field label={t("phpSite.healthPath")} htmlFor="php-health">
+          <input
+            id="php-health"
+            className="input mono"
+            placeholder="/up"
+            value={values.health}
+            onChange={(event) => set({ health: event.target.value })}
+          />
+        </Field>
+        <p className="muted small">{t("phpSite.healthPathNote")}</p>
+        {template?.worker && (
+          <label className="check-line">
+            <input
+              type="checkbox"
+              checked={values.worker}
+              onChange={(event) => set({ worker: event.target.checked })}
+            />
+            <span>
+              {t("phpSite.queueWorker")}
+              <span className="muted small">
+                {" "}
+                · {t("phpSite.queueWorkerNote", { name: site.name })}
+              </span>
+            </span>
+          </label>
+        )}
         {error && <p className="field-error">{error}</p>}
       </div>
     </ConfirmDialog>
@@ -754,6 +793,9 @@ export function PhpSharedCard({ data }: { data: PhpSiteData }) {
   const { settings, status } = data;
   const paths = settings?.shared_paths ?? [];
   const sizes = new Map((status?.shared ?? []).map((item) => [item.path, item.bytes]));
+  // what backups leave out (#52): a shared path, or another path of the site
+  const excluded = settings?.backup_exclude ?? [];
+  const elsewhere = excluded.filter((path) => !paths.includes(path));
   return (
     <Card title={t("phpSite.shared")}>
       {paths.length === 0 ? (
@@ -770,11 +812,18 @@ export function PhpSharedCard({ data }: { data: PhpSiteData }) {
                     {size === undefined || size === null ? "–" : formatBytes(size)}
                   </span>
                 </div>
-                <div className="muted small">{t("phpSite.sharedNote")}</div>
+                <div className="muted small">
+                  {t(excluded.includes(path) ? "phpSite.sharedNoBackup" : "phpSite.sharedNote")}
+                </div>
               </li>
             );
           })}
         </ul>
+      )}
+      {elsewhere.length > 0 && (
+        <p className="muted small">
+          {t("phpSite.noBackup")} <span className="mono">{elsewhere.join(", ")}</span>
+        </p>
       )}
     </Card>
   );
@@ -924,7 +973,7 @@ function SecretsDialog({
     setError("");
     try {
       const applied = await phpApi.secrets(site.id, change);
-      toast.success(t("phpSite.applyStarted"));
+      toast.success(applied.deployment ? t("phpSite.redeployStarted") : t("phpSite.applyStarted"));
       onApplied(applied, t("phpSite.applyTitle", { name: site.name }));
       onClose();
     } catch (reason) {
@@ -1106,5 +1155,91 @@ export function PhpCronMailCard({ site, canAct }: { site: Site; canAct: boolean 
         )}
       </div>
     </Card>
+  );
+}
+
+/** "Update WordPress" (#52): a new release, a copy of the live one with the
+ * application's updates and the plugins and themes to add, so a broken
+ * update is one rollback away. */
+export function PhpUpdateButton({
+  site,
+  settings,
+  disabled,
+}: {
+  site: Site;
+  settings: SitePhp;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const template = settings.template === "custom" ? null : phpTemplates[settings.template];
+  if (!template?.update || settings.mode === "classic") {
+    return null;
+  }
+  const name = t(`phpSite.template.${settings.template}`);
+  return (
+    <>
+      <Button disabled={disabled} onClick={() => setOpen(true)}>
+        {t("phpSite.update", { name })}
+      </Button>
+      {open && <UpdateDialog site={site} name={name} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function UpdateDialog({ site, name, onClose }: { site: Site; name: string; onClose: () => void }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [plugins, setPlugins] = useState("");
+  const [themes, setThemes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const words = (text: string) => text.split(/[\s,]+/).filter(Boolean);
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await phpApi.update(site.id, { plugins: words(plugins), themes: words(themes) });
+      toast.success(t("phpSite.updateStarted", { name }));
+      onClose();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      open
+      title={t("phpSite.updateTitle", { name })}
+      confirmLabel={t("phpSite.updateConfirm")}
+      confirmDisabled={busy}
+      onCancel={onClose}
+      onConfirm={() => void submit()}
+    >
+      <div className="dialog-form">
+        <p>{t("phpSite.updateNote", { name })}</p>
+        <Field label={t("phpSite.updatePlugins")} htmlFor="php-update-plugins">
+          <input
+            id="php-update-plugins"
+            className="input mono"
+            placeholder="akismet, wordpress-seo"
+            value={plugins}
+            onChange={(event) => setPlugins(event.target.value)}
+          />
+        </Field>
+        <Field label={t("phpSite.updateThemes")} htmlFor="php-update-themes">
+          <input
+            id="php-update-themes"
+            className="input mono"
+            placeholder="twentytwentyfive"
+            value={themes}
+            onChange={(event) => setThemes(event.target.value)}
+          />
+        </Field>
+        <p className="muted small">{t("phpSite.updateAddNote")}</p>
+        {error && <p className="field-error">{error}</p>}
+      </div>
+    </ConfirmDialog>
   );
 }

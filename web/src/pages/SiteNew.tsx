@@ -11,7 +11,7 @@ import { hasRole, useAuth } from "../lib/auth";
 import { directoryId, type AcmeAccount, type Challenge } from "../lib/certificates";
 import { serverLabel, type DbServer } from "../lib/databases";
 import { formatBytes, formatDuration, formatNumber, parseDate } from "../lib/format";
-import { phpApi, type PhpTemplate, type PhpVersions } from "../lib/php";
+import { phpApi, phpTemplates, type PhpTemplate, type PhpVersions } from "../lib/php";
 import { useLiveList, useLiveRecord } from "../lib/realtime";
 import { provisionApi, type DnsPreview, type PreviewRecord, type SiteSource } from "../lib/sites";
 import type { Command, Host } from "../lib/types";
@@ -94,7 +94,7 @@ function SiteForm({
   onStarted: (id: string) => void;
   onPlan: (plan: Plan) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const toast = useToast();
   // a PHP application (#50) runs in a PHP-FPM container of its own
   const [kind, setKind] = useState<"static" | "php">("static");
@@ -104,7 +104,16 @@ function SiteForm({
     docroot: "public",
     dbServer: "",
     database: "",
+    // a template's worker and a fresh install (#52)
+    queueWorker: false,
+    title: "",
+    adminUser: "",
+    adminEmail: "",
+    adminPassword: "",
+    locale: i18n.language.startsWith("cs") ? "cs_CZ" : "en_US",
   });
+  // the template the user chose rather than the one the source looks like
+  const [templateChosen, setTemplateChosen] = useState(false);
   const setPhp = (change: Partial<typeof phpForm>) =>
     setPhpForm((current) => ({ ...current, ...change }));
   const versions = usePhpVersions(kind === "php");
@@ -143,6 +152,44 @@ function SiteForm({
   // a name of the LAN gets its certificate from the internal CA (#26)
   const lan = preview.data?.lan === true;
   const primary = accounts.find((account) => account.role === "primary");
+
+  const template = phpForm.template === "custom" ? null : phpTemplates[phpForm.template];
+  // a template's application without a source of its own is installed fresh (#52)
+  const fresh = php && values.source === "empty" && template?.fresh === true;
+  const install = {
+    title: phpForm.title.trim(),
+    admin_user: phpForm.adminUser.trim(),
+    admin_email: phpForm.adminEmail.trim(),
+    admin_password: phpForm.adminPassword,
+    locale: phpForm.locale,
+  };
+  const installReady =
+    install.title !== "" &&
+    install.admin_user !== "" &&
+    install.admin_email.includes("@") &&
+    install.admin_password.length >= 12;
+  const needsDatabase = php && template?.database === true && dbServer === "";
+  const sourceless = php && values.source === "empty" && template !== null && !template.fresh;
+  const detected = useDetected(php, values, file, server);
+  // what the source looks like is the template, until one is chosen
+  useEffect(() => {
+    if (detected.template !== null && !templateChosen) {
+      const found =
+        detected.template === ""
+          ? null
+          : phpTemplates[detected.template as keyof typeof phpTemplates];
+      setPhpForm((current) => ({
+        ...current,
+        template: (detected.template || "custom") as PhpTemplate,
+        docroot: found ? found.docroot : current.docroot,
+      }));
+    }
+  }, [detected.template, templateChosen]);
+  const chooseTemplate = (value: PhpTemplate) => {
+    setTemplateChosen(true);
+    const chosen = value === "custom" ? null : phpTemplates[value];
+    setPhp({ template: value, docroot: chosen ? chosen.docroot : "public" });
+  };
 
   const builds = values.source !== "empty" && (php || values.generator !== "none");
   const start = async () => {
@@ -191,6 +238,8 @@ function SiteForm({
                         database: phpForm.database.trim() || siteName.replace(/-/g, "_"),
                       }
                     : {}),
+                  ...(fresh ? { install } : {}),
+                  ...(template?.worker && phpForm.queueWorker ? { queue_worker: true } : {}),
                 },
               }
             : {}),
@@ -231,7 +280,10 @@ function SiteForm({
     server !== "" &&
     !preview.data?.problem &&
     (preview.data?.taken.length ?? 0) === 0 &&
-    (values.source !== "upload" || file !== null);
+    (values.source !== "upload" || file !== null) &&
+    (!fresh || installReady) &&
+    !needsDatabase &&
+    !sourceless;
 
   return (
     <>
@@ -253,11 +305,21 @@ function SiteForm({
             label={t("site.source")}
             value={values.source}
             onChange={(source) => set({ source: source as SiteSource })}
-            options={(["git", "upload", "empty"] as SiteSource[]).map((source) => ({
-              value: source,
-              title: t(`site.sourceKind.${source}`),
-              note: t(`siteNew.sourceNote.${source}`),
-            }))}
+            options={(["git", "upload", "empty"] as SiteSource[]).map((source) =>
+              source === "empty" && php && template?.fresh
+                ? {
+                    value: source,
+                    title: t("siteNew.freshTitle"),
+                    note: t("siteNew.freshNote", {
+                      name: t(`phpSite.template.${phpForm.template}`),
+                    }),
+                  }
+                : {
+                    value: source,
+                    title: t(`site.sourceKind.${source}`),
+                    note: t(`siteNew.sourceNote.${source}`),
+                  },
+            )}
           />
           {values.source === "upload" && (
             <Field label={t("siteNew.zip")} htmlFor="new-site-zip" error={errors.file}>
@@ -273,6 +335,7 @@ function SiteForm({
           {values.source !== "empty" && (
             <BuildFields values={values} set={set} errors={errors} idPrefix="wizard" php={php} />
           )}
+          {php && values.source !== "empty" && <DetectedLine detected={detected} />}
         </div>
       </Card>
 
@@ -303,17 +366,94 @@ function SiteForm({
                   id="new-site-template"
                   className="select"
                   value={phpForm.template}
-                  onChange={(event) => setPhp({ template: event.target.value as PhpTemplate })}
+                  onChange={(event) => chooseTemplate(event.target.value as PhpTemplate)}
                 >
                   <option value="custom">{t("phpSite.template.custom")}</option>
-                  {(["wordpress", "laravel", "nette"] as const).map((template) => (
-                    <option key={template} value={template} disabled>
-                      {t("siteNew.templateLater", { name: t(`phpSite.template.${template}`) })}
+                  {(["wordpress", "laravel", "nette"] as const).map((name) => (
+                    <option key={name} value={name}>
+                      {t(`phpSite.template.${name}`)}
                     </option>
                   ))}
                 </select>
               </Field>
             </div>
+            {template && (
+              <p className="muted small">{t(`siteNew.templateNote.${phpForm.template}`)}</p>
+            )}
+            {sourceless && (
+              <p className="field-error small">
+                {t("siteNew.templateNeedsSource", {
+                  name: t(`phpSite.template.${phpForm.template}`),
+                })}
+              </p>
+            )}
+            {fresh && (
+              <>
+                <div className="form-row">
+                  <Field label={t("siteNew.freshSiteTitle")} htmlFor="new-site-title">
+                    <input
+                      id="new-site-title"
+                      className="input"
+                      value={phpForm.title}
+                      onChange={(event) => setPhp({ title: event.target.value })}
+                    />
+                  </Field>
+                  <Field label={t("siteNew.freshLocale")} htmlFor="new-site-locale">
+                    <select
+                      id="new-site-locale"
+                      className="select"
+                      value={phpForm.locale}
+                      onChange={(event) => setPhp({ locale: event.target.value })}
+                    >
+                      {["cs_CZ", "en_US", "en_GB", "sk_SK", "de_DE", "pl_PL"].map((locale) => (
+                        <option key={locale} value={locale}>
+                          {t(`siteNew.locale.${locale}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <div className="form-row">
+                  <Field label={t("siteNew.freshAdmin")} htmlFor="new-site-admin">
+                    <input
+                      id="new-site-admin"
+                      className="input"
+                      autoComplete="off"
+                      value={phpForm.adminUser}
+                      onChange={(event) => setPhp({ adminUser: event.target.value })}
+                    />
+                  </Field>
+                  <Field label={t("siteNew.freshEmail")} htmlFor="new-site-admin-email">
+                    <input
+                      id="new-site-admin-email"
+                      className="input"
+                      type="email"
+                      value={phpForm.adminEmail}
+                      onChange={(event) => setPhp({ adminEmail: event.target.value })}
+                    />
+                  </Field>
+                </div>
+                <Field
+                  label={t("siteNew.freshPassword")}
+                  htmlFor="new-site-admin-password"
+                  error={
+                    phpForm.adminPassword !== "" && phpForm.adminPassword.length < 12
+                      ? t("siteNew.freshPasswordShort")
+                      : undefined
+                  }
+                >
+                  <input
+                    id="new-site-admin-password"
+                    className="input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={phpForm.adminPassword}
+                    onChange={(event) => setPhp({ adminPassword: event.target.value })}
+                  />
+                </Field>
+                <p className="muted small">{t("siteNew.freshPasswordNote")}</p>
+              </>
+            )}
             {values.source !== "empty" && (
               <>
                 <Field label={t("phpSite.webRoot")} htmlFor="new-site-docroot">
@@ -364,10 +504,29 @@ function SiteForm({
                 </>
               ) : dbServer ? (
                 t("siteNew.databaseNote")
+              ) : needsDatabase ? (
+                <span className="warn-text">
+                  {t("siteNew.databaseRequired", {
+                    name: t(`phpSite.template.${phpForm.template}`),
+                  })}
+                </span>
               ) : (
                 t("siteNew.noDatabaseNote")
               )}
             </p>
+            {template?.worker && (
+              <label className="check-line">
+                <input
+                  type="checkbox"
+                  checked={phpForm.queueWorker}
+                  onChange={(event) => setPhp({ queueWorker: event.target.checked })}
+                />
+                <span>
+                  {t("siteNew.queueWorker")}
+                  <span className="muted small"> · {t("siteNew.queueWorkerNote")}</span>
+                </span>
+              </label>
+            )}
           </div>
         </Card>
       )}
@@ -651,6 +810,89 @@ function RecordsTable({ records, label }: { records: PreviewRecord[]; label: str
         ))}
       </tbody>
     </Table>
+  );
+}
+
+/** What a new PHP site's source looks like (#52): null until asked, "" for
+ * none of the templates'. */
+type Detected = { template: string | null; title: string; busy: boolean; error: string };
+
+/** Asks the panel which PHP application the wizard's source is: an upload's
+ * files at once, a repository's a moment after its address was typed. */
+function useDetected(php: boolean, values: BuildValues, file: File | null, host: string): Detected {
+  const [detected, setDetected] = useState<Detected>({
+    template: null,
+    title: "",
+    busy: false,
+    error: "",
+  });
+  const repo = values.source === "git" ? values.repo_url.trim() : "";
+  const branch = values.branch.trim();
+  const token = values.token.trim();
+  useEffect(() => {
+    const git = values.source === "git" && /^https:\/\/[^\s/]+\/\S+/.test(repo) && host !== "";
+    const upload = values.source === "upload" && file !== null;
+    if (!php || (!git && !upload)) {
+      setDetected({ template: null, title: "", busy: false, error: "" });
+      return;
+    }
+    const abort = new AbortController();
+    const timer = window.setTimeout(
+      () => {
+        setDetected((current) => ({ ...current, busy: true, error: "" }));
+        provisionApi
+          .detect(
+            upload
+              ? { source: "upload" }
+              : {
+                  source: "git",
+                  host,
+                  repo_url: repo,
+                  branch,
+                  ...(token ? { git_token: token } : {}),
+                },
+            upload ? (file ?? undefined) : undefined,
+            abort.signal,
+          )
+          .then((answer) =>
+            setDetected({ template: answer.template, title: answer.title, busy: false, error: "" }),
+          )
+          .catch((reason: unknown) => {
+            if (!abort.signal.aborted) {
+              setDetected({ template: null, title: "", busy: false, error: errorMessage(reason) });
+            }
+          });
+      },
+      upload ? 0 : 800,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      abort.abort();
+    };
+  }, [php, values.source, repo, branch, token, file, host]);
+  return detected;
+}
+
+/** "Detected: Laravel", as the static site builders say theirs. */
+function DetectedLine({ detected }: { detected: Detected }) {
+  const { t } = useTranslation();
+  if (detected.busy) {
+    return <p className="muted small">{t("siteNew.detecting")}</p>;
+  }
+  if (detected.error) {
+    return <p className="muted small">{t("siteNew.detectFailed", { error: detected.error })}</p>;
+  }
+  if (detected.template === null) {
+    return null;
+  }
+  if (detected.template === "") {
+    return <p className="muted small">{t("siteNew.detectedNone")}</p>;
+  }
+  return (
+    <p className="small ok-text detected-line">
+      <Check size={14} aria-hidden="true" />
+      {t("siteNew.detected", { name: detected.title })}
+    </p>
   );
 }
 

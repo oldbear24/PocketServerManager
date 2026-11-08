@@ -1505,7 +1505,8 @@
       "create": "První nasazení",
       "manual": "Nasazeno ručně",
       "push": "Push",
-      "upload": "Nahrání"
+      "upload": "Nahrání",
+      "update": "Aktualizace"
     },
     "sourceKind": {
       "git": "Git",
@@ -1529,7 +1530,11 @@
     "requestsKeys": "Požadavky po hodinách; šipkami se pohybuješ po hodinách",
     "internalRenews": "Interní CA · obnoví se sám",
     "composerDefault": "composer install, má-li zdroj composer.json",
-    "phpBuildNote": "Build běží v PHP image webu jako www-data, takže závislosti odpovídají PHP, které je spouští."
+    "phpBuildNote": "Build běží v PHP image webu jako www-data, takže závislosti odpovídají PHP, které je spouští.",
+    "byUpdate": "aktualizace #{{number}} · {{who}}",
+    "unhealthy": "Od nasazení vydání #{{number}} web neodpovídá, jak má: {{error}}",
+    "healthOk": "Kontrola dostupnosti: {{status}} na {{url}}",
+    "healthFailed": "Kontrola dostupnosti selhala na {{url}}"
   },
   "siteNew": {
     "title": "Nový web",
@@ -1649,7 +1654,6 @@
     "phpVersion": "Verze PHP",
     "recommended": "doporučeno",
     "application": "Aplikace",
-    "templateLater": "{{name}} (přijde se šablonami aplikací)",
     "docrootNone": "samotné vydání",
     "docrootNote": "Složka vydání, kterou edge obsluhuje: public pro Laravel, www pro Nette. Skripty .php jdou do PHP-FPM webu, ostatní soubory edge posílá rovnou.",
     "noDatabase": "Bez databáze",
@@ -1663,7 +1667,37 @@
     "planPhp": {
       "build": "composer install v PHP image jako www-data",
       "release": "trvalá data · release hook · přepnutí · reload PHP-FPM"
-    }
+    },
+    "freshTitle": "Nová instalace",
+    "freshNote": "{{name}} stažený a nainstalovaný",
+    "templateNote": {
+      "wordpress": "WordPress čte nastavení z prostředí webu přes wp-config.php od PocketCloudu, wp-content/uploads přežívá vydání a cron spouští panel. Aktualizace se sestaví jako nová vydání.",
+      "laravel": "Kořen public/, storage/ přežívá vydání a je propojený do public/, .env se zapíše z prostředí webu s novým APP_KEY, migrace a cache při každém vydání a plánovač každou minutu.",
+      "nette": "Kořen www/, log/ a temp/ přežívají vydání; temp/ se při každém vydání vyprázdní a je vyloučený ze záloh."
+    },
+    "templateNeedsSource": "Aplikace {{name}} pochází z Gitu nebo z nahraných souborů.",
+    "freshSiteTitle": "Název webu",
+    "freshLocale": "Jazyk",
+    "locale": {
+      "cs_CZ": "Čeština",
+      "en_US": "Angličtina (USA)",
+      "en_GB": "Angličtina (Británie)",
+      "sk_SK": "Slovenština",
+      "de_DE": "Němčina",
+      "pl_PL": "Polština"
+    },
+    "freshAdmin": "Uživatelské jméno administrátora",
+    "freshEmail": "E-mail administrátora",
+    "freshPassword": "Heslo administrátora",
+    "freshPasswordShort": "Alespoň 12 znaků.",
+    "freshPasswordNote": "Do dokončení instalace je to tajemství webu, potom ho PocketCloud zapomene.",
+    "databaseRequired": "{{name}} ukládá data do databáze: vyber databázový server.",
+    "queueWorker": "Zpracování fronty (queue worker)",
+    "queueWorkerNote": "php artisan queue:work ve vlastním kontejneru ze stejného vydání",
+    "detecting": "Zjišťuji, co je ve zdroji…",
+    "detectFailed": "Nerozpoznáno: {{error}}",
+    "detectedNone": "Žádná ze šablon: vlastní kód.",
+    "detected": "Rozpoznáno: {{name}}"
   },
   "ca": {
     "title": "Interní CA",
@@ -1838,7 +1872,22 @@
     "mailFailed_one": "{{formatted}} selhal",
     "mailFailed_few": "{{formatted}} selhaly",
     "mailFailed_many": "{{formatted}} selhalo",
-    "mailFailed_other": "{{formatted}} selhalo"
+    "mailFailed_other": "{{formatted}} selhalo",
+    "redeployStarted": "Aplikace si prostředí ukládá do cache: nasazuje se kopie živého vydání s novým prostředím.",
+    "healthPath": "Kontrola dostupnosti",
+    "healthPathNote": "Cesta webu, na kterou se panel zeptá po každém vydání, např. /up: méně než 400 je v pořádku. Prázdné pro žádnou.",
+    "queueWorker": "Zpracování fronty (queue worker)",
+    "queueWorkerNote": "{{name}}-worker spouští php artisan queue:work v živém vydání",
+    "sharedNoBackup": "mimo vydání (shared/) · vyloučeno ze záloh",
+    "noBackup": "Vyloučeno ze záloh:",
+    "update": "Aktualizovat {{name}}",
+    "updateTitle": "Aktualizovat {{name}}",
+    "updateConfirm": "Sestavit aktualizaci",
+    "updateNote": "Z kopie živého vydání se sestaví nové, ve kterém se aktualizuje {{name}} i s pluginy a šablonami. Když aktualizace web rozbije, vrátíš se k předchozímu vydání jedním kliknutím.",
+    "updatePlugins": "Přidat pluginy",
+    "updateThemes": "Přidat šablony",
+    "updateAddNote": "Názvy z wordpress.org, např. akismet, nebo adresy ZIP souborů, oddělené čárkami.",
+    "updateStarted": "Aktualizace se sestavuje: {{name}}."
   },
   "task": {
     "every": {

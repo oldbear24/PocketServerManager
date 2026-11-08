@@ -54,6 +54,7 @@ import {
   PhpRuntimeCard,
   PhpCronMailCard,
   PhpSharedCard,
+  PhpUpdateButton,
   usePhpSite,
   type OnApplied,
 } from "./SitePhp";
@@ -343,6 +344,9 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
                     }
                   }}
                 />
+                {php && phpData.settings && (
+                  <PhpUpdateButton site={site} settings={phpData.settings} disabled={busy} />
+                )}
                 <Button disabled={busy} onClick={() => upload.current?.click()}>
                   <Upload size={14} aria-hidden="true" />
                   {t("site.uploadZip")}
@@ -680,6 +684,11 @@ function DeploymentsCard({
         return t("site.byUpload", { who: deployment.requested_by });
       case "create":
         return t("site.byCreate");
+      case "update":
+        return t("site.byUpdate", {
+          number: deployment.base_release,
+          who: deployment.requested_by,
+        });
       default:
         return deployment.commit_sha
           ? t("site.byHandGit", {
@@ -690,12 +699,40 @@ function DeploymentsCard({
     }
   };
 
+  // a live release the site stopped answering since (#52): one rollback away
+  const live = deployments.find((deployment) => deployment.id === site.active_deployment);
+  const earlier = deployments.find(
+    (deployment) =>
+      deployment.id !== site.active_deployment &&
+      deployment.status === "succeeded" &&
+      deployment.on_server &&
+      deployment.number < (live?.number ?? 0),
+  );
+
   return (
     <Card
       title={t("site.deployments")}
       note={t(site.type === "php" ? "phpSite.deploymentsNote" : "site.deploymentsNote")}
       flush
     >
+      {live?.health && !live.health.ok && (
+        <div className="card-body">
+          <Banner tone="err">
+            {t("site.unhealthy", {
+              number: live.number,
+              error: live.health.error || live.health.status,
+            })}
+          </Banner>
+          {canAct && earlier && (
+            <div className="button-row">
+              <Button size="small" disabled={busy} onClick={() => onRollback(earlier)}>
+                <RotateCcw size={13} aria-hidden="true" />
+                {t("site.rollbackTo", { number: earlier.number })}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       {deployments.length === 0 ? (
         <p className="muted card-body">{t("site.noDeployments")}</p>
       ) : (
@@ -732,6 +769,16 @@ function DeploymentsCard({
                     </div>
                     {deployment.status === "failed" && deployment.error && (
                       <div className="field-error small">{deployment.error.split("\n")[0]}</div>
+                    )}
+                    {deployment.health && (
+                      <div className={`small ${deployment.health.ok ? "ok-text" : "field-error"}`}>
+                        {deployment.health.ok
+                          ? t("site.healthOk", {
+                              status: deployment.health.status,
+                              url: deployment.health.url,
+                            })
+                          : t("site.healthFailed", { url: deployment.health.url })}
+                      </div>
                     )}
                   </td>
                   <td>

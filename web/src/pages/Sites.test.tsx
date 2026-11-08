@@ -291,6 +291,97 @@ describe("the sites page", () => {
     await waitFor(() => expect(settings).toHaveBeenLastCalledWith("s2", { php_version: "8.5" }));
   });
 
+  it("updates WordPress in a new release, and rolls back one that broke the site (#52)", async () => {
+    signInAs("operator");
+    lists.sites = [
+      { ...site, id: "s2", name: "blog", type: "php", source: "empty", active_deployment: "d7" },
+    ];
+    lists.hosts = [{ id: "h1", name: "vps-wedos", roles: ["docker", "edge"], status: "online" }];
+    lists.site_php = [
+      {
+        ...phpSettings,
+        template: "wordpress",
+        docroot: "",
+        shared_paths: ["wp-content/uploads"],
+        backup_exclude: ["wp-content/cache", "wp-content/upgrade"],
+        health_path: "/",
+      },
+    ];
+    lists.deployments = [
+      deployment({
+        id: "d7",
+        site: "s2",
+        number: 7,
+        trigger: "update",
+        base_release: 6,
+        message: "Update WordPress",
+        requested_by: "op@example.com",
+        health: {
+          ok: false,
+          status: 500,
+          url: "https://blog.example.org/",
+          error: "https://blog.example.org/ answered 500.",
+          checked_at: "2026-11-05T11:59:00Z",
+        },
+      }),
+      deployment({
+        id: "d6",
+        site: "s2",
+        number: 6,
+        health: {
+          ok: true,
+          status: 200,
+          url: "https://blog.example.org/",
+          checked_at: "2026-11-04T11:00:00Z",
+        },
+      }),
+    ];
+    vi.spyOn(sitesApi, "requests").mockResolvedValue({
+      from: "2026-11-04T13:00:00Z",
+      hours: Array(24).fill(0),
+      total: 0,
+    });
+    vi.spyOn(phpApi, "status").mockResolvedValue(phpStatus);
+    vi.spyOn(phpApi, "versions").mockResolvedValue({ warn_days: 90, default: "8.4", versions: [] });
+    vi.spyOn(phpApi, "mail").mockResolvedValue({
+      relay: null,
+      sent: 0,
+      failed: 0,
+      last_sent_at: "",
+      failures: [],
+      since: "2026-11-04T12:00:00Z",
+    });
+    const rollback = vi.spyOn(sitesApi, "rollback").mockResolvedValue({ command: "c9" });
+    const update = vi.spyOn(phpApi, "update").mockResolvedValue({ deployment: "d8" });
+    renderAt("/sites/s2");
+
+    // the live release broke the site: one click back
+    expect(
+      screen.getByText(
+        "Since release #7 went live the site does not answer as it should: https://blog.example.org/ answered 500.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("update of #6 · op@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Health check: 200 at https://blog.example.org/")).toBeInTheDocument();
+    // what backups leave out
+    expect(screen.getByText("wp-content/cache, wp-content/upgrade")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Roll back to #6" })[0]);
+    await waitFor(() => expect(rollback).toHaveBeenCalledWith("s2", "d6"));
+
+    // an update with plugins to add
+    fireEvent.click(screen.getByRole("button", { name: "Update WordPress" }));
+    fireEvent.change(await screen.findByLabelText("Plugins to add"), {
+      target: { value: "akismet, https://example.org/plugin.zip" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build the update" }));
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith("s2", {
+        plugins: ["akismet", "https://example.org/plugin.zip"],
+        themes: [],
+      }),
+    );
+  });
+
   it("offers a new site when there is none, in the wizard", () => {
     signInAs("operator");
     renderAt("/sites");

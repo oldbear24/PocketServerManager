@@ -215,6 +215,8 @@ describe("the new-site wizard", () => {
     const start = vi
       .spyOn(provisionApi, "start")
       .mockResolvedValue({ provision: "p1", site: "s1" });
+    // a repository of custom code
+    vi.spyOn(provisionApi, "detect").mockResolvedValue({ template: "", title: "" });
     renderAt("/sites/new");
 
     fireEvent.click(screen.getByRole("radio", { name: /PHP application/ }));
@@ -223,7 +225,8 @@ describe("the new-site wizard", () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText("PHP version")).toHaveValue("8.4");
     expect(screen.getByRole("option", { name: /PHP 8\.1/ })).toBeDisabled();
-    expect(screen.getByRole("option", { name: /WordPress/ })).toBeDisabled();
+    // the templates are #52's
+    expect(screen.getByRole("option", { name: /WordPress/ })).not.toBeDisabled();
     // a PHP site builds in its own image: no generator, image or output
     expect(screen.queryByLabelText("Generator")).toBeNull();
     expect(screen.queryByLabelText("Build image")).toBeNull();
@@ -273,6 +276,99 @@ describe("the new-site wizard", () => {
         database: "shop",
       },
     });
+  });
+
+  it("recognises a Laravel upload, and installs a fresh WordPress with its database (#52)", async () => {
+    signInAs("operator");
+    lists.hosts = [edge];
+    lists.db_servers = [
+      {
+        id: "d1",
+        host: "h1",
+        name: "db-main",
+        engine: "mariadb",
+        version: "11.8.3-MariaDB",
+        image: "mariadb:11.8",
+        kind: "shared",
+        extensions: null,
+      },
+    ];
+    vi.spyOn(phpApi, "versions").mockResolvedValue({ warn_days: 90, default: "8.4", versions: [] });
+    vi.spyOn(provisionApi, "preview").mockResolvedValue({
+      hostname: "blog.example.org",
+      zone: "example.org",
+      provider: "Cloudflare",
+      kind: "cloudflare",
+      mode: "automatic",
+      records: [],
+      taken: [],
+    });
+    const detect = vi
+      .spyOn(provisionApi, "detect")
+      .mockResolvedValue({ template: "laravel", title: "Laravel" });
+    const start = vi
+      .spyOn(provisionApi, "start")
+      .mockResolvedValue({ provision: "p1", site: "s1" });
+    renderAt("/sites/new");
+
+    fireEvent.click(screen.getByRole("radio", { name: /PHP application/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /ZIP upload/ }));
+    const zip = new File(["PK"], "shop.zip", { type: "application/zip" });
+    fireEvent.change(screen.getByLabelText("ZIP file"), { target: { files: [zip] } });
+    expect(await screen.findByText("Detected: Laravel")).toBeInTheDocument();
+    expect(detect).toHaveBeenCalledWith({ source: "upload" }, zip, expect.anything());
+    // the template follows what was detected, until one is chosen
+    await waitFor(() => expect(screen.getByLabelText("Application")).toHaveValue("laravel"));
+    expect(screen.getByLabelText("Web root")).toHaveValue("public");
+    expect(screen.getByLabelText(/Queue worker/)).not.toBeChecked();
+
+    // Laravel has no fresh install: it needs a source of its own
+    fireEvent.click(screen.getByRole("radio", { name: /Placeholder/ }));
+    expect(screen.getByText("A Laravel site comes from Git or an upload.")).toBeInTheDocument();
+
+    // WordPress does: its title, administrator and language, and a database
+    fireEvent.change(screen.getByLabelText("Application"), { target: { value: "wordpress" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Fresh install/ }));
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "blog.example.org" } });
+    fireEvent.change(screen.getByLabelText("Site title"), { target: { value: "Můj blog" } });
+    fireEvent.change(screen.getByLabelText("Language"), { target: { value: "cs_CZ" } });
+    fireEvent.change(screen.getByLabelText("Administrator's user name"), {
+      target: { value: "editor" },
+    });
+    fireEvent.change(screen.getByLabelText("Administrator's e-mail"), {
+      target: { value: "editor@example.org" },
+    });
+    fireEvent.change(screen.getByLabelText("Administrator's password"), {
+      target: { value: "short" },
+    });
+    expect(screen.getByText("At least 12 characters.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Administrator's password"), {
+      target: { value: "correct horse battery" },
+    });
+    expect(
+      screen.getByText("WordPress keeps its data in a database: choose a database server."),
+    ).toBeInTheDocument();
+    await screen.findByText(/PocketCloud sets the DNS records/);
+    expect(screen.getByRole("button", { name: "Create and deploy" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Database"), { target: { value: "d1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and deploy" }));
+
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    expect(start.mock.calls[0][0].php).toEqual({
+      version: "8.4",
+      template: "wordpress",
+      docroot: "",
+      database_server: "d1",
+      database: "blog",
+      install: {
+        title: "Můj blog",
+        admin_user: "editor",
+        admin_email: "editor@example.org",
+        admin_password: "correct horse battery",
+        locale: "cs_CZ",
+      },
+    });
+    expect(start.mock.calls[0][0].site).toMatchObject({ source: "empty", type: "php" });
   });
 
   it("moves the source with the arrow keys, and builds nothing for a placeholder", async () => {
