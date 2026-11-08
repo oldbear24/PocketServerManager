@@ -184,7 +184,7 @@ func (p *Panel) HTTPHandler() http.Handler {
 		if r.URL.RawQuery != "" {
 			target += "?" + r.URL.RawQuery
 		}
-		http.Redirect(w, r, origin+target, http.StatusPermanentRedirect)
+		http.Redirect(w, r, origin+target, http.StatusPermanentRedirect) //nolint:gosec // the origin is the public URL's; the request gives the path alone
 	})
 }
 

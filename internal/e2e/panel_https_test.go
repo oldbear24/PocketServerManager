@@ -353,7 +353,7 @@ func TestAgentsKeepTheInternalCA(t *testing.T) {
 		t.Errorf("the new agent: %v", host)
 	}
 
-	config := a.agentConfig("pinned", a.harness.token("pinned"))
+	config := a.agentConfig("pinned", a.token("pinned"))
 	config.CAPin = "sha256:" + strings.Repeat("00", 32)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

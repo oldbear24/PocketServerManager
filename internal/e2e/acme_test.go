@@ -113,7 +113,7 @@ func startCA(t *testing.T, d *dnsHarness, opts acmeOptions) *acmetest.CA {
 		_ = listener.Close()
 	} else {
 		// what the edge's Caddy does on port 80 for /.well-known/acme-challenge/
-		var handler http.Handler = http.FileServer(http.Dir(filepath.Join(d.edge.config.StateDir, "edge", "acme")))
+		handler := http.FileServer(http.Dir(filepath.Join(d.edge.config.StateDir, "edge", "acme")))
 		if opts.panelHTTPS {
 			// the panel's own name reaches the panel's plain port, as port 80
 			// of its host would
