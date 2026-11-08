@@ -494,6 +494,11 @@ func (a *Authority) Pin() string {
 	return pki.PinOf(a.root.Raw)
 }
 
+// ServerCertificate is the gateway's server certificate, which names the
+// panel's public host and the agents' endpoint: the panel's HTTPS serves it
+// too until it has one from ACME (#63).
+func (a *Authority) ServerCertificate() *tls.Certificate { return a.server.Load() }
+
 // ServerTLSConfig returns the gateway's TLS configuration. Client certificates
 // are requested but not verified here: the gateway's interceptor does that, so a
 // rejected agent gets a clear gRPC error instead of a broken handshake, and only

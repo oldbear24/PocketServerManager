@@ -31,7 +31,7 @@ RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/pocketcloud-panel /usr/local/bin/pocketcloud-panel
 ENV POCKETCLOUD_DATA_DIR=/data/pb_data POCKETCLOUD_MASTER_KEY_FILE=/run/secrets/pocketcloud-master-key
 VOLUME /data
-EXPOSE 8090 9443
+EXPOSE 8090 8443 9443
 LABEL org.opencontainers.image.title="pocketcloud-panel" \
       org.opencontainers.image.source="https://github.com/oldbear24/PocketServerManager"
 ENTRYPOINT ["pocketcloud-panel"]

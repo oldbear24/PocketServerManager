@@ -44,6 +44,9 @@ type Panel struct {
 	// pinned in this release, another in tests (SetEdgeImage).
 	edgeImage atomic.Pointer[string]
 
+	// https is the panel's own HTTPS (#63)
+	https httpsState
+
 	Box       *secrets.Box
 	Audit     *audit.Writer
 	Authority *ca.Authority
@@ -160,6 +163,7 @@ func (p *Panel) Register() {
 	p.registerEdge()
 	p.registerDNS()
 	p.registerACME()
+	p.registerHTTPS()
 	p.registerLabels()
 	p.registerSites()
 	p.registerPHPSites()
@@ -183,6 +187,10 @@ func (p *Panel) Register() {
 		}
 
 		if err := p.startGateway(); err != nil {
+			return err
+		}
+		// with the internal CA open, whose certificate it serves first (#63)
+		if err := p.startHTTPS(e); err != nil {
 			return err
 		}
 		// a new release may give the edges another config
@@ -224,6 +232,7 @@ func (p *Panel) Register() {
 	p.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
 		// issuances under way stop waiting for answers
 		p.stopACME()
+		p.stopHTTPS()
 		p.later.stop()
 		p.Streams.Close()
 		if p.Gateway != nil {

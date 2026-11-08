@@ -416,7 +416,8 @@ func (p *Panel) handleRequestCertificate(e *core.RequestEvent) error {
 	}
 	sorted := slices.Sorted(slices.Values(names))
 	for _, record := range existing {
-		if slices.Equal(slices.Sorted(slices.Values(certificateNames(record))), sorted) {
+		// the panel's own is for the panel alone: an edge's may share its name
+		if !record.GetBool("panel") && slices.Equal(slices.Sorted(slices.Values(certificateNames(record))), sorted) {
 			return e.Error(http.StatusConflict, "There is a certificate for these names already.", map[string]any{"id": record.Id})
 		}
 	}
@@ -549,6 +550,7 @@ func (p *Panel) RunACME() {
 		return
 	}
 	p.orderCertificates(domains)
+	p.orderPanelCertificate()
 	accounts, err := p.App.CountRecords(schema.ACMEAccounts)
 	if err != nil {
 		return
@@ -571,7 +573,7 @@ func (p *Panel) RunACME() {
 			p.setFields(record, map[string]any{"attempt_started": nil})
 		}
 
-		if !neededBy(record, domains) {
+		if !neededBy(record, domains, p.panelName()) {
 			p.dropUnneeded(record)
 			continue
 		}
@@ -599,9 +601,13 @@ func (p *Panel) tlsDomains() ([]*core.Record, error) {
 	return p.App.FindRecordsByFilter(schema.Domains, "tls!={:off}", "", 0, 0, dbx.Params{"off": schema.TLSOff})
 }
 
-// neededBy tells whether a certificate is wanted: an admin asked for it, or a
-// domain with TLS of its kind needs it.
-func neededBy(record *core.Record, domains []*core.Record) bool {
+// neededBy tells whether a certificate is wanted: an admin asked for it, a
+// domain with TLS of its kind needs it, or the panel serves its own HTTPS
+// with it, for its name (#63).
+func neededBy(record *core.Record, domains []*core.Record, panelName string) bool {
+	if record.GetBool("panel") {
+		return panelName != "" && slices.Equal(certificateNames(record), []string{panelName})
+	}
 	if !record.GetBool("auto") {
 		return true
 	}
@@ -729,7 +735,7 @@ func (p *Panel) issue(id, requester string, scheduled bool) {
 	if err != nil {
 		return
 	}
-	if !neededBy(record, domains) {
+	if !neededBy(record, domains, p.panelName()) {
 		p.dropUnneeded(record)
 		return
 	}
@@ -779,7 +785,7 @@ func (p *Panel) issue(id, requester string, scheduled bool) {
 		return
 	}
 
-	plan, err := p.planChallenge(names, record.GetString("challenge"))
+	plan, err := p.planChallenge(names, record.GetString("challenge"), record.GetBool("panel"))
 	var waiting errWaiting
 	if errors.As(err, &waiting) {
 		p.acmeWaiting(record, waiting.reason)
@@ -836,7 +842,12 @@ func (p *Panel) obtainWith(account *acmeAccount, names []string, plan acmePlan, 
 	req := acme.Request{Account: account.account, Names: names, HTTPClient: p.acmeHTTPClient()}
 	switch plan.kind {
 	case schema.ChallengeHTTP01:
-		req.HTTP01 = &edgeAnswers{p: p, ctx: ctx, hosts: plan.hosts, requester: requester}
+		if plan.panel {
+			// the panel's own name, answered on its own plain port (#63)
+			req.HTTP01 = &panelAnswers{p: p}
+		} else {
+			req.HTTP01 = &edgeAnswers{p: p, ctx: ctx, hosts: plan.hosts, requester: requester}
+		}
 	default:
 		timing := p.acme.propagation.Load()
 		answers := &zoneAnswers{p: p, ctx: ctx, zones: plan.zones, timeout: timing[0], interval: timing[1]}
@@ -878,7 +889,7 @@ func (p *Panel) acmeIssued(record *core.Record, cert *acme.Certificate, challeng
 		return
 	}
 	renewal := record.GetString("key_pem") != ""
-	if domains, err := p.tlsDomains(); err == nil && !renewal && !neededBy(record, domains) {
+	if domains, err := p.tlsDomains(); err == nil && !renewal && !neededBy(record, domains, p.panelName()) {
 		// its domain went away while it was issued
 		p.dropUnneeded(record)
 		return
@@ -917,7 +928,11 @@ func (p *Panel) acmeIssued(record *core.Record, cert *acme.Certificate, challeng
 		fmt.Sprintf("%s the certificate for %s, valid until %s.", verb, strings.Join(names, ", "), notAfter.Format("2006-01-02")),
 		map[string]any{"certificate": record.Id, "names": strings.Join(names, ", "), "date": notAfter.Format("2006-01-02")})
 	p.resolveCertificateAlerts(record.Id, alertCertificateFailed, alertCertificateExpiring)
-	p.applyEdgesCovering(names, "")
+	// the panel's own goes to no edge: its record's change swaps what the
+	// panel serves (#63)
+	if !record.GetBool("panel") {
+		p.applyEdgesCovering(names, "")
+	}
 }
 
 func (p *Panel) acmeFailed(record *core.Record, challenge, message string, rateLimited bool) {
@@ -975,7 +990,7 @@ func (p *Panel) checkCertificateExpiry() {
 	for _, cert := range certs {
 		// in use: the one the edge serves a domain with, as buildEdgeConfig
 		// picks it; one that a newer one replaced is not
-		inUse := slices.ContainsFunc(domains, func(d *core.Record) bool {
+		inUse := p.servesPanelCertificate(cert.record.Id) || slices.ContainsFunc(domains, func(d *core.Record) bool {
 			chosen := coveringCertificate(certs, d)
 			return chosen != nil && chosen.record.Id == cert.record.Id
 		})
@@ -1006,12 +1021,17 @@ type acmePlan struct {
 	hosts map[string][]*core.Record
 	// zones hold the names, for DNS-01
 	zones map[string]acmeZone
+	// panel is the panel's own certificate, which the panel answers HTTP-01
+	// for itself (#63)
+	panel bool
 }
 
 // hint says what to look at when the CA could not check an answer.
 func (plan acmePlan) hint(explanation string) string {
 	lower := strings.ToLower(explanation)
 	switch {
+	case plan.panel && plan.kind == schema.ChallengeHTTP01 && (strings.Contains(lower, "(connection)") || strings.Contains(lower, "(unauthorized)") || strings.Contains(lower, "(incorrectresponse)")):
+		return "The CA fetches the answer from http://<name>/.well-known/acme-challenge/ on port 80: check that the name points at the panel and that port 80 reaches the panel's --http address."
 	case plan.kind == schema.ChallengeHTTP01 && (strings.Contains(lower, "(connection)") || strings.Contains(lower, "(unauthorized)") || strings.Contains(lower, "(incorrectresponse)")):
 		return "The CA fetches the answer from http://<name>/.well-known/acme-challenge/ on port 80: check that the name points at the edge's public address and that port 80 is open."
 	case plan.kind == schema.ChallengeDNS01 && (strings.Contains(lower, "(unauthorized)") || strings.Contains(lower, "(dns)")):
@@ -1031,7 +1051,7 @@ type acmeZone struct {
 // HTTP-01 when every name is served by an edge with a public address, and
 // DNS-01 for wildcards and names an edge cannot answer for, when their zones
 // are managed through a provider.
-func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
+func (p *Panel) planChallenge(names []string, wanted string, panel bool) (acmePlan, error) {
 	domains, err := p.App.FindAllRecords(schema.Domains)
 	if err != nil {
 		return acmePlan{}, err
@@ -1052,7 +1072,9 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 		byName[zone.GetString("name")] = zone
 	}
 
-	plan := acmePlan{hosts: map[string][]*core.Record{}, zones: map[string]acmeZone{}}
+	plan := acmePlan{hosts: map[string][]*core.Record{}, zones: map[string]acmeZone{}, panel: panel}
+	// why the panel cannot answer HTTP-01 for its name, if it cannot
+	panelBlocked := ""
 	zoneOf := map[string]*core.Record{}
 	// how each name can be checked
 	canHTTP, canDNS := map[string]bool{}, map[string]bool{}
@@ -1063,6 +1085,10 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 		base := strings.TrimPrefix(name, "*.")
 		if base != name {
 			wildcard = true
+		} else if panel {
+			// the panel answers for its own name, a public server of its own
+			panelBlocked = p.panelHTTPBlocked(name, domains, wanted)
+			canHTTP[name] = panelBlocked == ""
 		} else {
 			for _, domain := range domains {
 				if domain.GetString("hostname") != name {
@@ -1119,6 +1145,8 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 		switch {
 		case noWay != "" && strings.HasPrefix(noWay, "*."):
 			return plan, fmt.Errorf("a wildcard (%s) can only be checked with DNS-01, and its zone is in no connected DNS provider that PocketCloud manages", noWay)
+		case noWay != "" && panel:
+			return plan, fmt.Errorf("%s, and the zone of %s is in no connected DNS provider that PocketCloud manages, so the CA cannot check it", panelBlocked, noWay)
 		case noWay != "":
 			return plan, fmt.Errorf("no edge serves %s and its zone is in no connected DNS provider that PocketCloud manages, so the CA cannot check it", noWay)
 		case !allHTTP && !allDNS:
@@ -1135,6 +1163,9 @@ func (p *Panel) planChallenge(names []string, wanted string) (acmePlan, error) {
 		if cannotHTTP != "" {
 			if strings.HasPrefix(cannotHTTP, "*.") {
 				return plan, fmt.Errorf("a wildcard (%s) can only be checked with DNS-01", cannotHTTP)
+			}
+			if panel {
+				return plan, fmt.Errorf("%s, so the CA's HTTP-01 challenge cannot be answered", panelBlocked)
 			}
 			return plan, fmt.Errorf("no edge serves %s, so there is nowhere to answer the CA's HTTP-01 challenge", cannotHTTP)
 		}

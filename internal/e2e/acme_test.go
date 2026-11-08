@@ -22,6 +22,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/agent"
 	pcdns "github.com/oldbear24/PocketServerManager/internal/dns"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
+	"github.com/oldbear24/PocketServerManager/internal/panel"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
@@ -44,7 +45,14 @@ type acmeOptions struct {
 	unreachable bool
 	// configure changes the edge agent's config further
 	configure func(*agent.Config)
+	// panelHTTPS: the panel serves its own HTTPS for panel.example.test, and
+	// answers HTTP-01 for it where the CA asks (#63)
+	panelHTTPS     bool
+	panelChallenge string
 }
+
+// panelHost is the name of a panel that serves its own HTTPS in the tests.
+const panelHost = "panel.example.test"
 
 func newACMEHarness(t *testing.T, opts acmeOptions, zones ...string) *acmeHarness {
 	var configure func(*agent.Config)
@@ -65,7 +73,15 @@ func newACMEHarness(t *testing.T, opts acmeOptions, zones ...string) *acmeHarnes
 			opts.configure(config)
 		}
 	}
-	d := newDNSHarnessWith(t, configure, zones...)
+	var panelConfig func(*panel.Config)
+	if opts.panelHTTPS {
+		panelConfig = func(config *panel.Config) {
+			config.HTTPSAddr = "127.0.0.1:0"
+			config.PublicURL = "https://" + panelHost
+			config.HTTPSChallenge = opts.panelChallenge
+		}
+	}
+	d := newDNSHarnessFor(t, panelConfig, configure, zones...)
 	ca := startCA(t, d, opts)
 
 	d.panel.SetACMEHTTPClient(ca.Client)
@@ -97,7 +113,20 @@ func startCA(t *testing.T, d *dnsHarness, opts acmeOptions) *acmetest.CA {
 		_ = listener.Close()
 	} else {
 		// what the edge's Caddy does on port 80 for /.well-known/acme-challenge/
-		server := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.FileServer(http.Dir(filepath.Join(d.edge.config.StateDir, "edge", "acme")))}
+		handler := http.FileServer(http.Dir(filepath.Join(d.edge.config.StateDir, "edge", "acme")))
+		if opts.panelHTTPS {
+			// the panel's own name reaches the panel's plain port, as port 80
+			// of its host would
+			edgeFiles, panelPort := handler, d.panel.HTTPHandler()
+			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if host, _, err := net.SplitHostPort(r.Host); (err == nil && host == panelHost) || r.Host == panelHost {
+					panelPort.ServeHTTP(w, r)
+					return
+				}
+				edgeFiles.ServeHTTP(w, r)
+			})
+		}
+		server := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: handler}
 		go func() { _ = server.Serve(listener) }()
 		t.Cleanup(func() { _ = server.Close() })
 	}
@@ -308,6 +337,11 @@ func TestANewDomainGetsATrustedCertificate(t *testing.T) {
 	// up the CA's rate limits
 	if status, raw := testutil.Do(t, a.handler, testutil.Request{Method: "POST", URL: "/api/pc/certificates/" + cert.Id + "/retry", Token: a.admin}); status != http.StatusConflict {
 		t.Errorf("retrying a fine certificate: %d %s", status, raw)
+	}
+
+	// a panel behind a reverse proxy orders nothing for itself (#63)
+	if count, _ := a.app.CountRecords(schema.Certificates, dbx.HashExp{"panel": true}); count != 0 {
+		t.Errorf("%d certificates of the panel's own", count)
 	}
 }
 

@@ -108,6 +108,10 @@ func (p *Panel) handleInfo(e *core.RequestEvent) error {
 		"agent_image":     version.AgentRef(),
 		"updater_image":   version.UpdaterRef(),
 		"images_pinned":   version.Pinned(),
+		// the panel serves its UI and API over HTTPS itself, with this
+		// certificate record (#63)
+		"https":             p.panelName() != "",
+		"panel_certificate": panelCertificateID(p.panelRecord()),
 		"agents": map[string]int{
 			"connected": connected.Count,
 			"total":     total.Count,

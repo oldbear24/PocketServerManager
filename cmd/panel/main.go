@@ -29,6 +29,8 @@ func main() {
 
 	config := panel.ConfigFromEnv()
 	config.BindFlags(app.RootCmd)
+	// one HTTPS at a time (#63)
+	app.RootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error { return config.CheckServe(cmd, args) }
 
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{})
 

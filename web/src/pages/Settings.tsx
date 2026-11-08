@@ -1,6 +1,7 @@
 import type { RecordModel } from "pocketbase";
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 
 import { AcmeAccountsCard } from "../components/AcmeAccounts";
 import { PageHead } from "../components/Layout";
@@ -317,7 +318,8 @@ function SmtpCard() {
   );
 }
 
-function AboutCard() {
+/** The panel itself: its version, HTTPS, gateway and CA. */
+export function AboutCard() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<PanelInfo | null>(null);
 
@@ -345,6 +347,20 @@ function AboutCard() {
       <dl className="facts">
         <dt>{t("settings.version")}</dt>
         <dd className="mono">{info.version}</dd>
+        <dt>{t("settings.https")}</dt>
+        <dd>
+          {info.https ? (
+            info.panel_certificate ? (
+              <Link to={`/domains?certificate=${info.panel_certificate}`}>
+                {t("settings.httpsCertificate")}
+              </Link>
+            ) : (
+              t("settings.httpsOrdering")
+            )
+          ) : (
+            t("settings.httpsOff")
+          )}
+        </dd>
         <dt>{t("settings.gateway")}</dt>
         <dd className="mono">{info.grpc_address}</dd>
         <dt>CA_PIN</dt>

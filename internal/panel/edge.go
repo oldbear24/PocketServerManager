@@ -321,7 +321,8 @@ func coveringCertificate(certs []certificateRecord, domain *core.Record) *certif
 // suits tells whether a certificate is of the kind a domain's TLS asks for:
 // one of the internal CA for internal TLS, any other for automatic TLS.
 func suits(cert, domain *core.Record) bool {
-	return (cert.GetString("issuer") == schema.IssuerInternal) == (domain.GetString("tls") == schema.TLSInternal)
+	// the panel's own certificate is never an edge's (#63)
+	return !cert.GetBool("panel") && (cert.GetString("issuer") == schema.IssuerInternal) == (domain.GetString("tls") == schema.TLSInternal)
 }
 
 // edgeConfig is everything an edge serves, built from its domains.

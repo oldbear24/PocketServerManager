@@ -23,7 +23,7 @@ import {
   StatusPill,
   Table,
 } from "../components/ui";
-import { errorMessage } from "../lib/api";
+import { api, errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import type { AcmeAccount } from "../lib/certificates";
 import {
@@ -39,9 +39,37 @@ import { formatRelative } from "../lib/format";
 import { useLiveList } from "../lib/realtime";
 import type { Host } from "../lib/types";
 
+/** The certificate the panel serves its UI and API with, asked again when the
+ * panel orders another (#63). */
+function usePanelCertificate(certificates: Certificate[]) {
+  const [id, setId] = useState("");
+  const ordered = certificates
+    .filter((cert) => cert.panel)
+    .map((cert) => `${cert.id}:${cert.fingerprint}`)
+    .join(",");
+  useEffect(() => {
+    if (!ordered) {
+      return;
+    }
+    let cancelled = false;
+    api
+      .info()
+      .then((info) => {
+        if (!cancelled) {
+          setId(info.panel_certificate ?? "");
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [ordered]);
+  return ordered ? id : "";
+}
+
 /** Domains & TLS (#27): the DNS providers and their zones (#22), the
- * certificates the edges serve (#23), the ACME account and the internal CA
- * (#26). A warning elsewhere links here with ?provider= or ?certificate=,
+ * certificates the edges and the panel serve (#23, #63), the ACME account and
+ * the internal CA (#26). A warning elsewhere links here with ?provider= or ?certificate=,
  * which brings its card into view or opens it. */
 export function DomainsPage() {
   const { t } = useTranslation();
@@ -53,6 +81,7 @@ export function DomainsPage() {
   const certificates = useLiveList<Certificate>("certificates", { sort: "not_after,created" });
   const accounts = useLiveList<AcmeAccount>("acme_accounts", { sort: "role" });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
+  const panelCertificate = usePanelCertificate(certificates.items);
   const [connecting, setConnecting] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const [managing, setManaging] = useState<string | null>(null);
@@ -122,6 +151,7 @@ export function DomainsPage() {
           onRequest={() => setRequesting(true)}
           focus={focusCertificate}
           onFocusDone={() => forget("certificate")}
+          panelCertificate={panelCertificate}
         />
       )}
       <div className="columns">
