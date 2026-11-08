@@ -49,7 +49,7 @@ func upBackupTargets(app core.App) error {
 func downBackupTargets(app core.App) error {
 	targets, err := app.FindCollectionByNameOrId(schema.BackupTargets)
 	if err != nil {
-		return nil
+		return err
 	}
 	return app.Delete(targets)
 }

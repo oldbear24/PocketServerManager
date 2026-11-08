@@ -34,13 +34,13 @@ const (
 	DNSProviders      = "dns_providers"
 	DNSZones          = "dns_zones"
 	// BackupTargets are where backups go (#28)
-	BackupTargets = "backup_targets"
-	DNSRecords        = "dns_records"
-	ACMEAccounts      = "acme_accounts"
-	Sites             = "sites"
-	Deployments       = "deployments"
-	SitePHP           = "site_php"
-	ScheduledTasks    = "scheduled_tasks"
+	BackupTargets  = "backup_targets"
+	DNSRecords     = "dns_records"
+	ACMEAccounts   = "acme_accounts"
+	Sites          = "sites"
+	Deployments    = "deployments"
+	SitePHP        = "site_php"
+	ScheduledTasks = "scheduled_tasks"
 )
 
 // What a scheduled task runs in (#51).
