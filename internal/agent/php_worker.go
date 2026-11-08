@@ -92,9 +92,13 @@ func (a *Agent) applyWorker(ctx context.Context, payload *agentv1.SitePhpApply, 
 func workerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any, seccomp string) map[string]any {
 	site := payload.GetSite()
 	config := phpContainerConfig(payload, mounts, seccomp)
-	config["Cmd"] = []string{"sh", "-c", "exec " + payload.GetWorkerCommand()}
-	// followed when the container starts, so it is the release live then
-	config["WorkingDir"] = path.Join(sites.Root, site, "current")
+	// it runs in the release live when it starts, which a new site has once
+	// its first deployment went live: the read-only mount has no current
+	// before, which the engine cannot make as a working directory
+	current := path.Join(sites.Root, site, "current")
+	config["Cmd"] = []string{"sh", "-c", fmt.Sprintf(
+		`[ -d %[1]s ] || echo "Waiting for the site's first release."; until cd %[1]s 2>/dev/null; do sleep 5; done; exec %[2]s`,
+		current, payload.GetWorkerCommand())}
 	config["Healthcheck"] = map[string]any{"Test": []string{"NONE"}}
 	config["StopSignal"] = "SIGTERM"
 	config["StopTimeout"] = workerStopSeconds

@@ -219,8 +219,8 @@ func TestALaravelSiteIsSetUpWithItsTemplate(t *testing.T) {
 	if worker == nil {
 		t.Fatal("no worker")
 	}
-	if cmd, _ := json.Marshal(worker.Config["Cmd"]); !strings.Contains(string(cmd), "exec php artisan queue:work") ||
-		worker.Config["WorkingDir"] != "/srv/sites/shop/current" || worker.Labels["pocketcloud.role"] != "site-worker" ||
+	if cmd, _ := json.Marshal(worker.Config["Cmd"]); !strings.Contains(string(cmd), "until cd /srv/sites/shop/current") ||
+		!strings.Contains(string(cmd), "exec php artisan queue:work") || worker.Config["WorkingDir"] != nil || worker.Labels["pocketcloud.role"] != "site-worker" ||
 		worker.Config["Image"] != h.docker.Find("shop-php").Config["Image"] {
 		t.Errorf("the worker: %v %v", worker.Config, worker.Labels)
 	}
