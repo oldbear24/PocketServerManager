@@ -71,8 +71,23 @@ The panel opens no browser by itself. On the first start its log prints a link w
 | `--public-url` | `POCKETCLOUD_PUBLIC_URL` | – | The URL people use |
 | `--grpc-addr` | `POCKETCLOUD_GRPC_ADDR` | `:9443` | Where the gateway listens |
 | `--grpc-public-addr` | `POCKETCLOUD_GRPC_PUBLIC_ADDR` | public URL's host + gRPC port | What agents dial |
+| `--https-addr` | `POCKETCLOUD_HTTPS_ADDR` | – | Serve the UI and the API over HTTPS here, with a certificate for the public URL's name from the ACME accounts; `--http` then answers HTTP-01 and redirects |
+| `--https-challenge` | `POCKETCLOUD_HTTPS_CHALLENGE` | `auto` | How the CA checks the panel's name: `auto`, `http-01` or `dns-01` |
 | | `POCKETCLOUD_DIAGNOSTICS` | on | `0` turns the diagnostics plugin off |
 | | `POCKETCLOUD_METRICS_TOKEN` | – | Enables the Prometheus endpoint `/metrics` with this bearer token |
+
+#### HTTPS without a reverse proxy
+
+Behind a reverse proxy the panel speaks plain HTTP, as above. Without one it can serve HTTPS itself (#63): give it `--https-addr` and an `https://` public URL, and once an ACME account is set in Settings it gets a certificate for that name, renews it and serves it without a restart; until then it serves its internal CA's. With Docker:
+
+```sh
+docker run -d --name pocketcloud-panel -p 80:8090 -p 443:8443 -p 9443:9443 \
+  -e POCKETCLOUD_HTTPS_ADDR=0.0.0.0:8443 -e POCKETCLOUD_PUBLIC_URL=https://panel.example.com \
+  -v pocketcloud:/data -v /srv/master.key:/run/secrets/pocketcloud-master-key:ro \
+  ghcr.io/oldbear24/pocketcloud-panel
+```
+
+Port 80 must reach the panel's `--http` address for HTTP-01, or the name's zone must be in a connected DNS provider for `--https-challenge dns-01`. The certificate's state and errors are on Domains & TLS, marked *The panel*. Agents are not affected: the gRPC gateway on 9443 keeps the internal CA ([ADR 0007](docs/adr/0007-the-gateway-keeps-the-internal-ca.md)). The install command (`curl https://panel.example.com/api/pc/install.sh`) works once the certificate is issued.
 
 ### Without Docker
 
