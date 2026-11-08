@@ -788,8 +788,11 @@ func (d dockerSites) sitesMount(ctx context.Context, subpath, target string) (ma
 		return nil, err
 	}
 	if apiAtLeast(version.APIVersion, minSubpathAPI) {
+		// NoCopy: the engine would otherwise fill an empty directory with what
+		// the image has at the target, and give it the target's owner, root,
+		// as a fresh install's empty source (#52)
 		return map[string]any{"Type": "volume", "Source": sites.Volume, "Target": target,
-			"VolumeOptions": map[string]any{"Subpath": subpath}}, nil
+			"VolumeOptions": map[string]any{"Subpath": subpath, "NoCopy": true}}, nil
 	}
 	volume, err := d.a.Docker.InspectVolume(ctx, sites.Volume)
 	if err != nil {
