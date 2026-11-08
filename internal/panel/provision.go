@@ -27,6 +27,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/php"
+	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
@@ -218,6 +219,13 @@ type provisionPHP struct {
 	Template       string `json:"template"`
 	DatabaseServer string `json:"database_server,omitempty"`
 	Database       string `json:"database,omitempty"`
+	// Install is a fresh install of the template's application, as
+	// WordPress's with WP-CLI, for a site without a source of its own (#52)
+	Install *freshInstall `json:"install,omitempty"`
+	// QueueWorker gives the site its template's worker, as Laravel's
+	QueueWorker bool `json:"queue_worker,omitempty"`
+	// Health is the path the availability check asks for, the template's
+	Health string `json:"health,omitempty"`
 }
 
 func payloadOf(command *core.Record) provisionPayload {
@@ -304,6 +312,15 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		if phpRequest, err = p.checkProvisionPHP(body.PHP, site, host); err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
 		}
+		// a fresh install's build, as WP-CLI's download, is the site's (#52)
+		if install := phpRequest.Install; install != nil {
+			t, _ := phpapps.Get(phpRequest.Template)
+			build, err := t.FreshBuild(phpapps.Vars{Locale: install.Locale})
+			if err != nil {
+				return e.BadRequestError(capitalize(err.Error())+".", nil)
+			}
+			site.Set("build_cmd", build)
+		}
 	}
 
 	var upload *uploadedZip
@@ -337,6 +354,10 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 			settings.Set("php_version", phpRequest.Version)
 			settings.Set("docroot", phpRequest.Docroot)
 			settings.Set("template", phpRequest.Template)
+			// and the template's defaults (#52)
+			err = p.applyTemplate(settings, phpRequest, hostname)
+		}
+		if err == nil {
 			err = e.App.SaveWithContext(ctx, settings)
 		}
 		if err != nil {
@@ -350,7 +371,14 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		"site": site.Id, "site_name": site.GetString("name"), "hostname": hostname, "www": www, "challenge": challenge,
 	}
 	if phpRequest != nil {
-		payload["php"] = phpRequest
+		// the flow's record keeps no password
+		recorded := *phpRequest
+		if recorded.Install != nil {
+			install := *recorded.Install
+			install.AdminPassword = ""
+			recorded.Install = &install
+		}
+		payload["php"] = recorded
 	}
 	parent, err := p.Commands.Begin(ctx, commands.Options{
 		Host:        host.Id,
@@ -964,7 +992,12 @@ func (p *Panel) workOnCheck(parent, step *core.Record, payload provisionPayload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := "https://" + payload.Hostname + "/"
+	// the template's health check, such as Laravel's /up (#52)
+	path := "/"
+	if payload.PHP != nil && payload.PHP.Health != "" {
+		path = payload.PHP.Health
+	}
+	url := "https://" + payload.Hostname + path
 	answer, err := p.provision.siteCheck(ctx, url, address, roots)
 	problem := ""
 	switch {
@@ -1305,8 +1338,38 @@ func (p *Panel) checkProvisionPHP(request *provisionPHP, site, host *core.Record
 	if checked.Docroot != "" && (!docrootPath.MatchString(checked.Docroot) || slices.Contains(strings.Split(checked.Docroot, "/"), "..")) {
 		return nil, errors.New("the web root is a directory of the release, such as public, or empty for the release itself")
 	}
-	if !slices.Contains([]string{schema.PHPCustom, schema.PHPWordPress, schema.PHPLaravel, schema.PHPNette}, checked.Template) {
-		return nil, errors.New("the application is custom, wordpress, laravel or nette")
+	t, templated := phpapps.Get(checked.Template)
+	if !templated && checked.Template != schema.PHPCustom {
+		return nil, fmt.Errorf("the application is custom or one of %s", strings.Join(phpapps.Names(), ", "))
+	}
+	checked.Health = ""
+	if templated {
+		checked.Health = t.Health
+		if checked.Docroot == "" {
+			checked.Docroot = t.Docroot
+		}
+		if t.Database == phpapps.DatabaseRequired && checked.DatabaseServer == "" {
+			return nil, fmt.Errorf("%s keeps its data in a database: choose a database server for it", t.Title)
+		}
+	}
+	checked.QueueWorker = checked.QueueWorker && templated && t.Worker != nil
+	switch {
+	case checked.Install != nil && (!templated || t.Fresh == nil):
+		return nil, errors.New("only an application with a fresh install, such as WordPress, is installed fresh")
+	case checked.Install != nil && site.GetString("source") != sites.SourceEmpty:
+		return nil, errors.New("a fresh install has no source of its own: its source is empty")
+	case checked.Install == nil && templated && t.Fresh != nil && site.GetString("source") == sites.SourceEmpty:
+		return nil, fmt.Errorf("a new %s without a source of its own is installed fresh: give its title and administrator", t.Title)
+	case templated && t.Fresh == nil && site.GetString("source") == sites.SourceEmpty:
+		return nil, fmt.Errorf("a %s site comes from Git or an upload", t.Title)
+	case checked.Install != nil:
+		install := *checked.Install
+		if err := checkInstall(&install); err != nil {
+			return nil, err
+		}
+		checked.Install = &install
+		// the release is WordPress, whatever the wizard sent
+		checked.Docroot = t.Docroot
 	}
 	if checked.DatabaseServer == "" {
 		checked.Database = ""

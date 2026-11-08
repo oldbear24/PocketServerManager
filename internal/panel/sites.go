@@ -143,6 +143,9 @@ func (p *Panel) bindSiteRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	group.POST("/sites/{id}/php/apply", p.handlePHPApply).BindFunc(operators)
 	group.GET("/sites/{id}/php/status", p.handlePHPStatus).BindFunc(everyone)
 	group.GET("/sites/{id}/php/logs", p.handlePHPLogs).BindFunc(everyone)
+	// PHP application templates (#52)
+	group.POST("/sites/{id}/php/update", p.handlePHPUpdate).BindFunc(operators)
+	group.POST("/sites/detect", p.handleSiteDetect).BindFunc(operators).Bind(apis.BodyLimit(maxSiteUpload + 1<<20))
 }
 
 // takeSiteSecrets sets the Git token and the passwords from the request, so a
@@ -436,6 +439,12 @@ type deploymentRequest struct {
 	// PHP version, which is newer or older than PHPFrom (#50).
 	PHPApply bool
 	PHPFrom  string
+	// Base builds a copy of this release of the site rather than its source,
+	// as an update of a PHP application, or a redeploy of one installed
+	// fresh, which has no source of its own (#52).
+	Base int
+	// PreHook runs before the release hook, as an update's.
+	PreHook string
 }
 
 // startDeployment records a deployment and sends it to the site's server.
@@ -471,6 +480,9 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 	if last, err := p.App.FindRecordsByFilter(schema.Deployments, "site={:s}", "-number", 1, 0, dbx.Params{"s": site.Id}); err == nil && len(last) > 0 {
 		number = last[0].GetInt("number") + 1
 	}
+	if request.Base == 0 && request.Upload == nil {
+		request.Base = p.freshBase(site)
+	}
 
 	collection, err := p.App.FindCachedCollectionByNameOrId(schema.Deployments)
 	if err != nil {
@@ -500,6 +512,10 @@ func (p *Panel) startDeployment(ctx context.Context, site *core.Record, request 
 	if request.Message != "" {
 		deployment.Set("message", truncate(request.Message, 1000))
 	}
+	if request.Base > 0 {
+		deployment.Set("base_release", request.Base)
+	}
+	deployment.Set("pre_hook", request.PreHook)
 	if site.GetString("type") == schema.SitePHPApp {
 		// a rollback to it goes back to its PHP version
 		if settings, err := p.phpSettings(p.App, site); err == nil {
@@ -563,6 +579,15 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 	if again := request.Again; again != nil && again.GetString("source") == sites.SourceGit {
 		branch, commit = again.GetString("branch"), again.GetString("commit_sha")
 	}
+	buildCmd := site.GetString("build_cmd")
+	if deployment.GetInt("base_release") > 0 {
+		// a copy of a release is built already: what built it, such as a fresh
+		// install's download, would only undo it (#52)
+		buildCmd = ""
+	}
+	if pre := strings.TrimSpace(deployment.GetString("pre_hook")); pre != "" {
+		hook = strings.TrimSpace(pre + "\n" + hook)
+	}
 	command, err := p.Commands.Create(ctx, commands.Options{
 		Host:        site.GetString("host"),
 		Label:       fmt.Sprintf("%s #%d", site.GetString("name"), number),
@@ -580,7 +605,7 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 			ArtifactId:    artifact,
 			Generator:     site.GetString("generator"),
 			BuildImage:    site.GetString("build_image"),
-			BuildCmd:      site.GetString("build_cmd"),
+			BuildCmd:      buildCmd,
 			OutputDir:     site.GetString("output_dir"),
 			KeepReleases:  int32(site.GetInt("keep_releases")), //nolint:gosec // at most 50
 			CpuLimit:      site.GetFloat("build_cpus"),
@@ -634,6 +659,11 @@ func (p *Panel) enrichSiteDeploy(record *core.Record, command *agentv1.Command) 
 			if payload.Php.Apply.Secrets, err = p.smtpSecret(maps.Clone(secrets)); err != nil {
 				return err
 			}
+		}
+		// a fresh install's administrator password, for its release hook
+		// alone, not PHP-FPM's (#52)
+		if err := p.enrichInstall(payload.Php, settings); err != nil {
+			return err
 		}
 	}
 	if payload.GetSource() != sites.SourceGit {
@@ -752,6 +782,7 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 			fields["message"] = truncate(result.Message, 1000)
 		}
 	}
+	firstLive := site.GetString("active_deployment") == ""
 	// the deployment is live and the site's active one at once, so nothing
 	// sees one without the other
 	if err := p.setFieldsTogether(
@@ -765,6 +796,9 @@ func (p *Panel) siteDeployFinished(command *core.Record) {
 	}
 	events.Log(p.App, site.GetString("host"), "site.deployed", schema.SeverityInfo,
 		fmt.Sprintf("Deployment %s is live.", label), map[string]any{"site": site.Id, "deployment": deployment.Id})
+	if site.GetString("type") == schema.SitePHPApp {
+		p.templateReleased(site, deployment, command, firstLive)
+	}
 }
 
 // markReleasesOnServer records which releases the server still has, after a
@@ -835,6 +869,8 @@ func (p *Panel) siteRollbackFinished(command *core.Record) {
 	}
 	if site.GetString("type") == schema.SitePHPApp {
 		p.phpDeployApplied(site, command)
+		// whether the release it went back to answers (#52)
+		p.watchHealth(site.Id, deployment.Id)
 	}
 	events.Log(p.App, site.GetString("host"), "site.rolled_back", schema.SeverityInfo,
 		fmt.Sprintf("%s is back on deployment #%d.", site.GetString("name"), number), map[string]any{"site": site.Id, "deployment": deployment.Id})
