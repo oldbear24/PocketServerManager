@@ -78,6 +78,8 @@ func TestAPIRules(t *testing.T) {
 		schema.InternalCA:        saveRecord(t, app, schema.InternalCA, map[string]any{"root_cert": "x"}),
 		schema.Domains:           saveRecord(t, app, schema.Domains, domain("rules")),
 		schema.Certificates:      saveRecord(t, app, schema.Certificates, map[string]any{"names": []string{"rules.example.com"}, "key_pem": "secret"}),
+		schema.BackupTargets: saveRecord(t, app, schema.BackupTargets, map[string]any{"name": "rules", "kind": "local", "host": host.Id,
+			"config": map[string]any{"path": "/srv/backups"}, "credentials": "sealed", "repo_password": "sealed"}),
 	}
 
 	// bodies that would be valid, so a create can only fail because of the rule
@@ -87,6 +89,8 @@ func TestAPIRules(t *testing.T) {
 		schema.Domains:  fmt.Sprintf(`{"hostname":"created-%%s.example.com","host":%q,"target_kind":"redirect","redirect_to":"https://example.org"}`, edgeHost.Id),
 		// certificates come in through the panel's upload route only
 		schema.Certificates: `{"names":["x.example.com"]}`,
+		// targets, through the panel's route, which checks them with restic
+		schema.BackupTargets: fmt.Sprintf(`{"name":"created-%%s","kind":"local","host":%q}`, host.Id),
 	}
 
 	matrix := []struct {
@@ -109,6 +113,7 @@ func TestAPIRules(t *testing.T) {
 		{schema.InternalCA, nobody, nobody, nobody, nobody},
 		{schema.Domains, everyone, operators, operators, operators},
 		{schema.Certificates, everyone, nobody, nobody, nobody},
+		{schema.BackupTargets, everyone, nobody, nobody, nobody},
 	}
 
 	for _, row := range matrix {

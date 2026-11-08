@@ -33,6 +33,8 @@ const (
 	Certificates      = "certificates"
 	DNSProviders      = "dns_providers"
 	DNSZones          = "dns_zones"
+	// BackupTargets are where backups go (#28)
+	BackupTargets = "backup_targets"
 	DNSRecords        = "dns_records"
 	ACMEAccounts      = "acme_accounts"
 	Sites             = "sites"
@@ -58,11 +60,18 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// States of a backup target (#28).
+const (
+	TargetPending = "pending"
+	TargetOK      = "ok"
+	TargetFailed  = "failed"
+)
+
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
+	"backup_jobs", "backup_runs", "backup_checks",
 }
 
 // User roles.
