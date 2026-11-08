@@ -646,9 +646,16 @@ func (p *Panel) lookAtHealth(siteID, deploymentID string, started time.Time) boo
 
 // siteAddress is where the panel reaches a domain of a server, and the roots
 // its certificate is checked against: the server's public address, or for a
-// name of the LAN its address there with the internal CA.
+// name of the LAN, with internal TLS or in a zone of a DNS server of the LAN,
+// its address there with the internal CA.
 func (p *Panel) siteAddress(host, domain *core.Record) (string, *x509.CertPool) {
+	// a name with internal TLS is the LAN's, whether a DNS server of the LAN
+	// holds its zone or not
+	lan := domain.GetString("tls") == schema.TLSInternal
 	if want := p.desiredDNS(domain); !want.Manual && lanDriver(want.Provider) {
+		lan = true
+	}
+	if lan {
 		address := host.GetString("ip4")
 		if address == "" {
 			address = host.GetString("ip6")
