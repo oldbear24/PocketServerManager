@@ -1410,6 +1410,11 @@ func (p *Panel) startProvisionPHP(parent *core.Record, step string) error {
 	}
 	ctx := context.Background()
 	if step == "site.php.apply" {
+		// the database made for the site is connected to it as it is made; a
+		// connection that failed is tried again here, and says why it fails
+		if err := p.connectProvisionDatabase(ctx, parent, site, payload.PHP); err != nil {
+			return err
+		}
 		_, err := p.applyPHP(ctx, site, commands.Options{
 			RequestedBy: parent.GetString("requested_by"), Requester: parent.GetString("requested_label"),
 			Parent: parent.Id, Correlation: parent.Id,
@@ -1443,4 +1448,33 @@ func (p *Panel) startProvisionPHP(parent *core.Record, step string) error {
 		Site: site.Id, Parent: parent.Id,
 	}, server, payload.PHP.Database, create)
 	return err
+}
+
+// connectProvisionDatabase connects a new PHP site to the database its setup
+// made, unless it is connected already.
+func (p *Panel) connectProvisionDatabase(ctx context.Context, parent, site *core.Record, request *provisionPHP) error {
+	if request.DatabaseServer == "" {
+		return nil
+	}
+	settings, err := p.phpSettings(p.App, site)
+	if err != nil {
+		return err
+	}
+	if settings.GetString("database") != "" {
+		return nil
+	}
+	server, err := p.App.FindRecordById(schema.DBServers, request.DatabaseServer)
+	if err != nil {
+		return errors.New("the database server is gone")
+	}
+	database, err := p.App.FindFirstRecordByFilter(schema.Databases, "server={:server} && name={:name} && site={:site}",
+		dbx.Params{"server": server.Id, "name": request.Database, "site": site.Id})
+	if err != nil {
+		return errors.New("the site's database is gone")
+	}
+	connect := databaseRequest{Actor: dbActor, UserID: parent.GetString("requested_by"), Label: parent.GetString("requested_label")}
+	if err := p.connectSite(ctx, connect, server, database, site, false); err != nil {
+		return fmt.Errorf("the site could not be connected to its database: %w", err)
+	}
+	return nil
 }

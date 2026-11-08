@@ -535,3 +535,46 @@ func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
 }
+
+// TestTwoSitesShareADatabaseServer: each of two PHP sites of a server gets a
+// database on the same database server, and a network of its own to it; the
+// second used to collide with the first's (#50, found with #52). A Laravel
+// site's environment names the database as Laravel does.
+func TestTwoSitesShareADatabaseServer(t *testing.T) {
+	h := newProvisionHarness(t)
+	fakePHPTools(t, "")
+	server := h.databaseServer("db-main")
+	archive := zipOf(t, map[string]string{"artisan": "#!/usr/bin/env php", "public/index.php": "<?php"})
+	for _, name := range []string{"one", "two"} {
+		h.resolvers.set(name+".example.org", "A", "203.0.114.7")
+		h.resolvers.set(name+".example.org", "AAAA", "2a01:4f8::7")
+		status, raw := h.provisionUpload("/api/pc/sites/provision", map[string]any{
+			"site":     map[string]any{"name": name, "host": h.host.Id, "type": schema.SitePHPApp, "source": sites.SourceUpload},
+			"hostname": name + ".example.org", "php": map[string]any{"template": "laravel", "database_server": server.Id},
+		}, archive)
+		if status != http.StatusCreated {
+			t.Fatalf("%s: %d %s", name, status, raw)
+		}
+		var started map[string]string
+		_ = json.Unmarshal([]byte(raw), &started)
+		if setup := h.waitSetup(started["provision"], schema.CommandSucceeded, schema.CommandFailed); setup.GetString("status") != schema.CommandSucceeded {
+			t.Fatalf("%s: %v; steps %s", name, setup.PublicExport(), stepTypes(h.steps(started["provision"])))
+		}
+		site, settings := h.templateSite(name)
+		env := settings.GetString("env")
+		for _, want := range []string{"DB_HOST=db-main", "DB_CONNECTION=mysql", "DB_DATABASE=" + name, "DB_USERNAME=" + name, "DB_PASSWORD=${secret:db/" + name + "}"} {
+			if !strings.Contains(env, want) {
+				t.Errorf("%s: the environment lacks %s:\n%s", name, want, env)
+			}
+		}
+		if strings.Contains(env, "SESSION_DRIVER=file") || settings.GetString("database") == "" {
+			t.Errorf("%s: %v", name, settings.PublicExport())
+		}
+		if dotenv, _ := os.ReadFile(filepath.Join(sites.CurrentLink(h.sites, name), ".env")); !strings.Contains(string(dotenv), `DB_DATABASE="`+name+`"`) {
+			t.Errorf("%s: .env:\n%s", name, dotenv)
+		}
+		if networks, _ := h.app.FindRecordsByFilter(schema.DBNetworks, "site={:s}", "", 0, 0, dbx.Params{"s": site.Id}); len(networks) != 1 {
+			t.Errorf("%s: %d networks", name, len(networks))
+		}
+	}
+}
