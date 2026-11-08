@@ -1,5 +1,6 @@
 import { Lock, LockOpen, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -133,6 +134,7 @@ export function CertificatesCard({
   onRequest,
   focus = "",
   onFocusDone,
+  panelCertificate = "",
 }: {
   certificates: Certificate[];
   hosts: Host[];
@@ -146,6 +148,8 @@ export function CertificatesCard({
   /** a certificate to open, as a warning links to it (#27) */
   focus?: string;
   onFocusDone?: () => void;
+  /** the certificate the panel serves its UI and API with (#63) */
+  panelCertificate?: string;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -177,15 +181,18 @@ export function CertificatesCard({
     return { valid, issuing, action };
   }, [certificates, now]);
 
-  const shown = certificates.filter((cert) => {
-    if (filter === "action") {
-      return needsAction(cert, now);
-    }
-    if (filter === "internal") {
-      return cert.issuer === "internal";
-    }
-    return true;
-  });
+  const shown = certificates
+    .filter((cert) => {
+      if (filter === "action") {
+        return needsAction(cert, now);
+      }
+      if (filter === "internal") {
+        return cert.issuer === "internal";
+      }
+      return true;
+    })
+    // the panel's own first, the rest as they came
+    .sort((a, b) => Number(!!b.panel) - Number(!!a.panel));
 
   const retry = async (cert: Certificate) => {
     setRetrying(cert.id);
@@ -271,9 +278,7 @@ export function CertificatesCard({
           <tbody>
             {shown.map((cert) => {
               const state = certificateState(cert, now);
-              const deployed = Object.keys(cert.installed ?? {})
-                .map((id) => hostNames.get(id) ?? id)
-                .sort();
+              const deployed = deployedOn(cert, hostNames, panelCertificate, t);
               const LockIcon = cert.fingerprint && state !== "expired" ? Lock : LockOpen;
               const showRetry =
                 canRetry &&
@@ -291,6 +296,7 @@ export function CertificatesCard({
                       />
                       <div>
                         <div className="mono">{cert.names[0]}</div>
+                        {cert.panel && <span className="pill">{t("cert.panelBadge")}</span>}
                         {cert.names.length > 1 && (
                           <div className="muted small">
                             {cert.names.length > 3
@@ -317,7 +323,7 @@ export function CertificatesCard({
                   <td>
                     <ValidityCell cert={cert} state={state} now={now} />
                   </td>
-                  <td className="mono small">{deployed.length > 0 ? deployed.join(", ") : "–"}</td>
+                  <td className={cert.panel ? "small" : "mono small"}>{deployed}</td>
                   <td>
                     <div className="row-actions">
                       {showRetry && (
@@ -360,11 +366,31 @@ export function CertificatesCard({
           canRetry={canRetry}
           isAdmin={isAdmin}
           now={now}
+          panelCertificate={panelCertificate}
           onClose={() => setOpen(null)}
         />
       )}
     </Card>
   );
+}
+
+/**
+ * Where a certificate is served: the edges it is installed on, or this panel
+ * for its own while it serves it (#63).
+ */
+function deployedOn(
+  cert: Certificate,
+  hostNames: Map<string, string>,
+  panelCertificate: string,
+  t: TFunction,
+) {
+  if (cert.panel) {
+    return cert.id === panelCertificate && cert.fingerprint ? t("cert.deployedPanel") : "–";
+  }
+  const hosts = Object.keys(cert.installed ?? {})
+    .map((id) => hostNames.get(id) ?? id)
+    .sort();
+  return hosts.length > 0 ? hosts.join(", ") : "–";
 }
 
 /** The time, again every 30 seconds, so states and days left move on. */
@@ -386,6 +412,7 @@ function CertificateDetail({
   canRetry,
   isAdmin,
   now,
+  panelCertificate,
   onClose,
 }: {
   cert: Certificate;
@@ -397,6 +424,7 @@ function CertificateDetail({
   canRetry: boolean;
   isAdmin: boolean;
   now: number;
+  panelCertificate: string;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -451,7 +479,7 @@ function CertificateDetail({
     ),
   }));
 
-  const deployed = Object.keys(cert.installed ?? {}).map((id) => hostNames.get(id) ?? id);
+  const deployed = deployedOn(cert, hostNames, panelCertificate, t);
 
   return (
     <Drawer
@@ -528,11 +556,17 @@ function CertificateDetail({
           </>
         )}
         <dt>{t("cert.deployedOn")}</dt>
-        <dd className="mono">{deployed.length > 0 ? deployed.join(", ") : "–"}</dd>
+        <dd className={cert.panel ? undefined : "mono"}>{deployed}</dd>
         {cert.issuer !== "manual" && (
           <>
             <dt>{t("cert.ordered")}</dt>
-            <dd>{cert.auto ? t("cert.orderedAuto") : t("cert.orderedByHand")}</dd>
+            <dd>
+              {cert.panel
+                ? t("cert.orderedPanel")
+                : cert.auto
+                  ? t("cert.orderedAuto")
+                  : t("cert.orderedByHand")}
+            </dd>
           </>
         )}
         {cert.note && (
@@ -566,7 +600,11 @@ function CertificateDetail({
         onConfirm={() => void remove()}
       >
         <p className="muted">
-          {cert.auto ? t("cert.removeAutoNote") : t("edge.removeCertificateNote")}
+          {cert.panel
+            ? t("cert.removePanelNote")
+            : cert.auto
+              ? t("cert.removeAutoNote")
+              : t("edge.removeCertificateNote")}
         </p>
       </ConfirmDialog>
     </Drawer>

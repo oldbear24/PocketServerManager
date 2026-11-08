@@ -70,7 +70,8 @@ function covers(cert: Certificate, hostname: string): boolean {
 /** The ACME certificate the panel is getting for a name that has none yet. */
 function orderFor(certificates: Certificate[], hostname: string): Certificate | undefined {
   return certificates.find(
-    (cert) => cert.issuer === "acme" && !cert.fingerprint && covers(cert, hostname),
+    // the panel's own never reaches an edge (#63)
+    (cert) => !cert.panel && cert.issuer === "acme" && !cert.fingerprint && covers(cert, hostname),
   );
 }
 

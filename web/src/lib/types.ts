@@ -210,6 +210,10 @@ export type PanelInfo = {
   agent_image: string;
   updater_image: string;
   images_pinned: boolean;
+  /** the panel serves HTTPS itself (#63) */
+  https?: boolean;
+  /** the certificates record it serves, "" before it is ordered */
+  panel_certificate?: string;
   agents: { connected: number; total: number };
 };
 

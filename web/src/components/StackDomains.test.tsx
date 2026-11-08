@@ -159,6 +159,18 @@ describe("a service's domains", () => {
     expect(screen.getByText("HTTP only: no certificate covers this name")).toBeTruthy();
     expect(screen.queryByText("Getting a certificate")).toBeNull();
   });
+
+  it("does not wait for the panel's own certificate of the same name (#63)", () => {
+    wrap(
+      <ServiceDomains
+        domains={twoDomains}
+        routes={twoRoutes([order({ panel: true, last_error: "Timeout during connect" })])}
+      />,
+    );
+    expect(screen.getByText("HTTP only: no certificate covers this name")).toBeTruthy();
+    expect(screen.queryByText("Getting a certificate")).toBeNull();
+    expect(screen.queryByRole("link", { name: "No certificate yet: see Domains" })).toBeNull();
+  });
 });
 
 const stack = {

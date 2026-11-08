@@ -593,6 +593,10 @@
     "about": "O tomto panelu",
     "version": "Verze",
     "gateway": "gRPC brána",
+    "https": "HTTPS",
+    "httpsCertificate": "Vlastní certifikát panelu",
+    "httpsOrdering": "Poskytuje panel; o jeho certifikát se žádá",
+    "httpsOff": "Panel ho neposkytuje (prosté HTTP, jako za reverzní proxy)",
     "rootCertificate": "Kořenový certifikát",
     "rootCertificateDownload": "Stáhnout kořenový certifikát",
     "smtp": "Odchozí pošta",
@@ -1307,6 +1311,9 @@
     "fingerprint": "Otisk SHA-256",
     "ordered": "Objednal",
     "orderedAuto": "panel, pro doménu",
+    "orderedPanel": "panel, pro svou vlastní adresu",
+    "panelBadge": "Panel",
+    "deployedPanel": "Tento panel (UI a API)",
     "orderedByHand": "admin",
     "note": "Poznámka",
     "history": "Historie",
@@ -1318,6 +1325,7 @@
     "fallback": "záložní CA",
     "chain": "Řetězec certifikátů (PEM)",
     "removeAutoNote": "Edge ho přestanou používat. Doména, která certifikát dál potřebuje, dostane nový z ACME.",
+    "removePanelNote": "Panel ho hned přestane používat a do vydání nového z ACME, o který požádá do minuty, používá certifikát své interní CA.",
     "account": "ACME účet",
     "changeInSettings": "Změnit v Nastavení",
     "noAccount": "ACME účet zatím není: nastaví ho admin v Nastavení a domény pak dostanou certifikáty.",
@@ -1347,7 +1355,7 @@
   },
   "acme": {
     "title": "Certifikáty (ACME)",
-    "note": "odkud mají edge certifikáty",
+    "note": "odkud mají certifikáty edge a panel",
     "role": {
       "primary": "Výchozí CA",
       "fallback": "Záložní CA"

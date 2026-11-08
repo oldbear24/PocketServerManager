@@ -107,6 +107,8 @@ export type Certificate = RecordModel & {
   history: CertificateAttempt[] | null;
   /** asked of this ACME account alone, without the other (#27) */
   account?: "" | "primary" | "fallback";
+  /** the panel's own, for its UI and API; never an edge's (#63) */
+  panel?: boolean;
 };
 
 export const edgeApi = {

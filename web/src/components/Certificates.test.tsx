@@ -319,6 +319,96 @@ describe("the certificates table", () => {
   });
 });
 
+describe("the panel's own certificate (#63)", () => {
+  const own = cert({
+    id: "p1",
+    names: ["panel.example.com"],
+    installed: null,
+    panel: true,
+  });
+  const failed = cert({
+    id: "p2",
+    names: ["panel.example.com"],
+    fingerprint: "",
+    chain_pem: "",
+    not_before: "",
+    not_after: "",
+    status: "failed",
+    attempts: 1,
+    installed: null,
+    panel: true,
+    last_error:
+      "panel.example.com: Timeout during connect (connection)\nThe CA fetches the answer from http://panel.example.com/.well-known/acme-challenge/ on port 80.",
+  });
+
+  function panelCard(certificates: Certificate[], panelCertificate: string) {
+    return wrap(
+      <CertificatesCard
+        certificates={certificates}
+        hosts={hosts}
+        zones={[]}
+        providers={[]}
+        accounts={[]}
+        canRetry
+        isAdmin
+        loading={false}
+        onRequest={() => undefined}
+        panelCertificate={panelCertificate}
+      />,
+    );
+  }
+
+  it("comes first, marked as the panel's, and is deployed on this panel", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    panelCard([cert({}), own], "p1");
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]!).getByText("panel.example.com")).toBeTruthy();
+    expect(within(rows[0]!).getByText("The panel")).toBeTruthy();
+    expect(within(rows[0]!).getByText("This panel (UI and API)")).toBeTruthy();
+    expect(within(rows[1]!).getByText("vps-1")).toBeTruthy();
+    expect(within(rows[1]!).queryByText("The panel")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the certificate for panel.example.com" }),
+    );
+    const drawer = screen.getByRole("dialog", { name: "panel.example.com" });
+    expect(within(drawer).getByText("by the panel, for its own address")).toBeTruthy();
+    expect(within(drawer).getByText("This panel (UI and API)")).toBeTruthy();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove" }));
+    expect(
+      screen.getByText(/serves its internal CA's certificate until it gets a new one/),
+    ).toBeTruthy();
+  });
+
+  it("is not deployed while the panel serves another", () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    panelCard([own], "");
+    const row = screen.getByText("panel.example.com").closest("tr")!;
+    expect(within(row).queryByText("This panel (UI and API)")).toBeNull();
+    expect(within(row).getByText("–")).toBeTruthy();
+  });
+
+  it("shows what the CA said when it failed, and offers Retry", async () => {
+    vi.useFakeTimers({ now, shouldAdvanceTime: true });
+    const retry = vi.spyOn(certificatesApi, "retry").mockResolvedValue({ id: "p2" });
+    panelCard([failed], "p2");
+    const row = screen.getByText("panel.example.com").closest("tr")!;
+    expect(within(row).getByText(/Timeout during connect \(connection\)/)).toBeTruthy();
+    // not issued: nothing is deployed, though it is the panel's record
+    expect(within(row).getByText("–")).toBeTruthy();
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Try the certificate for panel.example.com again" }),
+    );
+    await waitFor(() => expect(retry).toHaveBeenCalledWith("p2"));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the certificate for panel.example.com" }),
+    );
+    const drawer = screen.getByRole("dialog", { name: "panel.example.com" });
+    expect(within(drawer).getByText(/on port 80/)).toBeTruthy();
+  });
+});
+
 const accounts = [
   { id: "a1", role: "primary", directory_url: "https://acme-v02.api.letsencrypt.org/directory" },
   { id: "a2", role: "fallback", directory_url: "https://acme.zerossl.com/v2/DV90" },

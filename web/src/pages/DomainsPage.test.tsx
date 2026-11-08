@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/toast";
+import { api } from "../lib/api";
 import { AuthProvider } from "../lib/auth";
 import { caApi } from "../lib/certificates";
 import { dnsApi, type DnsKind, type DnsProvider, type DnsZone } from "../lib/dns";
@@ -262,6 +263,28 @@ describe("a warning's link", () => {
     page("/domains?certificate=c1");
     expect(await screen.findByRole("dialog", { name: "shop.example.org" })).toBeInTheDocument();
     expect(screen.getByTestId("location")).toHaveTextContent(/^\/domains$/);
+  });
+
+  it("shows the panel's own certificate as served by this panel (#63)", async () => {
+    signInAs("viewer");
+    const own = {
+      ...certificate,
+      id: "p1",
+      names: ["panel.example.org"],
+      status: "active",
+      fingerprint: "ab12",
+      installed: null,
+      panel: true,
+    } as Certificate;
+    live.lists.certificates = [certificate, own];
+    const info = vi.spyOn(api, "info").mockResolvedValue({
+      https: true,
+      panel_certificate: "p1",
+    } as Awaited<ReturnType<typeof api.info>>);
+    page("/domains?certificate=p1");
+    const drawer = await screen.findByRole("dialog", { name: "panel.example.org" });
+    expect(await within(drawer).findByText("This panel (UI and API)")).toBeInTheDocument();
+    expect(info).toHaveBeenCalledTimes(1);
   });
 
   it("leads from an alert to what it is about", () => {

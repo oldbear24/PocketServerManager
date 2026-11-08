@@ -561,6 +561,10 @@
     "about": "About this panel",
     "version": "Version",
     "gateway": "gRPC gateway",
+    "https": "HTTPS",
+    "httpsCertificate": "The panel's own certificate",
+    "httpsOrdering": "Served by the panel; its certificate is being ordered",
+    "httpsOff": "Not served by the panel (plain HTTP, as behind a reverse proxy)",
     "rootCertificate": "Root certificate",
     "rootCertificateDownload": "Download the root certificate",
     "smtp": "Outgoing mail",
@@ -1243,6 +1247,9 @@
     "fingerprint": "SHA-256 fingerprint",
     "ordered": "Ordered",
     "orderedAuto": "by the panel, for a domain",
+    "orderedPanel": "by the panel, for its own address",
+    "panelBadge": "The panel",
+    "deployedPanel": "This panel (UI and API)",
     "orderedByHand": "by an admin",
     "note": "Note",
     "history": "History",
@@ -1254,6 +1261,7 @@
     "fallback": "fallback CA",
     "chain": "Certificate chain (PEM)",
     "removeAutoNote": "The edges stop serving it. A domain that still needs a certificate gets a new one from ACME.",
+    "removePanelNote": "The panel stops serving it at once and serves its internal CA's certificate until it gets a new one from ACME, which it orders within a minute.",
     "account": "ACME account",
     "changeInSettings": "Change in Settings",
     "noAccount": "No ACME account is set yet: an admin sets one in Settings, and domains get their certificates then.",
@@ -1281,7 +1289,7 @@
   },
   "acme": {
     "title": "Certificates (ACME)",
-    "note": "where the edges' certificates come from",
+    "note": "where the certificates of the edges and the panel come from",
     "role": {
       "primary": "Primary CA",
       "fallback": "Fallback CA"
