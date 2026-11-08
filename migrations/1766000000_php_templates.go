@@ -33,9 +33,6 @@ func upPHPTemplates(app core.App) error {
 		// a fresh install's title, administrator and language until it is done;
 		// its password is a secret of the site meanwhile
 		&core.JSONField{Name: "install", MaxSize: 4 << 10, Hidden: true},
-		// the build of a site installed fresh, as WP-CLI's download: its own
-		// release's only, not a build of an upload or of Git
-		&core.TextField{Name: "fresh_build", Max: 1024},
 	)
 	if err := app.Save(settings); err != nil {
 		return err
@@ -66,7 +63,7 @@ func downPHPTemplates(app core.App) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{"queue_worker", "health_path", "backup_exclude", "install", "fresh_build"} {
+	for _, name := range []string{"queue_worker", "health_path", "backup_exclude", "install"} {
 		settings.Fields.RemoveByName(name)
 	}
 	if err := app.Save(settings); err != nil {
