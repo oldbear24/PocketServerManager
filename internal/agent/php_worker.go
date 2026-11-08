@@ -161,10 +161,11 @@ func (a *Agent) restartWorker(ctx context.Context, site string, output io.Writer
 		return
 	}
 	fmt.Fprintf(output, "%s starts anew in the new release once its job is done.\n", name)
+	// it outlives the switch that asked, which has its own deadline
+	restart, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*workerStopSeconds*time.Second)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*workerStopSeconds*time.Second)
 		defer cancel()
-		if err := a.Docker.Restart(ctx, current.ID, workerStopSeconds); err != nil {
+		if err := a.Docker.Restart(restart, current.ID, workerStopSeconds); err != nil {
 			a.Log.Warn("failed to restart a site's worker", "container", name, "error", err)
 		}
 	}()
