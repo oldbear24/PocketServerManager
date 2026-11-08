@@ -38,15 +38,26 @@ type harness struct {
 // the only safe moment to change its settings.
 func newHarness(t *testing.T, options ...func(*gateway.Server)) *harness {
 	t.Helper()
+	return newHarnessWith(t, nil, options...)
+}
+
+// newHarnessWith starts a panel with a change of its config, made before it
+// registers: its config is not changed while it runs.
+func newHarnessWith(t *testing.T, panelConfig func(*panel.Config), options ...func(*gateway.Server)) *harness {
+	t.Helper()
 
 	app := testutil.NewApp(t)
 	t.Cleanup(app.Cleanup)
 
-	p := panel.New(app, &panel.Config{
+	config := &panel.Config{
 		MasterKey: testutil.MasterKey,
 		GRPCAddr:  "127.0.0.1:0",
 		PublicURL: "http://panel.test",
-	}, fstest.MapFS{"index.html": {Data: []byte("ui")}})
+	}
+	if panelConfig != nil {
+		panelConfig(config)
+	}
+	p := panel.New(app, config, fstest.MapFS{"index.html": {Data: []byte("ui")}})
 	p.Observers = append(p.Observers, options...)
 	p.Register()
 

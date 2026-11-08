@@ -15,6 +15,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/dns"
 	"github.com/oldbear24/PocketServerManager/internal/dns/fakecloudflare"
+	"github.com/oldbear24/PocketServerManager/internal/panel"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
@@ -63,7 +64,12 @@ func newDNSHarness(t *testing.T, zones ...string) *dnsHarness {
 
 // newDNSHarnessWith starts the edge agent with a change of its config.
 func newDNSHarnessWith(t *testing.T, configure func(*agent.Config), zones ...string) *dnsHarness {
-	h := newHarness(t)
+	return newDNSHarnessFor(t, nil, configure, zones...)
+}
+
+// newDNSHarnessFor also changes the panel's config.
+func newDNSHarnessFor(t *testing.T, panelConfig func(*panel.Config), configure func(*agent.Config), zones ...string) *dnsHarness {
+	h := newHarnessWith(t, panelConfig)
 	api := fakecloudflare.New("cf-token", zones...)
 	t.Cleanup(api.Close)
 	dns.SetHTTPClient(api.Client())
