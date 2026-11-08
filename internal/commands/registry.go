@@ -162,6 +162,8 @@ var Specs = map[string]Spec{
 	// a read, which waits for no deployment
 	"site.php.status": {Timeout: 30 * time.Second},
 	"site.php.mail":   {Timeout: 30 * time.Second},
+	// a look at a repository for the new-site wizard (#52)
+	"site.detect": {Timeout: 2 * time.Minute},
 
 	"task.run": {Timeout: time.Hour},
 

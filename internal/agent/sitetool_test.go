@@ -283,3 +283,111 @@ func TestAPlaceholderIsNotBuilt(t *testing.T) {
 		t.Errorf("the placeholder's plan: %v", plan)
 	}
 }
+
+// TestATemplatesSiteIsReleasedWithWhatItAsks: the site tool's part of a PHP
+// application template (#52): a fresh install starts from nothing, the
+// template's files go where the source has none, the links and the
+// environment file are made in the release, a cache is emptied once it is
+// live, and an update starts from a copy of the live release.
+func TestATemplatesSiteIsReleasedWithWhatItAsks(t *testing.T) {
+	root := t.TempDir()
+	files := `{"wp-config.php":"<?php // PocketCloud"}`
+
+	// a fresh install: no placeholder in the way of WP-CLI
+	found, err := tool(t, root, map[string]string{envFiles: files}, "source", "--site", "blog", "--n", "1", "--kind", "empty", "--php",
+		"--image", "pocketcloud-php:8.4-fpm", "--command", "wp core download --locale=cs_CZ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan := found["plan"].(map[string]any); plan["command"] != "wp core download --locale=cs_CZ" || plan["image"] != "pocketcloud-php:8.4-fpm" {
+		t.Errorf("plan: %v", plan)
+	}
+	entries, _ := os.ReadDir(sites.SourceDir(root, "blog", 1))
+	if len(entries) != 1 || entries[0].Name() != "wp-config.php" {
+		t.Errorf("a fresh source holds %v", entries)
+	}
+
+	// an upload of Laravel: recognised, its .env replaced, storage linked
+	upload := filepath.Join(t.TempDir(), "site.zip")
+	writeZip(t, upload, map[string]string{"artisan": "#!/usr/bin/env php", "public/index.php": "<?php", ".env": "APP_ENV=local",
+		"storage/app/public/logo.png": "png"})
+	if err := os.MkdirAll(sites.BuildDir(root, "shop", 1), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(upload, filepath.Join(sites.BuildDir(root, "shop", 1), sites.UploadName)); err != nil {
+		t.Fatal(err)
+	}
+	found, err = tool(t, root, nil, "source", "--site", "shop", "--n", "1", "--kind", "upload", "--php", "--image", "php")
+	if err != nil || found["detected"] != "laravel" {
+		t.Fatalf("source: %v %v", found, err)
+	}
+	if _, err := tool(t, root, map[string]string{envEnvFile: "APP_ENV=\"production\"\n"}, "release", "--site", "shop", "--n", "1", "--php",
+		"--no-switch", "--shared", "storage", "--links", "public/storage=storage/app/public", "--env-file", ".env"); err != nil {
+		t.Fatal(err)
+	}
+	release := sites.ReleaseDir(root, "shop", 1)
+	if env, _ := os.ReadFile(filepath.Join(release, ".env")); string(env) != "APP_ENV=\"production\"\n" {
+		t.Errorf(".env: %q", env)
+	}
+	if logo, err := os.ReadFile(filepath.Join(release, "public", "storage", "logo.png")); err != nil || string(logo) != "png" {
+		t.Errorf("public/storage leads nowhere: %q %v", logo, err)
+	}
+	if _, err := os.Stat(filepath.Join(sites.SharedDir(root, "shop"), "storage", "app", "public", "logo.png")); err != nil {
+		t.Errorf("storage is not shared: %v", err)
+	}
+
+	// once live, the cache goes
+	cache := filepath.Join(sites.SharedDir(root, "shop"), "storage", "framework", "views")
+	_ = os.MkdirAll(cache, 0o755)
+	_ = os.WriteFile(filepath.Join(cache, "old.php"), []byte("<?php"), 0o644)
+	if _, err := tool(t, root, nil, "activate", "--site", "shop", "--n", "1", "--clear", "storage/framework/views"); err != nil {
+		t.Fatal(err)
+	}
+	if sites.Current(root, "shop") != 1 {
+		t.Error("release 1 is not live")
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) != 0 {
+		t.Errorf("the cache keeps %v", entries)
+	}
+
+	// an update: a copy of release 1
+	found, err = tool(t, root, nil, "source", "--site", "shop", "--n", "2", "--kind", "release", "--from", "1", "--php", "--image", "php")
+	if err != nil || found["detected"] != "laravel" {
+		t.Fatalf("update source: %v %v", found, err)
+	}
+	if _, err := os.Lstat(filepath.Join(sites.SourceDir(root, "shop", 2), "public", "storage")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the copy has the release's link: %v", err)
+	}
+	if _, err := tool(t, root, nil, "source", "--site", "shop", "--n", "3", "--kind", "release", "--from", "9", "--php"); err == nil {
+		t.Error("a release that is not there was copied")
+	}
+}
+
+func TestTheSiteToolRecognisesARepositoryWithoutItsFiles(t *testing.T) {
+	repo, commit := gitRepo(t, map[string]string{"composer.json": "{}", "index.php": "<?php"})
+	found, err := tool(t, t.TempDir(), nil, "detect", "--url", repo, "--branch", "main")
+	if err != nil || found["template"] != "" || len(found["commit"].(string)) != 40 {
+		t.Fatalf("plain PHP: %v %v", found, err)
+	}
+	commit("Nette", map[string]string{"app/Bootstrap.php": "<?php", "www/index.php": "<?php"})
+	if found, err = tool(t, t.TempDir(), nil, "detect", "--url", repo); err != nil || found["template"] != "nette" {
+		t.Errorf("nette: %v %v", found, err)
+	}
+	if _, err := tool(t, t.TempDir(), nil, "detect", "--url", repo, "--branch", "nosuchbranch"); err == nil {
+		t.Error("a branch that is not there was looked at")
+	}
+}
+
+func writeZip(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	for name, content := range files {
+		writer, _ := archive.Create(name)
+		_, _ = writer.Write([]byte(content))
+	}
+	_ = archive.Close()
+	if err := os.WriteFile(path, buffer.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

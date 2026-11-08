@@ -33,6 +33,9 @@ const (
 	SourceGit    = "git"
 	SourceUpload = "upload"
 	SourceEmpty  = "empty"
+	// SourceRelease is a copy of one of the site's releases, which a PHP
+	// application's update starts from (#52); no site has it as its source
+	SourceRelease = "release"
 )
 
 var siteName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)

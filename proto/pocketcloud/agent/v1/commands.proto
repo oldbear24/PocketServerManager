@@ -76,6 +76,8 @@ message Command {
     SitePhpStatus site_php_status = 154;
     // site_php_mail counts the mail a PHP site sent through the relay (#51).
     SitePhpMail site_php_mail = 155;
+    // site_detect says which PHP application a Git repository is (#52).
+    SiteDetect site_detect = 156;
 
     // task_run runs a scheduled task.
     TaskRun task_run = 160;
@@ -398,6 +400,23 @@ message SitePhpDeploy {
   // masked are the secrets' own values, which the release hook's output
   // hides wherever they appear in it, as within a longer variable.
   repeated string masked = 9 [(pocketcloud.options.v1.sensitive) = true];
+  // files are put into a source that does not have them, before its build,
+  // by their path in the source: a template's, such as WordPress's
+  // wp-config.php that reads the environment (#52).
+  map<string, string> files = 10;
+  // links are made in the release, relative, as path=target with both in the
+  // release, such as Laravel's public/storage=storage/app/public: PHP of the
+  // site cannot make links.
+  repeated string links = 11;
+  // clear are shared paths emptied once the release is live, such as
+  // Nette's temp.
+  repeated string clear = 12;
+  // env_file is a file of the release written from env and secrets before
+  // the release hook, such as Laravel's .env.
+  string env_file = 13;
+  // from_release builds a copy of this release rather than the site's source,
+  // as an update of a PHP application does.
+  int32 from_release = 14;
 }
 
 // SiteRollback switches a site's `current` symlink to an older release.
@@ -444,6 +463,21 @@ message SitePhpApply {
   // classic lets PHP-FPM write the site's code, for an application that
   // updates itself; otherwise only `shared/` is writable (#50).
   bool classic = 10;
+  // worker_command runs in a worker container of the site, from the same
+  // image, environment and mounts, in its live release, such as Laravel's
+  // php artisan queue:work; empty removes the worker (#52).
+  string worker_command = 11;
+}
+
+// SiteDetect looks at a Git repository's files, without checking them out,
+// and says which PHP application template fits it (#52).
+message SiteDetect {
+  // repo_url is the repository.
+  string repo_url = 1;
+  // branch is the branch to look at; empty for the default.
+  string branch = 2;
+  // git_token authenticates to the repository's server.
+  string git_token = 3 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // SitePhpStatus reads a site's PHP-FPM: its pool's workers and queue, OPcache

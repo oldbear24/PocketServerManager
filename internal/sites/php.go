@@ -41,6 +41,10 @@ const FastCGIPort = 9000
 // network, which the edge dials.
 func PHPContainer(site string) string { return site + "-php" }
 
+// PHPWorker names a site's worker container, such as Laravel's queue worker
+// (#52); it has no alias on the site's network.
+func PHPWorker(site string) string { return site + "-worker" }
+
 // Network names a PHP site's own network: its PHP-FPM container and the edge
 // are on it, and nothing else, so that no other container reaches the
 // FastCGI port, through which any PHP setting can be passed.

@@ -73,7 +73,7 @@ func Extract(zipPath, dst string) error {
 	if len(files) > MaxUploadFiles {
 		return fmt.Errorf("the upload has %d files, more than %d", len(files), MaxUploadFiles)
 	}
-	prefix := commonFolder(files)
+	prefix := CommonFolder(files)
 
 	var total uint64
 	for _, file := range files {
@@ -106,8 +106,9 @@ func Extract(zipPath, dst string) error {
 	return nil
 }
 
-// commonFolder is the folder every file of a ZIP is in, with its slash, or "".
-func commonFolder(files []*zip.File) string {
+// CommonFolder is the folder every file of a ZIP is in, with its slash, or "":
+// an upload unpacks without it.
+func CommonFolder(files []*zip.File) string {
 	prefix := ""
 	for _, file := range files {
 		name := strings.TrimPrefix(filepath.ToSlash(file.Name), "./")

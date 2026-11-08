@@ -70,7 +70,7 @@ RUN set -eux; \
     rm /tmp/redis.tgz /tmp/imagick.tgz; \
     \
     docker-php-ext-configure gd --with-avif --with-freetype --with-jpeg --with-webp; \
-    extensions="bcmath exif gd imagick intl mysqli pdo_mysql pdo_pgsql redis zip"; \
+    extensions="bcmath exif gd imagick intl mysqli pcntl pdo_mysql pdo_pgsql redis zip"; \
     # PHP 8.5 has OPcache built in; before, it is an extension of its own
     if ! php -m | grep -qx 'Zend OPcache'; then extensions="$extensions opcache"; fi; \
     docker-php-ext-install -j"$(nproc)" $extensions; \

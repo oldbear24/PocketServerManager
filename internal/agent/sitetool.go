@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/sites"
 )
 
@@ -50,7 +51,18 @@ type sourceResult struct {
 	Commit  string     `json:"commit,omitempty"`
 	Message string     `json:"message,omitempty"`
 	Plan    sites.Plan `json:"plan"`
+	// Detected is the PHP application template the source looks like (#52)
+	Detected string `json:"detected,omitempty"`
 }
+
+// Environment of the site tool's job with what a PHP site's template gives
+// (#52): files a source lacks, as a JSON object of path to content, and the
+// content of the release's environment file, which holds the site's secrets
+// and so goes neither on the command line nor into the log.
+const (
+	envFiles   = "POCKETCLOUD_FILES"
+	envEnvFile = "POCKETCLOUD_ENV_FILE"
+)
 
 // releaseResult is what the release op made.
 type releaseResult struct {
@@ -83,11 +95,27 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	php := flags.Bool("php", false, "a PHP site (#50)")
 	shared := flags.String("shared", "", "a PHP site's shared paths, separated by commas")
 	noSwitch := flags.Bool("no-switch", false, "leave the switch to activate")
+	from := flags.Int("from", 0, "the release whose copy is the source, for --kind release")
+	links := flags.String("links", "", "a PHP release's links, path=target separated by commas")
+	envFile := flags.String("env-file", "", "the file of a PHP release that its environment is written into")
+	clear := flags.String("clear", "", "shared paths emptied once the release is live, separated by commas")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
 	if op == "sweep" {
 		return sweepBuilds(*root, stdout, stderr)
+	}
+	if op == "detect" {
+		found, err := detectRepo(ctx, gitSource{repo: *repo, branch: *branch, token: env["GIT_TOKEN"]}, stderr)
+		if err != nil {
+			return err
+		}
+		line, err := json.Marshal(found)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, string(line))
+		return err
 	}
 	if err := sites.ValidName(*site); err != nil {
 		return err
@@ -100,15 +128,34 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 	var result any
 	switch op {
 	case "source":
-		found, err := siteSource(ctx, *root, *site, *n, *kind, gitSource{*repo, *branch, *commit, env["GIT_TOKEN"]}, stderr)
+		// a PHP site without a source of its own whose template installs it
+		// fresh, as WordPress with WP-CLI, starts from nothing (#52)
+		fresh := *php && *kind == sites.SourceEmpty && *command != ""
+		found, err := siteSource(ctx, *root, *site, *n, *kind, *from, fresh, gitSource{*repo, *branch, *commit, env["GIT_TOKEN"]}, stderr)
 		if err != nil {
 			return err
 		}
 		switch chosen := *generator; {
 		case *php:
+			src := sites.SourceDir(*root, *site, *n)
+			if !fresh {
+				found.Detected = phpapps.DetectDir(src)
+				if template, ok := phpapps.Get(found.Detected); ok {
+					fmt.Fprintf(stderr, "The source looks like a %s application.\n", template.Title)
+				}
+			}
+			if raw := env[envFiles]; raw != "" {
+				var files map[string]string
+				if err := json.Unmarshal([]byte(raw), &files); err != nil {
+					return fmt.Errorf("site-tool: the files of the template: %w", err)
+				}
+				if err := sites.WriteMissing(src, files); err != nil {
+					return err
+				}
+			}
 			// a PHP site's build runs as www-data, who must write its vendor/
 			found.Plan = sites.PHPPlan(*image, *command)
-			if err := sites.Chown(sites.SourceDir(*root, *site, *n)); err != nil {
+			if err := sites.Chown(src); err != nil {
 				return err
 			}
 		case *kind == sites.SourceEmpty:
@@ -126,7 +173,7 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 		var release sites.Release
 		var err error
 		if *php {
-			release, err = phpRelease(*root, *site, *n, *shared)
+			release, err = phpRelease(*root, *site, *n, *shared, *links, *envFile, env[envEnvFile])
 		} else {
 			release, err = sites.MakeRelease(*root, *site, *n, *output, *built)
 		}
@@ -163,6 +210,15 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 			return err
 		}
 		fmt.Fprintf(stderr, "Release %d is live.\n", *n)
+		// what the old code cached must not serve the new (#52); the release
+		// is live whatever this leaves
+		if cleared := splitList(*clear); len(cleared) > 0 {
+			if err := sites.ClearShared(*root, *site, cleared); err != nil {
+				fmt.Fprintf(stderr, "%s could not all be emptied: %v\n", strings.Join(cleared, ", "), err)
+			} else {
+				fmt.Fprintf(stderr, "Emptied %s.\n", strings.Join(cleared, ", "))
+			}
+		}
 		if _, err := sites.Prune(*root, *site, max(*keep, 1)); err != nil {
 			fmt.Fprintf(stderr, "Old releases could not all be removed: %v\n", err)
 		}
@@ -202,7 +258,11 @@ func SiteTool(ctx context.Context, args []string, env map[string]string, stdout,
 // phpRelease makes a PHP site's release: its whole source, with its shared
 // paths linked from shared/, given to www-data, who runs its release hook
 // and PHP-FPM.
-func phpRelease(root, site string, n int, shared string) (sites.Release, error) {
+func phpRelease(root, site string, n int, shared, links, envFile, envContent string) (sites.Release, error) {
+	linked, err := sites.ParseLinks(links)
+	if err != nil {
+		return sites.Release{}, err
+	}
 	release, err := sites.MakePHPRelease(root, site, n)
 	if err != nil {
 		return release, err
@@ -210,16 +270,23 @@ func phpRelease(root, site string, n int, shared string) (sites.Release, error) 
 	if err := sites.PreparePHP(root, site); err != nil {
 		return release, err
 	}
-	paths := []string{}
-	for _, path := range strings.Split(shared, ",") {
-		if path = strings.TrimSpace(path); path != "" {
-			paths = append(paths, path)
-		}
-	}
-	if err := sites.LinkShared(root, site, n, paths); err != nil {
+	if err := sites.LinkShared(root, site, n, splitList(shared)); err != nil {
 		return release, err
 	}
-	return release, sites.Chown(sites.ReleaseDir(root, site, n))
+	// the links a template asks for, which PHP of the site cannot make (#52)
+	if err := sites.MakeLinks(root, site, n, linked); err != nil {
+		return release, err
+	}
+	if err := sites.Chown(sites.ReleaseDir(root, site, n)); err != nil {
+		return release, err
+	}
+	// written last, readable by www-data alone
+	if envFile != "" {
+		if err := sites.WriteEnvFile(root, site, n, envFile, envContent); err != nil {
+			return release, err
+		}
+	}
+	return release, nil
 }
 
 func describeGenerator(generator string) string {
@@ -244,7 +311,7 @@ type gitSource struct {
 	repo, branch, commit, token string
 }
 
-func siteSource(ctx context.Context, root, site string, n int, kind string, git gitSource, log io.Writer) (sourceResult, error) {
+func siteSource(ctx context.Context, root, site string, n int, kind string, from int, fresh bool, git gitSource, log io.Writer) (sourceResult, error) {
 	src := sites.SourceDir(root, site, n)
 	if err := sites.Prepare(root, site, n); err != nil {
 		return sourceResult{}, err
@@ -260,9 +327,63 @@ func siteSource(ctx context.Context, root, site string, n int, kind string, git 
 		}
 		return sourceResult{}, os.Remove(upload)
 	case sites.SourceEmpty:
+		if fresh {
+			fmt.Fprintln(log, "A fresh install: the build makes the site.")
+			return sourceResult{}, nil
+		}
 		return sourceResult{}, sites.Placeholder(src, site)
+	case sites.SourceRelease:
+		// an update starts from the live release (#52)
+		fmt.Fprintf(log, "Copying release %d.\n", from)
+		return sourceResult{}, sites.CopyRelease(root, site, from, n)
 	}
 	return sourceResult{}, fmt.Errorf("site-tool: unknown source %q", kind)
+}
+
+// detected is what a look at a repository found (#52).
+type detected struct {
+	Template string `json:"template"`
+	Commit   string `json:"commit,omitempty"`
+}
+
+// detectRepo says which PHP application a repository's branch is, by its
+// files: they are listed without being downloaded, from a clone without its
+// files' contents, made in a directory of the job's own that goes with it.
+func detectRepo(ctx context.Context, git gitSource, log io.Writer) (detected, error) {
+	env, err := gitEnv(git.repo, git.token)
+	if err != nil {
+		return detected{}, err
+	}
+	dir, err := os.MkdirTemp("", "detect-")
+	if err != nil {
+		return detected{}, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	args := []string{"clone", "--depth", "1", "--single-branch", "--no-tags", "--filter=blob:none", "--no-checkout", "--quiet"}
+	if git.branch != "" {
+		args = append(args, "--branch", git.branch)
+	}
+	args = append(args, "--", git.repo, dir)
+	fmt.Fprintf(log, "$ git clone %s (%s)\n", git.repo, branchOrDefault(git.branch))
+	clone := exec.CommandContext(ctx, "git", args...)
+	clone.Env = env
+	clone.Stdout = log
+	clone.Stderr = log
+	if err := clone.Run(); err != nil {
+		return detected{}, fmt.Errorf("git could not clone %s: %w", git.repo, err)
+	}
+	list := exec.CommandContext(ctx, "git", "-C", dir, "ls-tree", "-r", "-z", "--name-only", "HEAD") //nolint:gosec // the look's own clone
+	list.Env = env
+	list.Stderr = log
+	out, err := list.Output()
+	if err != nil {
+		return detected{}, fmt.Errorf("git could not list the files of %s: %w", git.repo, err)
+	}
+	head := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD") //nolint:gosec // the look's own clone
+	head.Env = env
+	commit, _ := head.Output()
+	paths := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
+	return detected{Template: phpapps.Detect(paths), Commit: strings.TrimSpace(string(commit))}, nil
 }
 
 // gitClone checks out the newest commit of a branch, with its submodules
