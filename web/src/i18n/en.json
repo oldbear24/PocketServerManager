@@ -1462,7 +1462,9 @@
     "byUpdate": "update of #{{number}} · {{who}}",
     "unhealthy": "Since release #{{number}} went live the site does not answer as it should: {{error}}",
     "healthOk": "Health check: {{status}} at {{url}}",
-    "healthFailed": "Health check failed at {{url}}"
+    "healthFailed": "Health check failed at {{url}}",
+    "byCopy": "copy of #{{number}} · {{who}}",
+    "answered": "{{url}} answered {{status}}."
   },
   "siteNew": {
     "title": "New site",

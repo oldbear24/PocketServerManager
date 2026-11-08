@@ -696,6 +696,13 @@ function DeploymentsCard({
           who: deployment.requested_by,
         });
       default:
+        // a copy of a release, as for a changed environment (#52)
+        if (deployment.base_release > 0) {
+          return t("site.byCopy", {
+            number: deployment.base_release,
+            who: deployment.requested_by,
+          });
+        }
         return deployment.commit_sha
           ? t("site.byHandGit", {
               commit: shortCommit(deployment.commit_sha),
@@ -726,7 +733,10 @@ function DeploymentsCard({
           <Banner tone="err">
             {t("site.unhealthy", {
               number: live.number,
-              error: live.health.error || live.health.status,
+              error:
+                live.health.status > 0
+                  ? t("site.answered", { url: live.health.url, status: live.health.status })
+                  : live.health.error,
             })}
           </Banner>
           {canAct && earlier && (

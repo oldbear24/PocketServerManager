@@ -334,8 +334,8 @@ func (p *Panel) redeploysOnEnv(site, settings *core.Record) (*core.Record, bool)
 func (p *Panel) redeployForEnv(ctx context.Context, site, settings, live *core.Record, options commands.Options) (*core.Record, error) {
 	return p.startDeployment(ctx, site, deploymentRequest{
 		Trigger: schema.TriggerManual, RequestedBy: options.RequestedBy, Requester: options.Requester,
-		Message:  "The environment changed",
-		Again:    live,
+		// the page says what it is, a copy of the live release, in its language
+		Again: live,
 		Base:     live.GetInt("number"),
 		PHPApply: true,
 		PHPFrom:  settings.GetString("php_version"),
@@ -385,7 +385,6 @@ func (p *Panel) handlePHPUpdate(e *core.RequestEvent) error {
 	ctx := audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e))
 	deployment, err := p.startDeployment(ctx, site, deploymentRequest{
 		Trigger: schema.TriggerUpdate, RequestedBy: id, Requester: label,
-		Message: "Update " + t.Title,
 		Again:   live,
 		Base:    live.GetInt("number"),
 		PreHook: hook,

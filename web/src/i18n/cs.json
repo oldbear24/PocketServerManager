@@ -1534,7 +1534,9 @@
     "byUpdate": "aktualizace #{{number}} · {{who}}",
     "unhealthy": "Od nasazení vydání #{{number}} web neodpovídá, jak má: {{error}}",
     "healthOk": "Kontrola dostupnosti: {{status}} na {{url}}",
-    "healthFailed": "Kontrola dostupnosti selhala na {{url}}"
+    "healthFailed": "Kontrola dostupnosti selhala na {{url}}",
+    "byCopy": "kopie #{{number}} · {{who}}",
+    "answered": "{{url}} odpověděla {{status}}."
   },
   "siteNew": {
     "title": "Nový web",
