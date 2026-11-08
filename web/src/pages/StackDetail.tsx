@@ -6,6 +6,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { CommandOutput } from "../components/CommandOutput";
 import { PageHead } from "../components/Layout";
 import { LogViewer } from "../components/LogViewer";
+import { TaskList } from "../components/TaskList";
 import {
   LabelDomainsCard,
   ServiceDomains,
@@ -759,6 +760,9 @@ export function StackDetailPage() {
               </div>
             )}
           </section>
+          <Card title={t("task.stackTitle")} note={t("task.stackCardNote")}>
+            <TaskList target={{ kind: "stack", id: stack.id, services }} canAct={canAct} />
+          </Card>
         </div>
 
         <div className="column-side">

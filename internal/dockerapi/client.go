@@ -544,6 +544,8 @@ type LogOptions struct {
 	Tail       int
 	Follow     bool
 	Timestamps bool
+	// Since leaves out what was logged before it; zero for everything.
+	Since time.Time
 }
 
 // Logs opens the log stream of a container. For a container without a TTY the
@@ -557,6 +559,9 @@ func (c *Client) Logs(ctx context.Context, id string, options LogOptions) (io.Re
 	}
 	if options.Tail >= 0 {
 		query.Set("tail", strconv.Itoa(options.Tail))
+	}
+	if !options.Since.IsZero() {
+		query.Set("since", strconv.FormatInt(options.Since.Unix(), 10))
 	}
 
 	res, err := c.request(ctx, http.MethodGet, "/containers/"+id+"/logs", query, nil, nil)
@@ -637,7 +642,9 @@ type ExecOptions struct {
 	Cmd  []string
 	User string
 	Env  []string
-	TTY  bool
+	// WorkingDir is where the process starts; empty for the container's own.
+	WorkingDir string
+	TTY        bool
 	// Stdin attaches the process's standard input.
 	Stdin bool
 }
@@ -655,6 +662,7 @@ func (c *Client) ExecCreate(ctx context.Context, container string, options ExecO
 		"Cmd":          options.Cmd,
 		"User":         options.User,
 		"Env":          options.Env,
+		"WorkingDir":   options.WorkingDir,
 	}, &created)
 	return created.ID, err
 }

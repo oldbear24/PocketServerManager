@@ -20,8 +20,10 @@ type ExecCall struct {
 	Cmd       []string
 	Env       []string
 	User      string
-	TTY       bool
-	Stdin     bool
+	// WorkingDir is where the process was asked to start.
+	WorkingDir string
+	TTY        bool
+	Stdin      bool
 
 	mu      sync.Mutex
 	running bool
@@ -83,6 +85,7 @@ func (e *Engine) createExec(w http.ResponseWriter, r *http.Request, container *C
 		Cmd         []string `json:"Cmd"`
 		Env         []string `json:"Env"`
 		User        string   `json:"User"`
+		WorkingDir  string   `json:"WorkingDir"`
 		Tty         bool     `json:"Tty"`
 		AttachStdin bool     `json:"AttachStdin"`
 	}
@@ -97,14 +100,15 @@ func (e *Engine) createExec(w http.ResponseWriter, r *http.Request, container *C
 	}
 
 	call := &ExecCall{
-		ID:        newID(),
-		Container: container.ID,
-		Cmd:       body.Cmd,
-		Env:       body.Env,
-		User:      body.User,
-		TTY:       body.Tty,
-		Stdin:     body.AttachStdin,
-		running:   true,
+		ID:         newID(),
+		Container:  container.ID,
+		Cmd:        body.Cmd,
+		Env:        body.Env,
+		User:       body.User,
+		WorkingDir: body.WorkingDir,
+		TTY:        body.Tty,
+		Stdin:      body.AttachStdin,
+		running:    true,
 	}
 
 	e.execs[call.ID] = call

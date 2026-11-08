@@ -87,6 +87,8 @@ type Agent struct {
 	edgeByHost    map[string]float64
 	// edgeLatency is the last reading of the requests' durations per hostname
 	edgeLatency map[string]hostHistogram
+	// tasks are the scheduled tasks running now, by id: one run at a time (#51)
+	tasks sync.Map
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64

@@ -74,6 +74,8 @@ message Command {
     SitePhpApply site_php_apply = 153;
     // site_php_status reads the state of a site's PHP-FPM (#50).
     SitePhpStatus site_php_status = 154;
+    // site_php_mail counts the mail a PHP site sent through the relay (#51).
+    SitePhpMail site_php_mail = 155;
 
     // task_run runs a scheduled task.
     TaskRun task_run = 160;
@@ -454,6 +456,13 @@ message SitePhpStatus {
   repeated string shared_paths = 2;
 }
 
+// SitePhpMail counts the mail a PHP site sent in the last day, from msmtp's
+// lines in its PHP-FPM container's log.
+message SitePhpMail {
+  // site is the site name.
+  string site = 1;
+}
+
 // TaskRun runs a scheduled task with `docker exec`.
 message TaskRun {
   // task_id is the id of the `scheduled_tasks` record.
@@ -466,6 +475,12 @@ message TaskRun {
   string command = 4;
   // timeout_s is when the task gets killed.
   int32 timeout_s = 5;
+  // working_dir is where the command starts, such as a PHP site's live
+  // release; empty for the container's own.
+  string working_dir = 6;
+  // masked are the values of the secrets in the container's environment,
+  // which the output hides: viewers read it.
+  repeated string masked = 7 [(pocketcloud.options.v1.sensitive) = true];
 }
 
 // DbServerCreate creates a shared database server as a PocketCloud-owned stack.

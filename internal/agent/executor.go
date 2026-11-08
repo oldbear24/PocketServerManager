@@ -33,6 +33,8 @@ var perTypeLimits = map[string]int{
 	"site.deploy": 2,
 	"backup.":     2,
 	"db.":         3,
+	// scheduled tasks may run for hours: they never take every worker
+	"task.": 4,
 }
 
 // errHandedOver is returned by a handler that started work which outlives this
@@ -82,8 +84,13 @@ func newExecutor(store *commandStore, log *slog.Logger) *Executor {
 	}
 }
 
-// Handle registers the handler of a command type.
+// Handle registers the handler of a command type; a nil handler drops it, and
+// the agent no longer offers the type.
 func (x *Executor) Handle(commandType string, handler Handler) {
+	if handler == nil {
+		delete(x.handlers, commandType)
+		return
+	}
 	x.handlers[commandType] = handler
 }
 

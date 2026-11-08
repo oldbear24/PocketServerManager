@@ -38,13 +38,30 @@ const (
 	Sites             = "sites"
 	Deployments       = "deployments"
 	SitePHP           = "site_php"
+	ScheduledTasks    = "scheduled_tasks"
+)
+
+// What a scheduled task runs in (#51).
+const (
+	TaskTargetSite  = "site"
+	TaskTargetStack = "stack"
+)
+
+// How a scheduled task's last run went.
+const (
+	TaskRunning   = "running"
+	TaskSucceeded = "succeeded"
+	TaskFailed    = "failed"
+	TaskTimedOut  = "timed_out"
+	TaskSkipped   = "skipped"
+	// TaskCancelled is a run stopped by hand or never delivered: no failure of the task.
+	TaskCancelled = "cancelled"
 )
 
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"scheduled_tasks",
 	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
 }
 
@@ -245,6 +262,7 @@ var Encrypted = map[string][]string{
 	"notification_channels": {"config"},
 	Sites:                   {"webhook_secret", "basic_auth", "git_token"},
 	SitePHP:                 {"secrets"},
+	Settings:                {"smtp_password"},
 	DNSProviders:            {"credentials"},
 	Domains:                 {"basic_auth"},
 	ACMEAccounts:            {"key", "eab_hmac"},
@@ -296,7 +314,9 @@ var Audited = []AuditedCollection{
 	{Name: "notification_channels", Label: "kind"},
 	{Name: Sites, Label: "name", Host: "host", Ignore: []string{"active_deployment"}, Redact: []string{"basic_auth_users"}},
 	{Name: SitePHP, Label: "site", Ignore: []string{"state", "image", "applied_at", "last_error"}},
-	{Name: "scheduled_tasks", Label: "command", Ignore: []string{"last_run_at", "last_status", "last_duration_ms", "last_output"}},
+	{Name: ScheduledTasks, Label: "command", Ignore: []string{
+		"host", "last_run_at", "last_status", "last_exit_code", "last_duration_ms", "last_output", "last_command", "failures",
+	}},
 	{Name: Domains, Label: "hostname", Host: "host", Ignore: []string{"zone", "dns_status", "dns_error", "label_removed"}},
 	{Name: DNSProviders, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},
 	{Name: DNSZones, Label: "name", Ignore: []string{"status", "last_check", "last_error"}},

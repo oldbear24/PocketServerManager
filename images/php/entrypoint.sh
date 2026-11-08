@@ -8,7 +8,8 @@
 #   answers them on the pool's port 9000 too, which other containers reach, so
 #   their paths are made up anew at every start and only exist in here.
 # - msmtprc: the SMTP relay for mail(), from POCKETCLOUD_SMTP_HOST, _PORT,
-#   _TLS (starttls, tls or off), _USER, _PASSWORD or _PASSWORD_FILE and _FROM.
+#   _TLS (starttls, tls or off), _USER, _PASSWORD or _PASSWORD_FILE and _FROM,
+#   the sender, without which mail is off.
 #   A password goes into a file of its own that msmtp reads, never onto a
 #   command line, and POCKETCLOUD_SMTP_PASSWORD is unset before PHP starts.
 #
@@ -90,6 +91,12 @@ write_mail_config() {
 			return 0
 			;;
 	esac
+	# the envelope sender: msmtp takes none from the mail, and a relay
+	# refuses mail without one
+	if [ -z "$from" ]; then
+		warn "POCKETCLOUD_SMTP_FROM is empty, so mail is off"
+		return 0
+	fi
 	if ! safe_value "$user" || ! safe_value "$from"; then
 		warn "POCKETCLOUD_SMTP_USER or _FROM holds a quote, a backslash or a line break, so mail is off"
 		return 0
@@ -105,8 +112,13 @@ write_mail_config() {
 		echo "# Written by pocketcloud-php-entrypoint at start, from POCKETCLOUD_SMTP_*."
 		echo "defaults"
 		echo "syslog off"
-		# one line per mail on the container's log: the base of the counts of sent and failed mail
-		echo "logfile /dev/stderr"
+		# one line per mail on the container's log, that of FPM (PID 1), from
+		# mail() and from a docker exec alike: the base of the counts of sent
+		# and failed mail
+		echo "logfile /proc/1/fd/2"
+		# a relay that takes the connection and never answers does not hold
+		# mail() for ever
+		echo "timeout 30"
 		echo
 		echo "account default"
 		echo "host $host"
@@ -127,12 +139,8 @@ write_mail_config() {
 		else
 			echo "auth off"
 		fi
-		# the envelope sender: the one given, or else the From header of the mail
-		if [ -n "$from" ]; then
-			echo "from \"$from\""
-		else
-			echo "from %F"
-		fi
+		# the envelope sender, and the From header of a mail without one
+		echo "from \"$from\""
 	} >"$runtime/msmtprc.new"
 
 	if [ -n "$user" ] && [ -z "$password_file" ]; then

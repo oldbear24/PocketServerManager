@@ -69,6 +69,7 @@ docker run --rm -u 0 -v pcsmoke-sites:/srv/sites --entrypoint sh "$image" -ec 'm
 docker run -d --name pcsmoke-fpm --network "$net" --network-alias site-php \
 	-v pcsmoke-sites:/srv/sites \
 	-e POCKETCLOUD_SMTP_HOST=mail.invalid -e POCKETCLOUD_SMTP_USER=site -e POCKETCLOUD_SMTP_PASSWORD=secret \
+	-e POCKETCLOUD_SMTP_FROM=noreply@example.org \
 	--health-interval 2s "$image" >/dev/null
 
 for _ in $(seq 60); do
@@ -88,6 +89,8 @@ before=$(cached_scripts)
 [ -n "$before" ] || fail "OPcache reports no count of cached scripts"
 docker exec pcsmoke-fpm sh -ec '
 	grep -q "^host mail.invalid$" /run/pocketcloud-php/msmtprc
+	grep -qx "from \"noreply@example.org\"" /run/pocketcloud-php/msmtprc
+	grep -qx "logfile /proc/1/fd/2" /run/pocketcloud-php/msmtprc
 	[ "$(cat /run/pocketcloud-php/smtp-password)" = secret ]
 ' || fail "mail is not set up"
 # the password is in a file of its own, never in the environment of FPM

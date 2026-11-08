@@ -227,6 +227,20 @@ describe("the sites page", () => {
       ],
     });
     const settings = vi.spyOn(phpApi, "settings").mockResolvedValue({ command: "c7" });
+    vi.spyOn(phpApi, "mail").mockResolvedValue({
+      relay: { host: "smtp.example.cz", port: 587 },
+      sent: 14,
+      failed: 2,
+      last_sent_at: "2026-11-05T11:50:00Z",
+      failures: [
+        {
+          at: "2026-11-05T11:40:00Z",
+          recipients: "bob@example.org",
+          error: "recipient address bob@example.org not accepted by the server",
+        },
+      ],
+      since: "2026-11-04T11:50:00Z",
+    });
     renderAt("/sites/s2");
 
     expect(
@@ -251,6 +265,15 @@ describe("the sites page", () => {
         .map((item) => item.textContent),
     ).toEqual(["opcache", "gd", "intl", "redis"]);
     expect(screen.getByText("3.1 GB")).toBeInTheDocument();
+    // its mail through the relay, and why some failed (#51)
+    expect(
+      await screen.findByText(/smtp\.example\.cz:587 · 14 e-mails in 24 h/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/2 failed/)).toBeInTheDocument();
+    expect(
+      screen.getByText("recipient address bob@example.org not accepted by the server"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No scheduled tasks yet.")).toBeInTheDocument();
     // the deployment says which PHP it was built for
     expect(screen.getByText(/· PHP 8\.4$/)).toBeInTheDocument();
 
