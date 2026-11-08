@@ -363,8 +363,9 @@ describe("the sites page", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("update of #6 · op@example.com")).toBeInTheDocument();
     expect(screen.getByText("Health check: 200 at https://blog.example.org/")).toBeInTheDocument();
-    // what backups leave out
+    // what backups leave out, and a source that was a fresh install
     expect(screen.getByText("wp-content/cache, wp-content/upgrade")).toBeInTheDocument();
+    expect(screen.getByText("Fresh install · WordPress")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "Roll back to #6" })[0]);
     await waitFor(() => expect(rollback).toHaveBeenCalledWith("s2", "d6"));
 

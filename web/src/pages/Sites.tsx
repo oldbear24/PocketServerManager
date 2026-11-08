@@ -33,6 +33,7 @@ import {
   parseDate,
 } from "../lib/format";
 import { pb } from "../lib/pb";
+import { phpTemplates, type PhpTemplate } from "../lib/php";
 import { useLiveList, useLiveRecord, useNow } from "../lib/realtime";
 import {
   generators,
@@ -416,7 +417,12 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
               <PhpEnvCard site={site} data={phpData} canAct={canAct} onApplied={onApplied} />
             </>
           )}
-          <SourceCard site={site} active={active} canAct={canAct} />
+          <SourceCard
+            site={site}
+            active={active}
+            canAct={canAct}
+            template={php ? phpData.settings?.template : undefined}
+          />
         </div>
       </div>
       {php && phpData.settings && <PhpLogCard site={site} />}
@@ -833,11 +839,19 @@ function SourceCard({
   site,
   active,
   canAct,
+  template,
 }: {
   site: Site;
   active?: Deployment;
   canAct: boolean;
+  /** a PHP site's template, whose application may be installed fresh (#52) */
+  template?: PhpTemplate;
 }) {
+  const fresh =
+    site.source === "empty" &&
+    template !== undefined &&
+    template !== "custom" &&
+    phpTemplates[template].fresh;
   const { t } = useTranslation();
   const toast = useToast();
   const [editing, setEditing] = useState(false);
@@ -872,7 +886,11 @@ function SourceCard({
     >
       <dl className="facts">
         <dt>{t("site.source")}</dt>
-        <dd>{t(`site.sourceKind.${site.source}`)}</dd>
+        <dd>
+          {fresh
+            ? `${t("siteNew.freshTitle")} · ${t(`phpSite.template.${template}`)}`
+            : t(`site.sourceKind.${site.source}`)}
+        </dd>
         {site.source === "git" && (
           <>
             <dt>{t("site.repository")}</dt>
