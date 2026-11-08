@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
@@ -34,16 +35,13 @@ const workerStopSeconds = 60
 func (a *Agent) applyWorker(ctx context.Context, payload *agentv1.SitePhpApply, mounts []map[string]any, seccomp string, output io.Writer) error {
 	site := payload.GetSite()
 	name := sites.PHPWorker(site)
+	if payload.GetWorkerCommand() == "" {
+		// a container of that name that is not the site's is none of its business
+		return a.removeSiteWorker(ctx, site)
+	}
 	current, err := a.siteWorker(ctx, site, name)
 	if err != nil {
 		return err
-	}
-	if payload.GetWorkerCommand() == "" {
-		if current == nil {
-			return nil
-		}
-		fmt.Fprintf(output, "Removing the worker %s.\n", name)
-		return a.removeWorker(ctx, current)
 	}
 	config := workerConfig(payload, mounts, seccomp)
 	if current != nil && current.State.Running && checkMounts(current, mounts, "the worker") == nil {
@@ -96,8 +94,10 @@ func workerConfig(payload *agentv1.SitePhpApply, mounts []map[string]any, seccom
 	// its first deployment went live: the read-only mount has no current
 	// before, which the engine cannot make as a working directory
 	current := path.Join(sites.Root, site, "current")
+	// the shell is PID 1 while it waits, which ignores SIGTERM unless trapped:
+	// a stop would wait out its timeout
 	config["Cmd"] = []string{"sh", "-c", fmt.Sprintf(
-		`[ -d %[1]s ] || echo "Waiting for the site's first release."; until cd %[1]s 2>/dev/null; do sleep 5; done; exec %[2]s`,
+		`trap 'exit 0' TERM; [ -d %[1]s ] || echo "Waiting for the site's first release."; until cd %[1]s 2>/dev/null; do sleep 5 & wait $!; done; exec %[2]s`,
 		current, payload.GetWorkerCommand())}
 	config["Healthcheck"] = map[string]any{"Test": []string{"NONE"}}
 	config["StopSignal"] = "SIGTERM"
@@ -148,7 +148,8 @@ func (a *Agent) removeWorker(ctx context.Context, info *dockerapi.ContainerInspe
 }
 
 // restartWorker starts a site's worker anew in the release live now, as after
-// a switch: it finishes the job it is on first.
+// a switch. It finishes the job it is on first, which may take a while: the
+// switch or rollback that asked does not wait for it.
 func (a *Agent) restartWorker(ctx context.Context, site string, output io.Writer) {
 	name := sites.PHPWorker(site)
 	current, err := a.siteWorker(ctx, site, name)
@@ -159,14 +160,18 @@ func (a *Agent) restartWorker(ctx context.Context, site string, output io.Writer
 	if current == nil {
 		return
 	}
-	if err := a.Docker.Restart(ctx, current.ID, workerStopSeconds); err != nil {
-		fmt.Fprintf(output, "%s could not be restarted: %v\n", name, err)
-		return
-	}
-	fmt.Fprintf(output, "%s starts anew in the new release.\n", name)
+	fmt.Fprintf(output, "%s starts anew in the new release once its job is done.\n", name)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*workerStopSeconds*time.Second)
+		defer cancel()
+		if err := a.Docker.Restart(ctx, current.ID, workerStopSeconds); err != nil {
+			a.Log.Warn("failed to restart a site's worker", "container", name, "error", err)
+		}
+	}()
 }
 
-// removeSiteWorker removes a site's worker, if it has one, as the site goes.
+// removeSiteWorker removes a site's worker, if it has one, as the site goes
+// or no longer wants one; a container of the name that is not its stays.
 func (a *Agent) removeSiteWorker(ctx context.Context, site string) error {
 	info, err := a.Docker.Inspect(ctx, sites.PHPWorker(site))
 	if dockerapi.IsNotFound(err) {
@@ -179,8 +184,6 @@ func (a *Agent) removeSiteWorker(ctx context.Context, site string) error {
 	if labels["pocketcloud.role"] != workerRole || labels[siteLabel] != site {
 		return nil
 	}
-	if err := a.Docker.Remove(ctx, info.ID, false, true); err != nil && !dockerapi.IsNotFound(err) {
-		return err
-	}
-	return nil
+	// it finishes the job it is on
+	return a.removeWorker(ctx, info)
 }

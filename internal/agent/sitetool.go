@@ -380,9 +380,16 @@ func detectRepo(ctx context.Context, git gitSource, log io.Writer) (detected, er
 	fmt.Fprintf(log, "$ git clone %s (%s)\n", git.repo, branchOrDefault(git.branch))
 	clone := exec.CommandContext(ctx, "git", args...)
 	clone.Env = env
-	clone.Stdout = log
-	clone.Stderr = log
+	// git's own words say why, as a branch that is not there
+	said := &lastLineWriter{}
+	// one writer for both, which exec then never writes from two goroutines
+	both := io.MultiWriter(log, said)
+	clone.Stdout = both
+	clone.Stderr = both
 	if err := clone.Run(); err != nil {
+		if why := strings.TrimPrefix(said.String(), "fatal: "); why != "" {
+			return detected{}, fmt.Errorf("git could not clone %s: %s", git.repo, why)
+		}
 		return detected{}, fmt.Errorf("git could not clone %s: %w", git.repo, err)
 	}
 	list := exec.CommandContext(ctx, "git", "-C", dir, "ls-tree", "-r", "-z", "--name-only", "HEAD") //nolint:gosec // the look's own clone

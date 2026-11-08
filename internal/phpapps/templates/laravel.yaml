@@ -9,8 +9,11 @@ detect: [artisan]
 docroot: public
 # Laravel's own health route (Laravel 11 and later)
 health: /up
+# a copy of a release, as for a changed environment, has the old release's
+# cached configuration: migrations must read the new one
 release_hook: |
   set -e
+  php artisan config:clear
   if [ -n "${DB_HOST:-}" ]; then
     php artisan migrate --force
   fi

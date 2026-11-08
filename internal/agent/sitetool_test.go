@@ -373,8 +373,9 @@ func TestTheSiteToolRecognisesARepositoryWithoutItsFiles(t *testing.T) {
 	if found, err = tool(t, t.TempDir(), nil, "detect", "--url", repo); err != nil || found["template"] != "nette" {
 		t.Errorf("nette: %v %v", found, err)
 	}
-	if _, err := tool(t, t.TempDir(), nil, "detect", "--url", repo, "--branch", "nosuchbranch"); err == nil {
-		t.Error("a branch that is not there was looked at")
+	// git says why
+	if _, err := tool(t, t.TempDir(), nil, "detect", "--url", repo, "--branch", "nosuchbranch"); err == nil || !strings.Contains(err.Error(), "nosuchbranch not found") {
+		t.Errorf("a branch that is not there: %v", err)
 	}
 }
 

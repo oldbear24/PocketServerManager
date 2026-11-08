@@ -584,6 +584,11 @@ func (p *Panel) sendDeploymentLocked(ctx context.Context, site, deployment *core
 		// a copy of a release is built already: what built it, such as a fresh
 		// install's download, would only undo it (#52)
 		buildCmd = ""
+	} else if source == sites.SourceEmpty && site.GetString("type") == schema.SitePHPApp {
+		// a site installed fresh, without a release to copy: its install
+		if settings, err := p.phpSettings(p.App, site); err == nil && settings.GetString("fresh_build") != "" {
+			buildCmd = settings.GetString("fresh_build")
+		}
 	}
 	if pre := strings.TrimSpace(deployment.GetString("pre_hook")); pre != "" {
 		hook = strings.TrimSpace(pre + "\n" + hook)

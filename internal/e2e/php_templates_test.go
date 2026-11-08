@@ -219,7 +219,7 @@ func TestALaravelSiteIsSetUpWithItsTemplate(t *testing.T) {
 	if worker == nil {
 		t.Fatal("no worker")
 	}
-	if cmd, _ := json.Marshal(worker.Config["Cmd"]); !strings.Contains(string(cmd), "until cd /srv/sites/shop/current") ||
+	if cmd, _ := json.Marshal(worker.Config["Cmd"]); !strings.Contains(string(cmd), "until cd /srv/sites/shop/current") || !strings.Contains(string(cmd), "trap 'exit 0' TERM") ||
 		!strings.Contains(string(cmd), "exec php artisan queue:work") || worker.Config["WorkingDir"] != nil || worker.Labels["pocketcloud.role"] != "site-worker" ||
 		worker.Config["Image"] != h.docker.Find("shop-php").Config["Image"] {
 		t.Errorf("the worker: %v %v", worker.Config, worker.Labels)
@@ -330,8 +330,9 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 	}
 
 	site, settings := h.templateSite("blog")
-	if site.GetString("build_cmd") != "wp core download --locale=cs_CZ" {
-		t.Errorf("build: %q", site.GetString("build_cmd"))
+	// the install's build is its own release's, not the site's
+	if settings.GetString("fresh_build") != "wp core download --locale=cs_CZ" || site.GetString("build_cmd") != "" {
+		t.Errorf("build: %q, the site's %q", settings.GetString("fresh_build"), site.GetString("build_cmd"))
 	}
 	log := calls()
 	for _, want := range []string{"wp core download --locale=cs_CZ", "wp core is-installed", "installed Můj blog|editor|editor@example.org|cs_CZ", "with the password"} {
@@ -434,6 +435,17 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 		return sites.Current(h.sites, "blog") == 2 && live.GetString("active_deployment") == two.Id &&
 			strings.Contains(string(mustJSON(found.Get("health"))), `"ok":true`)
 	})
+
+	// an upload of its own is built as one, without the install's download
+	status, raw := h.provisionUpload("/api/pc/sites/"+site.Id+"/upload", nil,
+		zipOf(t, map[string]string{"wp-load.php": "<?php", "index.php": "<?php // mine"}))
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("upload: %d %s", status, raw)
+	}
+	if four := h.deploymentNumbered(site.Id, 4, schema.DeploymentSucceeded, schema.DeploymentFailed); four.GetString("status") != schema.DeploymentSucceeded ||
+		four.GetInt("base_release") != 0 || strings.Count(calls(), "core download") != 1 {
+		t.Errorf("the upload: %v\n%s", four.PublicExport(), calls())
+	}
 }
 
 // TestANetteSiteEmptiesItsCacheAtEachRelease (#52): Nette's web root is www/,
@@ -442,6 +454,8 @@ func TestAFreshWordPressIsInstalledUpdatedAndRolledBack(t *testing.T) {
 func TestANetteSiteEmptiesItsCacheAtEachRelease(t *testing.T) {
 	h := newProvisionHarness(t)
 	fakePHPTools(t, "")
+	// a container of the name a worker would have, which is not the site's
+	foreign := h.docker.AddContainer("news-worker", "busybox", map[string]string{"app": "mine"})
 	h.resolvers.set("news.example.org", "A", "203.0.114.7")
 	h.resolvers.set("news.example.org", "AAAA", "2a01:4f8::7")
 	files := map[string]string{"app/Bootstrap.php": "<?php", "www/index.php": "<?php echo 'news';", "temp/.gitignore": "*\n!.gitignore"}
@@ -500,6 +514,9 @@ func TestANetteSiteEmptiesItsCacheAtEachRelease(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != ".gitignore" {
 		t.Errorf("temp keeps %v", entries)
 	}
+	if found := h.docker.Find("news-worker"); found == nil || found.ID != foreign {
+		t.Error("a container that is not the site's worker was touched")
+	}
 }
 
 // databaseServer is a shared database server of the harness's host that the
@@ -542,7 +559,7 @@ func mustJSON(value any) []byte {
 // site's environment names the database as Laravel does.
 func TestTwoSitesShareADatabaseServer(t *testing.T) {
 	h := newProvisionHarness(t)
-	fakePHPTools(t, "")
+	calls := fakePHPTools(t, "")
 	server := h.databaseServer("db-main")
 	archive := zipOf(t, map[string]string{"artisan": "#!/usr/bin/env php", "public/index.php": "<?php"})
 	for _, name := range []string{"one", "two"} {
@@ -576,5 +593,10 @@ func TestTwoSitesShareADatabaseServer(t *testing.T) {
 		if networks, _ := h.app.FindRecordsByFilter(schema.DBNetworks, "site={:s}", "", 0, 0, dbx.Params{"s": site.Id}); len(networks) != 1 {
 			t.Errorf("%s: %d networks", name, len(networks))
 		}
+	}
+	// migrations read the environment, not what a copied release cached
+	log := calls()
+	if clear, migrate := strings.Index(log, "php artisan config:clear"), strings.Index(log, "php artisan migrate --force"); clear < 0 || migrate < clear {
+		t.Errorf("the hook ran:\n%s", log)
 	}
 }

@@ -3,9 +3,14 @@ package panel
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/oldbear24/PocketServerManager/internal/phpapps"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -113,4 +118,62 @@ func TestANameOfTheLANIsAskedAtTheServersAddressThere(t *testing.T) {
 	if address, _ := p.siteAddress(host, internal); address != "192.168.1.20" {
 		t.Errorf("a name of the LAN: %s", address)
 	}
+}
+
+// TestASiteServedWithoutTLSIsAskedOverHTTP: the health check asks a name the
+// site serves over HTTPS when it has one, and one served without TLS over
+// plain HTTP, rather than calling it broken after every release (#52).
+func TestASiteServedWithoutTLSIsAskedOverHTTP(t *testing.T) {
+	p, app, _ := newTestPanel(t)
+	host := saveRecord(t, app, schema.Hosts, map[string]any{
+		"name": "vps", "status": "online", "roles": []string{"docker", "edge"}, "public_ip4": "203.0.114.7",
+	})
+	site := saveRecord(t, app, schema.Sites, map[string]any{"name": "shop", "host": host.Id, "type": schema.SitePHPApp, "source": "upload"})
+	settings, err := p.phpSettings(app, site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Set("health_path", "/up")
+	if err := app.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	deployment := saveRecord(t, app, schema.Deployments, map[string]any{"site": site.Id, "number": 1, "status": schema.DeploymentSucceeded})
+	site.Set("active_deployment", deployment.Id)
+	if err := app.Save(site); err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	p.SetSiteCheck(func(_ context.Context, url, _ string) (int, string, error) {
+		asked = append(asked, url)
+		return 200, "", nil
+	})
+	domain := func(name, tls string) {
+		saveRecord(t, app, schema.Domains, map[string]any{
+			"hostname": name, "host": host.Id, "site": site.Id, "target_kind": schema.TargetSite, "tls": tls,
+		})
+	}
+	domain("plain.example.org", schema.TLSOff)
+	if again := p.lookAtHealth(site.Id, deployment.Id, time.Now()); again || len(asked) != 1 || asked[0] != "http://plain.example.org/up" {
+		t.Errorf("without TLS: %v %v", asked, again)
+	}
+	domain("shop.example.org", schema.TLSAuto)
+	p.lookAtHealth(site.Id, deployment.Id, time.Now())
+	if asked[len(asked)-1] != "https://shop.example.org/up" {
+		t.Errorf("with a name over HTTPS too: %v", asked)
+	}
+	if health := deploymentHealth(t, app, deployment.Id); health["ok"] != true || health["url"] != "https://shop.example.org/up" {
+		t.Errorf("health: %v", health)
+	}
+}
+
+func deploymentHealth(t *testing.T, app core.App, id string) map[string]any {
+	t.Helper()
+	record, err := app.FindRecordById(schema.Deployments, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := map[string]any{}
+	raw, _ := json.Marshal(record.Get("health"))
+	_ = json.Unmarshal(raw, &health)
+	return health
 }

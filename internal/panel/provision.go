@@ -308,18 +308,17 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 		return e.BadRequestError(preview.Problem, nil)
 	}
 	var phpRequest *provisionPHP
+	freshBuild := ""
 	if site.GetString("type") == schema.SitePHPApp {
 		if phpRequest, err = p.checkProvisionPHP(body.PHP, site, host); err != nil {
 			return e.BadRequestError(capitalize(err.Error())+".", nil)
 		}
-		// a fresh install's build, as WP-CLI's download, is the site's (#52)
+		// a fresh install's build, as WP-CLI's download (#52)
 		if install := phpRequest.Install; install != nil {
 			t, _ := phpapps.Get(phpRequest.Template)
-			build, err := t.FreshBuild(phpapps.Vars{Locale: install.Locale})
-			if err != nil {
+			if freshBuild, err = t.FreshBuild(phpapps.Vars{Locale: install.Locale}); err != nil {
 				return e.BadRequestError(capitalize(err.Error())+".", nil)
 			}
-			site.Set("build_cmd", build)
 		}
 	}
 
@@ -354,6 +353,7 @@ func (p *Panel) handleProvision(e *core.RequestEvent) error {
 			settings.Set("php_version", phpRequest.Version)
 			settings.Set("docroot", phpRequest.Docroot)
 			settings.Set("template", phpRequest.Template)
+			settings.Set("fresh_build", freshBuild)
 			// and the template's defaults (#52)
 			err = p.applyTemplate(settings, phpRequest, hostname)
 		}

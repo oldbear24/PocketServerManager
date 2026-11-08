@@ -335,7 +335,7 @@ func (p *Panel) redeployForEnv(ctx context.Context, site, settings, live *core.R
 	return p.startDeployment(ctx, site, deploymentRequest{
 		Trigger: schema.TriggerManual, RequestedBy: options.RequestedBy, Requester: options.Requester,
 		// the page says what it is, a copy of the live release, in its language
-		Again: live,
+		Again:    live,
 		Base:     live.GetInt("number"),
 		PHPApply: true,
 		PHPFrom:  settings.GetString("php_version"),
@@ -606,18 +606,30 @@ func (p *Panel) lookAtHealth(siteID, deploymentID string, started time.Time) boo
 	if err != nil || settings.GetString("health_path") == "" {
 		return false
 	}
-	domain, err := p.App.FindFirstRecordByFilter(schema.Domains, "site={:s} && target_kind!={:redirect}",
+	// a name it serves over HTTPS, if it has one, as visitors are sent there
+	domains, err := p.App.FindRecordsByFilter(schema.Domains, "site={:s} && target_kind!={:redirect}", "created", 0, 0,
 		dbx.Params{"s": site.Id, "redirect": schema.TargetRedirect})
-	if err != nil {
+	if err != nil || len(domains) == 0 {
 		// a site without a name on the web yet has no one to answer
 		return false
+	}
+	domain := domains[0]
+	for _, candidate := range domains {
+		if candidate.GetString("tls") != schema.TLSOff {
+			domain = candidate
+			break
+		}
+	}
+	scheme := "https://"
+	if domain.GetString("tls") == schema.TLSOff {
+		scheme = "http://"
 	}
 	host, err := p.App.FindRecordById(schema.Hosts, site.GetString("host"))
 	if err != nil {
 		return false
 	}
 	address, roots := p.siteAddress(host, domain)
-	url := "https://" + domain.GetString("hostname") + settings.GetString("health_path")
+	url := scheme + domain.GetString("hostname") + settings.GetString("health_path")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	answer, err := p.provision.siteCheck(ctx, url, address, roots)
@@ -677,14 +689,11 @@ func (p *Panel) siteAddress(host, domain *core.Record) (string, *x509.CertPool) 
 // a copy of: its live one, as the site has no source of its own and its
 // install would start it anew. Any other site's builds its source.
 func (p *Panel) freshBase(site *core.Record) int {
-	if site.GetString("type") != schema.SitePHPApp || site.GetString("source") != sites.SourceEmpty || site.GetString("build_cmd") == "" {
+	if site.GetString("type") != schema.SitePHPApp || site.GetString("source") != sites.SourceEmpty {
 		return 0
 	}
 	settings, err := p.phpSettings(p.App, site)
-	if err != nil {
-		return 0
-	}
-	if t, ok := templateOf(settings); !ok || t.Fresh == nil {
+	if err != nil || settings.GetString("fresh_build") == "" {
 		return 0
 	}
 	live, err := p.App.FindRecordById(schema.Deployments, site.GetString("active_deployment"))
