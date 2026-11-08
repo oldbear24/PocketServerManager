@@ -313,7 +313,7 @@ describe("the sites page", () => {
         site: "s2",
         number: 7,
         trigger: "update",
-        base_release: 6,
+        base_release: 5,
         message: "Update WordPress",
         requested_by: "op@example.com",
         health: {
@@ -325,9 +325,21 @@ describe("the sites page", () => {
         },
       }),
       deployment({
+        // a release that broke the site before, and was rolled back from
         id: "d6",
         site: "s2",
         number: 6,
+        health: {
+          ok: false,
+          status: 500,
+          url: "https://blog.example.org/",
+          checked_at: "2026-11-04T12:00:00Z",
+        },
+      }),
+      deployment({
+        id: "d5",
+        site: "s2",
+        number: 5,
         health: {
           ok: true,
           status: 200,
@@ -361,13 +373,15 @@ describe("the sites page", () => {
         "Since release #7 went live the site does not answer as it should: https://blog.example.org/ answered 500.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("update of #6 · op@example.com")).toBeInTheDocument();
+    expect(screen.getByText("update of #5 · op@example.com")).toBeInTheDocument();
     expect(screen.getByText("Health check: 200 at https://blog.example.org/")).toBeInTheDocument();
     // what backups leave out, and a source that was a fresh install
     expect(screen.getByText("wp-content/cache, wp-content/upgrade")).toBeInTheDocument();
     expect(screen.getByText("Fresh install · WordPress")).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole("button", { name: "Roll back to #6" })[0]);
-    await waitFor(() => expect(rollback).toHaveBeenCalledWith("s2", "d6"));
+    // the banner's way back is the release it was a copy of, not #6, which
+    // broke the site too
+    fireEvent.click(screen.getByRole("button", { name: "Back to #5" }));
+    await waitFor(() => expect(rollback).toHaveBeenCalledWith("s2", "d5"));
 
     // an update with plugins to add
     fireEvent.click(screen.getByRole("button", { name: "Update WordPress" }));
@@ -381,6 +395,24 @@ describe("the sites page", () => {
         themes: [],
       }),
     );
+  });
+
+  it("offers no update of WordPress before its first release is live (#52)", () => {
+    signInAs("operator");
+    lists.sites = [
+      { ...site, id: "s3", name: "fresh", type: "php", source: "empty", active_deployment: "" },
+    ];
+    lists.hosts = [{ id: "h1", name: "vps-wedos", roles: ["docker", "edge"], status: "online" }];
+    lists.site_php = [{ ...phpSettings, site: "s3", template: "wordpress", docroot: "" }];
+    lists.deployments = [];
+    vi.spyOn(sitesApi, "requests").mockResolvedValue({
+      from: "2026-11-04T13:00:00Z",
+      hours: Array(24).fill(0),
+      total: 0,
+    });
+    vi.spyOn(phpApi, "versions").mockResolvedValue({ warn_days: 90, default: "8.4", versions: [] });
+    renderAt("/sites/s3");
+    expect(screen.getByRole("button", { name: "Update WordPress" })).toBeDisabled();
   });
 
   it("offers a new site when there is none, in the wizard", () => {

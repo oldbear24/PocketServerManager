@@ -1179,6 +1179,7 @@ export function PhpUpdateButton({
   const name = t(`phpSite.template.${settings.template}`);
   return (
     <>
+      {/* an update is a copy of the live release, which a site may not have yet */}
       <Button disabled={disabled} onClick={() => setOpen(true)}>
         {t("phpSite.update", { name })}
       </Button>

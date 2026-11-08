@@ -1536,7 +1536,8 @@
     "healthOk": "Kontrola dostupnosti: {{status}} na {{url}}",
     "healthFailed": "Kontrola dostupnosti selhala na {{url}}",
     "byCopy": "kopie #{{number}} · {{who}}",
-    "answered": "{{url}} odpověděla {{status}}."
+    "answered": "{{url}} odpověděla {{status}}.",
+    "rollbackBack": "Zpět na #{{number}}"
   },
   "siteNew": {
     "title": "Nový web",

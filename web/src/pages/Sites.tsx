@@ -346,7 +346,11 @@ function SiteDetail({ site, host, canAct }: { site: Site; host?: Host; canAct: b
                   }}
                 />
                 {php && phpData.settings && (
-                  <PhpUpdateButton site={site} settings={phpData.settings} disabled={busy} />
+                  <PhpUpdateButton
+                    site={site}
+                    settings={phpData.settings}
+                    disabled={busy || !site.active_deployment}
+                  />
                 )}
                 <Button disabled={busy} onClick={() => upload.current?.click()}>
                   <Upload size={14} aria-hidden="true" />
@@ -714,13 +718,18 @@ function DeploymentsCard({
 
   // a live release the site stopped answering since (#52): one rollback away
   const live = deployments.find((deployment) => deployment.id === site.active_deployment);
-  const earlier = deployments.find(
+  // where to go back: the release it was a copy of, as an update's, or the
+  // newest one before it, never one that failed its own health check
+  const candidates = deployments.filter(
     (deployment) =>
       deployment.id !== site.active_deployment &&
       deployment.status === "succeeded" &&
       deployment.on_server &&
-      deployment.number < (live?.number ?? 0),
+      deployment.number < (live?.number ?? 0) &&
+      deployment.health?.ok !== false,
   );
+  const earlier =
+    candidates.find((deployment) => deployment.number === live?.base_release) ?? candidates[0];
 
   return (
     <Card
@@ -743,7 +752,7 @@ function DeploymentsCard({
             <div className="button-row">
               <Button size="small" disabled={busy} onClick={() => onRollback(earlier)}>
                 <RotateCcw size={13} aria-hidden="true" />
-                {t("site.rollbackTo", { number: earlier.number })}
+                {t("site.rollbackBack", { number: earlier.number })}
               </Button>
             </div>
           )}

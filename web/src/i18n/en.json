@@ -1464,7 +1464,8 @@
     "healthOk": "Health check: {{status}} at {{url}}",
     "healthFailed": "Health check failed at {{url}}",
     "byCopy": "copy of #{{number}} · {{who}}",
-    "answered": "{{url}} answered {{status}}."
+    "answered": "{{url}} answered {{status}}.",
+    "rollbackBack": "Back to #{{number}}"
   },
   "siteNew": {
     "title": "New site",
