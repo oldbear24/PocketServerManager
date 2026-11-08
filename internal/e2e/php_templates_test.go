@@ -615,6 +615,15 @@ func TestTwoSitesShareADatabaseServer(t *testing.T) {
 			t.Errorf("%s: %d networks", name, len(networks))
 		}
 	}
+	// a site with its database, tasks and settings goes; its database stays
+	one, _ := h.templateSite("one")
+	if status, raw := testutil.Do(t, h.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/collections/sites/records/" + one.Id, Token: h.operator}); status != http.StatusNoContent {
+		t.Errorf("removing a site: %d %s", status, raw)
+	}
+	if database, err := h.app.FindFirstRecordByData(schema.Databases, "name", "one"); err != nil || database.GetString("site") != "" {
+		t.Errorf("the site's database: %v %v", database, err)
+	}
+
 	// migrations read the environment, not what a copied release cached
 	log := calls()
 	if clear, migrate := strings.Index(log, "php artisan config:clear"), strings.Index(log, "php artisan migrate --force"); clear < 0 || migrate < clear {
