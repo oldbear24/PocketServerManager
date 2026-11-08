@@ -363,7 +363,8 @@ describe("the panel's own certificate (#63)", () => {
     panelCard([cert({}), own], "p1");
     const rows = screen.getAllByRole("row").slice(1);
     expect(within(rows[0]!).getByText("panel.example.com")).toBeTruthy();
-    expect(within(rows[0]!).getByText("The panel")).toBeTruthy();
+    // a badge with its tone, as every pill has
+    expect(within(rows[0]!).getByText("The panel")).toHaveClass("pill", "info");
     expect(within(rows[0]!).getByText("This panel (UI and API)")).toBeTruthy();
     expect(within(rows[1]!).getByText("vps-1")).toBeTruthy();
     expect(within(rows[1]!).queryByText("The panel")).toBeNull();
@@ -380,12 +381,25 @@ describe("the panel's own certificate (#63)", () => {
     ).toBeTruthy();
   });
 
-  it("is not deployed while the panel serves another", () => {
+  it("is marked as no longer used once the panel serves another, and not first", () => {
     vi.useFakeTimers({ now, shouldAdvanceTime: true });
-    panelCard([own], "");
-    const row = screen.getByText("panel.example.com").closest("tr")!;
+    panelCard([cert({}), own], "p9");
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]!).getByText("shop.example.com")).toBeTruthy();
+    const row = rows[1]!;
+    expect(within(row).getByText("panel.example.com")).toBeTruthy();
+    expect(within(row).getByText("The panel's, no longer used")).toBeTruthy();
+    expect(within(row).queryByText("The panel")).toBeNull();
     expect(within(row).queryByText("This panel (UI and API)")).toBeNull();
     expect(within(row).getByText("–")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the certificate for panel.example.com" }),
+    );
+    const drawer = screen.getByRole("dialog", { name: "panel.example.com" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Remove" }));
+    expect(screen.getByText(/removing it changes nothing it serves/)).toBeTruthy();
+    expect(screen.queryByText(/until it gets a new one/)).toBeNull();
   });
 
   it("shows what the CA said when it failed, and offers Retry", async () => {

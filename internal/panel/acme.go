@@ -1087,7 +1087,7 @@ func (p *Panel) planChallenge(names []string, wanted string, panel bool) (acmePl
 			wildcard = true
 		} else if panel {
 			// the panel answers for its own name, a public server of its own
-			panelBlocked = p.panelHTTPBlocked(name, domains)
+			panelBlocked = p.panelHTTPBlocked(name, domains, wanted)
 			canHTTP[name] = panelBlocked == ""
 		} else {
 			for _, domain := range domains {

@@ -318,7 +318,8 @@ function SmtpCard() {
   );
 }
 
-function AboutCard() {
+/** The panel itself: its version, HTTPS, gateway and CA. */
+export function AboutCard() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<PanelInfo | null>(null);
 

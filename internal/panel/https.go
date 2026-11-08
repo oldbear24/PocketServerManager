@@ -175,7 +175,16 @@ func (p *Panel) HTTPHandler() http.Handler {
 			_, _ = w.Write([]byte(answer.keyAuth))
 			return
 		}
-		http.Redirect(w, r, origin+r.URL.RequestURI(), http.StatusPermanentRedirect)
+		// the path and query alone, from the origin's root: a request target
+		// that is not a path (http:@evil.com, *) cannot change where it leads
+		target := r.URL.EscapedPath()
+		if r.URL.Opaque != "" || !strings.HasPrefix(target, "/") {
+			target = "/"
+		}
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, origin+target, http.StatusPermanentRedirect)
 	})
 }
 
@@ -290,9 +299,11 @@ func (p *Panel) orderPanelCertificate() {
 }
 
 // panelHTTPBlocked says why the CA cannot reach the panel for HTTP-01 on its
-// name, or "": its name is an edge's domain, whose port 80 the edge has, or
-// the panel listens for HTTP on a loopback address alone.
-func (p *Panel) panelHTTPBlocked(name string, domains []*core.Record) string {
+// name, or "": its name is an edge's domain, whose port 80 the edge has, or,
+// when the challenge is chosen for it, the panel listens for HTTP on a
+// loopback address alone. Asked for HTTP-01, the panel tries it there too: a
+// port forward or a proxy may reach it, and the CA's answer says if not.
+func (p *Panel) panelHTTPBlocked(name string, domains []*core.Record, wanted string) string {
 	for _, domain := range domains {
 		if !strings.EqualFold(domain.GetString("hostname"), name) {
 			continue
@@ -300,6 +311,9 @@ func (p *Panel) panelHTTPBlocked(name string, domains []*core.Record) string {
 		if host, err := p.App.FindRecordById(schema.Hosts, domain.GetString("host")); err == nil && hasEdgeRole(host) {
 			return "port 80 of " + name + " reaches the edge of " + host.GetString("name") + ", which serves it as a domain"
 		}
+	}
+	if wanted == schema.ChallengeHTTP01 {
+		return ""
 	}
 	if address := p.https.httpAddr.Load(); address != nil {
 		if host, _, err := net.SplitHostPort(*address); err == nil {

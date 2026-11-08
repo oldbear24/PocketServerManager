@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -121,6 +122,32 @@ func TestThePlainPortAnswersTheCAAndSendsTheRestToHTTPS(t *testing.T) {
 		w := ask(method, "evil.test", "/x?y=1")
 		if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != "https://panel.example.com:8443/x?y=1" {
 			t.Errorf("%s: %d %q", method, w.Code, w.Header().Get("Location"))
+		}
+	}
+
+	// a request target that is no path cannot lead elsewhere
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	for target, want := range map[string]string{
+		"http:@evil.com/steal": "https://panel.example.com:8443/",
+		"http:evil.com":        "https://panel.example.com:8443/",
+		"*":                    "https://panel.example.com:8443/",
+		"http://evil.com/abs":  "https://panel.example.com:8443/abs",
+		"//evil.com/":          "https://panel.example.com:8443//evil.com/",
+	} {
+		conn, err := net.Dial("tcp", server.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(conn, "GET "+target+" HTTP/1.1\r\nHost: panel.example.com\r\nConnection: close\r\n\r\n")
+		response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		_ = conn.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		_ = response.Body.Close()
+		if location := response.Header.Get("Location"); location != want {
+			t.Errorf("GET %s: %d %q, want %q", target, response.StatusCode, location, want)
 		}
 	}
 }
@@ -289,6 +316,11 @@ func TestTheCAChecksThePanelsNameOverItsOwnPlainPort(t *testing.T) {
 	if _, err := p.planChallenge([]string{"panel.example.com"}, schema.ChallengeAuto, true); err == nil ||
 		!strings.Contains(err.Error(), "listens for HTTP on 127.0.0.1:8090 only") {
 		t.Errorf("loopback without a zone: %v", err)
+	}
+	// asked for HTTP-01, the panel tries it all the same: a port forward may
+	// reach it, and the CA's answer says if not
+	if plan, err := p.planChallenge([]string{"panel.example.com"}, schema.ChallengeHTTP01, true); err != nil || plan.kind != schema.ChallengeHTTP01 {
+		t.Errorf("loopback, HTTP-01 asked for: %q %v", plan.kind, err)
 	}
 	// with the zone managed, DNS-01 then
 	provider := saveRecord(t, app, schema.DNSProviders, map[string]any{"name": "Cloudflare", "kind": "cloudflare", "status": "ok"})

@@ -191,8 +191,12 @@ export function CertificatesCard({
       }
       return true;
     })
-    // the panel's own first, the rest as they came
-    .sort((a, b) => Number(!!b.panel) - Number(!!a.panel));
+    // the one the panel serves first, the rest as they came
+    .sort(
+      (a, b) =>
+        Number(b.id === panelCertificate && !!b.panel) -
+        Number(a.id === panelCertificate && !!a.panel),
+    );
 
   const retry = async (cert: Certificate) => {
     setRetrying(cert.id);
@@ -296,7 +300,16 @@ export function CertificatesCard({
                       />
                       <div>
                         <div className="mono">{cert.names[0]}</div>
-                        {cert.panel && <span className="pill">{t("cert.panelBadge")}</span>}
+                        {cert.panel && (
+                          <StatusPill
+                            tone={cert.id === panelCertificate ? "info" : "off"}
+                            dot={false}
+                          >
+                            {cert.id === panelCertificate
+                              ? t("cert.panelBadge")
+                              : t("cert.panelUnused")}
+                          </StatusPill>
+                        )}
                         {cert.names.length > 1 && (
                           <div className="muted small">
                             {cert.names.length > 3
@@ -601,7 +614,9 @@ function CertificateDetail({
       >
         <p className="muted">
           {cert.panel
-            ? t("cert.removePanelNote")
+            ? cert.id === panelCertificate
+              ? t("cert.removePanelNote")
+              : t("cert.removePanelUnusedNote")
             : cert.auto
               ? t("cert.removeAutoNote")
               : t("edge.removeCertificateNote")}
