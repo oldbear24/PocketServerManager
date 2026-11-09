@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -42,6 +44,11 @@ type Container struct {
 	// a job's end, and its exit code (see OnJob)
 	exited   chan struct{}
 	exitCode int
+	// the standard input of a container created with OpenStdin, which an
+	// attached client writes to
+	stdinR    *io.PipeReader
+	stdinW    *io.PipeWriter
+	stdinOnce bool
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -97,6 +104,10 @@ type Job struct {
 	Host map[string]any
 	// Files are those copied into the container before it started.
 	Files map[string][]byte
+	// Stdin is what a client attached to a job created with OpenStdin
+	// writes, which ends when it leaves one created with StdinOnce; nil for
+	// a job without OpenStdin.
+	Stdin io.Reader
 }
 
 // JobResult is how a job ended.
@@ -231,6 +242,7 @@ func (e *Engine) RemoveContainer(id string) {
 
 	if container := e.containers[id]; container != nil {
 		e.stopping(container)
+		closeStdin(container)
 	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
@@ -511,7 +523,12 @@ func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	e.containers[id] = &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+	container := &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+	if open, _ := body["OpenStdin"].(bool); open {
+		container.stdinR, container.stdinW = io.Pipe()
+		container.stdinOnce, _ = body["StdinOnce"].(bool)
+	}
+	e.containers[id] = container
 
 	// a container created on a network of its own starts out on it
 	if mode, _ := host["NetworkMode"].(string); mode != "" {
@@ -545,6 +562,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 			return
 		}
 		e.stopping(container)
+		closeStdin(container)
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
@@ -555,6 +573,12 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 
 	case action == "archive" && r.Method == http.MethodPut:
 		e.receiveArchive(w, r, container)
+
+	case action == "attach" && r.Method == http.MethodPost:
+		stdin, once := container.stdinW, container.stdinOnce
+		e.mu.Unlock()
+		attach(w, r, stdin, once)
+		e.mu.Lock()
 
 	case action == "start" && e.OnJob != nil && container.Labels["pocketcloud.role"] == "job":
 		container.Status = "running"
@@ -807,10 +831,22 @@ func (e *Engine) inspectVolume(w http.ResponseWriter, name string) {
 		writeError(w, http.StatusNotFound, "get "+name+": no such volume")
 		return
 	}
+	writeJSON(w, map[string]any{"Name": name, "Driver": "local", "Labels": labels, "Mountpoint": volumeDir(root, name)})
+}
+
+// VolumeDir is the directory a volume says it has on the host, under
+// VolumeRoot, as its inspect reports it.
+func (e *Engine) VolumeDir(name string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return volumeDir(e.VolumeRoot, name)
+}
+
+func volumeDir(root, name string) string {
 	if root == "" {
 		root = "/var/lib/docker/volumes"
 	}
-	writeJSON(w, map[string]any{"Name": name, "Driver": "local", "Labels": labels, "Mountpoint": root + "/" + name + "/_data"})
+	return root + "/" + name + "/_data"
 }
 
 // Fail makes requests whose "METHOD path" contains key fail with message, from
@@ -847,6 +883,9 @@ func omitEmptyMountFields(host map[string]any) {
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
 	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files)}
+	if c.stdinR != nil {
+		job.Stdin = c.stdinR
+	}
 	if cmd, ok := c.Config["Cmd"].([]any); ok {
 		for _, arg := range cmd {
 			text, _ := arg.(string)
@@ -865,6 +904,10 @@ func jobOf(c *Container) Job {
 // runJob runs a job container's work and ends it.
 func (e *Engine) runJob(c *Container, job Job) {
 	result := e.OnJob(job)
+	if c.stdinR != nil {
+		// what is still written to it has nowhere to go
+		c.stdinR.CloseWithError(errors.New("the container has exited"))
+	}
 	for _, out := range []struct {
 		stream byte
 		text   string
