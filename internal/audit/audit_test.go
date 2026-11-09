@@ -361,7 +361,9 @@ func TestNoSecretInAuditLog(t *testing.T) {
 		schema.Certificates: {"names": []string{"secret.example.com"}},
 		schema.ACMEAccounts: {"role": schema.ACMEPrimary, "directory_url": "https://acme.example.com/dir"},
 		schema.DNSProviders: {"kind": "cloudflare"},
-		schema.Sites:        {"host": edgeHost.Id, "source": "empty"},
+		// #28
+		schema.BackupTargets: {"kind": "local"},
+		schema.Sites:         {"host": edgeHost.Id, "source": "empty"},
 	}
 
 	covered := 0

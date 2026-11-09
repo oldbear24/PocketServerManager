@@ -2769,3 +2769,92 @@ td .row-actions {
   align-items: center;
   margin: 0;
 }
+
+/* Backup targets (#28), as the design's card of them */
+.backup-targets {
+  max-width: 760px;
+}
+
+.backup-target {
+  display: grid;
+  gap: 6px;
+}
+
+.backup-target-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.backup-target-name {
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.backup-target-usage {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.backup-target-location {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.backup-target .progress {
+  height: 6px;
+}
+
+.backup-target-note {
+  overflow-wrap: anywhere;
+}
+
+.backup-target-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.backup-target-meta .row-actions {
+  margin-left: auto;
+}
+
+.backup-target-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--err-bg);
+  color: var(--err-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* the fields of a dialog, disabled together while its request is on its way */
+.dialog-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* a new target still waits for its first check: not an error yet */
+.backup-target-error.pending {
+  background: var(--accent-bg);
+  color: var(--text-2);
+}

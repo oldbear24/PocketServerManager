@@ -189,6 +189,20 @@ func (m *Manager) Register() {
 		m.Kick(e.Record.GetString("host"))
 		return e.Next()
 	})
+
+	// a removed server's commands stay as its history, under its name. The
+	// relation to it is cleared beside the state machine, which refuses any
+	// save of a finished command: through it, a server that ever ran one
+	// could not be removed. It runs in the removal's transaction, before
+	// PocketBase looks for what refers to the server.
+	m.app.OnRecordDeleteExecute(schema.Hosts).BindFunc(func(e *core.RecordEvent) error {
+		_, err := e.App.DB().NewQuery("UPDATE {{" + schema.Commands + "}} SET [[host]]='' WHERE [[host]]={:host}").
+			Bind(dbx.Params{"host": e.Record.Id}).Execute()
+		if err != nil {
+			return fmt.Errorf("failed to keep the server's commands: %w", err)
+		}
+		return e.Next()
+	})
 }
 
 // transitions lists the allowed state changes of a command.

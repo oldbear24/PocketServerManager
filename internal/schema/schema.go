@@ -33,12 +33,14 @@ const (
 	Certificates      = "certificates"
 	DNSProviders      = "dns_providers"
 	DNSZones          = "dns_zones"
-	DNSRecords        = "dns_records"
-	ACMEAccounts      = "acme_accounts"
-	Sites             = "sites"
-	Deployments       = "deployments"
-	SitePHP           = "site_php"
-	ScheduledTasks    = "scheduled_tasks"
+	// BackupTargets are where backups go (#28)
+	BackupTargets  = "backup_targets"
+	DNSRecords     = "dns_records"
+	ACMEAccounts   = "acme_accounts"
+	Sites          = "sites"
+	Deployments    = "deployments"
+	SitePHP        = "site_php"
+	ScheduledTasks = "scheduled_tasks"
 )
 
 // What a scheduled task runs in (#51).
@@ -58,11 +60,18 @@ const (
 	TaskCancelled = "cancelled"
 )
 
+// States of a backup target (#28).
+const (
+	TargetPending = "pending"
+	TargetOK      = "ok"
+	TargetFailed  = "failed"
+)
+
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"backup_targets", "backup_jobs", "backup_runs", "backup_checks",
+	"backup_jobs", "backup_runs", "backup_checks",
 }
 
 // User roles.
@@ -272,7 +281,7 @@ var Encrypted = map[string][]string{
 	DBServers:               {"admin_password"},
 	DBUsers:                 {"password", "pending_password"},
 	DBMoves:                 {"secrets"},
-	"backup_targets":        {"credentials", "repo_password"},
+	BackupTargets:           {"credentials", "repo_password"},
 }
 
 // AuditedCollection describes how changes of one collection are audited.
@@ -333,7 +342,7 @@ var Audited = []AuditedCollection{
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
-	{Name: "backup_targets", Label: "name", Ignore: []string{"capacity_bytes", "used_bytes"}},
+	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes", "usage_at"}},
 	{Name: "backup_jobs", Label: "name", Host: "host"},
 }
 

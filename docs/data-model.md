@@ -81,7 +81,7 @@ The REST API only reads these collections (a move without its secrets), except t
 
 | Collection | Purpose | Key fields |
 |---|---|---|
-| `backup_targets` | Where backups go | `kind` (s3 / sftp / rest / local), `name`, `config`, `credentials` 🔒, `repo_password` 🔒, `capacity_bytes`, `used_bytes` |
+| `backup_targets` | Where backups go (#28) | `name` (unique), `kind` (s3 / sftp / rest / local), `host` (the server whose agent reaches it, and holds a local one), `config` (json, nothing secret), `location` (where it is as people read it), `credentials` 🔒, `repo_password` 🔒, `repo_id` (restic's), `status` (pending: saved, not checked yet / ok / failed), `last_error`, `checked_at`, `used_bytes`, `usage_at` (when it was measured), `capacity_bytes` (0: not known), `immutable_days` (the days a bucket's Object Lock keeps objects, as the admin notes it), `note`. Viewers read it; only the panel's routes write it |
 | `backup_jobs` | What, when and how long | `name`, `host`, `source_kind` (volume / path / db_dump / database / site_shared / stack), `source`, `database`, `site`, `pre_hook`, `targets[]`, `schedule` (cron), `retention` (json), `enabled`, `origin` (manual / label / database / site) |
 | `backup_runs` | One execution per target | `job`, `target`, `status` (succeeded / failed / skipped), `started_at`, `finished_at`, `bytes_added`, `snapshot_id`, `error`, `log` (file) |
 | `backup_checks` | Repository integrity checks | `target`, `status`, `started_at`, `finished_at`, `output` |

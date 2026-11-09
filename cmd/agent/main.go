@@ -8,6 +8,7 @@
 //	pocketcloud-agent diagnostics   print connectivity, certificate and Docker status
 //	pocketcloud-agent version       print the version
 //	pocketcloud-agent site-tool     change the sites volume, in a site's job container
+//	pocketcloud-agent backup-tool   run restic for a backup command, in its job container
 package main
 
 import (
@@ -48,6 +49,8 @@ func main() {
 		fmt.Println(version.Version)
 	case "site-tool":
 		err = agent.SiteTool(ctx, os.Args[2:], agent.SiteToolEnv(os.Getenv), os.Stdout, os.Stderr)
+	case "backup-tool":
+		err = agent.BackupTool(ctx, os.Args[2:], agent.BackupToolEnv(os.Environ()), os.Stdout, os.Stderr)
 	default:
 		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics or version", command)
 	}

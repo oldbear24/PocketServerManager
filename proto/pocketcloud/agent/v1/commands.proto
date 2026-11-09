@@ -772,12 +772,34 @@ message BackupRepository {
   map<string, string> env = 2 [(pocketcloud.options.v1.sensitive) = true];
   // password is the repository password.
   string password = 3 [(pocketcloud.options.v1.sensitive) = true];
+  // target_id is the `backup_targets` record; the panel adds the secrets
+  // when it delivers the command (#28).
+  string target_id = 4;
+  // options are restic's `-o` options, such as `sftp.command`.
+  map<string, string> options = 5;
+  // ssh_key is an SFTP target's private key.
+  string ssh_key = 6 [(pocketcloud.options.v1.sensitive) = true];
+  // known_hosts pins an SFTP server's host key.
+  string known_hosts = 7;
+  // mount is the server's directory of a local target, mounted at /repo.
+  string mount = 8;
 }
 
 // BackupInit initialises a restic repository, if it does not exist yet.
 message BackupInit {
   // repository is the repository.
   BackupRepository repository = 1;
+  // repo_id is the id of the repository the target has had. When set, the
+  // repository is only opened: a missing one, or another one, is an error,
+  // not a reason to create a new one (#28).
+  string repo_id = 2;
+  // usage asks how much the repository holds as well: restic reads every
+  // snapshot for it, which takes a while on a large repository.
+  bool usage = 3;
+  // change marks the check of settings the panel has not stored yet; the
+  // agent does not read it. A panel that restarted meanwhile no longer has
+  // them, and fails the check rather than complete it with the stored ones.
+  bool change = 4;
 }
 
 // BackupRun runs one backup job for one target.

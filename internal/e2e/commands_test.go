@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -993,4 +994,23 @@ func TestComposeContainersLinkToTheirStack(t *testing.T) {
 	})
 
 	_ = running
+}
+
+// TestAServerThatRanCommandsCanBeRemoved: its commands stay as its history,
+// under its name, and keep how they ended; the state machine, which refuses
+// any save of a finished command, did not let PocketBase clear their
+// relation to it, so a server that ever ran one could not be removed.
+func TestAServerThatRanCommandsCanBeRemoved(t *testing.T) {
+	h := newHarness(t)
+	_, host := h.enrolled("retired")
+	command := h.create(host.Id, &agentv1.Command{Payload: &agentv1.Command_ImagePull{ImagePull: &agentv1.ImagePull{Image: "busybox:1"}}})
+	h.waitForStatus(command.Id, schema.CommandSucceeded, schema.CommandFailed)
+	_, admin := testutil.NewUser(t, h.app, "admin@example.com", schema.RoleAdmin)
+	if status, body := testutil.Do(t, h.handler, testutil.Request{Method: http.MethodDelete, URL: "/api/collections/hosts/records/" + host.Id, Token: admin}); status != http.StatusNoContent {
+		t.Fatalf("remove the server: %d %s", status, body)
+	}
+	kept := h.command(command.Id)
+	if kept.GetString("host") != "" || kept.GetString("host_name") != "retired" || !slices.Contains([]string{schema.CommandSucceeded, schema.CommandFailed}, kept.GetString("status")) {
+		t.Errorf("the command: %v", kept.PublicExport())
+	}
 }

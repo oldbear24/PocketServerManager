@@ -102,6 +102,8 @@ func (e *Engine) streamLogs(w http.ResponseWriter, r *http.Request, container *C
 		container.logs = &logBuffer{}
 	}
 	buffer := container.logs
+	// a job's log ends with it, as the Engine's does
+	exited := container.exited
 	e.mu.Unlock()
 
 	query := r.URL.Query()
@@ -127,6 +129,9 @@ func (e *Engine) streamLogs(w http.ResponseWriter, r *http.Request, container *C
 		next += len(lines)
 
 		for _, line := range lines {
+			if line.stream == 0 {
+				continue // the mark of a job's end
+			}
 			if err := writeFrame(w, line, timestamps); err != nil {
 				return
 			}
@@ -137,6 +142,16 @@ func (e *Engine) streamLogs(w http.ResponseWriter, r *http.Request, container *C
 
 		if !follow {
 			return
+		}
+		if exited != nil {
+			select {
+			case <-exited:
+				if len(buffer.from(next)) == 0 {
+					return
+				}
+				continue
+			default:
+			}
 		}
 
 		select {
