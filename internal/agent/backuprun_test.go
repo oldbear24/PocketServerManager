@@ -640,17 +640,21 @@ func TestABackupRunThatCouldNotReadEverythingFails(t *testing.T) {
 
 // TestACancelledBackupJobIsStoppedBeforeItIsRemoved (review of #29): a run
 // that is cancelled, or times out, gives its job 30 seconds to stop, as
-// restic then removes its locks, before it removes the job; other jobs are
-// removed at once, as before.
+// restic then removes its locks, before it removes the job; other jobs, a
+// target's check, which takes no lock, among them, are removed at once, as
+// before.
 func TestACancelledBackupJobIsStoppedBeforeItIsRemoved(t *testing.T) {
 	r := newRunAgent(t)
 	repo := r.remote(t)
 	r.volume(t, "data", map[string]string{"a": "1"})
 	entered := make(chan string, 2)
 	stopped := make(chan string, 2)
+	// the jobs removed by force, which the fake leaves running, end
+	removed := make(chan struct{})
+	t.Cleanup(func() { close(removed) })
 	run := r.engine.OnJob
 	r.engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
-		if len(job.Cmd) < 2 || job.Cmd[1] != "backup" && job.Cmd[0] != "site-tool" {
+		if len(job.Cmd) < 2 || job.Cmd[1] != "backup" && job.Cmd[0] != "site-tool" && !slices.Contains(job.Cmd, "--expect") {
 			return run(job)
 		}
 		entered <- job.Name
@@ -658,8 +662,8 @@ func TestACancelledBackupJobIsStoppedBeforeItIsRemoved(t *testing.T) {
 		case <-job.Stop:
 			stopped <- job.Name
 			return fakedocker.JobResult{Code: 130, Stderr: "error: signal: terminated"}
-		case <-time.After(20 * time.Second):
-			return fakedocker.JobResult{Code: 1, Stderr: "error: the job was never stopped"}
+		case <-removed:
+			return fakedocker.JobResult{Code: 137}
 		}
 	}
 	// the stop and the removal of a job's container, in order: the fake
@@ -700,19 +704,32 @@ func TestACancelledBackupJobIsStoppedBeforeItIsRemoved(t *testing.T) {
 		t.Errorf("the job's container: %q", calls)
 	}
 
-	// a site's job is removed at once, as before
-	ctx, cancel = context.WithCancel(context.Background())
-	go func() {
-		done <- dockerSites{a: r.Agent}.run(ctx, map[string]any{"Image": agentImage, "Cmd": []string{"site-tool", "sweep"},
-			"Labels": map[string]string{"pocketcloud.role": "job"}}, nil, io.Discard, io.Discard)
-	}()
-	name = <-entered
-	cancel()
-	if err := <-done; err == nil {
-		t.Error("a cancelled site's job succeeded")
+	// a target's check, and a site's job, are removed at once, as before
+	for _, start := range []func(ctx context.Context) error{
+		func(ctx context.Context) error {
+			command := initCommand(repo)
+			command.GetBackupInit().RepoId = strings.Repeat("a", 64)
+			_, err := r.handleBackupInit(ctx, command, &Reporter{})
+			return err
+		},
+		func(ctx context.Context) error {
+			return dockerSites{a: r.Agent}.run(ctx, map[string]any{"Image": agentImage, "Cmd": []string{"site-tool", "sweep"},
+				"Labels": map[string]string{"pocketcloud.role": "job"}}, nil, io.Discard, io.Discard)
+		},
+	} {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { done <- start(ctx) }()
+		name := <-entered
+		cancel()
+		if err := <-done; err == nil {
+			t.Error("a cancelled job succeeded")
+		}
+		if calls := callsOf(name); len(calls) != 1 || !strings.HasPrefix(calls[0], "DELETE ") {
+			t.Errorf("another job: %q", calls)
+		}
 	}
-	if calls := callsOf(name); len(calls) != 1 || !strings.HasPrefix(calls[0], "DELETE ") {
-		t.Errorf("a site's job: %q", calls)
+	if len(stopped) != 0 {
+		t.Errorf("%d other jobs were stopped", len(stopped))
 	}
 }
 

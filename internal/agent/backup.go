@@ -34,10 +34,11 @@ const (
 	// check would fetch every snapshot's trees again.
 	resticCache    = "pocketcloud-restic-cache"
 	resticCacheDir = "/cache"
-	// backupStopGrace is how long a backup job that is cancelled, or left by
-	// the agent, has to stop before it is removed: the backup tool stops
-	// restic, which removes its locks; a job removed at once is killed, and
-	// its locks keep other backups and retentions waiting
+	// backupStopGrace is how long a backup run's job that is cancelled, or
+	// a backup job left by the agent, has to stop before it is removed: the
+	// backup tool stops restic, which removes its locks; a job removed at
+	// once is killed, and its locks keep other backups and retentions
+	// waiting. A target's check takes no lock, and is removed at once.
 	backupStopGrace = 30 * time.Second
 )
 
@@ -95,6 +96,9 @@ type backupJobSpec struct {
 	feed func(ctx context.Context, stdin io.WriteCloser)
 	// notes are lines for the run's log, said before the job starts
 	notes []string
+	// stopGrace is how long the job has to stop when its command is
+	// cancelled, before it is removed (see backupStopGrace)
+	stopGrace time.Duration
 }
 
 // checkRepository checks that the panel completed a command's repository.
@@ -191,7 +195,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		stderr = &markWatcher{w: stderr, mark: relayReady, seen: ready}
 	}
 	hooks := jobHooks{
-		stopGrace: backupStopGrace,
+		stopGrace: job.stopGrace,
 		prepare: func(id string) error {
 			// ssh reads the key and the pinned host key from files
 			for _, file := range []struct {

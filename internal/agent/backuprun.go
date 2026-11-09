@@ -138,7 +138,7 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 	// mounts keep from writing them; never DAC_READ_SEARCH, with which
 	// Docker's seccomp profile allows open_by_handle_at, which opens any file
 	// of a file system the job mounts a part of
-	job := backupJobSpec{capabilities: []string{"DAC_OVERRIDE"}}
+	job := backupJobSpec{capabilities: []string{"DAC_OVERRIDE"}, stopGrace: backupStopGrace}
 	volumes, paths, dump := payload.GetVolumes(), payload.GetPaths(), payload.GetStdinCommand()
 	sources := 0
 	for _, source := range [][]string{volumes, paths, dump} {

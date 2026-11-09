@@ -45,7 +45,7 @@ type Container struct {
 	// a job's end, and its exit code (see OnJob)
 	exited   chan struct{}
 	exitCode int
-	// stop is closed once a job is stopped or removed (see Job.Stop)
+	// stop is closed once a job is stopped (see Job.Stop)
 	stop chan struct{}
 	// the standard input of a container created with OpenStdin, which an
 	// attached client writes to
@@ -114,9 +114,11 @@ type Job struct {
 	// writes, which ends when it leaves one created with StdinOnce; nil for
 	// a job without OpenStdin.
 	Stdin io.Reader
-	// Stop is closed when the job's container is stopped or removed, as
-	// the Engine signals its process: a stop waits for the job to end, up
-	// to its timeout, as the Engine's does.
+	// Stop is closed when the job's container is stopped, as the Engine
+	// signals its process, and the stop waits for the job to end, up to its
+	// timeout, as the Engine's does. A job whose container is removed by
+	// force goes on to its end unseen, as one the Engine kills may have
+	// done its work.
 	Stop <-chan struct{}
 	// Stdout and Stderr reach the container's log line by line as OnJob
 	// writes them, as a running process's output does; JobResult's output
@@ -257,7 +259,6 @@ func (e *Engine) RemoveContainer(id string) {
 	if container := e.containers[id]; container != nil {
 		e.stopping(container)
 		closeStdin(container)
-		stopJob(container)
 	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
@@ -584,7 +585,6 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		}
 		e.stopping(container)
 		closeStdin(container)
-		stopJob(container)
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
