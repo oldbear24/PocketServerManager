@@ -63,7 +63,10 @@ func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine)) *jobs
 		}
 		return run(job)
 	}
+	// after the panel's own finishers, which keep what a check found and how
+	// a run went
 	b.panel.Commands.OnFinish("backup.init", func(command *core.Record) { b.finished.Store(command.Id, true) })
+	b.panel.Commands.OnFinish("backup.run", func(command *core.Record) { b.finished.Store(command.Id, true) })
 
 	t.Setenv("FAKE_COMPOSE_LOG", filepath.Join(t.TempDir(), "compose.log"))
 	config := b.agentConfig("backup-node", b.token("backup-node", schema.HostRoleDocker))
@@ -189,7 +192,9 @@ func (j *jobsHarness) runNow(jobID string) []*core.Record {
 	return ended
 }
 
-// runEnded waits until a run has ended, and its finisher kept how.
+// runEnded waits until a run has ended, and its command's finisher, which
+// alerts and notes the run on its job after it keeps how the run went, is
+// done.
 func (j *jobsHarness) runEnded(id string) *core.Record {
 	j.t.Helper()
 	var run *core.Record
@@ -201,9 +206,14 @@ func (j *jobsHarness) runEnded(id string) *core.Record {
 		run = found
 		switch found.GetString("status") {
 		case schema.RunSucceeded, schema.RunFailed, schema.RunCancelled, schema.RunSkipped:
-			return true
+		default:
+			return false
 		}
-		return false
+		if command := found.GetString("command"); command != "" {
+			_, done := j.finished.Load(command)
+			return done
+		}
+		return true
 	})
 	return run
 }
@@ -270,6 +280,10 @@ func dueNow(minute time.Time) string {
 // the server.
 func TestAScheduledBackupStartsInItsMinute(t *testing.T) {
 	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
+	// the scheduler runs at the start of a minute: so does this test
+	if now := time.Now(); now.Second() > 40 {
+		time.Sleep(now.Truncate(time.Minute).Add(time.Minute + time.Second).Sub(now))
+	}
 	now := time.Now().UTC()
 	job := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "schedule": dueNow(now)})
 	id := job["id"].(string)
@@ -367,9 +381,9 @@ func TestRunNowBacksUpToEachTarget(t *testing.T) {
 	case <-time.After(waitLimit):
 		t.Fatal("no backup started")
 	}
-	if running := j.runs(id); !slices.ContainsFunc(running, func(run *core.Record) bool { return run.GetString("status") == schema.RunRunning }) {
-		t.Error("no run is running while its backup runs")
-	}
+	j.waitFor("a run to be running", func() bool {
+		return slices.ContainsFunc(j.runs(id), func(run *core.Record) bool { return run.GetString("status") == schema.RunRunning })
+	})
 	if status, out := j.send(http.MethodPost, "/api/pc/backup-jobs/"+id+"/run", operator, nil); status != http.StatusConflict ||
 		out["message"] != "Its previous runs are still going." {
 		t.Errorf("run again: %d %v", status, out)
