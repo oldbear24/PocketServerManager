@@ -2218,6 +2218,11 @@
       "removeText": "PocketCloud zapomene úlohu i záznamy jejích běhů. Její snapshoty zůstanou v repozitářích cílů a žádná retence je už nesmaže.",
       "source": "Co zálohovat",
       "labelNote": "Tuto úlohu vytvořil label pocketcloud.backup u služby stacku: zdroj i server zůstávají, jak říkají labely. Co nastavují labely pocketcloud.backup.schedule, .target a .retention, nastaví znovu při každém nasazení a panel to tady změnit nedovolí: změň raději label.",
+      "labelSets": {
+        "schedule": "Nastavuje ho label pocketcloud.backup.schedule; mění se v souboru Compose.",
+        "targets": "Cíle nastavuje label pocketcloud.backup.target; mění se v souboru Compose.",
+        "retention": "Retenci nastavuje label pocketcloud.backup.retention; mění se v souboru Compose."
+      },
       "serverHint": "Zálohu spouští jeho agent, v kontejneru úlohy, který data připojí jen pro čtení.",
       "volume": "Svazek",
       "volumeInvalid": "Název svazku Dockeru: písmena, číslice, _ . a -, na začátku písmeno nebo číslice.",

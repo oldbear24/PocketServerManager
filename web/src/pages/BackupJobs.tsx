@@ -566,7 +566,8 @@ function zoneName(): string {
 
 /** Adds a job, or changes one. A label's job keeps its source and server as
  * its labels say; what else they set comes back at the next deploy, and the
- * panel refuses to change it. */
+ * panel refuses to change it: the dialog shows it read-only and never sends
+ * it. */
 export function JobDialog({
   job,
   targets,
@@ -585,6 +586,11 @@ export function JobDialog({
   const toast = useToast();
   const mounted = useMounted();
   const fromLabel = job?.origin === "label";
+  // what the job's labels set, as they set it
+  const labelSets = fromLabel ? (job?.label_sets ?? []) : [];
+  const scheduleLocked = labelSets.includes("schedule");
+  const targetsLocked = labelSets.includes("targets");
+  const retentionLocked = labelSets.includes("retention");
   // presets are in local time now; the panel keeps UTC
   const [offset] = useState(() => zoneOffset());
   const [initial] = useState<SchedulePreset | null>(() =>
@@ -733,7 +739,8 @@ export function JobDialog({
     return body;
   };
 
-  /** What differs from the job: a label's job never sends its source. */
+  /** What differs from the job: a label's job never sends its source, nor
+   * what its labels set. */
   const changes = (): BackupJobChange => {
     if (!job) {
       return {};
@@ -743,13 +750,13 @@ export function JobDialog({
     if (body.name !== job.name) {
       change.name = body.name;
     }
-    if (!sameTargets(body.targets, job.targets ?? [])) {
+    if (!targetsLocked && !sameTargets(body.targets, job.targets ?? [])) {
       change.targets = body.targets;
     }
-    if (body.schedule !== job.schedule) {
+    if (!scheduleLocked && body.schedule !== job.schedule) {
       change.schedule = body.schedule;
     }
-    if (!sameRetention(body.retention, job.retention)) {
+    if (!retentionLocked && !sameRetention(body.retention, job.retention)) {
       change.retention = body.retention;
     }
     if (body.enabled !== job.enabled) {
@@ -789,7 +796,14 @@ export function JobDialog({
   };
 
   const changed = job ? Object.keys(changes()).length > 0 : true;
-  const ready = name.trim() !== "" && sourceReady && scheduleValid && keepValid && changed && !busy;
+  // what the labels set is not sent: it holds nothing back
+  const ready =
+    name.trim() !== "" &&
+    sourceReady &&
+    (scheduleValid || scheduleLocked) &&
+    (keepValid || retentionLocked) &&
+    changed &&
+    !busy;
 
   const save = async () => {
     if (!ready) {
@@ -1055,7 +1069,7 @@ export function JobDialog({
             </>
           )}
 
-          <fieldset className="job-targets">
+          <fieldset className="job-targets" disabled={targetsLocked}>
             <legend className="field-label">{t("backups.job.targets")}</legend>
             {targets.length === 0 ? (
               <p className="muted small">{t("backups.job.noTargets")}</p>
@@ -1092,6 +1106,7 @@ export function JobDialog({
             {targets.length > 0 && selected.length === 0 && (
               <p className="warn-text small">{t("backups.job.noTargetChosen")}</p>
             )}
+            {targetsLocked && <p className="muted small">{t("backups.job.labelSets.targets")}</p>}
           </fieldset>
 
           <div className="form-grid">
@@ -1099,6 +1114,7 @@ export function JobDialog({
               <select
                 id="job-schedule"
                 className="input"
+                disabled={scheduleLocked}
                 value={mode}
                 onChange={(event) => {
                   const next = event.target.value as ScheduleMode;
@@ -1126,6 +1142,7 @@ export function JobDialog({
                   min={0}
                   max={59}
                   step={1}
+                  disabled={scheduleLocked}
                   value={minute}
                   onChange={(event) => {
                     setMinute(event.target.value);
@@ -1139,6 +1156,7 @@ export function JobDialog({
                 <select
                   id="job-weekday"
                   className="input"
+                  disabled={scheduleLocked}
                   value={weekday}
                   onChange={(event) => {
                     setWeekday(Number(event.target.value));
@@ -1160,6 +1178,7 @@ export function JobDialog({
                   className="input"
                   type="time"
                   required
+                  disabled={scheduleLocked}
                   value={time}
                   onChange={(event) => {
                     setTime(event.target.value);
@@ -1177,6 +1196,7 @@ export function JobDialog({
                 autoComplete="off"
                 spellCheck={false}
                 placeholder="0 3 * * *"
+                disabled={scheduleLocked}
                 value={cron}
                 onChange={(event) => {
                   setCron(event.target.value);
@@ -1200,8 +1220,9 @@ export function JobDialog({
               </p>
             )
           )}
+          {scheduleLocked && <p className="muted small">{t("backups.job.labelSets.schedule")}</p>}
 
-          <fieldset className="job-retention-fields">
+          <fieldset className="job-retention-fields" disabled={retentionLocked}>
             <legend className="field-label">{t("backups.job.retention")}</legend>
             <div className="keep-grid">
               {retentionKeys.map((key) => (
@@ -1229,6 +1250,9 @@ export function JobDialog({
               </p>
             ) : (
               <p className="field-error">{t("backups.job.retentionInvalid")}</p>
+            )}
+            {retentionLocked && (
+              <p className="muted small">{t("backups.job.labelSets.retention")}</p>
             )}
           </fieldset>
 

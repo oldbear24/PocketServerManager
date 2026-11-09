@@ -803,6 +803,90 @@ describe("changing a job", () => {
     ]);
   });
 
+  it("shows what a label's labels set read-only, and never sends it", async () => {
+    const change = vi.spyOn(jobsApi, "change").mockResolvedValue(umami);
+    openDialog(job({ ...umami, label_sets: ["schedule", "retention"] }));
+
+    // as the labels say, in local time
+    expect(screen.getByLabelText("Schedule")).toBeDisabled();
+    expect(screen.getByLabelText("Time")).toBeDisabled();
+    expect(screen.getByLabelText("Time")).toHaveValue("01:30");
+    expect(
+      screen.getByText(
+        "Set by the label pocketcloud.backup.schedule; it changes in the Compose file.",
+      ),
+    ).toBeInTheDocument();
+    for (const keep of ["Last", "Hourly", "Daily", "Weekly", "Monthly", "Yearly"]) {
+      expect(screen.getByLabelText(keep)).toBeDisabled();
+    }
+    expect(screen.getByLabelText("Daily")).toHaveValue(14);
+    expect(
+      screen.getByText(
+        "Set by the label pocketcloud.backup.retention; it changes in the Compose file.",
+      ),
+    ).toBeInTheDocument();
+
+    // the targets are the admin's
+    expect(screen.getByLabelText("Backblaze B2")).toBeEnabled();
+    expect(screen.queryByText(/pocketcloud\.backup\.target;/)).not.toBeInTheDocument();
+    expect(confirm("Save")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Backblaze B2"));
+    fireEvent.click(confirm("Save"));
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    expect(change.mock.calls[0]).toEqual(["j3", { targets: ["t1", "t3"] }]);
+  });
+
+  it("never sends the targets a label sets, though one no longer fits", async () => {
+    const change = vi.spyOn(jobsApi, "change").mockResolvedValue(umami);
+    // Panel disk is a directory of nas; umami-db backs up pve-01
+    openDialog(job({ ...umami, targets: ["t2", "t3"], label_sets: ["targets"] }));
+
+    expect(screen.getByLabelText("Backblaze B2")).toBeDisabled();
+    expect(screen.getByLabelText("backup-node")).toBeDisabled();
+    expect(screen.getByLabelText("backup-node")).toBeChecked();
+    expect(
+      screen.getByText(
+        "Set by the label pocketcloud.backup.target; they change in the Compose file.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Time")).toBeEnabled();
+    expect(screen.getByLabelText("Daily")).toBeEnabled();
+    // what the dialog cannot show of them is no change
+    expect(confirm("Save")).toBeDisabled();
+
+    type("Name", "umami-postgres");
+    fireEvent.click(confirm("Save"));
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    expect(change.mock.calls[0]).toEqual(["j3", { name: "umami-postgres" }]);
+  });
+
+  it.each([{ sets: [] }, { sets: null }])(
+    "lets a label's job whose labels set $sets change all but its source",
+    async ({ sets }) => {
+      const change = vi.spyOn(jobsApi, "change").mockResolvedValue(umami);
+      openDialog(job({ ...umami, label_sets: sets }));
+
+      for (const label of ["Schedule", "Time", "Backblaze B2", "Daily", "Weekly"]) {
+        expect(screen.getByLabelText(label)).toBeEnabled();
+      }
+      expect(screen.queryByText(/change in the Compose file\.$/)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText("Backblaze B2"));
+      type("Time", "02:00");
+      type("Weekly", "4");
+      fireEvent.click(confirm("Save"));
+      await waitFor(() => expect(change).toHaveBeenCalled());
+      expect(change.mock.calls[0]).toEqual([
+        "j3",
+        {
+          targets: ["t1", "t3"],
+          schedule: "0 1 * * *",
+          retention: { last: 0, hourly: 0, daily: 14, weekly: 4, monthly: 0, yearly: 0 },
+        },
+      ]);
+    },
+  );
+
   it("closes nothing when its dialog was closed before the save ended", async () => {
     let done: (job: BackupJob) => void = () => {};
     vi.spyOn(jobsApi, "change").mockReturnValue(

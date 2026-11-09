@@ -46,6 +46,9 @@ export type BackupJob = RecordModel & {
   retention: Partial<Retention> | null;
   enabled: boolean;
   origin: "manual" | "label";
+  /** of a label's job, what its labels set besides its source: any of
+   * "schedule", "targets" and "retention". The panel refuses to change them. */
+  label_sets?: string[] | null;
   /** a label's job whose label is gone: kept, but it no longer runs */
   label_removed: boolean;
   /** what keeps the job from running, as the panel says it */

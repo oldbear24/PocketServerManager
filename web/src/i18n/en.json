@@ -2116,6 +2116,11 @@
       "removeText": "PocketCloud forgets the job and the record of its runs. Its snapshots stay in the targets' repositories, where no retention removes them any more.",
       "source": "What to back up",
       "labelNote": "The pocketcloud.backup label of the stack's service made this job: its source and server stay as the labels say. What the labels pocketcloud.backup.schedule, .target and .retention set, they set again at every deploy, and the panel refuses to change it here: change the label instead.",
+      "labelSets": {
+        "schedule": "Set by the label pocketcloud.backup.schedule; it changes in the Compose file.",
+        "targets": "Set by the label pocketcloud.backup.target; they change in the Compose file.",
+        "retention": "Set by the label pocketcloud.backup.retention; it changes in the Compose file."
+      },
       "serverHint": "Its agent runs the backup, in a job container that mounts the data read-only.",
       "volume": "Volume",
       "volumeInvalid": "A Docker volume's name: letters, digits, _ . and -, starting with a letter or digit.",
