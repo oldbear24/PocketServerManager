@@ -793,6 +793,9 @@ message BackupInit {
   // repository is only opened: a missing one, or another one, is an error,
   // not a reason to create a new one (#28).
   string repo_id = 2;
+  // usage asks how much the repository holds as well: restic reads every
+  // snapshot for it, which takes a while on a large repository.
+  bool usage = 3;
 }
 
 // BackupRun runs one backup job for one target.

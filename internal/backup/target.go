@@ -140,6 +140,10 @@ func Check(kind string, config Config, creds Credentials) (Config, Credentials, 
 		config.Address = net.JoinHostPort(host, strconv.Itoa(port))
 		if port == 22 {
 			config.Address = host
+			if strings.Contains(host, ":") {
+				// an IPv6 address keeps its brackets, so its colons read as its own
+				config.Address = "[" + host + "]"
+			}
 		}
 		if !userName.MatchString(config.User) {
 			return config, creds, errors.New("give the SFTP user, such as backup")
@@ -233,9 +237,14 @@ func Locate(kind string, config Config, creds Credentials) (Repository, error) {
 			return repo, err
 		}
 		// restic runs ssh itself; the server's key is pinned and nothing
-		// else is trusted
-		repo.URL = "sftp:" + config.User + "@" + host + ":" + config.Path
-		repo.Options["sftp.command"] = fmt.Sprintf("ssh -i %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes -p %d %s@%s -s sftp",
+		// else is trusted. The URL form brackets an IPv6 address, which the
+		// sftp:user@host:path form would split at its first colon; restic
+		// takes one slash off the path, so an absolute one keeps its own.
+		repo.URL = (&url.URL{Scheme: "sftp", User: url.User(config.User), Host: net.JoinHostPort(host, strconv.Itoa(port)), Path: "/" + config.Path}).String()
+		// a server that does not answer is given up on before the panel
+		// stops waiting, and one that stops answering is noticed
+		repo.Options["sftp.command"] = fmt.Sprintf("ssh -i %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes "+
+			"-o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -p %d %s@%s -s sftp",
 			SSHKeyFile, KnownHostsFile, port, config.User, host)
 		known := host
 		if port != 22 {

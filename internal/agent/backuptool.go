@@ -26,14 +26,16 @@ import (
 // to stderr, with those secrets taken out, and last its result as one line of
 // JSON to stdout.
 //
-//	init   open the repository, or create it where there is none; then say
-//	       its id and how much it holds. --local DIR: the repository is the
-//	       directory DIR, which also says how much room is left; a directory
-//	       that holds other files and no repository is refused. --expect ID:
-//	       the repository is the one with this id, which is only opened; a
-//	       missing or another one is an error.
+//	init   open the repository, or create it where there is none, and say
+//	       its id. --usage: say how much it holds too, which reads every
+//	       snapshot and takes a while on a large repository. --local DIR:
+//	       the repository is the directory DIR, whose room left it says; a
+//	       directory that holds other files and no repository is refused.
+//	       --expect ID: the repository is the one with this id, which is only
+//	       opened; a missing or another one is an error.
 //
-// Every op takes restic's options as -o key=value.
+// Every op takes restic's options as -o key=value, and --cache DIR for
+// restic's cache; without it restic keeps none.
 
 // The environment of the backup tool's job: restic's own variables.
 const (
@@ -52,11 +54,11 @@ type backupInitResult struct {
 	// Created says the repository is new.
 	Created bool   `json:"created"`
 	ID      string `json:"id"`
-	// Used is what the repository's data takes, compressed.
-	Used int64 `json:"used_bytes"`
-	// Capacity is how much the repository could hold: what it holds and the
-	// room left on a local target's file system; 0 when not known.
-	Capacity int64 `json:"capacity_bytes"`
+	// Used is what the repository's data takes, compressed: measured when
+	// asked, and nothing in a new one.
+	Used *int64 `json:"used_bytes,omitempty"`
+	// Free is the room left on a local target's file system.
+	Free *int64 `json:"free_bytes,omitempty"`
 }
 
 // BackupToolEnv is what the backup tool takes of its job's environment: restic's
@@ -98,6 +100,8 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 	flags.Var(&opts, "o", "a restic option, key=value")
 	local := flags.String("local", "", "the directory of a local repository")
 	expect := flags.String("expect", "", "the id of the repository, which must exist")
+	usage := flags.Bool("usage", false, "say how much the repository holds")
+	cache := flags.String("cache", "", "restic's cache directory")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -107,11 +111,11 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 	secrets := backup.Secrets(env[envResticPassword], withoutRestic(env), "")
 	log := &redactingWriter{w: stderr, secrets: secrets}
 	defer log.Flush()
-	r := restic{env: env, options: opts, log: log, secrets: secrets}
+	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache}
 
 	switch op {
 	case "init":
-		result, err := r.init(ctx, *local, *expect)
+		result, err := r.init(ctx, *local, *expect, *usage)
 		if err != nil {
 			return err
 		}
@@ -138,12 +142,17 @@ type restic struct {
 	options []string
 	log     io.Writer
 	secrets []string
+	// cache is restic's cache directory, if it keeps one
+	cache string
 }
 
 // run runs restic and returns what it printed to stdout and its exit code. An
 // error is one restic did not get to: a code of its own is not one.
 func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, error) {
 	full := []string{"--no-cache"}
+	if r.cache != "" {
+		full = []string{"--cache-dir", r.cache}
+	}
 	for _, option := range r.options {
 		full = append(full, "-o", option)
 	}
@@ -219,11 +228,16 @@ func (r restic) said(stderr []byte) string {
 	return text
 }
 
-func (r restic) init(ctx context.Context, local, expect string) (backupInitResult, error) {
+func (r restic) init(ctx context.Context, local, expect string, usage bool) (backupInitResult, error) {
 	var result backupInitResult
 	out, code, said, err := r.run(ctx, "--no-lock", "cat", "config")
 	if err != nil {
 		return result, err
+	}
+	// a bucket that is not there yet holds no repository either: init
+	// creates it, or says the key may not
+	if code == 1 && strings.Contains(said, "bucket does not exist") {
+		code = resticNoRepository
 	}
 	switch code {
 	case 0:
@@ -241,22 +255,30 @@ func (r restic) init(ctx context.Context, local, expect string) (backupInitResul
 			}
 		}
 		fmt.Fprintln(r.log, "There is no repository yet: creating it")
-		if _, code, said, err := r.run(ctx, "init"); err != nil {
+		created, code, said, err := r.run(ctx, "init", "--json")
+		if err != nil {
 			return result, err
 		} else if code != 0 {
 			return result, errors.New(said)
 		}
+		// its id comes with it: nothing that could fail is asked once the
+		// repository exists, as the panel would forget a password that one
+		// had already taken
+		var initialized struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(lastLine(created), &initialized); err != nil || initialized.ID == "" {
+			return result, fmt.Errorf("restic created the repository and said: %s", strings.TrimSpace(string(created)))
+		}
+		out = []byte(`{"id":"` + initialized.ID + `"}`)
 		result.Created = true
+		nothing := int64(0)
+		result.Used = &nothing
 		if local != "" {
 			// only for the owner, as restic keeps its files
 			if err := os.Chmod(local, 0o700); err != nil { //nolint:gosec // a directory
 				fmt.Fprintln(r.log, "The directory's permissions stay as they are:", err)
 			}
-		}
-		if out, code, said, err = r.run(ctx, "--no-lock", "cat", "config"); err != nil {
-			return result, err
-		} else if code != 0 {
-			return result, errors.New(said)
 		}
 	case resticWrongPassword:
 		return result, errors.New("a repository is there, and the password is not its own: " + said)
@@ -275,24 +297,29 @@ func (r restic) init(ctx context.Context, local, expect string) (backupInitResul
 		return result, fmt.Errorf("this is another repository (%.8s), not the target's (%.8s)", config.ID, expect)
 	}
 
-	out, code, said, err = r.run(ctx, "--no-lock", "stats", "--mode", "raw-data", "--json")
-	if err != nil {
-		return result, err
+	if usage && !result.Created {
+		// the repository opened: statistics that fail, as while a prune
+		// runs, leave what it holds unsaid, not the check failed
+		out, code, said, err = r.run(ctx, "--no-lock", "stats", "--mode", "raw-data", "--json")
+		var stats struct {
+			TotalSize *int64 `json:"total_size"`
+		}
+		switch {
+		case err != nil:
+			return result, err
+		case code != 0:
+			fmt.Fprintln(r.log, "How much the repository holds stays unsaid:", said)
+		case json.Unmarshal(lastLine(out), &stats) != nil || stats.TotalSize == nil:
+			fmt.Fprintln(r.log, "restic's statistics cannot be read:", strings.TrimSpace(string(out)))
+		default:
+			result.Used = stats.TotalSize
+		}
 	}
-	if code != 0 {
-		return result, errors.New(said)
-	}
-	var stats struct {
-		TotalSize int64 `json:"total_size"`
-	}
-	if err := json.Unmarshal(lastLine(out), &stats); err != nil {
-		return result, fmt.Errorf("restic's statistics cannot be read: %s", strings.TrimSpace(string(out)))
-	}
-	result.Used = stats.TotalSize
 
 	if local != "" {
 		if _, _, available, err := diskUsage(local); err == nil {
-			result.Capacity = result.Used + int64(min(available, uint64(1)<<62)) //nolint:gosec // capped
+			free := int64(min(available, uint64(1)<<62)) //nolint:gosec // capped
+			result.Free = &free
 		}
 	}
 	return result, nil

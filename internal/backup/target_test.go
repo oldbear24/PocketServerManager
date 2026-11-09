@@ -93,16 +93,34 @@ func TestAnSFTPTargetPinsTheServersKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repo.URL != "sftp:backup@backup-node:/srv/restic" || repo.SSHKey != creds.PrivateKey ||
+	if repo.URL != "sftp://backup@backup-node:2222//srv/restic" || repo.SSHKey != creds.PrivateKey ||
 		repo.KnownHosts != "[backup-node]:2222 "+config.HostKey+"\n" {
 		t.Errorf("%+v", repo)
 	}
 	command := repo.Options["sftp.command"]
-	for _, want := range []string{"-i " + SSHKeyFile, "UserKnownHostsFile=" + KnownHostsFile, "StrictHostKeyChecking=yes", "BatchMode=yes", "-p 2222", "backup@backup-node", "-s sftp"} {
+	for _, want := range []string{"-i " + SSHKeyFile, "UserKnownHostsFile=" + KnownHostsFile, "StrictHostKeyChecking=yes", "BatchMode=yes", "ConnectTimeout=20", "ServerAliveInterval=15", "-p 2222", "backup@backup-node", "-s sftp"} {
 		if !strings.Contains(command, want) {
 			t.Errorf("the command lacks %q: %s", want, command)
 		}
 	}
+	// an IPv6 address keeps its brackets in the URL, where restic finds the
+	// directory after them, and in the place people read
+	config, creds, err = Check(KindSFTP, Config{Address: "[2001:db8::7]", User: "backup", Path: "/srv/restic", HostKey: hostKey}, Credentials{PrivateKey: privateKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, _ = Locate(KindSFTP, config, creds)
+	if config.Address != "[2001:db8::7]" || repo.URL != "sftp://backup@[2001:db8::7]:22//srv/restic" ||
+		Where(KindSFTP, config) != "sftp:backup@[2001:db8::7]:/srv/restic" || !strings.HasPrefix(repo.KnownHosts, "2001:db8::7 ssh-ed25519 ") ||
+		!strings.Contains(repo.Options["sftp.command"], "backup@2001:db8::7 -s sftp") {
+		t.Errorf("IPv6: %+v %q %q", config, repo.URL, repo.KnownHosts)
+	}
+	// a directory in the user's home is the URL's path as it is
+	config, creds, _ = Check(KindSFTP, Config{Address: "backup-node", User: "backup", Path: "restic", HostKey: hostKey}, Credentials{PrivateKey: privateKey})
+	if repo, _ = Locate(KindSFTP, config, creds); repo.URL != "sftp://backup@backup-node:22/restic" {
+		t.Errorf("a home directory: %q", repo.URL)
+	}
+
 	// port 22 is the default, and the plain host its known_hosts name
 	config, creds, _ = Check(KindSFTP, Config{Address: "backup-node:22", User: "backup", Path: "restic", HostKey: hostKey}, Credentials{PrivateKey: privateKey})
 	repo, _ = Locate(KindSFTP, config, creds)

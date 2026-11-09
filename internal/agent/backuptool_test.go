@@ -61,7 +61,7 @@ func TestTheBackupToolOpensWhatExistsAndCreatesWhatDoesNot(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the password is not its own") || strings.Contains(err.Error(), "another-password") {
 		t.Errorf("a wrong password: %v", err)
 	}
-	if calls := fakerestic.Calls(t, root); strings.Count(calls, " init\n") != 1 || !strings.Contains(calls, "RESTIC_REST_PASSWORD=rest-password") {
+	if calls := fakerestic.Calls(t, root); strings.Count(calls, " init --json\n") != 1 || !strings.Contains(calls, "RESTIC_REST_PASSWORD=rest-password") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 
@@ -119,16 +119,44 @@ func TestALocalRepositoryGoesIntoAnEmptyDirectoryOnly(t *testing.T) {
 	}
 	t.Setenv("FAKE_RESTIC_SIZE", "1000")
 	env["RESTIC_REPOSITORY"] = empty
-	result, _, err := runBackupTool(t, env, "init", "--local", empty)
-	if err != nil || !result.Created || result.Used != 1000 || result.Capacity <= 1000 {
+	result, _, err := runBackupTool(t, env, "init", "--local", empty, "--usage")
+	// a new repository holds nothing: restic is not asked
+	if err != nil || !result.Created || result.Used == nil || *result.Used != 0 || result.Free == nil || *result.Free <= 0 {
 		t.Fatalf("an empty directory: %+v %v", result, err)
 	}
 	if info, err := os.Stat(empty); err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("the directory: %v %v", info.Mode(), err)
 	}
-	// its own repository is no other file
-	if again, _, err := runBackupTool(t, env, "init", "--local", empty); err != nil || again.Created {
+	// its own repository is no other file; how much it holds is said when asked
+	if again, _, err := runBackupTool(t, env, "init", "--local", empty, "--usage"); err != nil || again.Created || again.Used == nil || *again.Used != 1000 {
 		t.Errorf("again: %+v %v", again, err)
+	}
+	if quick, _, err := runBackupTool(t, env, "init", "--local", empty); err != nil || quick.Used != nil || quick.Free == nil {
+		t.Errorf("without usage: %+v %v", quick, err)
+	}
+	// statistics that fail, as while a prune runs, leave the usage unsaid
+	t.Setenv("FAKE_RESTIC_STATS_FAIL", "repository contains errors")
+	if failed, log, err := runBackupTool(t, env, "init", "--local", empty, "--usage"); err != nil || failed.Used != nil || !strings.Contains(log, "stays unsaid") {
+		t.Errorf("failed statistics: %+v %v\n%s", failed, err, log)
+	}
+}
+
+// TestABucketThatIsNotThereYetIsMade (#28): restic's S3 backend says a
+// missing bucket is no missing repository, but its init makes the bucket; a
+// target that has a repository is never made again.
+func TestABucketThatIsNotThereYetIsMade(t *testing.T) {
+	root := fakerestic.Install(t)
+	env := map[string]string{"RESTIC_REPOSITORY": "s3:http://minio:9000/nobucket/pc", "RESTIC_PASSWORD": "pw-bucket",
+		"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "s3-secret"}
+	if _, _, err := runBackupTool(t, env, "init", "--expect", strings.Repeat("a", 64)); err == nil || !strings.Contains(err.Error(), "bucket does not exist") {
+		t.Errorf("a target's bucket that is gone: %v", err)
+	}
+	result, _, err := runBackupTool(t, env, "init", "--cache", "/cache")
+	if err != nil || !result.Created {
+		t.Fatalf("a new bucket: %+v %v", result, err)
+	}
+	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "restic --cache-dir /cache --no-lock cat config") || strings.Count(calls, "--no-cache") != 1 {
+		t.Errorf("restic ran:\n%s", calls)
 	}
 }
 

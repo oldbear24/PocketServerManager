@@ -24,7 +24,7 @@ import (
 const Wrong = "wrong"
 
 // script is restic as far as the backup tool uses it: cat config, init and
-// stats, behind the global options --no-cache, --no-lock and -o. A
+// stats, behind the global options --no-cache, --cache-dir, --no-lock and -o. A
 // repository whose URL is a directory lives in it, like restic's local
 // backend; the others live in the test's directory.
 const script = `#!/bin/sh
@@ -40,7 +40,7 @@ esac
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--no-cache|--no-lock) shift;;
-	-o) shift 2;;
+	-o|--cache-dir) shift 2;;
 	*) break;;
 	esac
 done
@@ -50,6 +50,15 @@ case "$RESTIC_REPOSITORY" in
 esac
 case "$1" in
 cat)
+	# a bucket named nobucket is not there until init makes it, as MinIO says
+	case "$RESTIC_REPOSITORY" in
+	*/nobucket*)
+		if [ ! -d "$repo" ]; then
+			echo "Fatal: unable to open config file: Stat: The specified bucket does not exist" >&2
+			echo "Is there a repository at the following location?" >&2
+			exit 1
+		fi;;
+	esac
 	if [ ! -f "$repo/config" ]; then
 		echo "Fatal: repository does not exist: unable to open config file: stat $repo/config: no such file or directory" >&2
 		exit 10
@@ -68,8 +77,16 @@ init)
 	printf %s "$RESTIC_PASSWORD" > "$repo/keys/password"
 	id=$(printf %s "$RESTIC_REPOSITORY" | sha256sum | cut -c1-64)
 	printf '{"version":2,"id":"%s","chunker_polynomial":"1"}\n' "$id" > "$repo/config"
-	echo "created restic repository at $RESTIC_REPOSITORY";;
+	if [ "$2" = --json ]; then
+		printf '{"message_type":"initialized","id":"%s","repository":"%s"}\n' "$id" "$RESTIC_REPOSITORY"
+	else
+		echo "created restic repository at $RESTIC_REPOSITORY"
+	fi;;
 stats)
+	if [ -n "$FAKE_RESTIC_STATS_FAIL" ]; then
+		echo "Fatal: $FAKE_RESTIC_STATS_FAIL" >&2
+		exit 1
+	fi
 	printf '{"total_size":%s,"snapshots_count":0}\n' "${FAKE_RESTIC_SIZE:-0}";;
 *)
 	echo "Fatal: the fake restic knows no command $1" >&2

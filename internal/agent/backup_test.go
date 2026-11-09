@@ -70,7 +70,7 @@ func TestABackupTargetIsCreatedOnceInAJobOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["created"] != true || len(result["id"].(string)) != 64 || result["used_bytes"] != int64(0) {
+	if result["created"] != true || len(result["id"].(string)) != 64 || result["used_bytes"] != int64(0) || result["free_bytes"] != nil {
 		t.Errorf("the first init: %v", result)
 	}
 	again, err := a.handleBackupInit(context.Background(), initCommand(repo), &Reporter{})
@@ -82,7 +82,7 @@ func TestABackupTargetIsCreatedOnceInAJobOfItsOwn(t *testing.T) {
 		t.Fatalf("%d jobs ran", len(seen))
 	}
 	job := seen[0]
-	if !slices.Equal(job.Cmd, []string{"backup-tool", "init", "-o", "s3.bucket-lookup=path"}) {
+	if !slices.Equal(job.Cmd, []string{"backup-tool", "init", "--cache", "/cache", "-o", "s3.bucket-lookup=path"}) {
 		t.Errorf("the job's command: %q", job.Cmd)
 	}
 	for _, want := range []string{"RESTIC_REPOSITORY=s3:http://minio:9000/backups", "RESTIC_PASSWORD=repo-password-1",
@@ -98,12 +98,15 @@ func TestABackupTargetIsCreatedOnceInAJobOfItsOwn(t *testing.T) {
 		!slices.Equal(anyStrings(job.Host["SecurityOpt"]), []string{"no-new-privileges"}) {
 		t.Errorf("host config: %v", job.Host)
 	}
-	if mounts, _ := job.Host["Mounts"].([]any); len(mounts) != 0 {
-		t.Errorf("a remote target's job mounts %v", mounts)
+	// restic's cache, and nothing else of the server
+	if mounts, _ := job.Host["Mounts"].([]any); len(mounts) != 1 || mounts[0].(map[string]any)["Source"] != resticCache ||
+		mounts[0].(map[string]any)["Type"] != "volume" || job.Host["CapAdd"] != nil {
+		t.Errorf("a remote target's job mounts %v, may %v", mounts, job.Host["CapAdd"])
 	}
 	calls := fakerestic.Calls(t, root)
-	if !strings.Contains(calls, "restic --no-cache -o s3.bucket-lookup=path --no-lock cat config") ||
-		!strings.Contains(calls, "restic --no-cache -o s3.bucket-lookup=path init") || strings.Count(calls, " init\n") != 1 {
+	if !strings.Contains(calls, "restic --cache-dir /cache -o s3.bucket-lookup=path --no-lock cat config") ||
+		!strings.Contains(calls, "restic --cache-dir /cache -o s3.bucket-lookup=path init --json") || strings.Count(calls, " init --json\n") != 1 ||
+		strings.Contains(calls, " stats ") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 	if fakerestic.Repositories(t, root) != 1 {
@@ -136,17 +139,26 @@ func TestALocalTargetIsTheOnlyThingItsJobMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["created"] != true || result["used_bytes"] != int64(4096) || result["capacity_bytes"].(int64) <= 4096 {
+	if result["created"] != true || result["used_bytes"] != int64(0) || result["free_bytes"].(int64) <= 0 {
 		t.Errorf("result: %v", result)
 	}
-	if !slices.Equal(job.Cmd, []string{"backup-tool", "init", "--local", "/repo"}) || job.Host["NetworkMode"] != "none" {
-		t.Errorf("job: %q %v", job.Cmd, job.Host["NetworkMode"])
+	if !slices.Equal(job.Cmd, []string{"backup-tool", "init", "--cache", "/cache", "--local", "/repo"}) || job.Host["NetworkMode"] != "none" ||
+		!slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER"}) {
+		t.Errorf("job: %q %v %v", job.Cmd, job.Host["NetworkMode"], job.Host["CapAdd"])
+	}
+	// how much it holds, when the panel asks
+	command := initCommand(&agentv1.BackupRepository{TargetId: "t2", Url: backup.LocalMount, Password: "repo-password-2", Mount: dir})
+	command.GetBackupInit().RepoId = result["id"].(string)
+	command.GetBackupInit().Usage = true
+	if measured, err := a.handleBackupInit(context.Background(), command, &Reporter{}); err != nil || measured["used_bytes"] != int64(4096) ||
+		!slices.Contains(job.Cmd, "--usage") || !slices.Contains(job.Cmd, "--expect") {
+		t.Errorf("usage: %v %v %q", measured, err, job.Cmd)
 	}
 	mounts, _ := job.Host["Mounts"].([]any)
-	if len(mounts) != 1 {
+	if len(mounts) != 2 {
 		t.Fatalf("mounts: %v", mounts)
 	}
-	mount := mounts[0].(map[string]any)
+	mount := mounts[1].(map[string]any)
 	options, _ := mount["BindOptions"].(map[string]any)
 	if mount["Type"] != "bind" || mount["Source"] != dir || mount["Target"] != "/repo" || options["CreateMountpoint"] != true {
 		t.Errorf("mount: %v", mount)

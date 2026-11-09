@@ -22,20 +22,31 @@ import (
 // host key into files copied in before it starts, and nowhere else on the
 // server. A local target's directory is the only thing the job mounts.
 
-// backupTargetLabel names the target of a backup job container.
-const backupTargetLabel = "pocketcloud.backup-target"
+const (
+	// backupTargetLabel names the target of a backup job container.
+	backupTargetLabel = "pocketcloud.backup-target"
+	// resticCache is the volume of restic's cache, which every job of the
+	// server shares: restic keeps each repository's apart, by its id, and
+	// what it holds is as encrypted as the repository. Without it every
+	// check would fetch every snapshot's trees again.
+	resticCache    = "pocketcloud-restic-cache"
+	resticCacheDir = "/cache"
+)
 
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
 }
 
-// handleBackupInit opens a target's repository, or creates it, and says how
-// much it holds.
+// handleBackupInit opens a target's repository, or creates it, and says what
+// the panel asked of it.
 func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
 	payload := command.GetBackupInit()
 	args := []string{"init"}
 	if payload.GetRepoId() != "" {
 		args = append(args, "--expect", payload.GetRepoId())
+	}
+	if payload.GetUsage() {
+		args = append(args, "--usage")
 	}
 	out, err := a.backupJob(ctx, payload.GetRepository(), args, reporter)
 	if err != nil {
@@ -45,12 +56,14 @@ func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, 
 	if err := json.Unmarshal(out, &result); err != nil {
 		return nil, fmt.Errorf("the backup tool said: %s", out)
 	}
-	return map[string]any{
-		"created":        result.Created,
-		"id":             result.ID,
-		"used_bytes":     result.Used,
-		"capacity_bytes": result.Capacity,
-	}, nil
+	answer := map[string]any{"created": result.Created, "id": result.ID}
+	if result.Used != nil {
+		answer["used_bytes"] = *result.Used
+	}
+	if result.Free != nil {
+		answer["free_bytes"] = *result.Free
+	}
+	return answer, nil
 }
 
 // backupJob runs the backup tool for a repository in a job container, and
@@ -71,6 +84,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 		env = append(env, name+"="+repo.GetEnv()[name])
 	}
 	cmd := append([]string{"backup-tool"}, args...)
+	cmd = append(cmd, "--cache", resticCacheDir)
 	for _, name := range slices.Sorted(maps.Keys(repo.GetOptions())) {
 		cmd = append(cmd, "-o", name+"="+repo.GetOptions()[name])
 	}
@@ -78,7 +92,8 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 	// a remote repository is reached over the network; a local one is a
 	// directory of the server, which the job alone mounts
 	network := "bridge"
-	mounts := []map[string]any{}
+	mounts := []map[string]any{{"Type": "volume", "Source": resticCache, "Target": resticCacheDir}}
+	var capabilities []string
 	if repo.GetMount() != "" {
 		dir, err := backup.LocalPath(repo.GetMount())
 		if err != nil {
@@ -90,6 +105,10 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 			"BindOptions": map[string]any{"CreateMountpoint": true},
 		})
 		cmd = append(cmd, "--local", backup.LocalMount)
+		// root of the job may use the directory whoever owns it, such as a
+		// disk mounted for a user: the job reaches nothing but it and has no
+		// network
+		capabilities = []string{"DAC_OVERRIDE", "FOWNER"}
 	}
 
 	config := map[string]any{
@@ -101,6 +120,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 			"Mounts":      mounts,
 			"NetworkMode": network,
 			"CapDrop":     []string{"ALL"},
+			"CapAdd":      capabilities,
 			"SecurityOpt": []string{"no-new-privileges"},
 			"LogConfig":   map[string]any{"Type": "json-file"},
 		},
