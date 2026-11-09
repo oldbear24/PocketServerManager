@@ -831,13 +831,21 @@ func (p *Panel) noteSkip(job, target, run *core.Record, reason string, alert boo
 
 // neverStarted says why a run whose command waited its whole time never
 // started: its server stayed offline, or was busy with other backups, as
-// those of the same target before it, which run one after another.
+// those of the same target before it, which run one after another. It goes by
+// the server as it is now, not by whether the command was delivered: one
+// delivered just before its server went away stays delivered.
 func (p *Panel) neverStarted(command *core.Record) string {
 	why := "was busy with other backups"
-	if command.GetDateTime("dispatched_at").IsZero() && !p.Commands.Connected(command.GetString("host")) {
+	if !p.Commands.Connected(command.GetString("host")) || p.markedOffline(command.GetString("host")) {
 		why = "stayed offline"
 	}
 	return fmt.Sprintf("It waited %d hours while the server %s %s, and never started.", int(backupRunQueue.Hours()), command.GetString("host_name"), why)
+}
+
+// markedOffline tells whether a server is marked offline.
+func (p *Panel) markedOffline(hostID string) bool {
+	host, err := p.App.FindRecordById(schema.Hosts, hostID)
+	return err == nil && host.GetString("status") == schema.HostOffline
 }
 
 // cancelledByItsTime tells whether a command that did not start was

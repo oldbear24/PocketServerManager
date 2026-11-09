@@ -509,9 +509,20 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 	if alert(alertBackupFailed) != nil {
 		t.Error("a run that never started failed")
 	}
-	// ...or the agent cancelled it as its time was up while it waited for a
-	// free worker
+	// ...or reached it just before it went away, and it stayed offline...
 	now := types.NowDateTime()
+	gone := finishWith(map[string]any{"status": schema.CommandTimedOut, "error": "The agent did not finish the command in time.",
+		"dispatched_at": now.Add(-12 * time.Hour), "expires_at": now.Add(-time.Second), "finished_at": now})
+	if gone.GetString("status") != schema.RunSkipped || gone.GetString("error") != "It waited 12 hours while the server node-1 stayed offline, and never started." {
+		t.Errorf("delivered to a server that stayed offline: %v", gone.FieldsData())
+	}
+	// ...or the agent cancelled it as its time was up while it waited for a
+	// free worker, its server connected
+	f.host.Set("status", schema.HostOnline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	stream := f.p.Commands.Connect(f.host.Id, []string{"backup.run"}, nil)
 	busy := finishWith(map[string]any{"status": schema.CommandCancelled, "error": "The command was cancelled while waiting for a free worker.",
 		"dispatched_at": now.Add(-12 * time.Hour), "expires_at": now.Add(-time.Second), "finished_at": now})
 	if busy.GetString("status") != schema.RunSkipped || busy.GetString("error") != "It waited 12 hours while the server node-1 was busy with other backups, and never started." {
@@ -520,6 +531,17 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 	if a := alert(alertBackupSkipped); a == nil || !strings.Contains(a.GetString("message"), "was busy with other backups") {
 		t.Errorf("the alert of a run that waited for a free worker: %v", a)
 	}
+	// a server marked offline stayed offline, even with a connection left
+	f.host.Set("status", schema.HostOffline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	marked := finishWith(map[string]any{"status": schema.CommandTimedOut, "error": "The agent did not finish the command in time.",
+		"dispatched_at": now.Add(-12 * time.Hour), "expires_at": now.Add(-time.Second), "finished_at": now})
+	if marked.GetString("error") != "It waited 12 hours while the server node-1 stayed offline, and never started." {
+		t.Errorf("delivered to a server marked offline: %v", marked.FieldsData())
+	}
+	f.p.Commands.Disconnect(stream)
 
 	// one someone cancelled is cancelled, and alerts nobody
 	finish(schema.CommandSucceeded, "", map[string]any{"snapshot_id": "6c4d"})
