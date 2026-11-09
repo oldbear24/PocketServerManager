@@ -53,6 +53,7 @@ func (a *Agent) registerHandlers() {
 	a.registerPHPHandlers()
 	a.registerTaskHandlers()
 	a.registerRewriteHandlers()
+	a.registerBackupHandlers()
 }
 
 // protected refuses work on the containers PocketCloud itself depends on. The UI

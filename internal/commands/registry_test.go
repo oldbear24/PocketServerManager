@@ -117,6 +117,8 @@ func TestResources(t *testing.T) {
 		{"container", &agentv1.Command{Payload: &agentv1.Command_ContainerStop{ContainerStop: &agentv1.ContainerStop{DockerId: "x"}}}, "container:x"},
 		{"site", &agentv1.Command{Payload: &agentv1.Command_SiteRollback{SiteRollback: &agentv1.SiteRollback{Site: "s"}}}, "site:s"},
 		{"backup", &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{Repository: &agentv1.BackupRepository{Url: "s3:b"}}}}, "backup:s3:b"},
+		// local targets share the URL /repo; each is its own resource
+		{"backup target", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
 		{"agent", &agentv1.Command{Payload: &agentv1.Command_AgentRestart{AgentRestart: &agentv1.AgentRestart{}}}, "agent"},
 		{"edge", &agentv1.Command{Payload: &agentv1.Command_EdgeApply{EdgeApply: &agentv1.EdgeApply{}}}, "edge"},
 	} {

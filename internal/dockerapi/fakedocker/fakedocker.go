@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,9 @@ type Container struct {
 	cpuTotal   uint64
 	logs       *logBuffer
 	files      map[string][]byte
+	// a job's end, and its exit code (see OnJob)
+	exited   chan struct{}
+	exitCode int
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -71,10 +75,34 @@ type Engine struct {
 	OnStop func(c *Container)
 	// OnPull is called for each pulled image.
 	OnPull func(image string)
+	// OnJob, when set, runs what a started job container (one labelled
+	// pocketcloud.role=job) does, as the Engine would run its command: the
+	// container runs until OnJob returns, then exits with its code, and its
+	// output is the container's log. It runs without the engine locked.
+	OnJob func(job Job) JobResult
 	// APIVersion is the Engine API version the fake reports; empty is 1.47.
 	APIVersion string
 	// VolumeRoot is where volumes say their directories are on the host.
 	VolumeRoot string
+}
+
+// Job is a started job container, as OnJob sees it.
+type Job struct {
+	Name   string
+	Labels map[string]string
+	// Cmd and Env are the container's command and environment.
+	Cmd []string
+	Env []string
+	// Host is the container's HostConfig.
+	Host map[string]any
+	// Files are those copied into the container before it started.
+	Files map[string][]byte
+}
+
+// JobResult is how a job ended.
+type JobResult struct {
+	Code           int
+	Stdout, Stderr string
 }
 
 func newEngine() *Engine {
@@ -528,6 +556,20 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 	case action == "archive" && r.Method == http.MethodPut:
 		e.receiveArchive(w, r, container)
 
+	case action == "start" && e.OnJob != nil && container.Labels["pocketcloud.role"] == "job":
+		container.Status = "running"
+		container.Started = time.Now().UTC()
+		container.exited = make(chan struct{})
+		if container.logs == nil {
+			container.logs = &logBuffer{}
+		}
+		e.broadcast("container", "start", container.ID, map[string]string{"name": container.Name})
+		go e.runJob(container, jobOf(container))
+		w.WriteHeader(http.StatusNoContent)
+
+	case action == "wait" && r.Method == http.MethodPost:
+		e.waitFor(w, r, container)
+
 	case action == "start":
 		status, health := "running", container.Health
 		if _, checked := container.Config["Healthcheck"]; checked {
@@ -616,6 +658,9 @@ func (e *Engine) inspectDocument(c *Container) map[string]any {
 		"Running":    c.Status == "running",
 		"Restarting": c.Status == "restarting",
 		"ExitCode": func() int {
+			if c.exited != nil {
+				return c.exitCode
+			}
 			if c.Status == "exited" || c.Status == "restarting" {
 				return 1
 			}
@@ -797,4 +842,77 @@ func omitEmptyMountFields(host map[string]any) {
 			}
 		}
 	}
+}
+
+// jobOf copies what OnJob may see of a container.
+func jobOf(c *Container) Job {
+	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files)}
+	if cmd, ok := c.Config["Cmd"].([]any); ok {
+		for _, arg := range cmd {
+			text, _ := arg.(string)
+			job.Cmd = append(job.Cmd, text)
+		}
+	}
+	if env, ok := c.Config["Env"].([]any); ok {
+		for _, entry := range env {
+			text, _ := entry.(string)
+			job.Env = append(job.Env, text)
+		}
+	}
+	return job
+}
+
+// runJob runs a job container's work and ends it.
+func (e *Engine) runJob(c *Container, job Job) {
+	result := e.OnJob(job)
+	for _, out := range []struct {
+		stream byte
+		text   string
+	}{{1, result.Stdout}, {2, result.Stderr}} {
+		for _, line := range strings.Split(strings.TrimSuffix(out.text, "\n"), "\n") {
+			if line != "" {
+				c.logs.add(out.stream, line)
+			}
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c.exitCode = result.Code
+	if c.Status == "running" {
+		c.Status = "exited"
+	}
+	close(c.exited)
+	c.logs.add(0, "") // wakes the followers, who see the end
+	e.broadcast("container", "die", c.ID, nil)
+}
+
+// waitFor answers when a container is no longer running, with its exit code.
+// It is called with the engine locked.
+func (e *Engine) waitFor(w http.ResponseWriter, r *http.Request, c *Container) {
+	for c.Status == "running" {
+		exited := c.exited
+		e.mu.Unlock()
+		if exited != nil {
+			select {
+			case <-exited:
+			case <-r.Context().Done():
+			}
+		} else {
+			select {
+			case <-time.After(20 * time.Millisecond):
+			case <-r.Context().Done():
+			}
+		}
+		e.mu.Lock()
+		if r.Context().Err() != nil {
+			return
+		}
+	}
+	code := 0
+	if c.exited != nil {
+		code = c.exitCode
+	} else if c.Status == "exited" {
+		code = 1
+	}
+	writeJSON(w, map[string]any{"StatusCode": code})
 }

@@ -120,6 +120,11 @@ func backup(c *agentv1.Command) string {
 	if repository == nil {
 		return ""
 	}
+	// a target's commands run one after another; the URL of a local one is
+	// the same /repo in each job, whatever the directory
+	if id := repository.GetTargetId(); id != "" {
+		return "backup:" + id
+	}
 	return "backup:" + repository.GetUrl()
 }
 
