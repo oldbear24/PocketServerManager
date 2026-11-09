@@ -1025,8 +1025,12 @@ func dumpCommand(engine, file string) ([]string, string, bool) {
 // cannot read the database, with only an error in the dump, and makes an
 // empty file where there was none: so it opens the file read-only, waits up
 // to a minute for a writer's lock, and any error it says fails the dump, with
-// its words.
-const sqliteDump = `exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
+// its words. A damaged page is no error to the dump of older sqlite3 (3.45),
+// which only leaves a comment in the dump and exits 0: so it checks the
+// database first, and fails with what the check says unless that is "ok".
+const sqliteDump = `c=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" 'PRAGMA quick_check' 2>&1); ` +
+	`if [ "$c" != ok ]; then printf '%s\n' "$c" >&2; exit 1; fi; ` +
+	`exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
 	`if [ -n "$e" ]; then printf '%s\n' "$e" >&2; exit 1; fi; exit $s`
 
 // dumpOf completes the command of a dump: the running container of the

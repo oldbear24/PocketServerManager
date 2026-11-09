@@ -232,10 +232,14 @@ func TestABackupRunNamesWhatItBacksUp(t *testing.T) {
 		t.Errorf("a MySQL dump: %v %v", run, err)
 	}
 	// sqlite3 exits 0 on a database it cannot read, and makes one that is
-	// not there: the dump opens it read-only, waits for a writer's lock, and
-	// fails on any error sqlite3 says; the file is the shell's argument
+	// not there, and an older one dumps a damaged page with only a comment:
+	// the dump checks the database first, opens it read-only, waits for a
+	// writer's lock, and fails on any error sqlite3 says; the file is the
+	// shell's argument
 	run, err = build(f.job("notes", map[string]any{"source_kind": schema.SourceDump, "stack": stack.Id, "service": "db", "engine": schema.DumpSQLite, "source": "/data/my notes.db"}))
-	want := []string{"sh", "-c", `exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
+	want := []string{"sh", "-c", `c=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" 'PRAGMA quick_check' 2>&1); ` +
+		`if [ "$c" != ok ]; then printf '%s\n' "$c" >&2; exit 1; fi; ` +
+		`exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
 		`if [ -n "$e" ]; then printf '%s\n' "$e" >&2; exit 1; fi; exit $s`, "sh", "/data/my notes.db"}
 	if err != nil || !slices.Equal(run.GetStdinCommand(), want) || run.GetStdinFileName() != "shop-db.sql" {
 		t.Errorf("a SQLite dump: %q %v", run.GetStdinCommand(), err)
