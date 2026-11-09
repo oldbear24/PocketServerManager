@@ -31,8 +31,8 @@ import (
 const Wrong = "wrong"
 
 // script is restic as far as the backup tool uses it: cat config, init,
-// stats, backup, forget and snapshots, behind the global options --no-cache,
-// --cache-dir, --no-lock and -o. A repository whose URL is a directory lives
+// stats, backup, forget, unlock and snapshots, behind the global options
+// --no-cache, --cache-dir, --no-lock and -o. A repository whose URL is a directory lives
 // in it, like restic's local backend; the others live in the test's
 // directory.
 //
@@ -50,6 +50,14 @@ const Wrong = "wrong"
 // together they keep as many as the largest. A forgotten snapshot moves to
 // the repository's forgotten directory. FAKE_RESTIC_FORGET_FAIL makes forget
 // fail with its text.
+//
+// The fake holds no locks. FAKE_RESTIC_LOCKED_BACKUP=N makes the first N
+// backups of the test, and FAKE_RESTIC_LOCKED_FORGET=N the first N forgets,
+// find the repository locked by another restic: they fail with exit code 11
+// and restic's words, "unable to create lock in backend: repository is
+// already locked ...", as restic does once --retry-lock has passed. unlock
+// removes nothing and says nothing, as restic with no stale lock; Unlocks
+// counts its calls.
 const script = `#!/bin/sh
 root="${FAKE_RESTIC_ROOT:?}"
 { echo "restic $*"; env | grep -E '^(RESTIC|AWS)_' | sort; echo; } >> "$root/calls"
@@ -131,6 +139,20 @@ MOUNTS
 	printf %s "$1"
 }
 
+# locked: the first $1 calls of the command $2 find the repository locked by
+# another restic, which holds the lock $3 (exclusively, or "")
+locked() {
+	[ "${1:-0}" -gt 0 ] 2>/dev/null || return 0
+	count=$(cat "$root/locked-$2" 2>/dev/null || echo 0)
+	[ "$count" -lt "$1" ] || return 0
+	echo $((count + 1)) > "$root/locked-$2"
+	echo "unable to create lock in backend: repository is already locked ${3:+$3 }by PID 1 on other-server by root (UID 0, GID 0)" >&2
+	echo "lock was created at 2026-11-09 03:00:00 (5m0.12s ago)" >&2
+	echo "storage ID 4f2a9c1e" >&2
+	echo "the ` + "\\`unlock\\`" + ` command can be used to remove stale locks" >&2
+	exit 11
+}
+
 # json_list: the lines of a file as a JSON list of strings
 json_list() {
 	sed 's/.*/"&"/' "$1" | paste -sd, -
@@ -179,6 +201,8 @@ backup)
 		esac
 	done
 	open_repo
+	# what keeps a backup out is a forget's or a prune's exclusive lock
+	locked "$FAKE_RESTIC_LOCKED_BACKUP" backup exclusively
 	last=$(snapshots | tail -n 1)
 	n=$(expr "${last:-0}" + 1)
 	while ! mkdir "$repo/snapshots/$(printf %08d "$n")" 2>/dev/null; do n=$(expr "$n" + 1); done
@@ -283,6 +307,8 @@ forget)
 		esac
 	done
 	open_repo
+	# forget takes an exclusive lock, which any other lock keeps out
+	locked "$FAKE_RESTIC_LOCKED_FORGET" forget
 	if [ -n "$FAKE_RESTIC_FORGET_FAIL" ]; then
 		echo "Fatal: $FAKE_RESTIC_FORGET_FAIL" >&2
 		exit 1
@@ -324,6 +350,12 @@ forget)
 		echo "to delete: the data of $removed snapshots"
 		echo "done"
 	fi;;
+unlock)
+	if [ $# -gt 1 ]; then
+		echo "Fatal: the fake restic knows no unlock flag $2" >&2
+		exit 1
+	fi
+	open_repo;;
 snapshots)
 	shift
 	filters=
@@ -393,6 +425,32 @@ func Calls(t testing.TB, root string) string {
 		t.Fatal(err)
 	}
 	return string(calls)
+}
+
+// Unlocks counts the calls of restic unlock.
+func Unlocks(t testing.TB, root string) int {
+	t.Helper()
+	unlocks := 0
+	for line := range strings.SplitSeq(Calls(t, root), "\n") {
+		if command, ok := strings.CutPrefix(line, "restic "); ok && commandOf(strings.Fields(command)) == "unlock" {
+			unlocks++
+		}
+	}
+	return unlocks
+}
+
+// commandOf is restic's command in its arguments, after the global options.
+func commandOf(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--no-cache", "--no-lock", "--cleanup-cache":
+		case "-o", "--cache-dir":
+			i++
+		default:
+			return args[i]
+		}
+	}
+	return ""
 }
 
 // Repositories counts the repositories the fake restic created in its own

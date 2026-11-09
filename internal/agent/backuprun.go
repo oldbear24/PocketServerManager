@@ -126,6 +126,9 @@ func (r backupRunResult) answer() map[string]any {
 	if r.RetentionError != "" {
 		answer["retention_error"] = r.RetentionError
 	}
+	if r.RetentionDeferred != "" {
+		answer["retention_deferred"] = r.RetentionDeferred
+	}
 	return answer
 }
 

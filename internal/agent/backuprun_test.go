@@ -156,7 +156,7 @@ func TestABackupRunMountsItsVolumesReadOnly(t *testing.T) {
 	if job.Labels["pocketcloud.role"] != "job" || job.Labels[backupTargetLabel] != "t1" {
 		t.Errorf("labels: %v", job.Labels)
 	}
-	if calls := fakerestic.Calls(t, r.root); !strings.Contains(calls, " forget --json --prune --retry-lock 30m --group-by tags --tag pocketcloud,job:j1 --keep-last 3 --keep-daily 7\n") {
+	if calls := fakerestic.Calls(t, r.root); !strings.Contains(calls, " forget --json --prune --retry-lock 5m --group-by tags --tag pocketcloud,job:j1 --keep-last 3 --keep-daily 7\n") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 	for _, name := range r.engine.Names() {
@@ -549,10 +549,20 @@ func TestABackupRunThatCouldNotReadEverythingFails(t *testing.T) {
 	}
 
 	t.Setenv("FAKE_RESTIC_UNREADABLE", "")
-	t.Setenv("FAKE_RESTIC_FORGET_FAIL", "unable to create lock in backend: repository is already locked by PID 9 on other-server")
+	t.Setenv("FAKE_RESTIC_FORGET_FAIL", "unable to open repository: a bad key")
 	result, err = r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
-	if err != nil || result["snapshot_id"] == nil || result["retention_error"] != "Fatal: unable to create lock in backend: repository is already locked by PID 9 on other-server" {
+	if err != nil || result["snapshot_id"] == nil || result["retention_error"] != "Fatal: unable to open repository: a bad key" || result["retention_deferred"] != nil {
 		t.Errorf("a failed retention: %v %v", result, err)
+	}
+
+	// one that another restic's lock kept out waits for the next run, and
+	// says who held it (review of #29)
+	t.Setenv("FAKE_RESTIC_FORGET_FAIL", "")
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "2")
+	result, err = r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	if err != nil || result["snapshot_id"] == nil || result["retention_error"] != nil || len(result) != 8 ||
+		result["retention_deferred"] != "unable to create lock in backend: repository is already locked by PID 1 on other-server by root (UID 0, GID 0)" {
+		t.Errorf("a retention locked out: %v %v", result, err)
 	}
 }
 

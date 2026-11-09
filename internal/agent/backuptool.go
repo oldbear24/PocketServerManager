@@ -44,7 +44,10 @@ import (
 //	       thinned out to that policy, and the repository pruned. Its
 //	       result says what the snapshot holds, and how many snapshots
 //	       went; a snapshot saved without files restic could not read is
-//	       said too, with the error.
+//	       said too, with the error. A backup or a retention that finds
+//	       the repository locked runs restic unlock, which removes the
+//	       locks no restic holds any more, and tries once more; a
+//	       retention still locked out waits for the next run.
 //	relay  what restic runs for a dump: it reads the frames from the backup
 //	       tool's --socket SOCKET and writes the dump to its standard
 //	       output, and ends with the dump's exit code.
@@ -62,14 +65,22 @@ const (
 const (
 	// resticPartial is a backup that saved its snapshot without some files
 	// it could not read.
-	resticPartial       = 3
-	resticNoRepository  = 10
+	resticPartial      = 3
+	resticNoRepository = 10
+	// resticLocked is restic that could not lock the repository, as
+	// another restic held a lock that kept it out
+	resticLocked        = 11
 	resticWrongPassword = 12
 )
 
-// retryLock is how long restic waits for a lock another restic holds, such
+// retryLock is how long a backup waits for a lock another restic holds, such
 // as a prune of the same repository from another server.
 const retryLock = "30m"
+
+// forgetRetryLock is how long the retention waits for the repository's
+// exclusive lock, which any backup to it from another server keeps out: the
+// retention then waits for the next run, rather than hold the run's slot.
+const forgetRetryLock = "5m"
 
 // keepOptions are restic's --keep-* options that a job's retention sets.
 var keepOptions = []string{"keep-last", "keep-hourly", "keep-daily", "keep-weekly", "keep-monthly", "keep-yearly"}
@@ -254,12 +265,48 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 	log.Flush()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
-		return stdout.Bytes(), exit.ExitCode(), r.said(stderr.Bytes()), nil
+		said := r.said(stderr.Bytes())
+		if line := lockLine(stderr.Bytes()); exit.ExitCode() == resticLocked && line != "" {
+			// which restic holds the lock, and where
+			said = backup.Redact(line, r.secrets...)
+		}
+		return stdout.Bytes(), exit.ExitCode(), said, nil
 	}
 	if err != nil {
 		return nil, -1, "", err
 	}
 	return stdout.Bytes(), 0, "", nil
+}
+
+// lockLine is the line of restic's error output that says who holds the lock
+// that kept it out, such as "unable to create lock in backend: repository
+// is already locked by PID 1 on nas by root (UID 0, GID 0)".
+func lockLine(stderr []byte) string {
+	for line := range strings.SplitSeq(string(stderr), "\n") {
+		if line = strings.TrimSpace(readable(line)); strings.Contains(line, "is already locked") {
+			return line
+		}
+	}
+	return ""
+}
+
+// unlock removes the locks that no restic holds any more: those of a
+// process that is gone, and those nobody refreshed for 30 minutes, as a
+// restic that was killed left; a live restic refreshes its own every 5
+// minutes, which stays.
+func (r restic) unlock(ctx context.Context) {
+	fmt.Fprintln(r.log, "The repository is locked: removing the locks no restic holds any more, and trying once more")
+	out, code, said, err := r.run(ctx, "unlock")
+	switch {
+	case err != nil:
+		fmt.Fprintln(r.log, "restic unlock failed:", err)
+	case code != 0:
+		fmt.Fprintln(r.log, "restic unlock failed:", said)
+	default:
+		if text := strings.TrimSpace(backup.Redact(string(out), r.secrets...)); text != "" {
+			fmt.Fprintln(r.log, text)
+		}
+	}
 }
 
 // sshSaid prefixes what restic passes on of the ssh it runs for SFTP.

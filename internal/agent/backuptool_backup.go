@@ -51,6 +51,9 @@ type backupRunResult struct {
 	// RetentionError is what restic said when the snapshot was saved and
 	// the retention failed.
 	RetentionError string `json:"retention_error,omitempty"`
+	// RetentionDeferred is restic's line that says who held the lock the
+	// retention needs, when it waits for the next run.
+	RetentionDeferred string `json:"retention_deferred,omitempty"`
 }
 
 // backupRunOf checks the backup op's flags.
@@ -149,6 +152,12 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 		args = append(append(args, "--"), run.paths...)
 	}
 	out, code, said, err := r.run(ctx, args...)
+	if err == nil && code == resticLocked && (dump == nil || !dump.connected()) {
+		// a lock that no restic refreshes, of a job that was killed, keeps
+		// every other out until restic unlock removes it
+		r.unlock(ctx)
+		out, code, said, err = r.run(ctx, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -174,9 +183,14 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	if len(run.keep) > 0 {
 		forgotten, err := r.forget(ctx, run.tags, run.keep)
 		result.Forgotten = forgotten
-		if err != nil {
-			// the snapshot is saved: the run succeeded, and the panel says
-			// the retention did not
+		// the snapshot is saved: the run succeeded, and the panel says the
+		// retention did not
+		var locked *lockedError
+		switch {
+		case errors.As(err, &locked):
+			fmt.Fprintln(r.log, "The retention waits for the next run, as another restic uses the repository:", locked.said)
+			result.RetentionDeferred = locked.said
+		case err != nil:
 			fmt.Fprintln(r.log, "The retention failed:", err)
 			result.RetentionError = err.Error()
 		}
@@ -184,13 +198,19 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	return &result, nil
 }
 
+// lockedError is restic that could not lock the repository, once more after
+// restic unlock.
+type lockedError struct{ said string }
+
+func (e *lockedError) Error() string { return e.said }
+
 // forget thins out the snapshots that have all of tags to the retention,
 // and prunes what they alone held. It counts the snapshots that went, also
 // when the prune after them failed.
 func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (int, error) {
 	// one --tag with commas: snapshots with every tag, where several --tag
 	// would take those with any; grouped by tags, as a job's are the same
-	args := []string{"forget", "--json", "--prune", "--retry-lock", retryLock, "--group-by", "tags", "--tag", strings.Join(tags, ",")}
+	args := []string{"forget", "--json", "--prune", "--retry-lock", forgetRetryLock, "--group-by", "tags", "--tag", strings.Join(tags, ",")}
 	var policy []string
 	for _, option := range keep {
 		args = append(args, "--"+option.name, strconv.Itoa(option.n))
@@ -198,6 +218,10 @@ func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (i
 	}
 	fmt.Fprintf(r.log, "Applying the retention: keep %s\n", strings.Join(policy, ", "))
 	out, code, said, err := r.run(ctx, args...)
+	if err == nil && code == resticLocked {
+		r.unlock(ctx)
+		out, code, said, err = r.run(ctx, args...)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -220,7 +244,11 @@ func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (i
 			fmt.Fprintf(r.log, "%s\n", line)
 		}
 	}
-	if code != 0 {
+	switch code {
+	case 0:
+	case resticLocked:
+		return forgotten, &lockedError{said: said}
+	default:
 		return forgotten, errors.New(said)
 	}
 	fmt.Fprintf(r.log, "Forgot %d snapshots\n", forgotten)
@@ -316,6 +344,17 @@ func (d *dumpRelay) failure() string {
 		return failure
 	case <-time.After(dumpVerdictWait):
 		return ""
+	}
+}
+
+// connected says whether the relay has connected: what it read of the dump
+// is gone, and a dump is not read twice.
+func (d *dumpRelay) connected() bool {
+	select {
+	case <-d.accepted:
+		return d.conn != nil
+	default:
+		return false
 	}
 }
 

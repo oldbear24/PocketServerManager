@@ -157,7 +157,7 @@ func TestTheRetentionThinsOutTheJobsSnapshotsOnly(t *testing.T) {
 		t.Errorf("the retention: %+v", kept)
 	}
 	calls := fakerestic.Calls(t, root)
-	if !strings.Contains(calls, "restic --no-cache forget --json --prune --retry-lock 30m --group-by tags --tag pocketcloud,job:j1 --keep-last 2 --keep-daily 1\n") {
+	if !strings.Contains(calls, "restic --no-cache forget --json --prune --retry-lock 5m --group-by tags --tag pocketcloud,job:j1 --keep-last 2 --keep-daily 1\n") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 	var ids []string
@@ -179,6 +179,122 @@ func TestTheRetentionThinsOutTheJobsSnapshotsOnly(t *testing.T) {
 	}
 	if !strings.Contains(log, "The retention failed: Fatal: unable to create lock") {
 		t.Errorf("the log:\n%s", log)
+	}
+}
+
+// resticCommands are the commands restic ran, in order, without the global
+// options.
+func resticCommands(t *testing.T, root string) []string {
+	t.Helper()
+	var commands []string
+	for line := range strings.SplitSeq(fakerestic.Calls(t, root), "\n") {
+		if args, ok := strings.CutPrefix(line, "restic "); ok {
+			fields := strings.Fields(args)
+			for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+				if fields[0] == "-o" || fields[0] == "--cache-dir" {
+					fields = fields[1:]
+				}
+				fields = fields[1:]
+			}
+			if len(fields) > 0 {
+				commands = append(commands, fields[0])
+			}
+		}
+	}
+	return commands
+}
+
+// lockedLine is what the fake restic says of the lock that keeps a backup
+// out, as restic 0.17 does.
+const lockedLine = "unable to create lock in backend: repository is already locked exclusively by PID 1 on other-server by root (UID 0, GID 0)"
+
+// TestALockedRepositoryIsUnlockedAndTriedOnceMore (review of #29): a lock
+// that no restic refreshes any more, as a job that was killed leaves, keeps
+// every backup out until restic unlock removes it; a backup that finds the
+// repository locked runs it and tries once more, also with a dump, whose
+// relay restic never ran.
+func TestALockedRepositoryIsUnlockedAndTriedOnceMore(t *testing.T) {
+	env, root := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1"})
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir}
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "1")
+	result, log, err := runBackup(t, env, nil, args...)
+	if err != nil || len(result.SnapshotID) != 64 {
+		t.Fatalf("%+v %v\n%s", result, err, log)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands, []string{"cat", "init", "backup", "unlock", "backup"}) || fakerestic.Unlocks(t, root) != 1 {
+		t.Errorf("restic ran %q", commands)
+	}
+	if !strings.Contains(log, lockedLine+"\n") || !strings.Contains(log, "The repository is locked: removing the locks no restic holds any more, and trying once more\n") {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// a lock that stays fails the backup once it was tried twice, with
+	// restic's words of who holds it
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "3")
+	if _, _, err := runBackup(t, env, nil, args...); err == nil || err.Error() != lockedLine {
+		t.Errorf("a lock that stays: %v", err)
+	}
+	if commands := resticCommands(t, root); len(commands) != 8 || !slices.Equal(commands[5:], []string{"backup", "unlock", "backup"}) {
+		t.Errorf("restic ran %q", commands)
+	}
+
+	// a dump is read once restic got the lock
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "4")
+	socket := filepath.Join(t.TempDir(), "dump.sock")
+	result, log, err = runBackup(t, env, dumpFrames(t, "CREATE TABLE t;\n", &backup.DumpEnd{}),
+		"--host", "nas", "--tag", "pocketcloud", "--tag", "job:db", "--stdin-name", "db.sql", "--relay", socket)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log)
+	}
+	snapshots := fakerestic.Snapshots(t, root, env["RESTIC_REPOSITORY"])
+	if last := snapshots[len(snapshots)-1]; last.ID != result.SnapshotID || last.Files["/db.sql"] != "CREATE TABLE t;\n" || fakerestic.Unlocks(t, root) != 3 {
+		t.Errorf("the dump's snapshot: %+v", last)
+	}
+}
+
+// TestARetentionLockedOutWaitsForTheNextRun (review of #29): forget needs
+// the repository's exclusive lock, which any backup to it from another
+// server keeps out; it waits 5 minutes, runs restic unlock and tries once
+// more, and then leaves the snapshots to the next run, saying who held the
+// lock, as a retention deferred and not failed.
+func TestARetentionLockedOutWaitsForTheNextRun(t *testing.T) {
+	env, root := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1"})
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir, "--keep-last", "1"}
+	if _, _, err := runBackup(t, env, nil, args...); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "1")
+	result, log, err := runBackup(t, env, nil, args...)
+	if err != nil || result.Forgotten != 1 || result.RetentionDeferred != "" || result.RetentionError != "" {
+		t.Errorf("a lock that went: %+v %v\n%s", result, err, log)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands[len(commands)-4:], []string{"backup", "forget", "unlock", "forget"}) {
+		t.Errorf("restic ran %q", commands)
+	}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "3")
+	result, log, err = runBackup(t, env, nil, args...)
+	locked := "unable to create lock in backend: repository is already locked by PID 1 on other-server by root (UID 0, GID 0)"
+	if err != nil || result.SnapshotID == "" || result.Forgotten != 0 || result.RetentionDeferred != locked || result.RetentionError != "" {
+		t.Errorf("a retention locked out: %+v %v", result, err)
+	}
+	if !strings.Contains(log, "The retention waits for the next run, as another restic uses the repository: "+locked+"\n") || strings.Contains(log, "The retention failed") {
+		t.Errorf("the log:\n%s", log)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands[len(commands)-4:], []string{"backup", "forget", "unlock", "forget"}) || fakerestic.Unlocks(t, root) != 2 {
+		t.Errorf("restic ran %q", commands)
+	}
+	if snapshots := fakerestic.Snapshots(t, root, env["RESTIC_REPOSITORY"]); len(snapshots) != 2 {
+		t.Errorf("%d snapshots", len(snapshots))
+	}
+	// the backup itself waits as long as before
+	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, " backup --json --quiet --retry-lock 30m ") || !strings.Contains(calls, " forget --json --prune --retry-lock 5m ") {
+		t.Errorf("restic ran:\n%s", calls)
 	}
 }
 
