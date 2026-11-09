@@ -930,3 +930,91 @@ func TestBackupJobsAreTheAdminsToChange(t *testing.T) {
 		t.Errorf("remove the job: %d", status)
 	}
 }
+
+// TestABackupRunToATargetTakenOutOfItsJobGetsNoSecrets (#29): a run queued
+// behind another one to the same target, whose target is taken out of its
+// job meanwhile, is not delivered: the server gets none of the target's
+// secrets, and the run is cancelled, with no alert.
+func TestABackupRunToATargetTakenOutOfItsJobGetsNoSecrets(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) {
+		addVolume(t, engine, "app_data")
+		addVolume(t, engine, "other_data")
+	})
+	b2 := j.addS3("b2", "b2-secret-key-taken-out")
+	first := j.addJob(map[string]any{"name": "first", "source_kind": "volume", "source": "app_data", "targets": []string{b2.Id}})["id"].(string)
+	second := j.addJob(map[string]any{"name": "second", "source_kind": "volume", "source": "other_data", "targets": []string{b2.Id}})["id"].(string)
+
+	entered, release := j.gateJobs(isBackupRun, nil)
+	status, out := j.send(http.MethodPost, "/api/pc/backup-jobs/"+first+"/run", j.admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("run first: %d %v", status, out)
+	}
+	firstRun := out["runs"].([]any)[0].(string)
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the first backup did not start")
+	}
+	// the second waits for the first, as runs to one target from one server do
+	status, out = j.send(http.MethodPost, "/api/pc/backup-jobs/"+second+"/run", j.admin, nil)
+	if status != http.StatusOK {
+		t.Fatalf("run second: %d %v", status, out)
+	}
+	secondRun := out["runs"].([]any)[0].(string)
+	queued := j.runs(second)[0]
+	if command := j.command(queued.GetString("command")); command.GetString("status") != schema.CommandQueued {
+		t.Fatalf("the second run's command: %s", command.GetString("status"))
+	}
+	if status, out := j.send(http.MethodPatch, "/api/pc/backup-jobs/"+second, j.admin, map[string]any{"targets": []string{j.disk.Id}}); status != http.StatusOK {
+		t.Fatalf("take b2 out: %d %v", status, out)
+	}
+	release()
+
+	if run := j.runEnded(firstRun); run.GetString("status") != schema.RunSucceeded {
+		t.Errorf("the first run: %v", run.FieldsData())
+	}
+	run := j.runEnded(secondRun)
+	if run.GetString("status") != schema.RunCancelled || !strings.HasSuffix(run.GetString("error"), "the target is no longer one of the job's targets") {
+		t.Errorf("the second run: %v", run.FieldsData())
+	}
+	if len(j.openAlerts("backup_failed")) != 0 {
+		t.Errorf("alerts: %v", j.openAlerts("backup_failed"))
+	}
+	given := 0
+	for _, job := range j.backupJobs() {
+		if slices.Contains(job.Env, "AWS_SECRET_ACCESS_KEY=b2-secret-key-taken-out") {
+			given++
+		}
+	}
+	if given != 1 {
+		t.Errorf("%d backup jobs got b2's secrets", given)
+	}
+}
+
+// TestBackupAlertsGoWithTheirJobAndTarget (#29): a job's alerts to a target
+// are resolved when the target is taken out of the job, and when the job is
+// removed: no run would resolve them any more.
+func TestBackupAlertsGoWithTheirJobAndTarget(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
+	b2 := j.addS3("b2", "b2-secret-key")
+	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "targets": []string{j.disk.Id, b2.Id}})["id"].(string)
+	words := "Fatal: unable to save snapshot: no space left on device\n"
+	j.fail.Store(&words)
+	j.runNow(id)
+	if alerts := j.openAlerts("backup_failed"); alerts[id+":"+j.disk.Id] == nil || alerts[id+":"+b2.Id] == nil {
+		t.Fatalf("the alerts: %v", alerts)
+	}
+
+	if status, out := j.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, j.admin, map[string]any{"targets": []string{j.disk.Id}}); status != http.StatusOK {
+		t.Fatalf("take b2 out: %d %v", status, out)
+	}
+	if alerts := j.openAlerts("backup_failed"); len(alerts) != 1 || alerts[id+":"+j.disk.Id] == nil {
+		t.Errorf("after b2 was taken out: %v", alerts)
+	}
+	if status, _ := j.send(http.MethodDelete, "/api/pc/backup-jobs/"+id, j.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove the job: %d", status)
+	}
+	if alerts := j.openAlerts("backup_failed"); len(alerts) != 0 {
+		t.Errorf("after the job was removed: %v", alerts)
+	}
+}

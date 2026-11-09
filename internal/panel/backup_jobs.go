@@ -67,6 +67,10 @@ const (
 // run.
 const noTarget = "Choose where it goes: no target."
 
+// staleTarget is why a run queued to a target that its job no longer backs
+// up to is not delivered.
+const staleTarget = "the target is no longer one of the job's targets"
+
 // What a label's job may take from its labels besides what it backs up, as
 // its label_sets says: an admin changes the rest.
 const (
@@ -87,6 +91,51 @@ func (p *Panel) registerBackupJobs() {
 	p.Commands.OnFinish("backup.run", p.backupRunFinished)
 	p.App.Cron().MustAdd("pocketcloud_backups", "* * * * *", func() { p.RunDueBackups(time.Now()) })
 	p.App.Cron().MustAdd("pocketcloud_backup_runs_retention", "35 4 * * *", p.pruneBackupRuns)
+
+	// the alerts of a job to a target go with the job, the target, the
+	// job's label, or the target's place among the job's: nothing would
+	// resolve them any more
+	p.App.OnRecordAfterDeleteSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
+		p.resolveBackupAlerts(e.App, dbx.Like("target", e.Record.Id+":").Match(false, true))
+		return e.Next()
+	})
+	p.App.OnRecordAfterDeleteSuccess(schema.BackupTargets).BindFunc(func(e *core.RecordEvent) error {
+		p.resolveBackupAlerts(e.App, dbx.Like("target", ":"+e.Record.Id).Match(true, false))
+		return e.Next()
+	})
+	p.App.OnRecordAfterUpdateSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
+		job, before := e.Record, e.Record.Original()
+		if labelGone(job) && !labelGone(before) {
+			p.resolveBackupAlerts(e.App, dbx.Like("target", job.Id+":").Match(false, true))
+			return e.Next()
+		}
+		for _, target := range before.GetStringSlice("targets") {
+			if !slices.Contains(job.GetStringSlice("targets"), target) {
+				p.resolveBackupAlerts(e.App, dbx.HashExp{"target": alertKey(job.Id, target)})
+			}
+		}
+		return e.Next()
+	})
+}
+
+// resolveBackupAlerts resolves the open backup alerts of the jobs and targets
+// that match.
+func (p *Panel) resolveBackupAlerts(app core.App, target dbx.Expression) {
+	alerts := []*core.Record{}
+	err := app.RecordQuery(schema.Alerts).
+		AndWhere(dbx.In("rule", alertBackupFailed, alertBackupSkipped, alertBackupRetention)).
+		AndWhere(target).
+		AndWhere(dbx.Not(dbx.HashExp{"status": schema.AlertResolved})).
+		All(&alerts)
+	if err != nil {
+		p.Log.Error("failed to read the backup alerts", "error", err)
+		return
+	}
+	for _, alert := range alerts {
+		if err := events.ResolveAlert(app, alert.GetString("rule"), alert.GetString("target")); err != nil {
+			p.Log.Error("failed to resolve an alert", "rule", alert.GetString("rule"), "error", err)
+		}
+	}
 }
 
 func (p *Panel) bindBackupJobRoutes(group *router.RouterGroup[*core.RequestEvent]) {
@@ -685,9 +734,7 @@ func (p *Panel) skipRun(job, target, host *core.Record, minute time.Time, reason
 	message := cutText(fmt.Sprintf("%s was skipped: %s", backupLabel(job, target), strings.ToLower(reason[:1])+reason[1:]), 2048)
 	events.Log(p.App, host.Id, "backup.skipped", schema.SeverityWarning, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
 	if alert {
-		if err := events.RaiseAlert(p.App, alertBackupSkipped, alertKey(job.Id, target.Id), host.Id, schema.SeverityWarning, message); err != nil {
-			p.Log.Error("failed to raise an alert", "rule", alertBackupSkipped, "error", err)
-		}
+		p.raiseJobAlert(alertBackupSkipped, job, target, schema.SeverityWarning, message)
 	}
 	p.noteJobRun(job.Id)
 }
@@ -703,9 +750,25 @@ func (p *Panel) runFailed(run, job, target *core.Record, reason string) {
 func (p *Panel) alertFailure(job, target, run *core.Record, reason string) {
 	message := cutText(fmt.Sprintf("%s failed: %s", backupLabel(job, target), sentenceText(reason)), 2048)
 	events.Log(p.App, job.GetString("host"), "backup.failed", schema.SeverityCritical, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
-	if err := events.RaiseAlert(p.App, alertBackupFailed, alertKey(job.Id, target.Id), job.GetString("host"), schema.SeverityCritical, message); err != nil {
-		p.Log.Error("failed to raise an alert", "rule", alertBackupFailed, "error", err)
+	p.raiseJobAlert(alertBackupFailed, job, target, schema.SeverityCritical, message)
+}
+
+// raiseJobAlert raises an alert of a job to a target. A job no longer alerts
+// about a target it does not back up to, nor once its label is gone: their
+// alerts were resolved as the job changed (see resolveBackupAlerts).
+func (p *Panel) raiseJobAlert(rule string, job, target *core.Record, severity, message string) {
+	if !backsUpTo(job, target) {
+		return
 	}
+	if err := events.RaiseAlert(p.App, rule, alertKey(job.Id, target.Id), job.GetString("host"), severity, message); err != nil {
+		p.Log.Error("failed to raise an alert", "rule", rule, "error", err)
+	}
+}
+
+// backsUpTo tells whether a job still backs up to a target: the target is one
+// of its own, and a label's job still has its label.
+func backsUpTo(job, target *core.Record) bool {
+	return slices.Contains(job.GetStringSlice("targets"), target.Id) && !labelGone(job)
 }
 
 // settleRun ends a run that its command can no longer end.
@@ -861,7 +924,9 @@ func (p *Panel) dumpOf(job *core.Record, payload *agentv1.BackupRun) error {
 
 // checkRunDelivery checks a backup.run as it is delivered: its run and its
 // job are still there, the command goes to the job's server, and the target
-// takes the job's backups.
+// takes the job's backups. A run queued before its target was taken out of
+// the job, or before its label went, gets no secrets of the target: the
+// server need no longer have them.
 func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun, target *core.Record) error {
 	run, err := p.App.FindRecordById(schema.BackupRuns, payload.GetRunId())
 	if err != nil {
@@ -876,6 +941,10 @@ func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun
 		return errors.New("the backup job runs on another server")
 	case run.GetString("target") != target.Id:
 		return errors.New("the backup run is for another target")
+	case !slices.Contains(job.GetStringSlice("targets"), target.Id):
+		return errors.New(staleTarget)
+	case labelGone(job):
+		return fmt.Errorf("the %s label of the job is gone", stacks.LabelBackup)
 	case target.GetString("status") == schema.TargetPending:
 		return errors.New("the target is still being added")
 	case target.GetString("kind") == backup.KindLocal && target.GetString("host") != job.GetString("host"):
@@ -963,6 +1032,10 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		// never delivered, as to a server that stayed offline: no run
 		status = schema.RunCancelled
 	}
+	if status == schema.RunFailed && started.IsZero() && !backsUpTo(job, target) {
+		// not delivered: the job no longer backs up to the target
+		status = schema.RunCancelled
+	}
 	message := command.GetString("error")
 	if status == schema.RunFailed && message == "" {
 		message = "The backup failed."
@@ -1025,9 +1098,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		if retentionError != "" {
 			text := cutText(fmt.Sprintf("%s kept every snapshot: restic could not forget the old ones: %s", backupLabel(job, target), sentenceText(retentionError)), 2048)
 			events.Log(p.App, host, "backup.retention_failed", schema.SeverityWarning, text, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
-			if err := events.RaiseAlert(p.App, alertBackupRetention, key, host, schema.SeverityWarning, text); err != nil {
-				p.Log.Error("failed to raise an alert", "rule", alertBackupRetention, "error", err)
-			}
+			p.raiseJobAlert(alertBackupRetention, job, target, schema.SeverityWarning, text)
 		} else if err := events.ResolveAlert(p.App, alertBackupRetention, key); err != nil {
 			p.Log.Error("failed to resolve an alert", "rule", alertBackupRetention, "error", err)
 		}

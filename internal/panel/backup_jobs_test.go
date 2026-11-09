@@ -17,6 +17,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/stacks"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
@@ -277,6 +278,11 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 	if err := f.app.Save(run); err != nil {
 		t.Fatal(err)
 	}
+	// as a target changed since it was chosen
+	job.Set("targets", []string{f.target.Id, disk.Id})
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := deliver(other.Id, disk); err == nil || !strings.Contains(err.Error(), "only that server's jobs back up to it") {
 		t.Errorf("another server's local target: %v", err)
 	}
@@ -290,6 +296,47 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 	}
 	if _, err := deliver(other.Id, f.target); err == nil || !strings.Contains(err.Error(), "still being added") {
 		t.Errorf("a target being added: %v", err)
+	}
+
+	// a run queued before its target was taken out of the job, or before
+	// its label went, gets none of the target's secrets
+	f.target.Set("status", schema.TargetOK)
+	if err := f.app.Save(f.target); err != nil {
+		t.Fatal(err)
+	}
+	second := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	job.Set("targets", []string{second.Id})
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	command, err = deliver(other.Id, f.target)
+	if err == nil || err.Error() != "the target is no longer one of the job's targets" || command.GetBackupRun().GetRepository().GetPassword() != "" {
+		t.Errorf("a target taken out of the job: %v", err)
+	}
+	stack := f.save(schema.Stacks, map[string]any{"host": other.Id, "name": "shop"})
+	job.Load(map[string]any{"targets": []string{f.target.Id}, "origin": schema.JobLabel, "stack": stack.Id, "service": "db", "label_removed": true})
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deliver(other.Id, f.target); err == nil || err.Error() != "the pocketcloud.backup label of the job is gone" {
+		t.Errorf("a label that is gone: %v", err)
+	}
+
+	// such a run did not start: it is cancelled, and alerts nobody
+	job.Load(map[string]any{"targets": []string{second.Id}, "origin": schema.JobManual, "label_removed": false})
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	refused := f.save(schema.Commands, map[string]any{"host": other.Id, "type": "backup.run",
+		"payload": map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"}}})
+	refused.Load(map[string]any{"status": schema.CommandFailed, "error": "the target is no longer one of the job's targets", "finished_at": types.NowDateTime()})
+	f.p.backupRunFinished(refused)
+	if stored, _ := f.app.FindRecordById(schema.BackupRuns, run.Id); stored.GetString("status") != schema.RunCancelled ||
+		stored.GetString("error") != "The target is no longer one of the job's targets" {
+		t.Errorf("the refused run: %v", stored.FieldsData())
+	}
+	if alerts, _ := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_failed'", "", 0, 0); len(alerts) != 0 {
+		t.Errorf("%d alerts", len(alerts))
 	}
 }
 
@@ -572,6 +619,81 @@ func TestAnOfflineServerSkipsItsRuns(t *testing.T) {
 	}
 	if settled, _ := f.app.FindRecordById(schema.BackupRuns, going.Id); settled.GetString("status") != schema.RunCancelled {
 		t.Errorf("settled: %s", settled.GetString("status"))
+	}
+}
+
+// TestBackupAlertsGoWithWhatTheyAreAbout (#29): the alerts of a job to a
+// target are resolved when the target is taken out of the job, when the
+// job's label goes, when the job is removed and when the target is: no run
+// would resolve them any more.
+func TestBackupAlertsGoWithWhatTheyAreAbout(t *testing.T) {
+	f := newJobFixture(t)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	raise := func(job, target *core.Record, rule string) {
+		t.Helper()
+		if err := events.RaiseAlert(f.app, rule, job.Id+":"+target.Id, f.host.Id, schema.SeverityWarning, "it went wrong"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func() []string {
+		t.Helper()
+		alerts, err := f.app.FindRecordsByFilter(schema.Alerts, "status!='resolved'", "", 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := []string{}
+		for _, alert := range alerts {
+			keys = append(keys, alert.GetString("rule")+" "+alert.GetString("target"))
+		}
+		slices.Sort(keys)
+		return keys
+	}
+	rules := []string{alertBackupFailed, alertBackupRetention, alertBackupSkipped}
+	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "targets": []string{f.target.Id, nas.Id}})
+	other := f.job("other", map[string]any{"source_kind": schema.SourceVolume, "source": "b"})
+	for _, rule := range rules {
+		raise(job, f.target, rule)
+		raise(job, nas, rule)
+	}
+	raise(other, f.target, alertBackupFailed)
+
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}}); status != http.StatusOK {
+		t.Fatalf("take nas out: %d %v", status, out)
+	}
+	want := []string{}
+	for _, rule := range rules {
+		want = append(want, rule+" "+job.Id+":"+f.target.Id)
+	}
+	want = append(want, alertBackupFailed+" "+other.Id+":"+f.target.Id)
+	slices.Sort(want)
+	if got := open(); !slices.Equal(got, want) {
+		t.Errorf("after nas was taken out:\n%v, not\n%v", got, want)
+	}
+
+	// a label's job whose label went no longer runs
+	stack := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "shop"})
+	label := f.job("shop-db", map[string]any{"origin": schema.JobLabel, "stack": stack.Id, "service": "db", "source_kind": schema.SourceDump, "engine": schema.DumpPostgres})
+	raise(label, f.target, alertBackupFailed)
+	f.p.syncBackupLabels(stack, nil)
+	if got := open(); !slices.Equal(got, want) {
+		t.Errorf("after the label went:\n%v, not\n%v", got, want)
+	}
+
+	if status, _ := f.send(http.MethodDelete, "/api/pc/backup-jobs/"+job.Id, f.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove the job: %d", status)
+	}
+	want = []string{alertBackupFailed + " " + other.Id + ":" + f.target.Id}
+	if got := open(); !slices.Equal(got, want) {
+		t.Errorf("after the job was removed: %v", got)
+	}
+
+	// one that nothing resolved, as from before the target was the job's
+	raise(other, nas, alertBackupSkipped)
+	if status, out := f.send(http.MethodDelete, "/api/pc/backup-targets/"+nas.Id, f.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove nas: %d %v", status, out)
+	}
+	if got := open(); !slices.Equal(got, want) {
+		t.Errorf("after nas was removed: %v", got)
 	}
 }
 
