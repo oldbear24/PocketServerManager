@@ -188,6 +188,59 @@ describe("live records", () => {
     expect(sorted(result.current.items)).toEqual(["r1:succeeded"]);
   });
 
+  it("replays onto a read's list only what arrived after the read began", async () => {
+    const fake = fakeCollection();
+    const { result } = renderHook(() => useLiveRecords<Run>("backup_runs"));
+    await waitFor(() => expect(fake.getFullList).toHaveBeenCalled());
+    // r9 comes while the first read is under way
+    fake.send("create", record("r9", "queued", "2026-11-09 12:00:01.000Z"));
+
+    // the connection drops, r9 is deleted unseen while it is down, and the
+    // reconnect reads the list again before the first read has ended
+    fake.connect();
+    expect(fake.getFullList).toHaveBeenCalledTimes(2);
+    await fake.arrive([record("r1", "queued", "2026-11-09 12:00:00.000Z")], 0);
+    await fake.arrive([record("r1", "queued", "2026-11-09 12:00:00.000Z")], 1);
+    expect(sorted(result.current.items)).toEqual(["r1:queued"]);
+    expect(result.current.loading).toBe(false);
+
+    // live again
+    fake.send("update", record("r1", "running", "2026-11-09 12:00:02.000Z"));
+    expect(sorted(result.current.items)).toEqual(["r1:running"]);
+  });
+
+  it("shows and keeps what arrived for a read that a newer one replaced", async () => {
+    const fake = fakeCollection();
+    const { result } = renderHook(() => useLiveRecords<Run>("backup_runs"));
+    await waitFor(() => expect(fake.getFullList).toHaveBeenCalled());
+    await fake.arrive([
+      record("r1", "queued", "2026-11-09 12:00:00.000Z"),
+      record("r2", "queued", "2026-11-09 12:00:00.000Z"),
+    ]);
+
+    fake.connect();
+    fake.send("update", record("r1", "running", "2026-11-09 12:00:01.000Z"));
+    fake.send("delete", record("r2", "queued", "2026-11-09 12:00:00.000Z"));
+    fake.connect();
+    expect(fake.getFullList).toHaveBeenCalledTimes(3);
+    expect(sorted(result.current.items)).toEqual(["r1:running"]);
+
+    // the replaced read ends late and counts for nothing; the newer one
+    // fails, and what is shown loses nothing that arrived meanwhile
+    await fake.arrive(
+      [
+        record("r1", "queued", "2026-11-09 12:00:00.000Z"),
+        record("r2", "queued", "2026-11-09 12:00:00.000Z"),
+      ],
+      1,
+    );
+    fake.send("create", record("r3", "queued", "2026-11-09 12:00:02.000Z"));
+    const err = new Error("Something went wrong.");
+    await fake.readFails(err);
+    expect(result.current.error).toBe(err);
+    expect(sorted(result.current.items)).toEqual(["r1:running", "r3:queued"]);
+  });
+
   it("stays live when a read after a reconnect fails", async () => {
     const fake = fakeCollection();
     const { result } = renderHook(() => useLiveRecords<Run>("backup_runs"));

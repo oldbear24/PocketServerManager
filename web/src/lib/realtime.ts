@@ -188,7 +188,18 @@ export function useLiveRecords<T extends RecordModel>(
 
     const read = () => {
       const current = ++reads;
-      early ??= [];
+      // the first read keeps what arrived before it began; each later one
+      // has its own buffer, for what arrives once it has begun
+      if (current > 1) {
+        if (early) {
+          // the read before has not ended and no longer counts. What arrived
+          // for it is shown now, so that this read loses none of it should it
+          // fail, but it is not replayed onto this read's list: that list is
+          // newer, and may lack a record whose delete never arrived.
+          applyShown(early);
+        }
+        early = [];
+      }
       pb.collection(collection)
         .getFullList<T>({ filter, fields, batch: 1000 })
         .then((list) => {
