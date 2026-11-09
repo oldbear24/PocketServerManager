@@ -4692,7 +4692,11 @@ func (x *BackupRepository) GetMount() string {
 type BackupInit struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// repository is the repository.
-	Repository    *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
+	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
+	// repo_id is the id of the repository the target has had. When set, the
+	// repository is only opened: a missing one, or another one, is an error,
+	// not a reason to create a new one (#28).
+	RepoId        string `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4732,6 +4736,13 @@ func (x *BackupInit) GetRepository() *BackupRepository {
 		return x.Repository
 	}
 	return nil
+}
+
+func (x *BackupInit) GetRepoId() string {
+	if x != nil {
+		return x.RepoId
+	}
+	return ""
 }
 
 // BackupRun runs one backup job for one target.
@@ -6087,12 +6098,13 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
 	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"T\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"m\n" +
 	"\n" +
 	"BackupInit\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
-	"repository\"\xf5\x02\n" +
+	"repository\x12\x17\n" +
+	"\arepo_id\x18\x02 \x01(\tR\x06repoId\"\xf5\x02\n" +
 	"\tBackupRun\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12F\n" +
 	"\n" +
