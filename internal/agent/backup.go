@@ -142,7 +142,11 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		capabilities = []string{"DAC_OVERRIDE", "FOWNER"}
 	}
 	mounts = append(mounts, job.mounts...)
-	capabilities = append(capabilities, job.capabilities...)
+	for _, capability := range job.capabilities {
+		if !slices.Contains(capabilities, capability) {
+			capabilities = append(capabilities, capability)
+		}
+	}
 
 	config := map[string]any{
 		"Image":  self.Image,

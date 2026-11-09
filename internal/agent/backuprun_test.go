@@ -95,9 +95,10 @@ func mountsOf(job fakedocker.Job) map[string]map[string]any {
 
 // TestABackupRunMountsItsVolumesReadOnly (#29): the job mounts each volume at
 // /volumes/<name> read-only, besides restic's cache, has no capability but
-// reading what it backs up, and restic saves one snapshot with the run's host
-// and tags; the result is restic's summary, the retention's count and the
-// log, without a secret.
+// DAC_OVERRIDE, to read what it backs up (never DAC_READ_SEARCH, with which
+// open_by_handle_at reaches past its mounts), and restic saves one snapshot
+// with the run's host and tags; the result is restic's summary, the
+// retention's count and the log, without a secret.
 func TestABackupRunMountsItsVolumesReadOnly(t *testing.T) {
 	r := newRunAgent(t)
 	repo := r.remote(t)
@@ -147,7 +148,7 @@ func TestABackupRunMountsItsVolumesReadOnly(t *testing.T) {
 		}
 	}
 	if job.Host["NetworkMode"] != "bridge" || !slices.Equal(anyStrings(job.Host["CapDrop"]), []string{"ALL"}) ||
-		!slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_READ_SEARCH"}) ||
+		!slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) ||
 		!slices.Equal(anyStrings(job.Host["SecurityOpt"]), []string{"no-new-privileges"}) || job.Stdin != nil {
 		t.Errorf("host config: %v", job.Host)
 	}
@@ -202,7 +203,7 @@ func TestABackupRunOfDirectoriesToALocalTarget(t *testing.T) {
 	if mount["Type"] != "bind" || mount["Source"] != dir || mount["ReadOnly"] != true {
 		t.Errorf("the directory's mount: %v", mount)
 	}
-	if job.Host["NetworkMode"] != "none" || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER", "DAC_READ_SEARCH"}) {
+	if job.Host["NetworkMode"] != "none" || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER"}) {
 		t.Errorf("host config: %v", job.Host)
 	}
 	if slices.Contains(job.Cmd, "--keep-last") || !slices.Contains(job.Cmd, "--local") {
@@ -329,7 +330,7 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 		"--stdin-name", "umami-db.pgdump", "--relay", dumpSocket, "--cache", "/cache"}) {
 		t.Errorf("the job's command: %q", job.Cmd)
 	}
-	if len(mountsOf(job)) != 1 || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_READ_SEARCH"}) || job.Stdin == nil {
+	if len(mountsOf(job)) != 1 || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) || job.Stdin == nil {
 		t.Errorf("the job: %v", job.Host)
 	}
 	// attached before it started
