@@ -51,6 +51,9 @@ type Options struct {
 	Parent      string
 	Correlation string
 	Timeout     time.Duration
+	// QueueTimeout is how long the command may wait to be delivered, as for
+	// its resource; zero is the panel's queue TTL.
+	QueueTimeout time.Duration
 }
 
 // Enricher completes a command right before delivery with values that must not
@@ -77,6 +80,7 @@ type Manager struct {
 
 	enrichers map[string]Enricher
 	finishers map[string][]func(*core.Record)
+	starters  map[string][]func(*core.Record)
 
 	outputMu sync.Mutex
 	outputs  map[string]*commandOutput
@@ -99,6 +103,7 @@ func NewManager(app core.App) *Manager {
 		streams:      make(map[string]*Stream),
 		enrichers:    make(map[string]Enricher),
 		finishers:    make(map[string][]func(*core.Record)),
+		starters:     make(map[string][]func(*core.Record)),
 		outputs:      make(map[string]*commandOutput),
 		ReapInterval: reapInterval,
 	}
@@ -117,6 +122,13 @@ func (m *Manager) RegisterEnricher(commandType string, enricher Enricher) {
 // OnFinish registers a callback for when a command of a type reaches a final state.
 func (m *Manager) OnFinish(commandType string, callback func(*core.Record)) {
 	m.finishers[commandType] = append(m.finishers[commandType], callback)
+}
+
+// OnStart registers a callback for when an agent says it started a command of
+// a type: once, as the command goes from dispatched to running. A command that
+// ends before the agent says it started has no start, only its finish.
+func (m *Manager) OnStart(commandType string, callback func(*core.Record)) {
+	m.starters[commandType] = append(m.starters[commandType], callback)
 }
 
 // Register binds the queue to the app's hooks.
@@ -340,6 +352,9 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error
 	record.Set("correlation_id", opts.Correlation)
 	if opts.Timeout > 0 {
 		record.Set("timeout_s", int(opts.Timeout.Seconds()))
+	}
+	if opts.QueueTimeout > 0 {
+		record.Set("expires_at", time.Now().UTC().Add(opts.QueueTimeout))
 	}
 
 	if err := m.app.SaveWithContext(ctx, record); err != nil {
@@ -846,7 +861,8 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		return false, nil
 	}
 
-	if status == schema.CommandDispatched {
+	started := status == schema.CommandDispatched
+	if started {
 		record.Set("started_at", types.NowDateTime())
 	}
 	record.Set("status", newStatus)
@@ -854,7 +870,15 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		record.Set("progress", progressOf(update.GetProgress()))
 	}
 
-	return false, m.app.Save(record)
+	if err := m.app.Save(record); err != nil {
+		return false, err
+	}
+	if started {
+		for _, callback := range m.starters[record.GetString("type")] {
+			callback(record)
+		}
+	}
+	return false, nil
 }
 
 func progressOf(progress *agentv1.CommandProgress) map[string]any {
