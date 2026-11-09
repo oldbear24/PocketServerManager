@@ -149,6 +149,12 @@
       "proxy": "Proxy & sites",
       "backups": "Backups"
     },
+    "backups": {
+      "title": "Backup jobs",
+      "open": "Manage on the Backups page",
+      "noneTitle": "No backup jobs on this server",
+      "noneText": "The jobs that back up this server's volumes, directories, stacks or databases appear here. Add one on the Backups page."
+    },
     "restartAgent": "Restart agent",
     "restartQueued": "The agent will restart.",
     "restartConfirm": "Restart the agent on {{name}}?",
@@ -256,7 +262,6 @@
     "newStack": "New stack",
     "edgeRoutes": "Edge proxy routes",
     "edgeRoutesNote": "Caddy run by the agent · certificates from the panel",
-    "backupsLater": "Backup jobs for this server arrive in milestone M4.",
     "openTerminal": "Terminal in {{name}}",
     "internalOnly": "internal network only",
     "restarts_one": "{{count}}× restarted",

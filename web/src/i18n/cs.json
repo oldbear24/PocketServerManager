@@ -161,6 +161,12 @@
       "proxy": "Proxy a weby",
       "backups": "Zálohy"
     },
+    "backups": {
+      "title": "Zálohovací úlohy",
+      "open": "Spravovat na stránce Zálohy",
+      "noneTitle": "Tento server nemá žádné zálohovací úlohy",
+      "noneText": "Tady se ukážou úlohy, které zálohují svazky, složky, stacky nebo databáze tohoto serveru. Přidáš je na stránce Zálohy."
+    },
     "restartAgent": "Restartovat agenta",
     "restartQueued": "Agent se restartuje.",
     "restartConfirm": "Restartovat agenta na serveru {{name}}?",
@@ -274,7 +280,6 @@
     "newStack": "Nový stack",
     "edgeRoutes": "Edge proxy – trasy",
     "edgeRoutesNote": "Caddy řízený agentem · certifikáty z panelu",
-    "backupsLater": "Zálohovací úlohy tohoto serveru přijdou v milníku M4.",
     "openTerminal": "Terminál v {{name}}",
     "internalOnly": "jen interní síť",
     "restarts_one": "{{count}}× restart",

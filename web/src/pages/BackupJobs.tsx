@@ -1,6 +1,8 @@
 import { Pencil, Trash2 } from "lucide-react";
+import type { RecordModel } from "pocketbase";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 
 import { useToast } from "../components/toast";
 import {
@@ -31,8 +33,10 @@ import {
   parseTime,
   presetCron,
   retentionKeys,
+  runFields,
   runMoment,
   runStrip,
+  runsSince,
   sameRetention,
   shortError,
   sourceKinds,
@@ -58,7 +62,7 @@ import { serverOption, type BackupTarget } from "../lib/backups";
 import { formatBytes, formatNumber } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
-import { useLiveList } from "../lib/realtime";
+import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
 import type { Container, Host, Stack, Volume } from "../lib/types";
 
 /** The stacks as the jobs need them: no compose files. */
@@ -542,6 +546,107 @@ export function JobsCard({
         <p className="muted">{t("backups.job.removeText")}</p>
       </ConfirmDialog>
     </>
+  );
+}
+
+/** A server's backup jobs, for its page: what each backs up, how its last
+ * run went and when it runs next. The Backups page manages them. */
+export function ServerJobsCard({ host }: { host: Host }) {
+  const { t } = useTranslation();
+  const now = useNow(30_000);
+  const filter = pb.filter("host = {:host}", { host: host.id });
+  const jobs = useLiveList<BackupJob>("backup_jobs", { filter, sort: "name" });
+  const stacks = useLiveList<StackName & RecordModel>("stacks", {
+    filter,
+    fields: "id,collectionId,collectionName,name,host",
+    perPage: 500,
+  });
+  // of several targets, Last run names the one a run is about
+  const targets = useLiveList<BackupTarget>("backup_targets", {
+    fields: "id,collectionId,collectionName,name",
+    perPage: 500,
+  });
+  const runs = useLiveRecords<BackupRun>("backup_runs", {
+    filter: pb.filter("host = {:host} && created >= {:since}", {
+      host: host.id,
+      since: runsSince(now),
+    }),
+    fields: runFields,
+  });
+
+  let body: ReactNode;
+  if (jobs.error || runs.error) {
+    body = (
+      <div className="card-pad">
+        <Banner tone="err">{errorMessage(jobs.error || runs.error)}</Banner>
+      </div>
+    );
+  } else if (jobs.loading && jobs.items.length === 0) {
+    body = <p className="card-pad muted">{t("common.loading")}</p>;
+  } else if (jobs.items.length === 0) {
+    body = (
+      <EmptyState title={t("server.backups.noneTitle")}>{t("server.backups.noneText")}</EmptyState>
+    );
+  } else {
+    body = (
+      <div
+        className="table-scroll"
+        tabIndex={0}
+        role="region"
+        aria-label={t("server.backups.title")}
+      >
+        <table className="table server-jobs">
+          <thead>
+            <tr>
+              <th scope="col">{t("backups.job.column.job")}</th>
+              <th scope="col">{t("backups.job.column.lastRun")}</th>
+              <th scope="col">{t("backups.summary.nextRun")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {jobs.items.map((job) => {
+              const source = describeSource(job, stacks.items, t);
+              // one whose label is gone says so under its name
+              let next: ReactNode = "–";
+              if (!job.enabled && !job.label_removed) {
+                next = <span className="faint">{t("backups.job.paused")}</span>;
+              } else if (job.enabled && job.next_run_at) {
+                next = <span className="mono">{formatMoment(job.next_run_at, now)}</span>;
+              }
+              return (
+                <tr key={job.id} className={job.label_removed ? "job-removed" : undefined}>
+                  <td className="job-cell">
+                    <div className="job-name">{job.name}</div>
+                    <div className="job-source" title={source}>
+                      {source}
+                    </div>
+                    {(job.label_removed || job.problem) && (
+                      <div className="job-problem">
+                        {job.label_removed ? t("backups.job.labelRemoved") : job.problem}
+                      </div>
+                    )}
+                  </td>
+                  <td className="job-last">
+                    <LastRun job={job} runs={runs.items} targets={targets.items} now={now} />
+                  </td>
+                  <td className="job-next">{next}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  return (
+    <Card
+      title={t("server.backups.title")}
+      side={<Link to="/backups">{t("server.backups.open")}</Link>}
+      flush
+    >
+      {body}
+    </Card>
   );
 }
 

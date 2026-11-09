@@ -2980,6 +2980,53 @@ td .row-actions {
   color: var(--warn-text);
 }
 
+/* a server's jobs, on its page: what, how the last run went, when next;
+ * three columns, which a phone shows nearly whole */
+.server-jobs {
+  min-width: 420px;
+  font-size: 12.5px;
+}
+
+.server-jobs th,
+.server-jobs td {
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.server-jobs td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  color: var(--text-2);
+}
+
+.server-jobs th:first-child,
+.server-jobs td:first-child {
+  padding-left: 18px;
+}
+
+.server-jobs th:last-child,
+.server-jobs td:last-child {
+  padding-right: 18px;
+}
+
+.server-jobs .job-cell {
+  min-width: 150px;
+}
+
+/* the page is wider than the Backups page's column */
+.server-jobs .job-source {
+  max-width: min(420px, 40vw);
+}
+
+.server-jobs .run-detail,
+.server-jobs .run-retention {
+  max-width: min(260px, 32vw);
+}
+
+.server-jobs .job-next {
+  white-space: nowrap;
+}
+
 /* Run first, where every row has it, then what only some rows have */
 .backup-jobs td.job-actions .row-actions {
   justify-content: flex-start;
