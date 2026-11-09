@@ -62,8 +62,8 @@ const (
 	// catchUpWithin is how long ago a job's minute that the panel missed,
 	// being down, may be for the job to run for it once the panel is back.
 	catchUpWithin = 24 * time.Hour
-	// retentionPatience is how long a job's retention may be postponed, its
-	// repository being busy, before it alerts.
+	// retentionPatience is how long a job's retention to a target may stay
+	// postponed, its repository being busy, before it alerts.
 	retentionPatience = 3 * 24 * time.Hour
 )
 
@@ -1275,21 +1275,17 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 
 // retentionPostponed notes a retention that restic postponed, as another
 // server's backup or prune had the repository: the next run tries again. It
-// alerts only once no run of the job to the target has applied its retention
-// for retentionPatience, and the job is older than that.
+// alerts only once the retention has stayed postponed for retentionPatience,
+// counted from the postponement, not from the job's age: a target new to an
+// old job, or a weekly job, gets its days too.
 func (p *Panel) retentionPostponed(job, target, run *core.Record, lock string) {
-	since, err := types.ParseDateTime(time.Now().Add(-retentionPatience))
-	if err != nil {
-		return
-	}
-	applied, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && target={:target} && retention={:applied} && finished_at>={:since}", "", 1, 0,
-		dbx.Params{"job": job.Id, "target": target.Id, "applied": retentionApplied, "since": since.String()})
+	since, err := p.retentionPostponedSince(job, target)
 	if err != nil {
 		p.Log.Error("failed to read the backup runs", "job", job.Id, "error", err)
 		return
 	}
 	data := map[string]any{"job": job.Id, "target": target.Id, "run": run.Id}
-	if len(applied) > 0 || job.GetDateTime("created").After(since) {
+	if since.IsZero() || time.Since(since) < retentionPatience {
 		text := cutText(fmt.Sprintf("%s kept its old snapshots for now: the repository was busy, so the next run applies the retention: %s", backupLabel(job, target), sentenceText(lock)), 2048)
 		events.Log(p.App, job.GetString("host"), "backup.retention_deferred", schema.SeverityInfo, text, data)
 		return
@@ -1298,6 +1294,30 @@ func (p *Panel) retentionPostponed(job, target, run *core.Record, lock string) {
 		backupLabel(job, target), int(retentionPatience.Hours()/24), sentenceText(lock)), 2048)
 	events.Log(p.App, job.GetString("host"), "backup.retention_deferred", schema.SeverityWarning, text, data)
 	p.raiseJobAlert(alertBackupRetention, job, target, schema.SeverityWarning, text)
+}
+
+// retentionPostponedSince is when the oldest run of a job to a target that
+// postponed its retention since the newest one that applied it (or since the
+// first run, if none did) finished; zero if none did. Runs go by when they
+// finished, and those that finished at the same moment by their ids.
+func (p *Panel) retentionPostponedSince(job, target *core.Record) (time.Time, error) {
+	applied, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && target={:target} && retention={:applied}", "-finished_at,-id", 1, 0,
+		dbx.Params{"job": job.Id, "target": target.Id, "applied": retentionApplied})
+	if err != nil {
+		return time.Time{}, err
+	}
+	filter := "job={:job} && target={:target} && retention={:deferred}"
+	params := dbx.Params{"job": job.Id, "target": target.Id, "deferred": retentionDeferred}
+	if len(applied) > 0 {
+		filter += " && (finished_at>{:at} || (finished_at={:at} && id>{:id}))"
+		params["at"] = applied[0].GetDateTime("finished_at").String()
+		params["id"] = applied[0].Id
+	}
+	deferred, err := p.App.FindRecordsByFilter(schema.BackupRuns, filter, "finished_at,id", 1, 0, params)
+	if err != nil || len(deferred) == 0 {
+		return time.Time{}, err
+	}
+	return deferred[0].GetDateTime("finished_at").Time(), nil
 }
 
 // targetSecretValues are a target's secrets, to hide from what is kept.

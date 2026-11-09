@@ -537,18 +537,21 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 
 // TestABusyRepositoryPostponesTheRetention (#29): a retention that restic
 // postponed, as another server's backup had the repository, is kept on the
-// run and is an event; it alerts only once no run of the job to the target
-// has applied its retention for three days, and the job is older than that.
-// A retention that failed alerts at once, and one that is applied resolves
-// the alert. A job that keeps every snapshot has no retention to keep.
+// run and is an event. It alerts only once it has stayed postponed for three
+// days: the oldest run of the job to the target that postponed it since the
+// newest one that applied it, or since the first run if none did, finished
+// three days ago; how old the job is does not count. A retention that failed
+// alerts at once, and one that is applied resolves the alert. A job that
+// keeps every snapshot has no retention to keep.
 func TestABusyRepositoryPostponesTheRetention(t *testing.T) {
 	f := newJobFixture(t)
-	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "retention": stacks.Retention{Daily: 7}})
-	key := job.Id + ":" + f.target.Id
-	finish := func(job *core.Record, retention map[string]any, result map[string]any) *core.Record {
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	daily := map[string]any{"daily": 7}
+	// finish ends a run of a job to a target now, as the agent answered it
+	finish := func(job, target *core.Record, retention map[string]any, result map[string]any) *core.Record {
 		t.Helper()
-		run := f.run(job)
-		payload := map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"}}
+		run := f.save(schema.BackupRuns, map[string]any{"job": job.Id, "target": target.Id, "host": f.host.Id, "trigger": schema.RunManual, "status": schema.RunQueued})
+		payload := map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": target.Id, "url": "s3:x"}}
 		if retention != nil {
 			payload["retention"] = retention
 		}
@@ -562,10 +565,41 @@ func TestABusyRepositoryPostponesTheRetention(t *testing.T) {
 		}
 		return stored
 	}
-	daily := map[string]any{"daily": 7}
-	alert := func() *core.Record {
+	// ended keeps a run of a job to a target that ended before, with how its
+	// retention went; id, when given, is the run's
+	now := types.NowDateTime()
+	ago := func(days int) types.DateTime { return now.Add(-time.Duration(days) * 24 * time.Hour) }
+	ended := func(job, target *core.Record, retention string, at types.DateTime, id string) {
 		t.Helper()
-		alerts, err := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_retention' && target={:key} && status!='resolved'", "", 0, 0, map[string]any{"key": key})
+		fields := map[string]any{"job": job.Id, "target": target.Id, "host": f.host.Id, "trigger": schema.RunSchedule,
+			"status": schema.RunSucceeded, "retention": retention, "finished_at": at}
+		if id != "" {
+			fields["id"] = id
+		}
+		f.save(schema.BackupRuns, fields)
+	}
+	// oldJob is a job made a month ago
+	oldJob := func(name string, fields map[string]any) *core.Record {
+		t.Helper()
+		all := map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "retention": stacks.Retention{Daily: 7}}
+		for key, value := range fields {
+			all[key] = value
+		}
+		job := f.job(name, all)
+		if _, err := f.app.DB().NewQuery("UPDATE backup_jobs SET created={:old} WHERE id={:job}").
+			Bind(map[string]any{"old": ago(30).String(), "job": job.Id}).Execute(); err != nil {
+			t.Fatal(err)
+		}
+		job, err := f.app.FindRecordById(schema.BackupJobs, job.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return job
+	}
+	alert := func(job, target *core.Record) *core.Record {
+		t.Helper()
+		alerts, err := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_retention' && target={:key} && status!='resolved'", "", 0, 0,
+			map[string]any{"key": job.Id + ":" + target.Id})
 		if err != nil || len(alerts) > 1 {
 			t.Fatalf("%d alerts: %v", len(alerts), err)
 		}
@@ -575,13 +609,15 @@ func TestABusyRepositoryPostponesTheRetention(t *testing.T) {
 		return alerts[0]
 	}
 	lock := "repository is already locked by PID 1 on 4f2a7c by root (UID 0, GID 0)"
+	deferred := map[string]any{"snapshot_id": "c1", "retention_deferred": lock}
 
 	// a new job: a postponed retention is an event
-	run := finish(job, daily, map[string]any{"snapshot_id": "a1", "retention_deferred": lock})
+	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "retention": stacks.Retention{Daily: 7}})
+	run := finish(job, f.target, daily, map[string]any{"snapshot_id": "a1", "retention_deferred": lock})
 	if run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "deferred" || run.GetInt("forgotten") != 0 {
 		t.Errorf("a postponed retention: %v", run.FieldsData())
 	}
-	if a := alert(); a != nil {
+	if a := alert(job, f.target); a != nil {
 		t.Errorf("a new job's postponed retention alerted: %v", a.FieldsData())
 	}
 	events, err := f.app.FindRecordsByFilter(schema.Events, "kind='backup.retention_deferred'", "", 0, 0)
@@ -589,49 +625,80 @@ func TestABusyRepositoryPostponesTheRetention(t *testing.T) {
 		t.Errorf("events: %v %v", events, err)
 	}
 
-	if run := finish(job, daily, map[string]any{"snapshot_id": "a2", "forgotten": 2}); run.GetString("retention") != "applied" || run.GetInt("forgotten") != 2 {
+	if run := finish(job, f.target, daily, map[string]any{"snapshot_id": "a2", "forgotten": 2}); run.GetString("retention") != "applied" || run.GetInt("forgotten") != 2 {
 		t.Errorf("an applied retention: %v", run.FieldsData())
 	}
-	if run := finish(job, daily, map[string]any{"snapshot_id": "a3", "retention_error": "Fatal: wrong password"}); run.GetString("retention") != "failed" {
+	if run := finish(job, f.target, daily, map[string]any{"snapshot_id": "a3", "retention_error": "Fatal: wrong password"}); run.GetString("retention") != "failed" {
 		t.Errorf("a failed retention: %v", run.FieldsData())
 	}
-	if a := alert(); a == nil || a.GetString("severity") != schema.SeverityWarning || !strings.Contains(a.GetString("message"), "wrong password") {
+	if a := alert(job, f.target); a == nil || a.GetString("severity") != schema.SeverityWarning || !strings.Contains(a.GetString("message"), "wrong password") {
 		t.Errorf("the alert of a failed retention: %v", a)
 	}
-	finish(job, daily, map[string]any{"snapshot_id": "a4"})
-	if alert() != nil {
+	finish(job, f.target, daily, map[string]any{"snapshot_id": "a4"})
+	if alert(job, f.target) != nil {
 		t.Error("an applied retention did not resolve the alert")
 	}
 
-	// three days later, its retention postponed at each run since
-	for _, query := range []string{
-		"UPDATE backup_jobs SET created={:old} WHERE id={:job}",
-		"UPDATE backup_runs SET finished_at={:old} WHERE job={:job}",
-	} {
-		if _, err := f.app.DB().NewQuery(query).Bind(map[string]any{"old": types.NowDateTime().Add(-4 * 24 * time.Hour).String(), "job": job.Id}).Execute(); err != nil {
-			t.Fatal(err)
-		}
+	// the first postponement of a target new to an old job, which applied
+	// its retention to its other target, waits its three days
+	old := oldJob("old", map[string]any{"targets": []string{f.target.Id, nas.Id}})
+	ended(old, f.target, retentionApplied, ago(1), "")
+	if run := finish(old, nas, daily, deferred); run.GetString("retention") != "deferred" || alert(old, nas) != nil {
+		t.Errorf("the first postponed retention of an old job's new target alerted: %v", run.FieldsData())
 	}
-	job, err = f.app.FindRecordById(schema.BackupJobs, job.Id)
-	if err != nil {
-		t.Fatal(err)
+	// so does a weekly job's, whose run before applied it a week ago
+	weekly := oldJob("weekly", nil)
+	ended(weekly, f.target, retentionApplied, ago(7), "")
+	finish(weekly, f.target, daily, deferred)
+	if alert(weekly, f.target) != nil {
+		t.Error("a weekly job's first postponed retention alerted")
 	}
-	if run := finish(job, daily, map[string]any{"snapshot_id": "a5", "retention_deferred": lock}); run.GetString("retention") != "deferred" {
-		t.Errorf("a postponed retention: %v", run.FieldsData())
-	}
-	if a := alert(); a == nil || !strings.Contains(a.GetString("message"), "has not applied its retention for 3 days") || !strings.Contains(a.GetString("message"), lock[1:]) {
+
+	// postponed at each run for more than three days since it was applied
+	busy := oldJob("busy", nil)
+	ended(busy, f.target, retentionApplied, ago(10), "")
+	ended(busy, f.target, retentionDeferred, ago(4), "")
+	ended(busy, f.target, retentionDeferred, ago(2), "")
+	finish(busy, f.target, daily, deferred)
+	if a := alert(busy, f.target); a == nil || a.GetString("severity") != schema.SeverityWarning ||
+		!strings.Contains(a.GetString("message"), "has not applied its retention for 3 days") || !strings.Contains(a.GetString("message"), lock[1:]) {
 		t.Errorf("the alert of a retention postponed for three days: %v", a)
 	}
-	// one applied in the last three days: a postponed one is an event again
-	finish(job, daily, map[string]any{"snapshot_id": "a6"})
-	finish(job, daily, map[string]any{"snapshot_id": "a7", "retention_deferred": lock})
-	if alert() != nil {
-		t.Error("a retention postponed after one applied alerted")
+	// or since the first run, none having applied it
+	never := oldJob("never", nil)
+	ended(never, f.target, retentionDeferred, ago(4), "")
+	finish(never, f.target, daily, deferred)
+	if alert(never, f.target) == nil {
+		t.Error("a retention never applied, postponed for four days, did not alert")
+	}
+	// one applied in between starts the days again
+	reset := oldJob("reset", nil)
+	ended(reset, f.target, retentionDeferred, ago(5), "")
+	ended(reset, f.target, retentionApplied, ago(2), "")
+	finish(reset, f.target, daily, deferred)
+	if alert(reset, f.target) != nil {
+		t.Error("a retention postponed after one applied two days ago alerted")
+	}
+
+	// runs that ended at the same moment go by their ids
+	after := oldJob("after", nil)
+	ended(after, f.target, retentionApplied, ago(4), "aaaaaaaaaaaaaa1")
+	ended(after, f.target, retentionDeferred, ago(4), "zzzzzzzzzzzzzz1")
+	finish(after, f.target, daily, deferred)
+	if alert(after, f.target) == nil {
+		t.Error("a retention postponed for four days, at the moment it was applied, did not alert")
+	}
+	before := oldJob("before", nil)
+	ended(before, f.target, retentionDeferred, ago(4), "aaaaaaaaaaaaaa2")
+	ended(before, f.target, retentionApplied, ago(4), "zzzzzzzzzzzzzz2")
+	finish(before, f.target, daily, deferred)
+	if alert(before, f.target) != nil {
+		t.Error("a retention applied after it was postponed, at the same moment, alerted")
 	}
 
 	// a job that keeps every snapshot
 	all := f.job("all", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
-	if run := finish(all, nil, map[string]any{"snapshot_id": "b1"}); run.GetString("retention") != "" {
+	if run := finish(all, f.target, nil, map[string]any{"snapshot_id": "b1"}); run.GetString("retention") != "" {
 		t.Errorf("no retention: %v", run.FieldsData())
 	}
 }

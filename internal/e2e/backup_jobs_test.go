@@ -1217,16 +1217,18 @@ func TestABackupThatNeverStartsIsSkippedWithAnAlert(t *testing.T) {
 // have the repository to itself, even after restic removed the stale locks
 // and tried again, postpones the retention: the run succeeds with its
 // snapshot and keeps the old ones, an event says so, and the alert waits
-// until no run applied the retention for three days. A retention applied
-// again resolves it. It needs the agent's retention_deferred and the fake
-// restic's FAKE_RESTIC_LOCKED_FORGET (forget fails as restic does on a
-// locked repository, exit code 11, that many times).
+// until the retention has stayed postponed for three days since a run
+// applied it. A retention applied again resolves it. It needs the agent's
+// retention_deferred and the fake restic's FAKE_RESTIC_LOCKED_FORGET (forget
+// fails as restic does on a locked repository, exit code 11, that many
+// times).
 func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
 	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "retention": map[string]any{"last": 1}})["id"].(string)
 	key := id + ":" + j.disk.Id
-	if run := j.runNow(id)[0]; run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "applied" {
-		t.Fatalf("the first run: %v", run.FieldsData())
+	applied := j.runNow(id)[0]
+	if applied.GetString("status") != schema.RunSucceeded || applied.GetString("retention") != "applied" {
+		t.Fatalf("the first run: %v", applied.FieldsData())
 	}
 
 	// locked at the first try and after the unlock
@@ -1250,12 +1252,11 @@ func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 
-	// three days later, with no retention applied since
-	for _, query := range []string{
-		"UPDATE backup_jobs SET created={:old} WHERE id={:job}",
-		"UPDATE backup_runs SET finished_at={:old} WHERE job={:job}",
-	} {
-		if _, err := j.app.DB().NewQuery(query).Bind(dbx.Params{"old": time.Now().UTC().Add(-4 * 24 * time.Hour).Format("2006-01-02 15:04:05.000Z"), "job": id}).Execute(); err != nil {
+	// four days later, with no retention applied since: the run that applied
+	// it ended five days ago, and the one that postponed it four
+	for runID, days := range map[string]time.Duration{applied.Id: 5, run.Id: 4} {
+		if _, err := j.app.DB().NewQuery("UPDATE backup_runs SET finished_at={:at} WHERE id={:run}").
+			Bind(dbx.Params{"at": time.Now().UTC().Add(-days * 24 * time.Hour).Format("2006-01-02 15:04:05.000Z"), "run": runID}).Execute(); err != nil {
 			t.Fatal(err)
 		}
 	}
