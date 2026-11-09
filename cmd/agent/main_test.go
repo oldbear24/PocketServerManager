@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
@@ -70,5 +75,81 @@ func TestTheBackupToolBinaryGetsWhatTheJobIsGiven(t *testing.T) {
 	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "AWS_SECRET_ACCESS_KEY=secret-binary") ||
 		!strings.Contains(calls, "RESTIC_PASSWORD=pw-binary") || !strings.Contains(calls, "-o s3.bucket-lookup=path") {
 		t.Errorf("restic ran:\n%s", calls)
+	}
+}
+
+// TestADumpGoesThroughTheBinarysRelay (#29): the backup tool names its own
+// binary for restic's --stdin-from-command, and the binary's `backup-tool
+// relay` hands restic the dump from the job's input and ends with the dump's
+// own exit code.
+func TestADumpGoesThroughTheBinarysRelay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the agent")
+	}
+	root := fakerestic.Install(t)
+	binary := filepath.Join(t.TempDir(), "pocketcloud-agent")
+	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	env := append(os.Environ(), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD=pw-dump")
+	frames := func(data string, code int, message string) *bytes.Buffer {
+		var stream bytes.Buffer
+		writer := backup.NewFrameWriter(&stream)
+		_, _ = writer.Write([]byte(data))
+		_ = writer.End(code, message)
+		return &stream
+	}
+	run := func(stdin io.Reader, args ...string) (string, string, int) {
+		t.Helper()
+		command := exec.Command(binary, append([]string{"backup-tool"}, args...)...)
+		command.Env = env
+		command.Stdin = stdin
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		err := command.Run()
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+		return stdout.String(), stderr.String(), command.ProcessState.ExitCode()
+	}
+	if _, stderr, code := run(nil, "init"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	socket := filepath.Join(t.TempDir(), "dump.sock")
+	backupArgs := []string{"backup", "--host", "nas", "--tag", "pocketcloud", "--tag", "job:db", "--stdin-name", "db.sql", "--relay", socket}
+	stdout, stderr, code := run(frames("CREATE TABLE posts;\n", 0, ""), backupArgs...)
+	if code != 0 || !strings.Contains(stdout, `"snapshot_id":"`) {
+		t.Fatalf("the backup: %d %s\n%s", code, stdout, stderr)
+	}
+	if snapshots := fakerestic.Snapshots(t, root, repo); len(snapshots) != 1 || snapshots[0].Files["/db.sql"] != "CREATE TABLE posts;\n" {
+		t.Errorf("snapshots: %+v", snapshots)
+	}
+	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "-- "+binary+" backup-tool relay --socket "+socket+"\n") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+	_, stderr, code = run(frames("CREATE", 2, "mysqldump: Got error: 1045: Access denied"), backupArgs...)
+	if code != 1 || !strings.Contains(stderr, "error: the dump failed with exit code 2, and restic saved no snapshot: mysqldump: Got error: 1045: Access denied\n") {
+		t.Errorf("a dump that failed: %d\n%s", code, stderr)
+	}
+
+	// the relay alone
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(conn, frames("PGDMP", 3, "pg_dump: error: query failed"))
+	}()
+	stdout, stderr, code = run(nil, "relay", "--socket", socket)
+	if code != 3 || stdout != "PGDMP" || stderr != "pg_dump: error: query failed\n" {
+		t.Errorf("the relay: %d %q %q", code, stdout, stderr)
 	}
 }

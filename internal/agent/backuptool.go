@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -33,6 +34,20 @@ import (
 //	       directory that holds other files and no repository is refused.
 //	       --expect ID: the repository is the one with this id, which is only
 //	       opened; a missing or another one is an error.
+//	backup back up the directories of --path, or a database dump (#29): with
+//	       --stdin-name FILE, the dump comes in on the tool's standard input
+//	       as the relay's frames, and the tool serves them to restic's
+//	       relay on the unix socket --relay SOCKET. The snapshot takes
+//	       --host NAME and every --tag; with any --keep-last, --keep-hourly,
+//	       --keep-daily, --keep-weekly, --keep-monthly or --keep-yearly N,
+//	       the snapshots that have every one of those tags are then
+//	       thinned out to that policy, and the repository pruned. Its
+//	       result says what the snapshot holds, and how many snapshots
+//	       went; a snapshot saved without files restic could not read is
+//	       said too, with the error.
+//	relay  what restic runs for a dump: it reads the frames from the backup
+//	       tool's --socket SOCKET and writes the dump to its standard
+//	       output, and ends with the dump's exit code.
 //
 // Every op takes restic's options as -o key=value, and --cache DIR for
 // restic's cache; without it restic keeps none.
@@ -45,9 +60,19 @@ const (
 
 // restic's exit codes, since 0.17
 const (
+	// resticPartial is a backup that saved its snapshot without some files
+	// it could not read.
+	resticPartial       = 3
 	resticNoRepository  = 10
 	resticWrongPassword = 12
 )
+
+// retryLock is how long restic waits for a lock another restic holds, such
+// as a prune of the same repository from another server.
+const retryLock = "30m"
+
+// keepOptions are restic's --keep-* options that a job's retention sets.
+var keepOptions = []string{"keep-last", "keep-hourly", "keep-daily", "keep-weekly", "keep-monthly", "keep-yearly"}
 
 // backupInitResult is what the init op found.
 type backupInitResult struct {
@@ -74,6 +99,21 @@ func BackupToolEnv(environ []string) map[string]string {
 	return env
 }
 
+// list is a repeated flag.
+type list []string
+
+func (l *list) String() string { return strings.Join(*l, ",") }
+
+func (l *list) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// ToolExit ends a tool with an exit code of its own, once it has said why.
+type ToolExit struct{ Code int }
+
+func (e *ToolExit) Error() string { return "exit code " + strconv.Itoa(e.Code) }
+
 // options is a repeated -o key=value flag.
 type options []string
 
@@ -88,10 +128,11 @@ func (o *options) Set(value string) error {
 }
 
 // BackupTool runs one op of the backup tool. env holds restic's variables, on
-// top of the process's own environment.
-func BackupTool(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) error {
+// top of the process's own environment; stdin is the job's standard input,
+// which brings a dump.
+func BackupTool(ctx context.Context, args []string, env map[string]string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("name an op: init")
+		return errors.New("name an op: init, backup or relay")
 	}
 	op := args[0]
 	flags := flag.NewFlagSet("backup-tool "+op, flag.ContinueOnError)
@@ -102,8 +143,29 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 	expect := flags.String("expect", "", "the id of the repository, which must exist")
 	usage := flags.Bool("usage", false, "say how much the repository holds")
 	cache := flags.String("cache", "", "restic's cache directory")
+	host := flags.String("host", "", "the snapshot's host")
+	var tags, paths list
+	flags.Var(&tags, "tag", "a tag of the snapshot")
+	flags.Var(&paths, "path", "a directory to back up")
+	stdinName := flags.String("stdin-name", "", "the file name of the dump that comes in on standard input")
+	relay := flags.String("relay", "", "the socket the dump's relay reads from")
+	socket := flags.String("socket", "", "the backup tool's socket, for the relay")
+	keep := make([]*int, len(keepOptions))
+	for i, name := range keepOptions {
+		keep[i] = flags.Int(name, 0, "restic's --"+name)
+	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
+	}
+	if op == "relay" {
+		// restic runs it, with the job's environment, which it needs none of
+		if *socket == "" {
+			return errors.New("the relay needs the backup tool's --socket")
+		}
+		if code := backup.RelaySocket(*socket, stdout, stderr); code != 0 {
+			return &ToolExit{Code: code}
+		}
+		return nil
 	}
 	if env[envResticRepository] == "" || env[envResticPassword] == "" {
 		return errors.New("the job has no repository or no password: the panel adds them when it delivers the command")
@@ -120,8 +182,24 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(result)
+	case "backup":
+		run, err := backupRunOf(*host, tags, paths, *stdinName, *relay, keep)
+		if err != nil {
+			return err
+		}
+		if stdin == nil {
+			stdin = strings.NewReader("")
+		}
+		result, err := r.backup(ctx, run, stdin)
+		// a snapshot that was saved is said, even one that lacks files
+		if result != nil {
+			if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil && err == nil {
+				err = encodeErr
+			}
+		}
+		return err
 	}
-	return fmt.Errorf("unknown op %q: use init", op)
+	return fmt.Errorf("unknown op %q: use init, backup or relay", op)
 }
 
 // withoutRestic is the storage's credentials: env without restic's own
@@ -169,9 +247,11 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 		command.Env = append(command.Env, name+"="+r.env[name])
 	}
 	var stdout, stderr bytes.Buffer
+	log := &readableWriter{w: r.log}
 	command.Stdout = &stdout
-	command.Stderr = io.MultiWriter(&stderr, r.log)
+	command.Stderr = io.MultiWriter(&stderr, log)
 	err := command.Run()
+	log.Flush()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
 		return stdout.Bytes(), exit.ExitCode(), r.said(stderr.Bytes()), nil
@@ -194,7 +274,7 @@ func (r restic) said(stderr []byte) string {
 	scanner := bufio.NewScanner(bytes.NewReader(stderr))
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
+		if line := strings.TrimSpace(readable(scanner.Text())); line != "" {
 			lines = append(lines, line)
 		}
 	}
@@ -244,7 +324,7 @@ func (r restic) init(ctx context.Context, local, expect string, usage bool) (bac
 	case 0:
 	case resticNoRepository:
 		if expect != "" {
-			return result, errors.New("the repository is gone, with its snapshots: " + said)
+			return result, repositoryError(resticNoRepository, said)
 		}
 		if local != "" {
 			entries, err := os.ReadDir(local)
@@ -281,10 +361,8 @@ func (r restic) init(ctx context.Context, local, expect string, usage bool) (bac
 				fmt.Fprintln(r.log, "The directory's permissions stay as they are:", err)
 			}
 		}
-	case resticWrongPassword:
-		return result, errors.New("a repository is there, and the password is not its own: " + said)
 	default:
-		return result, errors.New(said)
+		return result, repositoryError(code, said)
 	}
 
 	var config struct {
