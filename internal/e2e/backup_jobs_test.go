@@ -38,6 +38,8 @@ type jobsHarness struct {
 	diskDir string
 	// fail makes the backups fail as restic would, with its words
 	fail atomic.Pointer[string]
+	// hostRoot is where the agent sees the server's files
+	hostRoot string
 }
 
 // newJobsHarness starts the panel and the agent. prepare readies the engine
@@ -74,6 +76,7 @@ func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), optio
 	config := b.agentConfig("backup-node", b.token("backup-node", schema.HostRoleDocker))
 	config.DockerCLI = fakeCLI(t)
 	config.HostRoot = fakeHostRoot(t)
+	j.hostRoot = config.HostRoot
 	b.agent = b.start(config)
 	b.waitFor("the agent to connect", func() bool {
 		found, err := b.app.FindFirstRecordByData(schema.Hosts, "name", "backup-node")
@@ -482,8 +485,12 @@ func TestAPartialBackupIsAFailureThatKeepsItsSnapshot(t *testing.T) {
 func TestADirectoryIsBackedUpAtItsOwnPath(t *testing.T) {
 	j := newJobsHarness(t, nil)
 	dir := filepath.Join(t.TempDir(), "www")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	// the agent finds the directory through its view of the server's files;
+	// the fake job container reads it where it is
+	for _, path := range []string{dir, filepath.Join(j.hostRoot, dir)} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>hi</h1>"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1212,7 +1219,7 @@ func TestABackupThatNeverStartsIsSkippedWithAnAlert(t *testing.T) {
 // snapshot and keeps the old ones, an event says so, and the alert waits
 // until no run applied the retention for three days. A retention applied
 // again resolves it. It needs the agent's retention_deferred and the fake
-// restic's FAKE_RESTIC_FORGET_LOCKED (forget fails as restic does on a
+// restic's FAKE_RESTIC_LOCKED_FORGET (forget fails as restic does on a
 // locked repository, exit code 11, that many times).
 func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
@@ -1223,7 +1230,7 @@ func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 	}
 
 	// locked at the first try and after the unlock
-	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "2")
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "2")
 	run := j.runNow(id)[0]
 	if run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "deferred" || run.GetString("snapshot_id") == "" || run.GetInt("forgotten") != 0 {
 		t.Errorf("a run whose retention was postponed: %v", run.FieldsData())
@@ -1239,7 +1246,7 @@ func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 		t.Errorf("events: %v %v", events, err)
 	}
 	calls := fakerestic.Calls(t, j.restic)
-	if !strings.Contains(calls, "restic unlock") || strings.Contains(calls, "--remove-all") {
+	if fakerestic.Unlocks(t, j.restic) != 1 || strings.Contains(calls, "--remove-all") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 
@@ -1252,7 +1259,7 @@ func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "1000")
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "1000")
 	if run := j.runNow(id)[0]; run.GetString("retention") != "deferred" {
 		t.Errorf("a run whose retention was postponed again: %v", run.FieldsData())
 	}
@@ -1261,7 +1268,7 @@ func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
 		t.Errorf("the alert: %v", alert)
 	}
 
-	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "")
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "")
 	if run := j.runNow(id)[0]; run.GetString("retention") != "applied" || run.GetInt("forgotten") != 3 {
 		t.Errorf("a run whose retention was applied: %v", run.FieldsData())
 	}
