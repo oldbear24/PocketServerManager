@@ -218,7 +218,7 @@ func TestWhatResticSaysKeepsNoSecret(t *testing.T) {
 	_, err := a.backupJob(context.Background(), &agentv1.BackupRepository{
 		TargetId: "t5", Url: "s3:http://minio:9000/backups", Password: "repo-password-5",
 		Env: map[string]string{"AWS_ACCESS_KEY_ID": "minio-key", "AWS_SECRET_ACCESS_KEY": secret},
-	}, []string{"init"}, &out)
+	}, backupJobSpec{args: []string{"init"}}, &out)
 	if err == nil || !strings.Contains(err.Error(), "Access Denied") || strings.Contains(err.Error(), secret) {
 		t.Errorf("the error: %v", err)
 	}
