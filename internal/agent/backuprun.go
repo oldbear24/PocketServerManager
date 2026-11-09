@@ -30,11 +30,13 @@ import (
 // that snapshots name the server's paths; restic never runs in the agent's
 // own container, and its /host is no part of the job: the agent only follows
 // a directory's symbolic links through it first, so that it checks and
-// mounts where they lead, which the Engine would follow unchecked. A
-// database dump runs in the database's own container with docker exec, and
-// the agent writes what it prints to the job's attached standard input, as
-// the relay's frames (see internal/backup/relay.go), which the backup tool
-// hands to restic.
+// mounts where they lead, which the Engine would follow unchecked. The job
+// runs from the agent's own image, so the agent refuses, in its own files, a
+// directory that the job would mount at a symbolic link. A database dump
+// runs in the database's own container with docker exec, and the agent
+// writes what it prints to the job's attached standard input, as the relay's
+// frames (see internal/backup/relay.go), which the backup tool hands to
+// restic.
 
 const (
 	// backupVolumes is where a job mounts the volumes it backs up.
@@ -57,11 +59,6 @@ var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 // them, or holds one, would hide it, mounted at its own path.
 var backupJobDirs = []string{"/bin", "/sbin", "/lib", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/local/bin",
 	"/tmp", "/run/pocketcloud", "/var/lib/pocketcloud", resticCacheDir, backup.LocalMount, backupVolumes}
-
-// backupJobLinks are symbolic links of the backup job's image: a directory
-// mounted at one of them, or in one, would land where it leads in the job,
-// such as /var/run on its /run.
-var backupJobLinks = []string{"/var/run", "/var/lock", "/var/spool/mail"}
 
 // handleBackupRun backs up a job's volumes, directories or database dump to a
 // target's repository, and applies the job's retention.
@@ -209,7 +206,7 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 				return job, err
 			}
 			// where it leads only, which is what the job mounts
-			if err := checkJobLinks(real); err != nil {
+			if err := checkJobImage(a.jobImageRoot(), real); err != nil {
 				return job, err
 			}
 			if slices.Contains(resolved, real) {
@@ -303,18 +300,60 @@ func checkBackupPath(dir string) error {
 	return nil
 }
 
-// checkJobLinks checks a directory of the server, with no symbolic link left
-// in it, against the links of the backup job's image: mounted at one, or in
-// one, it would land where the link leads in the job. A directory that leads
-// through a link on the server is mounted where it leads, so only that is
-// checked: /var/spool/mail that leads to /var/mail is backed up there.
-func checkJobLinks(dir string) error {
-	for _, link := range backupJobLinks {
-		if dir == link || strings.HasPrefix(dir, link+"/") {
-			return fmt.Errorf("%s is a symbolic link in the backup job, which cannot mount %s at its own path: back up where it leads", link, dir)
+// jobImageRoot is where the agent sees the files of its backup jobs' image:
+// a job runs from the agent's own image, so they are the agent's own.
+func (a *Agent) jobImageRoot() string {
+	if a.Config.JobImageRoot == "" {
+		return "/"
+	}
+	return a.Config.JobImageRoot
+}
+
+// checkJobImage checks a directory of the server, with no symbolic link left
+// in it, against the backup job's image, whose files are at root: mounted at
+// a symbolic link of the image, or in one, the directory would land where
+// the link leads in the job, such as /var/spool/cron/crontabs on its
+// /etc/crontabs, and restic would save only the link. A part of the path the
+// image does not have is no matter: Docker makes it for the mount. A
+// directory that leads through a link on the server is mounted where it
+// leads, so only that is checked: /var/spool/mail that leads to /var/mail is
+// backed up there.
+func checkJobImage(root, dir string) error {
+	at := "/"
+	for _, name := range strings.Split(strings.TrimPrefix(dir, "/"), "/") {
+		at = path.Join(at, name)
+		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(at)))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("%s cannot be checked in the backup job's image: %w", dir, err)
+		case info.Mode()&fs.ModeSymlink != 0:
+			return jobImageLink(dir, at)
+		case !info.IsDir():
+			// a file of the image, with nothing in it: Docker cannot mount
+			// a directory there, and the job's start says so
+			return nil
 		}
 	}
 	return nil
+}
+
+// jobImageLink refuses dir, which is link, a symbolic link of the backup
+// job's image, or in it, and says what to back up instead: the directory the
+// link is in, which is no link in the image, as the check came through it,
+// and whose mount hides the link in the job; unless that one is refused too.
+func jobImageLink(dir, link string) error {
+	what := dir
+	if dir == link {
+		what = "it"
+	}
+	holder := path.Dir(link)
+	if checkBackupPath(holder) != nil {
+		// so is every directory that holds it
+		return fmt.Errorf("%s is a symbolic link in the backup job's image, so %s cannot be mounted there, and no directory that holds it can be backed up instead", link, what)
+	}
+	return fmt.Errorf("%s is a symbolic link in the backup job's image, so %s cannot be mounted there: back up %s, which holds it", link, what, holder)
 }
 
 // recursiveReadOnlyAPI is the first Engine API that makes a bind mount

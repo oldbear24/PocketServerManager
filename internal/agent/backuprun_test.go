@@ -32,6 +32,7 @@ func newRunAgent(t *testing.T) *runAgent {
 	t.Helper()
 	a, engine, root := backupAgent(t)
 	engine.VolumeRoot = t.TempDir()
+	a.Config.JobImageRoot = jobImage(t)
 	r := &runAgent{Agent: a, engine: engine, root: root}
 	run := engine.OnJob
 	engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
@@ -41,6 +42,31 @@ func newRunAgent(t *testing.T) *runAgent {
 		return run(job)
 	}
 	return r
+}
+
+// jobImage writes the directories of the backup jobs' image, the agent's own
+// (docker:27-cli, on Alpine), that hold its symbolic links, and the links,
+// which the agent checks the directories it backs up against.
+func jobImage(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, dir := range []string{"/run/lock", "/var/mail", "/var/spool/cron", "/etc/crontabs", "/etc/ssl/certs", "/etc/ssl1.1", "/srv", "/tmp"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"/var/run":                 "../run",
+		"/var/lock":                "../run/lock",
+		"/var/spool/mail":          "../mail",
+		"/var/spool/cron/crontabs": "../../../etc/crontabs",
+		"/etc/ssl1.1/certs":        "/etc/ssl/certs",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
 }
 
 // jobCount is how many jobs ran.
@@ -393,22 +419,33 @@ func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
 
 // TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads (review of #29): a
 // directory mounted at a symbolic link of the job's image, or in one, would
-// land where the link leads in the job, so the agent refuses it; but only
-// where the directory leads on the server, which is what the job mounts: on
+// land where the link leads in the job, and restic would save only the link,
+// so the agent refuses it, and says what holds it; it checks every such link
+// of the image, which is its own, in its own files. But it checks only where
+// the directory leads on the server, which is what the job mounts: on
 // Debian, where /var/spool/mail leads to /var/mail, it is backed up as
 // /var/mail, and where it is a directory of its own, it is refused.
 func TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads(t *testing.T) {
 	r := newRunAgent(t)
-	// a Debian server, and an older one, where /var/spool/mail and /var/run
-	// are directories of their own
+	// a Debian server, with its users' crontabs in /var/spool/cron/crontabs
+	// and the certificates of an old OpenSSL; and an older one, where
+	// /var/spool/mail and /var/run are directories of their own
 	debian, older := t.TempDir(), t.TempDir()
-	for _, dir := range []string{debian + "/var/spool", debian + "/var/mail", debian + "/srv/app", older + "/var/spool/mail", older + "/var/run/app"} {
+	for _, dir := range []string{debian + "/var/spool/cron/crontabs", debian + "/var/mail", debian + "/srv/app", debian + "/etc/ssl1.1/certs",
+		older + "/var/spool/mail/bob", older + "/var/run/app"} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	writeFiles(t, debian+"/var/spool/cron/crontabs", map[string]string{"bob": "@daily /home/bob/sync"})
 	if err := os.Symlink("../mail", debian+"/var/spool/mail"); err != nil {
 		t.Fatal(err)
+	}
+	prepare := func(server, dir string) (backupJobSpec, error) {
+		r.Config.HostRoot = server
+		return r.backupRunJob(context.Background(), &agentv1.BackupRun{
+			Paths: []string{dir}, Tags: []string{"pocketcloud", "job:j11"}, HostName: "nas",
+		})
 	}
 
 	for _, tc := range []struct {
@@ -419,15 +456,17 @@ func TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads(t *testing.T) {
 	}{
 		{debian, "/var/spool/mail", "/var/mail", ""},
 		{debian, "/srv/app", "/srv/app", ""},
-		{older, "/var/spool/mail", "", "/var/spool/mail is a symbolic link in the backup job"},
-		{older, "/var/run/app", "", "/var/run is a symbolic link in the backup job"},
+		{debian, "/var/spool/cron", "/var/spool/cron", ""},
+		{debian, "/var/spool/cron/crontabs", "", "/var/spool/cron/crontabs is a symbolic link in the backup job's image, so it cannot be mounted there: back up /var/spool/cron, which holds it"},
+		{debian, "/etc/ssl1.1/certs", "", "/etc/ssl1.1/certs is a symbolic link in the backup job's image, so it cannot be mounted there: back up /etc/ssl1.1, which holds it"},
+		{older, "/var/spool/mail", "", "/var/spool/mail is a symbolic link in the backup job's image, so it cannot be mounted there: back up /var/spool, which holds it"},
+		{older, "/var/spool/mail/bob", "", "/var/spool/mail is a symbolic link in the backup job's image, so /var/spool/mail/bob cannot be mounted there: back up /var/spool, which holds it"},
+		// /var would hide the job's own /var/lib/pocketcloud
+		{older, "/var/run/app", "", "/var/run is a symbolic link in the backup job's image, so /var/run/app cannot be mounted there, and no directory that holds it can be backed up instead"},
 	} {
-		r.Config.HostRoot = tc.server
-		job, err := r.backupRunJob(context.Background(), &agentv1.BackupRun{
-			Paths: []string{tc.dir}, Tags: []string{"pocketcloud", "job:j11"}, HostName: "nas",
-		})
+		job, err := prepare(tc.server, tc.dir)
 		if tc.refused != "" {
-			if err == nil || !strings.HasPrefix(err.Error(), tc.refused) {
+			if err == nil || err.Error() != tc.refused {
 				t.Errorf("%s: %v, want %q", tc.dir, err, tc.refused)
 			}
 			continue
@@ -446,6 +485,20 @@ func TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads(t *testing.T) {
 		if slices.Contains(job.notes, leads) != (tc.dir != tc.mounted) {
 			t.Errorf("%s: the notes: %q", tc.dir, job.notes)
 		}
+	}
+
+	// an agent that is told nothing checks its own files, the image's
+	r.Config.JobImageRoot = ""
+	own := t.TempDir()
+	if err := os.Symlink("/etc", filepath.Join(own, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(debian, own, "link"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := own + "/link is a symbolic link in the backup job's image, so it cannot be mounted there: back up " + own + ", which holds it"
+	if _, err := prepare(debian, own+"/link"); err == nil || err.Error() != want {
+		t.Errorf("a link in the agent's own files: %v, want %q", err, want)
 	}
 }
 
