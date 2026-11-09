@@ -1,11 +1,14 @@
 package e2e
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,6 +41,8 @@ type backupHarness struct {
 
 	mu   sync.Mutex
 	jobs []fakedocker.Job
+	// finished holds the checks whose finishers ran
+	finished sync.Map
 }
 
 func newBackupHarness(t *testing.T) *backupHarness {
@@ -54,6 +59,8 @@ func newBackupHarness(t *testing.T) *backupHarness {
 		b.mu.Unlock()
 		return run(job)
 	}
+	// after the panel's own finisher, which keeps what a check found
+	b.panel.Commands.OnFinish("backup.init", func(command *core.Record) { b.finished.Store(command.Id, true) })
 	b.agent, b.host = b.enrolled("backup-node")
 	var admin *core.Record
 	admin, b.admin = testutil.NewUser(t, b.app, "admin@example.com", schema.RoleAdmin)
@@ -78,14 +85,22 @@ func (b *backupHarness) send(method, url, token string, body any) (int, map[stri
 	return status, answer
 }
 
-// checksDone waits until no check of a target is queued or running: the
-// measures that follow a check run without anyone waiting.
+// checksDone waits until every check of a target has ended and its finisher
+// kept what it found: the measures that follow a check run without anyone
+// waiting, and a command is final a moment before its finisher runs.
 func (b *backupHarness) checksDone() {
 	b.t.Helper()
 	b.waitFor("the checks to end", func() bool {
-		open, err := b.app.FindRecordsByFilter(schema.Commands,
-			"type='backup.init' && (status='queued' || status='dispatched' || status='running')", "", 1, 0)
-		return err == nil && len(open) == 0
+		checks, err := b.app.FindRecordsByFilter(schema.Commands, "type='backup.init'", "", 0, 0)
+		if err != nil {
+			return false
+		}
+		for _, check := range checks {
+			if _, kept := b.finished.Load(check.Id); !kept {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -748,6 +763,14 @@ func TestWhatATargetHoldsIsMeasuredAfterItOpens(t *testing.T) {
 	if len(ran) != 2 || slices.Contains(ran[0].Cmd, "--usage") || !slices.Contains(ran[1].Cmd, "--usage") {
 		t.Errorf("the jobs: %v", ran)
 	}
+	// the measure opens the repository the check found, on a resource of its
+	// own, so that it holds up no check
+	target := b.targetNamed("b2")
+	measures, err := b.app.FindRecordsByFilter(schema.Commands, "type='backup.init' && resource={:r}", "", 0, 0, dbx.Params{"r": "backup-usage:" + target.Id})
+	if err != nil || len(measures) != 1 || !strings.Contains(string(mustJSON(measures[0].Get("payload"))), `"repo_id":"`+target.GetString("repo_id")+`"`) ||
+		!slices.Contains(ran[1].Cmd, "--expect") {
+		t.Errorf("the measure: %v %v", measures, err)
+	}
 }
 
 // TestNotesAndNamesAreCountedInCharacters (review of #28): as the collection
@@ -765,5 +788,144 @@ func TestNotesAndNamesAreCountedInCharacters(t *testing.T) {
 	body["note"] = strings.Repeat("ř", 501)
 	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusBadRequest || !strings.Contains(out["message"].(string), "at most 500") {
 		t.Errorf("too long: %d %v", status, out)
+	}
+}
+
+// TestTwoChangesAtOnceKeepNeitherOver (second review of #28): a change is
+// made from the target as it was read; one that another change replaced
+// meanwhile is refused, not stored over it.
+func TestTwoChangesAtOnceKeepNeitherOver(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "old-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	b.checksDone()
+	id := b.targetNamed("b2").Id
+	entered, release := b.gateJobs(func(job fakedocker.Job) bool { return !slices.Contains(job.Cmd, "--usage") }, nil)
+	rotated := make(chan int, 1)
+	go func() {
+		status, _ := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+			"credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "rotated-secret"},
+		})
+		rotated <- status
+	}()
+	<-entered
+	region := make(chan map[string]any, 1)
+	go func() {
+		status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+			"config": map[string]any{"endpoint": "http://minio:9000", "bucket": "backups", "prefix": "b2", "path_style": true, "region": "eu-1"},
+		})
+		out["status_code"] = status
+		region <- out
+	}()
+	b.waitFor("the second change's check to queue", func() bool {
+		queued, _ := b.app.FindRecordsByFilter(schema.Commands, "type='backup.init' && status='queued'", "", 0, 0)
+		return len(queued) == 1
+	})
+	release()
+	if status := <-rotated; status != http.StatusOK {
+		t.Fatalf("the rotation: %d", status)
+	}
+	if out := <-region; out["status_code"] == http.StatusOK || !strings.Contains(out["message"].(string), "changed meanwhile") {
+		t.Errorf("the change made from the old key: %v", out)
+	}
+	target := b.targetNamed("b2")
+	creds, _ := b.panel.Box.OpenString(target.GetString("credentials"))
+	if !strings.Contains(creds, "rotated-secret") || strings.Contains(target.GetString("config"), "eu-1") {
+		t.Errorf("the rotation was undone: %s %s", creds, target.GetString("config"))
+	}
+}
+
+// TestAClientThatLeavesEndsNothing (second review of #28): the check goes on
+// without the client, and so do the writes that follow it.
+func TestAClientThatLeavesEndsNothing(t *testing.T) {
+	b := newBackupHarness(t)
+	entered, release := b.gateJobs(func(fakedocker.Job) bool { return true }, nil)
+	body := s3Target("refused", "a-"+fakerestic.Wrong+"-secret")
+	body["host"] = b.host.Id
+	raw, _ := json.Marshal(body)
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/api/pc/backup-targets", strings.NewReader(string(raw))).WithContext(ctx)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", b.admin)
+	done := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		b.handler.ServeHTTP(recorder, request)
+		done <- recorder.Code
+	}()
+	<-entered
+	cancel()
+	release()
+	<-done
+	b.checksDone()
+	b.waitFor("the refused target to go", func() bool { return len(b.targets()) == 0 })
+}
+
+// TestACheckSentAgainAfterAReconnectKeepsNoStaleResult (second review of
+// #28): the agent goes on with what it was first sent; the panel does not
+// know what that was once a change came between.
+func TestACheckSentAgainAfterAReconnectKeepsNoStaleResult(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "old-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	b.checksDone()
+	id := b.targetNamed("b2").Id
+	entered, release := b.gateJobs(func(job fakedocker.Job) bool { return slices.Contains(job.Cmd, "--usage") },
+		func(fakedocker.JobResult) fakedocker.JobResult {
+			return fakedocker.JobResult{Code: 1, Stderr: "error: Fatal: unable to open config file: Access Denied"}
+		})
+	b.panel.CheckBackupTargets()
+	<-entered
+	if status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+		"credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "new-secret"},
+	}); status != http.StatusOK {
+		t.Fatalf("new credentials: %d %v", status, out)
+	}
+	measure, err := b.app.FindFirstRecordByFilter(schema.Commands, "type='backup.init' && status='running'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.panel.Commands.Drop(b.host.Id, errors.New("a test drops the stream"))
+	b.waitFor("the measure to be sent again", func() bool { return b.command(measure.Id).GetInt("attempts") >= 2 })
+	release()
+	b.checksDone()
+	if target := b.targetNamed("b2"); target.GetString("status") != schema.TargetOK {
+		t.Errorf("a stale measure failed the target: %s", target.GetString("last_error"))
+	}
+}
+
+// TestATargetBeingAddedIsNotChanged (second review of #28): its first check
+// may yet remove it, with its password; a change's check would make its
+// repository all the same.
+func TestATargetBeingAddedIsNotChanged(t *testing.T) {
+	b := newBackupHarness(t)
+	entered, release := b.gateJobs(func(fakedocker.Job) bool { return true }, nil)
+	body := s3Target("b2", "a-"+fakerestic.Wrong+"-secret")
+	body["host"] = b.host.Id
+	added := make(chan int, 1)
+	go func() {
+		status, _ := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body)
+		added <- status
+	}()
+	<-entered
+	id := b.targetNamed("b2").Id
+	if status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+		"credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "good-secret"},
+	}); status != http.StatusConflict || !strings.Contains(out["message"].(string), "still being added") {
+		t.Errorf("a change during the first check: %d %v", status, out)
+	}
+	release()
+	if status := <-added; status != http.StatusBadRequest {
+		t.Errorf("the refused add: %d", status)
+	}
+	b.checksDone()
+	if len(b.targets()) != 0 || fakerestic.Repositories(t, b.restic) != 0 {
+		t.Errorf("%d targets, %d repositories", len(b.targets()), fakerestic.Repositories(t, b.restic))
 	}
 }

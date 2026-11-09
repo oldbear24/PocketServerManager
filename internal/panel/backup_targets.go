@@ -71,6 +71,9 @@ type targetChange struct {
 	host    string
 	secrets targetSecrets
 	actor   audit.Actor
+	// base is the target the change was made from: one that changed
+	// since, as by another change, takes nothing of this one
+	base string
 }
 
 // checkOutcome is how a check went, as the finisher tells the route waiting
@@ -78,7 +81,14 @@ type targetChange struct {
 type checkOutcome struct {
 	problem *targetProblem
 	created bool
+	// refused says nothing was made with the target's password: restic
+	// refused, or the check never ran
+	refused bool
 }
+
+// replayed marks a check that went out again after a reconnect: what it was
+// completed with first is not known, so its result is not kept.
+const replayed = "\x00replayed"
 
 var (
 	// targetChanges holds the changes that wait for their checks, by the id
@@ -221,18 +231,25 @@ func (p *Panel) handleAddTarget(e *core.RequestEvent) error {
 	requestedBy, requester := requester(e)
 	// a client that leaves does not end the check: its target stays as it went
 	outcome := p.checkTarget(context.WithoutCancel(e.Request.Context()), target, host, nil, "", requestedBy, requester)
+	// what follows the check outlives a client that left, as the check does
+	ctx = audit.WithActor(context.WithoutCancel(e.Request.Context()), audit.ActorFromRequest(e))
 	switch {
 	case outcome.problem == nil:
-	case outcome.problem.status == http.StatusBadRequest || outcome.problem.status == http.StatusConflict:
+	case outcome.refused:
 		// restic refused it, or nothing ran: the target goes again
 		if err := e.App.DeleteWithContext(ctx, target); err != nil {
 			p.Log.Error("failed to remove a refused backup target", "target", name, "error", err)
 		}
 		return e.Error(outcome.problem.status, outcome.problem.message, nil)
 	default:
-		message := outcome.problem.message + " The target is kept, waiting: check it again to finish adding it, or remove it."
-		p.setFields(target, map[string]any{"last_error": message})
-		return e.Error(outcome.problem.status, message, nil)
+		// the repository may have been made: its password stays
+		message := strings.TrimSuffix(outcome.problem.message, ".") + ". The target is kept, waiting: check it again to finish adding it, or remove it."
+		p.setFields(target, map[string]any{"last_error": truncateText(message, 4000)})
+		status := http.StatusBadGateway
+		if outcome.problem.status == http.StatusGatewayTimeout {
+			status = http.StatusGatewayTimeout
+		}
+		return e.Error(status, message, nil)
 	}
 	if !outcome.created {
 		p.measureTarget(target, requestedBy, requester)
@@ -283,6 +300,11 @@ func (p *Panel) handleChangeTarget(e *core.RequestEvent) error {
 
 	actor := audit.ActorFromRequest(e)
 	if body.Config != nil || body.Credentials != nil || (body.Host != nil && *body.Host != target.GetString("host")) {
+		// a target still being added may yet be removed by its first check,
+		// and a change's check would make its repository all the same
+		if target.GetString("repo_id") == "" && p.checkUnderWay(target.Id) {
+			return e.Error(http.StatusConflict, "The target is still being added: wait for its check, then change it.", nil)
+		}
 		stored, err := p.targetSecretsOf(target)
 		if err != nil {
 			p.secretsMissing(target, err)
@@ -314,7 +336,8 @@ func (p *Panel) handleChangeTarget(e *core.RequestEvent) error {
 			return e.BadRequestError("Choose the server whose agent reaches the target.", nil)
 		}
 		requestedBy, requester := requester(e)
-		change := &targetChange{host: host.Id, secrets: targetSecrets{kind: kind, config: config, creds: creds, password: stored.password}, actor: actor}
+		change := &targetChange{host: host.Id, secrets: targetSecrets{kind: kind, config: config, creds: creds, password: stored.password}, actor: actor,
+			base: targetFingerprint(target)}
 		// the finisher keeps the change once the repository opened with it
 		outcome := p.checkTarget(context.WithoutCancel(e.Request.Context()), target, host, change, target.GetString("repo_id"), requestedBy, requester)
 		if outcome.problem != nil {
@@ -323,8 +346,9 @@ func (p *Panel) handleChangeTarget(e *core.RequestEvent) error {
 	}
 
 	if len(fields) > 0 {
-		// onto the target as it is now, which the check changed meanwhile
-		err := p.update(audit.WithActor(e.Request.Context(), actor), target, func(fresh *core.Record) error {
+		// onto the target as it is now, which the check changed meanwhile,
+		// even if the client left while it ran
+		err := p.update(audit.WithActor(context.WithoutCancel(e.Request.Context()), actor), target, func(fresh *core.Record) error {
 			for name, value := range fields {
 				fresh.Set(name, value)
 			}
@@ -421,6 +445,11 @@ func (p *Panel) CheckBackupTargets() {
 // without waiting: a check of its own, which the finisher keeps. A target
 // whose server is offline, or that is measured already, is passed by.
 func (p *Panel) measureTarget(target *core.Record, requestedBy, requester string) {
+	// as it is stored now: a check that just ended gave it its repository
+	target, err := p.App.FindRecordById(schema.BackupTargets, target.Id)
+	if err != nil {
+		return
+	}
 	hostID := target.GetString("host")
 	if !p.Commands.Connected(hostID) {
 		return
@@ -464,7 +493,7 @@ func (p *Panel) measureTarget(target *core.Record, requestedBy, requester string
 // to answer: 400 with restic's words, 409 offline, 504 no answer in time.
 func (p *Panel) checkTarget(ctx context.Context, target, host *core.Record, change *targetChange, expect, requestedBy, requester string) checkOutcome {
 	if !p.Commands.Connected(host.Id) {
-		return checkOutcome{problem: &targetProblem{http.StatusConflict, offlineTarget(host)}}
+		return checkOutcome{problem: &targetProblem{http.StatusConflict, offlineTarget(host)}, refused: true}
 	}
 	secrets := targetSecrets{}
 	if change != nil {
@@ -473,12 +502,12 @@ func (p *Panel) checkTarget(ctx context.Context, target, host *core.Record, chan
 		var err error
 		if secrets, err = p.targetSecretsOf(target); err != nil {
 			p.secretsMissing(target, err)
-			return checkOutcome{problem: &targetProblem{http.StatusBadRequest, secretsMissingMessage}}
+			return checkOutcome{problem: &targetProblem{http.StatusBadRequest, secretsMissingMessage}, refused: true}
 		}
 	}
 	repo, err := backup.Locate(secrets.kind, secrets.config, secrets.creds)
 	if err != nil {
-		return checkOutcome{problem: &targetProblem{http.StatusBadRequest, capitalize(err.Error()) + "."}}
+		return checkOutcome{problem: &targetProblem{http.StatusBadRequest, capitalize(err.Error()) + "."}, refused: true}
 	}
 
 	id := core.GenerateDefaultRandomId()
@@ -496,6 +525,7 @@ func (p *Panel) checkTarget(ctx context.Context, target, host *core.Record, chan
 		Command: &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{
 			Repository: &agentv1.BackupRepository{TargetId: target.Id, Url: repo.URL},
 			RepoId:     expect,
+			Change:     change != nil,
 		}}},
 		Label:       truncateText("Check the backup target "+target.GetString("name"), 255),
 		RequestedBy: requestedBy,
@@ -503,7 +533,7 @@ func (p *Panel) checkTarget(ctx context.Context, target, host *core.Record, chan
 	})
 	if err != nil {
 		targetChanges.Delete(id)
-		return checkOutcome{problem: &targetProblem{http.StatusBadRequest, capitalize(err.Error()) + "."}}
+		return checkOutcome{problem: &targetProblem{http.StatusBadRequest, capitalize(err.Error()) + "."}, refused: true}
 	}
 	wait := p.BackupCheckWait
 	if wait <= 0 {
@@ -537,7 +567,8 @@ func (p *Panel) targetChecked(command *core.Record) {
 		Repository struct {
 			TargetID string `json:"target_id"`
 		} `json:"repository"`
-		Usage bool `json:"usage"`
+		Usage  bool `json:"usage"`
+		Change bool `json:"change"`
 	}
 	raw, _ := json.Marshal(command.Get("payload"))
 	_ = json.Unmarshal(raw, &payload)
@@ -548,7 +579,13 @@ func (p *Panel) targetChecked(command *core.Record) {
 	}
 	enriched, _ := targetEnriched.LoadAndDelete(command.Id)
 	was, _ := enriched.(string)
-	outcome := p.keepCheck(command, payload.Repository.TargetID, payload.Usage, change, was)
+	var outcome checkOutcome
+	if payload.Change && change == nil {
+		// the panel restarted during the change, which is gone with it
+		outcome = checkOutcome{problem: &targetProblem{http.StatusConflict, "The panel restarted during the change: make it again."}}
+	} else {
+		outcome = p.keepCheck(command, payload.Repository.TargetID, payload.Usage, change, was)
+	}
 	if waiter, ok := targetWaiters.LoadAndDelete(command.Id); ok {
 		waiter.(chan checkOutcome) <- outcome
 	}
@@ -569,6 +606,9 @@ func (p *Panel) keepCheck(command *core.Record, targetID string, usage bool, cha
 	stale := func(fresh *core.Record) bool {
 		return change == nil && was != "" && was != targetFingerprint(fresh)
 	}
+	// a check that never reached the agent, as one whose command could not
+	// be prepared, says nothing of the target
+	ran := !command.GetDateTime("dispatched_at").IsZero() && !strings.HasPrefix(command.GetString("error"), "failed to prepare the command")
 
 	switch command.GetString("status") {
 	case schema.CommandSucceeded:
@@ -581,6 +621,10 @@ func (p *Panel) keepCheck(command *core.Record, targetID string, usage bool, cha
 		err := p.update(ctx, target, func(fresh *core.Record) error {
 			if stale(fresh) {
 				return errUnchanged
+			}
+			if change != nil && targetFingerprint(fresh) != change.base {
+				// another change came first: this one was made from what it replaced
+				return errTargetChanged
 			}
 			if change != nil {
 				fresh.Set("host", change.host)
@@ -606,6 +650,9 @@ func (p *Panel) keepCheck(command *core.Record, targetID string, usage bool, cha
 			}
 			return nil
 		})
+		if errors.Is(err, errTargetChanged) {
+			return checkOutcome{problem: &targetProblem{http.StatusConflict, "The target changed meanwhile: make the change again."}}
+		}
 		if err != nil {
 			p.Log.Error("failed to keep the check of a backup target", "target", targetID, "error", err)
 			return checkOutcome{problem: &targetProblem{http.StatusInternalServerError, "The check's result could not be kept."}}
@@ -630,10 +677,17 @@ func (p *Panel) keepCheck(command *core.Record, targetID string, usage bool, cha
 		// the agent took the secrets out already; whatever it missed
 		message = capitalize(backup.Redact(message, backup.Secrets(secrets.password, repo.Env, repo.SSHKey)...))
 		problem := &targetProblem{http.StatusBadRequest, message}
+		var answer struct {
+			Refused bool `json:"refused"`
+		}
+		raw, _ := json.Marshal(command.Get("result"))
+		_ = json.Unmarshal(raw, &answer)
+		refused := answer.Refused || !ran
 		// a change that failed leaves the target as it was; a measure that
-		// takes longer than its time says nothing of whether it answers
-		if change != nil || (usage && command.GetString("status") == schema.CommandTimedOut) {
-			return checkOutcome{problem: problem}
+		// takes longer than its time, or a check that never ran, says
+		// nothing of whether it answers
+		if change != nil || !ran || (usage && command.GetString("status") == schema.CommandTimedOut) {
+			return checkOutcome{problem: problem, refused: refused}
 		}
 		err := p.update(ctx, target, func(fresh *core.Record) error {
 			if stale(fresh) {
@@ -647,9 +701,21 @@ func (p *Panel) keepCheck(command *core.Record, targetID string, usage bool, cha
 		if err != nil {
 			p.Log.Error("failed to keep the check of a backup target", "target", targetID, "error", err)
 		}
-		return checkOutcome{problem: problem}
+		return checkOutcome{problem: problem, refused: refused}
 	}
 	return checkOutcome{problem: &targetProblem{http.StatusGatewayTimeout, "The check was cancelled."}}
+}
+
+// errTargetChanged says a change was made from what another one replaced.
+var errTargetChanged = errors.New("the target changed meanwhile")
+
+// checkUnderWay tells whether a check of a target, other than a measure of
+// its repository, is queued or running.
+func (p *Panel) checkUnderWay(targetID string) bool {
+	under, err := p.App.FindRecordsByFilter(schema.Commands,
+		"type='backup.init' && resource={:resource} && (status={:queued} || status={:dispatched} || status={:running})", "", 1, 0,
+		dbx.Params{"resource": "backup:" + targetID, "queued": schema.CommandQueued, "dispatched": schema.CommandDispatched, "running": schema.CommandRunning})
+	return err == nil && len(under) > 0
 }
 
 // targetFingerprint is what a target's commands are completed with, besides
@@ -667,10 +733,23 @@ func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) erro
 		return errors.New("the command names no backup target")
 	}
 	var secrets targetSecrets
-	if pending, ok := targetChanges.Load(record.Id); ok {
+	if command.GetBackupInit().GetChange() {
+		pending, ok := targetChanges.Load(record.Id)
+		if !ok {
+			return errors.New("the panel restarted during the change: make it again")
+		}
 		change, _ := pending.(targetChange)
 		if change.host != record.GetString("host") {
 			return errors.New("the change of the backup target is for another server")
+		}
+		// a target removed, or changed by another change, takes nothing of
+		// this one: no repository is made with a password that is gone
+		target, err := p.App.FindRecordById(schema.BackupTargets, repo.GetTargetId())
+		if err != nil {
+			return errors.New("the backup target is gone")
+		}
+		if targetFingerprint(target) != change.base {
+			return errors.New("the backup target changed meanwhile: make the change again")
 		}
 		secrets = change.secrets
 	} else {
@@ -685,7 +764,12 @@ func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) erro
 			return err
 		}
 		if record.GetString("type") == "backup.init" {
-			targetEnriched.Store(record.Id, targetFingerprint(target))
+			// a check sent again after a reconnect may still run with what
+			// it was first sent with, which the agent keeps
+			fingerprint := targetFingerprint(target)
+			if first, loaded := targetEnriched.LoadOrStore(record.Id, fingerprint); loaded && first != fingerprint {
+				targetEnriched.Store(record.Id, replayed)
+			}
 		}
 	}
 	located, err := backup.Locate(secrets.kind, secrets.config, secrets.creds)
