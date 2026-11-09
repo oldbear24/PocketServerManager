@@ -121,8 +121,14 @@ func backup(c *agentv1.Command) string {
 		return ""
 	}
 	// a target's commands run one after another; the URL of a local one is
-	// the same /repo in each job, whatever the directory
+	// the same /repo in each job, whatever the directory. Measuring what a
+	// target's repository reads without a lock and may take long: it waits
+	// only for another measure, never holds up a check someone waits for. One
+	// that may create the repository still runs in turn with the others.
 	if id := repository.GetTargetId(); id != "" {
+		if init := c.GetBackupInit(); init.GetUsage() && init.GetRepoId() != "" {
+			return "backup-usage:" + id
+		}
 		return "backup:" + id
 	}
 	return "backup:" + repository.GetUrl()
@@ -197,7 +203,7 @@ var Specs = map[string]Spec{
 	"acme.challenge.present": {Timeout: time.Minute},
 	"acme.challenge.cleanup": {Timeout: time.Minute},
 
-	"backup.init":      {Timeout: 10 * time.Minute, Resource: backup},
+	"backup.init":      {Timeout: time.Hour, Resource: backup},
 	"backup.run":       {Timeout: 12 * time.Hour, Resource: backup},
 	"backup.restore":   {Timeout: 12 * time.Hour, Resource: backup},
 	"backup.snapshots": {Timeout: 5 * time.Minute},

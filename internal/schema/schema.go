@@ -342,7 +342,7 @@ var Audited = []AuditedCollection{
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
-	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes"}},
+	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes", "usage_at"}},
 	{Name: "backup_jobs", Label: "name", Host: "host"},
 }
 

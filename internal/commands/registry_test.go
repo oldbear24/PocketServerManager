@@ -119,6 +119,8 @@ func TestResources(t *testing.T) {
 		{"backup", &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{Repository: &agentv1.BackupRepository{Url: "s3:b"}}}}, "backup:s3:b"},
 		// local targets share the URL /repo; each is its own resource
 		{"backup target", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
+		{"backup usage", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Usage: true, RepoId: "r1", Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup-usage:t1"},
+		{"backup usage of a new target", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Usage: true, Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
 		{"agent", &agentv1.Command{Payload: &agentv1.Command_AgentRestart{AgentRestart: &agentv1.AgentRestart{}}}, "agent"},
 		{"edge", &agentv1.Command{Payload: &agentv1.Command_EdgeApply{EdgeApply: &agentv1.EdgeApply{}}}, "edge"},
 	} {

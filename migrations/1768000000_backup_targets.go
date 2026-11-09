@@ -37,6 +37,9 @@ func upBackupTargets(app core.App) error {
 		&core.TextField{Name: "last_error", Max: 4096},
 		&core.DateField{Name: "checked_at"},
 		&core.NumberField{Name: "used_bytes", OnlyInt: true},
+		// when used_bytes was measured: restic reads every snapshot for it,
+		// after the repository opened
+		&core.DateField{Name: "usage_at"},
 		// 0: unknown, as for a bucket without a quota
 		&core.NumberField{Name: "capacity_bytes", OnlyInt: true},
 		// the days a bucket's Object Lock keeps objects, as the admin states

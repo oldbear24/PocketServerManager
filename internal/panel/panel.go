@@ -66,6 +66,9 @@ type Panel struct {
 	TerminalIdle time.Duration
 	// AdminerTTL is how long an Adminer session lasts; zero is AdminerLifetime.
 	AdminerTTL time.Duration
+	// BackupCheckWait is how long adding or checking a backup target waits
+	// for the agent; zero is two minutes.
+	BackupCheckWait time.Duration
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions

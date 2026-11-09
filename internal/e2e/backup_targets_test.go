@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"golang.org/x/crypto/ssh"
 
@@ -28,10 +30,11 @@ import (
 // backup tool and a fake restic, as the job container would.
 type backupHarness struct {
 	*harness
-	admin  string
-	host   *core.Record
-	agent  *runningAgent
-	restic string
+	admin   string
+	adminID string
+	host    *core.Record
+	agent   *runningAgent
+	restic  string
 
 	mu   sync.Mutex
 	jobs []fakedocker.Job
@@ -52,7 +55,9 @@ func newBackupHarness(t *testing.T) *backupHarness {
 		return run(job)
 	}
 	b.agent, b.host = b.enrolled("backup-node")
-	_, b.admin = testutil.NewUser(t, b.app, "admin@example.com", schema.RoleAdmin)
+	var admin *core.Record
+	admin, b.admin = testutil.NewUser(t, b.app, "admin@example.com", schema.RoleAdmin)
+	b.adminID = admin.Id
 	return b
 }
 
@@ -71,6 +76,42 @@ func (b *backupHarness) send(method, url, token string, body any) (int, map[stri
 	_ = json.Unmarshal([]byte(out), &answer)
 	answer["raw"] = out
 	return status, answer
+}
+
+// checksDone waits until no check of a target is queued or running: the
+// measures that follow a check run without anyone waiting.
+func (b *backupHarness) checksDone() {
+	b.t.Helper()
+	b.waitFor("the checks to end", func() bool {
+		open, err := b.app.FindRecordsByFilter(schema.Commands,
+			"type='backup.init' && (status='queued' || status='dispatched' || status='running')", "", 1, 0)
+		return err == nil && len(open) == 0
+	})
+}
+
+// gateJobs holds the jobs that match until release is called, and tells on
+// entered when one waits.
+func (b *backupHarness) gateJobs(match func(fakedocker.Job) bool, result func(fakedocker.JobResult) fakedocker.JobResult) (entered <-chan struct{}, release func()) {
+	b.t.Helper()
+	in := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	var once sync.Once
+	run := b.docker.OnJob
+	b.docker.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
+		if !match(job) {
+			return run(job)
+		}
+		in <- struct{}{}
+		<-gate
+		got := run(job)
+		if result != nil {
+			got = result(got)
+		}
+		return got
+	}
+	release = func() { once.Do(func() { close(gate) }) }
+	b.t.Cleanup(release)
+	return in, release
 }
 
 func (b *backupHarness) ranJobs() []fakedocker.Job {
@@ -135,7 +176,7 @@ func TestAddingABackupTargetChecksItWithRestic(t *testing.T) {
 		out["immutable_days"] != float64(30) || out["credentials"] != nil || out["repo_password"] != nil {
 		t.Errorf("the target: %v", out)
 	}
-	if fakerestic.Repositories(t, b.restic) != 1 || strings.Count(fakerestic.Calls(t, b.restic), " init\n") != 1 {
+	if fakerestic.Repositories(t, b.restic) != 1 || strings.Count(fakerestic.Calls(t, b.restic), " init --json\n") != 1 {
 		t.Errorf("restic ran:\n%s", fakerestic.Calls(t, b.restic))
 	}
 	stored := b.targets()[0]
@@ -278,9 +319,11 @@ func TestABackupTargetsSecretsLeaveThePanelOnlyInItsCommand(t *testing.T) {
 	keyLine := strings.Split(private, "\n")[1]
 	forbidden := append([]string{"minio-secret-key-b2", "rest-server-password", keyLine, "PRIVATE KEY"}, passwords...)
 
-	// the commands, as the panel keeps them and viewers read them
+	// the commands, as the panel keeps them and viewers read them: three
+	// adds, a check and its measure, a change
+	b.checksDone()
 	inits, err := b.app.FindRecordsByFilter(schema.Commands, "type='backup.init'", "created", 0, 0)
-	if err != nil || len(inits) != 5 {
+	if err != nil || len(inits) != 6 {
 		t.Fatalf("%d checks: %v", len(inits), err)
 	}
 	_, viewer := testutil.NewUser(t, b.app, "viewer@example.com", schema.RoleViewer)
@@ -313,7 +356,7 @@ func TestABackupTargetsSecretsLeaveThePanelOnlyInItsCommand(t *testing.T) {
 
 	// the agent's jobs got them
 	jobs := b.ranJobs()
-	if len(jobs) != 5 {
+	if len(jobs) != 6 {
 		t.Fatalf("%d jobs ran", len(jobs))
 	}
 	var env, files string
@@ -467,5 +510,260 @@ func TestABackupTargetNeedsItsServerOnline(t *testing.T) {
 	b.panel.CheckBackupTargets()
 	if b.commandCount(b.host.Id, "backup.init") != before {
 		t.Error("the hourly check queued a check for an offline server")
+	}
+}
+
+// TestATargetThatDidNotAnswerInTimeIsKept (review of #28): a target is kept
+// with its password before restic runs, so a check that the panel stopped
+// waiting for, which may have created the repository all the same, leaves a
+// target to check again rather than a repository whose password is lost.
+func TestATargetThatDidNotAnswerInTimeIsKept(t *testing.T) {
+	b := newBackupHarness(t)
+	b.panel.BackupCheckWait = 300 * time.Millisecond
+	entered, release := b.gateJobs(func(fakedocker.Job) bool { return true }, nil)
+	body := s3Target("slow", "slow-secret")
+	body["host"] = b.host.Id
+	status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body)
+	if status != http.StatusGatewayTimeout || !strings.Contains(out["message"].(string), "The target is kept, waiting") {
+		t.Fatalf("a check that did not end in time: %d %v", status, out)
+	}
+	<-entered
+	target := b.targetNamed("slow")
+	if target.GetString("status") != schema.TargetPending || !strings.Contains(target.GetString("last_error"), "check it again") ||
+		!secrets.IsSealed(target.GetString("repo_password")) {
+		t.Errorf("the kept target: %v", target.PublicExport())
+	}
+	// the job went on and made the repository with the target's password
+	release()
+	b.waitFor("the repository", func() bool { return fakerestic.Repositories(t, b.restic) == 1 })
+	b.checksDone()
+	status, out = b.send(http.MethodPost, "/api/pc/backup-targets/"+target.Id+"/refresh", b.admin, nil)
+	if status != http.StatusOK || out["status"] != schema.TargetOK || len(out["repo_id"].(string)) != 64 || out["last_error"] != "" {
+		t.Errorf("checked again: %d %v", status, out)
+	}
+	if fakerestic.Repositories(t, b.restic) != 1 {
+		t.Error("checking again made another repository")
+	}
+}
+
+// TestABackupTargetIsNotBroughtBackByARevert (review of #28): one brought
+// back would have neither its credentials nor its repository's password,
+// and read as answering; one whose secrets cannot be opened reads as failed.
+func TestABackupTargetIsNotBroughtBackByARevert(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	target := b.targetNamed("b2")
+	if status, _ := b.send(http.MethodDelete, "/api/pc/backup-targets/"+target.Id, b.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove: %d", status)
+	}
+	entry, err := b.app.FindFirstRecordByFilter(schema.AuditLog, "collection={:c} && action='delete'", dbx.Params{"c": schema.BackupTargets})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, out := b.send(http.MethodPost, "/api/pc/audit/"+entry.Id+"/revert", b.admin, nil); status != http.StatusBadRequest ||
+		!strings.Contains(out["message"].(string), "cannot be reverted") {
+		t.Errorf("revert: %d %v", status, out)
+	}
+	if len(b.targets()) != 0 {
+		t.Error("the target was brought back")
+	}
+
+	// a target as a revert would have made it: stored without its secrets
+	collection, err := b.app.FindCollectionByNameOrId(schema.BackupTargets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghost := core.NewRecord(collection)
+	ghost.Load(map[string]any{"name": "ghost", "kind": "local", "host": b.host.Id, "config": map[string]any{"path": "/srv/ghost"},
+		"location": "/srv/ghost", "status": schema.TargetOK, "repo_id": strings.Repeat("c", 64)})
+	if err := b.app.Save(ghost); err != nil {
+		t.Fatal(err)
+	}
+	status, out := b.send(http.MethodPost, "/api/pc/backup-targets/"+ghost.Id+"/refresh", b.admin, nil)
+	if status != http.StatusOK || out["status"] != schema.TargetFailed || !strings.Contains(out["last_error"].(string), "remove it and add it again") {
+		t.Errorf("a target without its secrets: %d %v", status, out)
+	}
+}
+
+// TestAServerThatReachesTargetsIsNotRemoved (review of #28): its targets
+// would lose their only way to their repositories; the answer names them.
+func TestAServerThatReachesTargetsIsNotRemoved(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	status, out := b.send(http.MethodDelete, "/api/collections/hosts/records/"+b.host.Id, b.admin, nil)
+	if status != http.StatusBadRequest || !strings.Contains(out["message"].(string), "reaches the backup targets b2: move them to another server first") {
+		t.Errorf("remove the server: %d %v", status, out)
+	}
+	if _, err := b.app.FindRecordById(schema.Hosts, b.host.Id); err != nil {
+		t.Error("the server is gone")
+	}
+	if status, _ := b.send(http.MethodDelete, "/api/pc/backup-targets/"+b.targetNamed("b2").Id, b.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove the target: %d", status)
+	}
+	if status, out := b.send(http.MethodDelete, "/api/collections/hosts/records/"+b.host.Id, b.admin, nil); status != http.StatusNoContent {
+		t.Errorf("remove the server without targets: %d %v", status, out)
+	}
+}
+
+// TestTargetChangesAreAuditedAsTheAdmin (review of #28): who added a target
+// with credentials, changed them or removed it, with its password.
+func TestTargetChangesAreAuditedAsTheAdmin(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	id := b.targetNamed("b2").Id
+	if status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+		"note": "rotated", "credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "another-secret"},
+	}); status != http.StatusOK {
+		t.Fatalf("change: %d %v", status, out)
+	}
+	if status, _ := b.send(http.MethodDelete, "/api/pc/backup-targets/"+id, b.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove: %d", status)
+	}
+	entries, err := b.app.FindRecordsByFilter(schema.AuditLog, "collection={:c}", "seq", 0, 0, dbx.Params{"c": schema.BackupTargets})
+	if err != nil || len(entries) < 3 {
+		t.Fatalf("%d entries: %v", len(entries), err)
+	}
+	actions := map[string]bool{}
+	for _, entry := range entries {
+		actions[entry.GetString("action")] = true
+		if entry.GetString("actor") != b.adminID || entry.GetString("actor_kind") != "user" {
+			t.Errorf("%s by %s %s", entry.GetString("action"), entry.GetString("actor_kind"), entry.GetString("actor_label"))
+		}
+	}
+	if !actions["create"] || !actions["update"] || !actions["delete"] {
+		t.Errorf("actions: %v", actions)
+	}
+}
+
+// TestAChangeMadeDuringACheckIsKept (review of #28): a change waits up to
+// two minutes for its check; what another change stored meanwhile stays.
+func TestAChangeMadeDuringACheckIsKept(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	b.checksDone()
+	id := b.targetNamed("b2").Id
+	entered, release := b.gateJobs(func(fakedocker.Job) bool { return true }, nil)
+	done := make(chan int, 1)
+	go func() {
+		status, _ := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+			"note":        "A's note",
+			"credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "rotated-secret"},
+		})
+		done <- status
+	}()
+	<-entered
+	if status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{"name": "renamed"}); status != http.StatusOK {
+		t.Fatalf("the other change: %d %v", status, out)
+	}
+	release()
+	if status := <-done; status != http.StatusOK {
+		t.Fatalf("the change with a check: %d", status)
+	}
+	target, err := b.app.FindRecordById(schema.BackupTargets, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.GetString("name") != "renamed" || target.GetString("note") != "A's note" {
+		t.Errorf("the other change was lost: %v", target.PublicExport())
+	}
+	secrets, err := b.panel.Box.OpenString(target.GetString("credentials"))
+	if err != nil || !strings.Contains(secrets, "rotated-secret") {
+		t.Errorf("the new credentials were not kept: %v", err)
+	}
+}
+
+// TestAMeasureMadeWithOldCredentialsDoesNotUndoAChange (review of #28): a
+// measure runs beside other checks; one completed with the credentials a
+// change has since replaced says nothing of the target as it is now.
+func TestAMeasureMadeWithOldCredentialsDoesNotUndoAChange(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "old-secret")
+	body["host"] = b.host.Id
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	b.checksDone()
+	id := b.targetNamed("b2").Id
+	// the measure with the old credentials, which the storage refuses by then
+	entered, release := b.gateJobs(func(job fakedocker.Job) bool { return slices.Contains(job.Cmd, "--usage") },
+		func(fakedocker.JobResult) fakedocker.JobResult {
+			return fakedocker.JobResult{Code: 1, Stderr: "error: Fatal: unable to open config file: Access Denied"}
+		})
+	b.panel.CheckBackupTargets()
+	<-entered
+	if status, out := b.send(http.MethodPatch, "/api/pc/backup-targets/"+id, b.admin, map[string]any{
+		"credentials": map[string]any{"access_key_id": "minio-access-b2", "secret_access_key": "new-secret"},
+	}); status != http.StatusOK || out["status"] != schema.TargetOK {
+		t.Fatalf("new credentials: %d %v", status, out)
+	}
+	release()
+	b.checksDone()
+	if target, _ := b.app.FindRecordById(schema.BackupTargets, id); target.GetString("status") != schema.TargetOK {
+		t.Errorf("the old measure undid the change: %s %s", target.GetString("status"), target.GetString("last_error"))
+	}
+}
+
+// TestWhatATargetHoldsIsMeasuredAfterItOpens (review of #28): adding an
+// existing repository only opens it; restic reads its snapshots afterwards,
+// without anyone waiting, and the target says when.
+func TestWhatATargetHoldsIsMeasuredAfterItOpens(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	body["password"] = "a-password-of-my-own"
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated || out["usage_at"] == "" {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	if status, _ := b.send(http.MethodDelete, "/api/pc/backup-targets/"+b.targetNamed("b2").Id, b.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("remove: %d", status)
+	}
+	b.checksDone()
+	jobs := len(b.ranJobs())
+	t.Setenv("FAKE_RESTIC_SIZE", "777")
+	status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body)
+	if status != http.StatusCreated || out["status"] != schema.TargetOK {
+		t.Fatalf("add it again: %d %v", status, out)
+	}
+	b.waitFor("the measure", func() bool {
+		target := b.targetNamed("b2")
+		return target.GetInt("used_bytes") == 777 && !target.GetDateTime("usage_at").IsZero()
+	})
+	ran := b.ranJobs()[jobs:]
+	if len(ran) != 2 || slices.Contains(ran[0].Cmd, "--usage") || !slices.Contains(ran[1].Cmd, "--usage") {
+		t.Errorf("the jobs: %v", ran)
+	}
+}
+
+// TestNotesAndNamesAreCountedInCharacters (review of #28): as the collection
+// and the form count them, not in bytes, which Czech letters take two of.
+func TestNotesAndNamesAreCountedInCharacters(t *testing.T) {
+	b := newBackupHarness(t)
+	body := s3Target("b2", "a-secret")
+	body["host"] = b.host.Id
+	body["name"] = strings.Repeat("ž", 90)
+	body["note"] = strings.Repeat("ř", 450)
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusCreated {
+		t.Errorf("Czech: %d %v", status, out)
+	}
+	body["name"] = "other"
+	body["note"] = strings.Repeat("ř", 501)
+	if status, out := b.send(http.MethodPost, "/api/pc/backup-targets", b.admin, body); status != http.StatusBadRequest || !strings.Contains(out["message"].(string), "at most 500") {
+		t.Errorf("too long: %d %v", status, out)
 	}
 }
