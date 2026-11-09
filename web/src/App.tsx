@@ -9,7 +9,7 @@ import { AuthProvider, hasRole, useAuth } from "./lib/auth";
 import type { Role } from "./lib/pb";
 import { AgentsPage } from "./pages/Agents";
 import { AuditPage } from "./pages/Audit";
-import { ComingLater } from "./pages/ComingLater";
+import { BackupsPage } from "./pages/Backups";
 import { ComponentDemoPage } from "./pages/ComponentDemo";
 import { ContainerDetailPage } from "./pages/ContainerDetail";
 import { DatabasesPage } from "./pages/Databases";
@@ -78,7 +78,7 @@ export function AppRoutes() {
         <Route path="stacks" element={<StacksPage />} />
         <Route path="stacks/:id" element={<StackDetailPage />} />
         <Route path="databases" element={<DatabasesPage />} />
-        <Route path="backups" element={<ComingLater feature="backups" milestone="M4" />} />
+        <Route path="backups" element={<BackupsPage />} />
         <Route path="sites" element={<SitesPage />} />
         <Route path="sites/new" element={<SiteNewPage />} />
         <Route path="sites/:id" element={<SitesPage />} />
