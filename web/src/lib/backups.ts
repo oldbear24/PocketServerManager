@@ -118,8 +118,11 @@ export type Usage =
   | { kind: "unknown" };
 
 export function targetUsage(
-  target: Pick<BackupTarget, "kind" | "used_bytes" | "capacity_bytes">,
+  target: Pick<BackupTarget, "kind" | "used_bytes" | "capacity_bytes" | "checked_at">,
 ): Usage {
+  if (!target.checked_at) {
+    return { kind: "unknown" };
+  }
   const used = Math.max(0, target.used_bytes || 0);
   const capacity = target.capacity_bytes || 0;
   if (capacity > 0) {
@@ -129,12 +132,9 @@ export function targetUsage(
       percent: percentOf(used, capacity),
     };
   }
-  if (used === 0) {
-    return { kind: "unknown" };
-  }
-  return target.kind === "s3"
-    ? { kind: "unlimited", used: formatBytes(used) }
-    : { kind: "used", used: formatBytes(used) };
+  // a new repository holds nothing yet, which is no dash
+  const size = used > 0 ? formatBytes(used) : `${formatNumber(0)} B`;
+  return target.kind === "s3" ? { kind: "unlimited", used: size } : { kind: "used", used: size };
 }
 
 const byteUnits = ["B", "kB", "MB", "GB", "TB", "PB"];

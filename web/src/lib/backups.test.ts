@@ -25,14 +25,30 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const checked = "2026-11-09 09:00:00.000Z";
+
 describe("the usage of a target", () => {
   it("reads used / capacity in the capacity's unit, with a share for the bar", () => {
-    expect(targetUsage({ kind: "local", used_bytes: 0.6 * TB, capacity_bytes: 4 * TB })).toEqual({
+    expect(
+      targetUsage({
+        kind: "local",
+        used_bytes: 0.6 * TB,
+        capacity_bytes: 4 * TB,
+        checked_at: checked,
+      }),
+    ).toEqual({
       kind: "capacity",
       text: "0.6 / 4 TB",
       percent: 15,
     });
-    expect(targetUsage({ kind: "local", used_bytes: 0.3 * GB, capacity_bytes: 20 * GB })).toEqual({
+    expect(
+      targetUsage({
+        kind: "local",
+        used_bytes: 0.3 * GB,
+        capacity_bytes: 20 * GB,
+        checked_at: checked,
+      }),
+    ).toEqual({
       kind: "capacity",
       text: "0.3 / 20 GB",
       percent: 1.5,
@@ -40,31 +56,57 @@ describe("the usage of a target", () => {
   });
 
   it("says a bucket without a capacity has no limit", () => {
-    expect(targetUsage({ kind: "s3", used_bytes: 1.2 * TB, capacity_bytes: 0 })).toEqual({
+    expect(
+      targetUsage({ kind: "s3", used_bytes: 1.2 * TB, capacity_bytes: 0, checked_at: checked }),
+    ).toEqual({
       kind: "unlimited",
       used: "1.2 TB",
     });
   });
 
   it("gives just the used size of another target that reports no capacity", () => {
-    expect(targetUsage({ kind: "sftp", used_bytes: 600 * GB, capacity_bytes: 0 })).toEqual({
+    expect(
+      targetUsage({ kind: "sftp", used_bytes: 600 * GB, capacity_bytes: 0, checked_at: checked }),
+    ).toEqual({
       kind: "used",
       used: "600 GB",
     });
-    expect(targetUsage({ kind: "rest", used_bytes: 84e6, capacity_bytes: 0 })).toEqual({
+    expect(
+      targetUsage({ kind: "rest", used_bytes: 84e6, capacity_bytes: 0, checked_at: checked }),
+    ).toEqual({
       kind: "used",
       used: "84 MB",
     });
   });
 
   it("says nothing of a target not checked yet", () => {
-    expect(targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0 })).toEqual({
+    expect(targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, checked_at: "" })).toEqual({
       kind: "unknown",
     });
   });
 
+  it("says a new repository, checked, holds nothing yet", () => {
+    expect(
+      targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, checked_at: checked }),
+    ).toEqual({
+      kind: "unlimited",
+      used: "0 B",
+    });
+    expect(
+      targetUsage({ kind: "sftp", used_bytes: 0, capacity_bytes: 0, checked_at: checked }),
+    ).toEqual({
+      kind: "used",
+      used: "0 B",
+    });
+  });
+
   it("keeps the bar within its track", () => {
-    const usage = targetUsage({ kind: "local", used_bytes: 5 * TB, capacity_bytes: 4 * TB });
+    const usage = targetUsage({
+      kind: "local",
+      used_bytes: 5 * TB,
+      capacity_bytes: 4 * TB,
+      checked_at: checked,
+    });
     expect(usage.kind === "capacity" && usage.percent).toBe(100);
   });
 });
