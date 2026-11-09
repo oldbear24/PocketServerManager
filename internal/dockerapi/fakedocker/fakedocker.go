@@ -89,6 +89,9 @@ type Engine struct {
 	OnJob func(job Job) JobResult
 	// APIVersion is the Engine API version the fake reports; empty is 1.47.
 	APIVersion string
+	// KernelVersion is the kernel release the fake's info reports; empty is
+	// 6.1.0-fake.
+	KernelVersion string
 	// VolumeRoot is where volumes say their directories are on the host.
 	VolumeRoot string
 }
@@ -424,8 +427,14 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]string{"Version": "27.3.1", "ApiVersion": api, "Os": "linux", "Arch": "amd64"})
 	case path == "/info":
+		e.mu.Lock()
+		kernel := e.KernelVersion
+		e.mu.Unlock()
+		if kernel == "" {
+			kernel = "6.1.0-fake"
+		}
 		writeJSON(w, map[string]any{
-			"Name": "fake-host", "OperatingSystem": "Fake Linux 1.0", "KernelVersion": "6.1.0-fake",
+			"Name": "fake-host", "OperatingSystem": "Fake Linux 1.0", "KernelVersion": kernel,
 			"Architecture": "x86_64", "NCPU": 4, "MemTotal": 8 << 30, "ServerVersion": "27.3.1",
 		})
 	case path == "/containers/json":

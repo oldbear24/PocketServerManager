@@ -186,6 +186,10 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			args = append(args, "--path", target)
 		}
 	case len(paths) > 0:
+		recursive, err := a.recursiveReadOnly(ctx)
+		if err != nil {
+			return job, err
+		}
 		var resolved []string
 		for _, dir := range paths {
 			if err := checkBackupPath(dir); err != nil {
@@ -208,7 +212,15 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 				job.notes = append(job.notes, fmt.Sprintf("The directory %s leads to %s on this server: backing up %s", dir, real, real))
 			}
 			resolved = append(resolved, real)
-			job.mounts = append(job.mounts, map[string]any{"Type": "bind", "Source": real, "Target": real, "ReadOnly": true})
+			mount := map[string]any{"Type": "bind", "Source": real, "Target": real, "ReadOnly": true}
+			if recursive {
+				// the start fails rather than leave a mount under it
+				// writable
+				mount["BindOptions"] = map[string]any{"ReadOnlyForceRecursive": true}
+			} else {
+				job.notes = append(job.notes, real+" is mounted read-only at its top only: this Docker Engine or kernel cannot make the mounts under it read-only.")
+			}
+			job.mounts = append(job.mounts, mount)
 			args = append(args, "--path", real)
 		}
 	default:
@@ -287,6 +299,52 @@ func checkBackupPath(dir string) error {
 		}
 	}
 	return nil
+}
+
+// recursiveReadOnlyAPI is the first Engine API that makes a bind mount
+// read-only with the mounts under it, on a kernel from 5.12 on; before, a
+// read-only bind is read-only at its top only, and a disk mounted in the
+// directory stays writable.
+const recursiveReadOnlyAPI = "1.44"
+
+// recursiveReadOnly says whether the Engine and its kernel can make a bind
+// mount read-only with every mount under it.
+func (a *Agent) recursiveReadOnly(ctx context.Context) (bool, error) {
+	version, err := a.Docker.Version(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !apiAtLeast(version.APIVersion, recursiveReadOnlyAPI) {
+		return false, nil
+	}
+	info, err := a.Docker.Info(ctx)
+	if err != nil {
+		return false, err
+	}
+	return kernelAtLeast(info.KernelVersion, 5, 12), nil
+}
+
+// kernelAtLeast says whether a kernel's release, such as 6.1.0-18-amd64, is
+// major.minor or later.
+func kernelAtLeast(release string, major, minor int) bool {
+	number := func(text string) (int, bool) {
+		end := strings.IndexFunc(text, func(r rune) bool { return r < '0' || r > '9' })
+		if end < 0 {
+			end = len(text)
+		}
+		n, err := strconv.Atoi(text[:end])
+		return n, err == nil
+	}
+	first, rest, _ := strings.Cut(release, ".")
+	x, ok := number(first)
+	if !ok {
+		return false
+	}
+	y, ok := number(rest)
+	if !ok {
+		return false
+	}
+	return x > major || x == major && y >= minor
 }
 
 // maxLinks is how many symbolic links a directory of the server may lead

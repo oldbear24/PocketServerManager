@@ -201,7 +201,8 @@ func TestABackupRunOfDirectoriesToALocalTarget(t *testing.T) {
 	}
 	job := r.lastJob(t)
 	mount := mountsOf(job)[dir]
-	if mount["Type"] != "bind" || mount["Source"] != dir || mount["ReadOnly"] != true {
+	if options, _ := mount["BindOptions"].(map[string]any); mount["Type"] != "bind" || mount["Source"] != dir || mount["ReadOnly"] != true ||
+		options["ReadOnlyForceRecursive"] != true {
 		t.Errorf("the directory's mount: %v", mount)
 	}
 	if job.Host["NetworkMode"] != "none" || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER"}) {
@@ -385,6 +386,50 @@ func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
 	r.Config.HostRoot = filepath.Join(root, "gone")
 	if _, err := run(plain); err == nil || !strings.HasPrefix(err.Error(), "the agent cannot see the server's directories at "+r.Config.HostRoot) {
 		t.Errorf("without the server's /: %v", err)
+	}
+}
+
+// TestADirectoryIsReadOnlyWithTheMountsUnderIt (review of #29): a disk
+// mounted in a directory to back up is read-only in the job too, where the
+// Engine (API 1.44) and the kernel (5.12) can make it so; elsewhere the run's
+// log says that only the directory's top is.
+func TestADirectoryIsReadOnlyWithTheMountsUnderIt(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a.txt": "a"})
+	top := dir + " is mounted read-only at its top only: this Docker Engine or kernel cannot make the mounts under it read-only.\n"
+	for _, tc := range []struct {
+		api, kernel string
+		recursive   bool
+	}{
+		{"1.47", "6.1.0-18-amd64", true},
+		{"1.44", "5.12.0", true},
+		{"1.51", "6.18.44-fc-v310", true},
+		{"1.43", "6.1.0-18-amd64", false},
+		{"1.47", "5.10.0-28-amd64", false},
+		{"1.41", "4.19.0-26-amd64", false},
+	} {
+		r.engine.APIVersion, r.engine.KernelVersion = tc.api, tc.kernel
+		result, err := r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+			Repository: repo, Paths: []string{dir}, Tags: []string{"pocketcloud", "job:j10"}, HostName: "nas",
+		}), &Reporter{})
+		if err != nil {
+			t.Fatalf("%v: %v %v", tc, err, result)
+		}
+		mount := mountsOf(r.lastJob(t))[dir]
+		options, _ := mount["BindOptions"].(map[string]any)
+		log, _ := result["log"].(string)
+		if tc.recursive && (options["ReadOnlyForceRecursive"] != true || len(options) != 1 || strings.Contains(log, "at its top only")) ||
+			!tc.recursive && (mount["BindOptions"] != nil || !strings.HasPrefix(log, top)) || mount["ReadOnly"] != true {
+			t.Errorf("Engine API %s, kernel %s: the mount %v, the log:\n%s", tc.api, tc.kernel, mount, log)
+		}
+	}
+	for release, want := range map[string]bool{"5.12": true, "5.11.22": false, "10.0.1": true, "4.20.0": false, "6.10.14-linuxkit": true,
+		"5.15.167.4-microsoft-standard-WSL2": true, "": false, "x.y": false, "5": false} {
+		if kernelAtLeast(release, 5, 12) != want {
+			t.Errorf("kernel %q: %v", release, !want)
+		}
 	}
 }
 
