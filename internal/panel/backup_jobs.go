@@ -821,11 +821,19 @@ func dumpCommand(engine, file string) ([]string, string, bool) {
 		return []string{"sh", "-c", `if command -v mariadb-dump >/dev/null 2>&1; then d=mariadb-dump; else d=mysqldump; fi; ` +
 			`MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" exec "$d" --user=root --single-transaction --routines --triggers --events --hex-blob --all-databases`}, "sql", true
 	case schema.DumpSQLite:
-		// the image needs sqlite3: Docker's error says so when it has none
-		return []string{"sqlite3", file, ".dump"}, "sql", true
+		// the image needs sqlite3: the shell's error says so when it has none
+		return []string{"sh", "-c", sqliteDump, "sh", file}, "sql", true
 	}
 	return nil, "", false
 }
+
+// sqliteDump dumps the SQLite file it is given ($1). sqlite3 exits 0 when it
+// cannot read the database, with only an error in the dump, and makes an
+// empty file where there was none: so it opens the file read-only, waits up
+// to a minute for a writer's lock, and any error it says fails the dump, with
+// its words.
+const sqliteDump = `exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
+	`if [ -n "$e" ]; then printf '%s\n' "$e" >&2; exit 1; fi; exit $s`
 
 // dumpOf completes the command of a dump: the running container of the
 // job's service, which runs the engine's dump, and the dump's file name.
@@ -1065,12 +1073,13 @@ func (p *Panel) noteJobRun(jobID string) {
 }
 
 // pruneBackupRuns removes the runs older than their history keeps, but each
-// job's newest one.
+// job's newest one: a run goes only when its job has a newer one.
 func (p *Panel) pruneBackupRuns() {
 	cutoff := types.NowDateTime().Add(-keepBackupRuns)
 	_, err := p.App.DB().NewQuery(
 		"DELETE FROM " + schema.BackupRuns + " WHERE created < {:cutoff} AND status NOT IN ('queued', 'running')" +
-			" AND id NOT IN (SELECT (SELECT r.id FROM " + schema.BackupRuns + " r WHERE r.job = j.id ORDER BY r.created DESC, r.id DESC LIMIT 1) FROM " + schema.BackupJobs + " j)",
+			" AND EXISTS (SELECT 1 FROM " + schema.BackupRuns + " n WHERE n.job = " + schema.BackupRuns + ".job" +
+			" AND (n.created > " + schema.BackupRuns + ".created OR (n.created = " + schema.BackupRuns + ".created AND n.id > " + schema.BackupRuns + ".id)))",
 	).Bind(dbx.Params{"cutoff": cutoff.String()}).Execute()
 	if err != nil {
 		p.Log.Error("failed to remove old backup runs", "error", err)

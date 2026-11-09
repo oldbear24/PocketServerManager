@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -228,9 +229,14 @@ func TestABackupRunNamesWhatItBacksUp(t *testing.T) {
 		!strings.Contains(run.GetStdinCommand()[2], `MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}"`) {
 		t.Errorf("a MySQL dump: %v %v", run, err)
 	}
-	run, err = build(f.job("notes", map[string]any{"source_kind": schema.SourceDump, "stack": stack.Id, "service": "db", "engine": schema.DumpSQLite, "source": "/data/notes.db"}))
-	if err != nil || strings.Join(run.GetStdinCommand(), " ") != "sqlite3 /data/notes.db .dump" || run.GetStdinFileName() != "shop-db.sql" {
-		t.Errorf("a SQLite dump: %v %v", run, err)
+	// sqlite3 exits 0 on a database it cannot read, and makes one that is
+	// not there: the dump opens it read-only, waits for a writer's lock, and
+	// fails on any error sqlite3 says; the file is the shell's argument
+	run, err = build(f.job("notes", map[string]any{"source_kind": schema.SourceDump, "stack": stack.Id, "service": "db", "engine": schema.DumpSQLite, "source": "/data/my notes.db"}))
+	want := []string{"sh", "-c", `exec 3>&1; e=$(sqlite3 -readonly -cmd '.timeout 60000' "$1" .dump 2>&1 >&3); s=$?; ` +
+		`if [ -n "$e" ]; then printf '%s\n' "$e" >&2; exit 1; fi; exit $s`, "sh", "/data/my notes.db"}
+	if err != nil || !slices.Equal(run.GetStdinCommand(), want) || run.GetStdinFileName() != "shop-db.sql" {
+		t.Errorf("a SQLite dump: %q %v", run.GetStdinCommand(), err)
 	}
 	if _, err := build(f.job("stopped", map[string]any{"source_kind": schema.SourceDump, "stack": stack.Id, "service": "old", "engine": schema.DumpPostgres})); err == nil ||
 		!strings.Contains(err.Error(), "the service old of shop has no running container") {
@@ -569,11 +575,14 @@ func TestAnOfflineServerSkipsItsRuns(t *testing.T) {
 	}
 }
 
-// TestOldRunsGo (#29): runs older than 60 days go, but each job's newest.
+// TestOldRunsGo (#29): runs older than 60 days go, but each job's newest,
+// also while a job has no run at all, as a new one or one without a target.
 func TestOldRunsGo(t *testing.T) {
 	f := newJobFixture(t)
 	busy := f.job("busy", map[string]any{"source_kind": schema.SourceVolume, "source": "a"})
 	quiet := f.job("quiet", map[string]any{"source_kind": schema.SourceVolume, "source": "b"})
+	stale := f.job("stale", map[string]any{"source_kind": schema.SourceVolume, "source": "c"})
+	f.job("never", map[string]any{"source_kind": schema.SourceVolume, "source": "d", "targets": []string{}})
 	old := types.NowDateTime().Add(-61 * 24 * time.Hour)
 	age := func(run *core.Record, at types.DateTime) {
 		t.Helper()
@@ -585,8 +594,12 @@ func TestOldRunsGo(t *testing.T) {
 	oldBusy, newBusy, oldQuiet := f.run(busy), f.run(busy), f.run(quiet)
 	age(oldBusy, old)
 	age(oldQuiet, old)
+	// two old runs of a job: the newer of them stays
+	older, newer := f.run(stale), f.run(stale)
+	age(older, old.Add(-time.Hour))
+	age(newer, old)
 	f.p.pruneBackupRuns()
-	for run, kept := range map[*core.Record]bool{oldBusy: false, newBusy: true, oldQuiet: true} {
+	for run, kept := range map[*core.Record]bool{oldBusy: false, newBusy: true, oldQuiet: true, older: false, newer: true} {
 		if _, err := f.app.FindRecordById(schema.BackupRuns, run.Id); (err == nil) != kept {
 			t.Errorf("run %s kept: %v", run.Id, err == nil)
 		}
