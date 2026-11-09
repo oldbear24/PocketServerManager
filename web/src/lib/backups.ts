@@ -3,6 +3,7 @@ import { ClientResponseError, type RecordModel } from "pocketbase";
 import type { Tone } from "../components/ui";
 import { formatBytes, formatNumber, percentOf } from "./format";
 import { pb } from "./pb";
+import type { Host } from "./types";
 
 /** Where restic keeps a repository (#28). */
 export type BackupTargetKind = "s3" | "sftp" | "rest" | "local";
@@ -346,4 +347,11 @@ export function parseDays(text: string): number | null {
     return 0;
   }
   return /^\d{1,5}$/.test(value) && Number(value) <= maxImmutableDays ? Number(value) : null;
+}
+
+/** A server that cannot answer now, marked in a list to choose from. */
+export function serverOption(host: Pick<Host, "name" | "status">, offline: string): string {
+  return host.status === "online" || host.status === "degraded"
+    ? host.name
+    : `${host.name} (${offline})`;
 }

@@ -1965,7 +1965,7 @@
     "stackCardNote": "příkazy podle plánu v kontejneru služby"
   },
   "backups": {
-    "lead": "restic na agentech · šifrováno klíčem uloženým v panelu",
+    "lead": "restic na agentech · šifrováno klíčem uloženým v panelu · plánuje panel, spouští agent",
     "targets": "Cíle",
     "add": "Přidat cíl",
     "addTitle": "Přidat cíl záloh",

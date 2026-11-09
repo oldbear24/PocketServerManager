@@ -1877,7 +1877,7 @@
     "stackCardNote": "commands on a schedule, in a service's container"
   },
   "backups": {
-    "lead": "restic on the agents · encrypted with a key kept in the panel",
+    "lead": "restic on the agents · encrypted with a key kept in the panel · the panel schedules, the agent runs",
     "targets": "Targets",
     "add": "Add target",
     "addTitle": "Add a backup target",
