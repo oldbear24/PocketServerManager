@@ -1036,7 +1036,10 @@ func (p *Panel) dumpOf(job *core.Record, payload *agentv1.BackupRun) error {
 // job are still there, the command goes to the job's server, and the target
 // takes the job's backups. A run queued before its target was taken out of
 // the job, or before its label went, gets no secrets of the target: the
-// server need no longer have them.
+// server need no longer have them. That holds for its first delivery only: a
+// command sent again after the agent reconnected reached it with the secrets
+// already and may be running, and refusing it would only mark a backup that
+// goes on as failed, and free its target for other runs meanwhile.
 func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun, target *core.Record) error {
 	run, err := p.App.FindRecordById(schema.BackupRuns, payload.GetRunId())
 	if err != nil {
@@ -1046,14 +1049,15 @@ func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun
 	if err != nil {
 		return errors.New("the backup job is gone")
 	}
+	first := record.GetString("status") == schema.CommandQueued
 	switch {
 	case job.GetString("host") != record.GetString("host"):
 		return errors.New("the backup job runs on another server")
 	case run.GetString("target") != target.Id:
 		return errors.New("the backup run is for another target")
-	case !slices.Contains(job.GetStringSlice("targets"), target.Id):
+	case first && !slices.Contains(job.GetStringSlice("targets"), target.Id):
 		return errors.New(staleTarget)
-	case labelGone(job):
+	case first && labelGone(job):
 		return fmt.Errorf("the %s label of the job is gone", stacks.LabelBackup)
 	case target.GetString("status") == schema.TargetPending:
 		return errors.New("the target is still being added")

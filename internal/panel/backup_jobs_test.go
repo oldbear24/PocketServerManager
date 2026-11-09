@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -260,6 +261,8 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 		record.Id = "deliveredrun001"
 		record.Set("host", host)
 		record.Set("type", "backup.run")
+		// its first delivery
+		record.Set("status", schema.CommandQueued)
 		command := &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{
 			RunId: run.Id, Repository: &agentv1.BackupRepository{TargetId: target.Id, Url: "s3:https://s3.example.com/backups/node"},
 		}}}
@@ -337,6 +340,84 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 	}
 	if alerts, _ := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_failed'", "", 0, 0); len(alerts) != 0 {
 		t.Errorf("%d alerts", len(alerts))
+	}
+}
+
+// TestARunItsAgentHasIsSentAgainAfterItsTargetLeft (#29): a run whose
+// command reached its agent already, running or waiting for a free worker
+// there, is sent again as the agent reconnects even when its target left
+// the job meanwhile: the agent goes on with it, and the run ends as the
+// backup did, not failed.
+func TestARunItsAgentHasIsSentAgainAfterItsTargetLeft(t *testing.T) {
+	for _, started := range []bool{true, false} {
+		t.Run(fmt.Sprintf("started=%v", started), func(t *testing.T) {
+			f := newJobFixture(t)
+			nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"},
+				backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+			job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "targets": []string{f.target.Id, nas.Id}})
+			run, err := f.p.startRun(context.Background(), job, nas, f.host, schema.RunManual, time.Time{}, commands.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := run.GetString("command")
+			status := func() (string, string) {
+				t.Helper()
+				command, err := f.app.FindRecordById(schema.Commands, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				run, err := f.app.FindRecordById(schema.BackupRuns, run.Id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return command.GetString("status"), run.GetString("status")
+			}
+			stream := f.p.Commands.Connect(f.host.Id, []string{"backup.run"}, nil)
+			if command, _ := status(); command != schema.CommandDispatched {
+				t.Fatalf("the command was not delivered: %s", command)
+			}
+			sequence := uint64(1)
+			if started {
+				if _, err := f.p.Commands.Update(f.host.Id, &agentv1.ReportCommandUpdateRequest{CommandId: id, Sequence: sequence,
+					State: agentv1.CommandState_COMMAND_STATE_RUNNING}); err != nil {
+					t.Fatal(err)
+				}
+				sequence++
+			}
+
+			if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}}); status != http.StatusOK {
+				t.Fatalf("take nas out: %d %v", status, out)
+			}
+			f.p.Commands.Disconnect(stream)
+			stream = f.p.Commands.Connect(f.host.Id, []string{"backup.run"}, nil)
+			select {
+			case message := <-stream.Out():
+				if message.GetCommand().GetId() != id || message.GetCommand().GetBackupRun().GetRepository().GetPassword() != "repo-password-nas" {
+					t.Errorf("sent again: %v", message)
+				}
+			default:
+				t.Error("the command was not sent again")
+			}
+			want := schema.CommandDispatched
+			if started {
+				want = schema.CommandRunning
+			}
+			if command, run := status(); command != want || (run != schema.RunQueued && run != schema.RunRunning) {
+				t.Errorf("after the reconnect: the command is %s, the run %s", command, run)
+			}
+
+			cancel, err := f.p.Commands.Update(f.host.Id, &agentv1.ReportCommandUpdateRequest{CommandId: id, Sequence: sequence,
+				State: agentv1.CommandState_COMMAND_STATE_SUCCEEDED})
+			if err != nil || cancel {
+				t.Errorf("the agent's end: cancel %v, %v", cancel, err)
+			}
+			if command, run := status(); command != schema.CommandSucceeded || run != schema.RunSucceeded {
+				t.Errorf("at the end: the command is %s, the run %s", command, run)
+			}
+			if failed, _ := f.app.FindRecordsByFilter(schema.Events, "kind='backup.failed'", "", 0, 0); len(failed) != 0 {
+				t.Errorf("%d failures logged", len(failed))
+			}
+		})
 	}
 }
 
