@@ -24,11 +24,15 @@ func (e *RevertError) Error() string {
 // certificates: a certificate brought back has no key and claims files that
 // are gone from the edges; it is uploaded again instead. Nor are ACME
 // accounts: one brought back has no key, or the key of another account, and
-// no registration at its CA; it is set again in Settings.
+// no registration at its CA; it is set again in Settings. Nor are backup
+// targets (#28): one brought back has neither credentials nor its
+// repository's password, and a server or settings put back would skip the
+// restic check that every change of them passes; it is added again instead.
 func revertible(collection string) bool {
 	for _, c := range schema.Audited {
 		if c.Name == collection {
-			return collection != schema.Stacks && collection != schema.Certificates && collection != schema.ACMEAccounts
+			return collection != schema.Stacks && collection != schema.Certificates && collection != schema.ACMEAccounts &&
+				collection != schema.BackupTargets
 		}
 	}
 	return false
