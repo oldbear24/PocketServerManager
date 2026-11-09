@@ -421,9 +421,10 @@ func resolveServerDir(root, dir string) (string, error) {
 
 // feedDump runs a dump's command in its container with docker exec, and
 // writes what it prints to the job's standard input as the relay's frames,
-// and last how it ended. A job that stops reading leaves the dump without
-// anyone to read it: docker exec cannot stop a process, which runs to its
-// end in its container.
+// and last how it ended. It starts once restic has the repository's lock
+// and reads the dump; a job that stops reading after that leaves the dump
+// without anyone to read it: docker exec cannot stop a process, which runs
+// to its end in its container.
 func (a *Agent) feedDump(ctx context.Context, stdin io.WriteCloser, container string, cmd, env, secrets []string) {
 	defer stdin.Close()
 	frames := backup.NewFrameWriter(stdin)

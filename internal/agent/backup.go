@@ -89,8 +89,9 @@ type backupJobSpec struct {
 	mounts []map[string]any
 	// capabilities are those the job needs besides a local target's
 	capabilities []string
-	// feed, when set, writes the job's standard input once it has started,
-	// and closes it; it stops when its context ends
+	// feed, when set, writes the job's standard input once restic reads
+	// it, as the backup tool says (relayReady), and closes it; it stops when
+	// its context ends, and never starts for a job that ends first
 	feed func(ctx context.Context, stdin io.WriteCloser)
 	// notes are lines for the run's log, said before the job starts
 	notes []string
@@ -182,6 +183,13 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	defer stopFeed()
 	fed := make(chan struct{})
 	feeding := false
+	var stderr io.Writer = &redactingWriter{w: log, secrets: secrets}
+	// the dump starts once restic reads it: the tool says when, before any
+	// secret is taken out of what it says
+	ready := make(chan struct{})
+	if job.feed != nil {
+		stderr = &markWatcher{w: stderr, mark: relayReady, seen: ready}
+	}
 	hooks := jobHooks{
 		stopGrace: backupStopGrace,
 		prepare: func(id string) error {
@@ -218,13 +226,22 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 				feeding = true
 				go func() {
 					defer close(fed)
-					job.feed(feedCtx, stdin)
+					select {
+					case <-ready:
+						if feedCtx.Err() == nil {
+							job.feed(feedCtx, stdin)
+						}
+					case <-feedCtx.Done():
+						// the job ended before restic ran the relay, as
+						// when it never got the repository's lock: the
+						// dump never starts
+					}
 				}()
 			}
 		},
 	}
 	var stdout bytes.Buffer
-	err = dockerSites{a: a}.runWith(ctx, config, hooks, &stdout, &redactingWriter{w: log, secrets: secrets})
+	err = dockerSites{a: a}.runWith(ctx, config, hooks, &stdout, stderr)
 	if stdin != nil {
 		// what still feeds a job that ended stops
 		stopFeed()
@@ -235,6 +252,10 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	}
 	out := lastLine(stdout.Bytes())
 	var exit *exitError
+	if errors.As(err, &exit) && exit.message == relayReady {
+		// the tool's own line, last as the job was killed, says nothing of why
+		exit.message = ""
+	}
 	if errors.As(err, &exit) && !exit.oom {
 		return out, &backupRefused{backup.Redact(err.Error(), secrets...)}
 	}
@@ -242,6 +263,38 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		return nil, errors.New(backup.Redact(err.Error(), secrets...))
 	}
 	return out, nil
+}
+
+// markWatcher passes on a job's output line by line, and closes seen when it
+// reads mark, a line of its own, which it keeps out of what it passes on.
+type markWatcher struct {
+	w       io.Writer
+	mark    string
+	seen    chan struct{}
+	partial []byte
+}
+
+func (m *markWatcher) Write(data []byte) (int, error) {
+	m.partial = append(m.partial, data...)
+	for {
+		end := bytes.IndexByte(m.partial, '\n')
+		if end < 0 {
+			return len(data), nil
+		}
+		line := m.partial[:end+1]
+		m.partial = m.partial[end+1:]
+		if string(bytes.TrimRight(line, "\r\n")) == m.mark {
+			select {
+			case <-m.seen:
+			default:
+				close(m.seen)
+			}
+			continue
+		}
+		if _, err := m.w.Write(line); err != nil {
+			return len(data), err
+		}
+	}
 }
 
 // backupRefused is what the backup tool said when it ended with an error: it

@@ -189,7 +189,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	secrets := backup.Secrets(env[envResticPassword], withoutRestic(env), "")
 	log := &redactingWriter{w: stderr, secrets: secrets}
 	defer log.Flush()
-	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache}
+	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine}
 
 	switch op {
 	case "init":
@@ -230,6 +230,12 @@ func withoutRestic(env map[string]string) map[string]string {
 	return rest
 }
 
+// relayReady is the line the backup tool writes to its error output once
+// restic has run the dump's relay, and only then: the agent starts the dump
+// when it reads it, so that a database is not dumped, holding its locks,
+// while restic waits for the repository, nor for a restic that failed.
+const relayReady = "--- pocketcloud: restic reads the dump ---"
+
 // restic runs restic for one repository.
 type restic struct {
 	env     map[string]string
@@ -238,6 +244,8 @@ type restic struct {
 	secrets []string
 	// cache is restic's cache directory, if it keeps one
 	cache string
+	// mark writes a line of the tool's own, such as relayReady, as it is
+	mark func(line string)
 }
 
 // run runs restic and returns what it printed to stdout and its exit code. An
@@ -485,6 +493,14 @@ func (r *redactingWriter) Write(data []byte) (int, error) {
 		}
 	}
 	return len(data), nil
+}
+
+// WriteLine passes on a line as it is, between the lines it redacts: one of
+// the tool's own, which no secret is in.
+func (r *redactingWriter) WriteLine(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, _ = io.WriteString(r.w, line+"\n")
 }
 
 // Flush passes on what is left of an unfinished line.

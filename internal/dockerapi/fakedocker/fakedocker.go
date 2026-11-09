@@ -118,6 +118,10 @@ type Job struct {
 	// the Engine signals its process: a stop waits for the job to end, up
 	// to its timeout, as the Engine's does.
 	Stop <-chan struct{}
+	// Stdout and Stderr reach the container's log line by line as OnJob
+	// writes them, as a running process's output does; JobResult's output
+	// follows what they took.
+	Stdout, Stderr io.Writer
 }
 
 // JobResult is how a job ended.
@@ -933,6 +937,7 @@ func jobOf(c *Container) Job {
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR
 	}
+	job.Stdout, job.Stderr = &liveLog{logs: c.logs, stream: 1}, &liveLog{logs: c.logs, stream: 2}
 	if cmd, ok := c.Config["Cmd"].([]any); ok {
 		for _, arg := range cmd {
 			text, _ := arg.(string)
@@ -948,9 +953,46 @@ func jobOf(c *Container) Job {
 	return job
 }
 
+// liveLog writes a running job's output to its log, a line at a time.
+type liveLog struct {
+	logs    *logBuffer
+	stream  byte
+	mu      sync.Mutex
+	partial []byte
+}
+
+func (l *liveLog) Write(data []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.partial = append(l.partial, data...)
+	for {
+		end := strings.IndexByte(string(l.partial), '\n')
+		if end < 0 {
+			return len(data), nil
+		}
+		l.logs.add(l.stream, string(l.partial[:end]))
+		l.partial = l.partial[end+1:]
+	}
+}
+
+// flush writes an unfinished last line.
+func (l *liveLog) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.partial) > 0 {
+		l.logs.add(l.stream, string(l.partial))
+		l.partial = nil
+	}
+}
+
 // runJob runs a job container's work and ends it.
 func (e *Engine) runJob(c *Container, job Job) {
 	result := e.OnJob(job)
+	for _, out := range []io.Writer{job.Stdout, job.Stderr} {
+		if live, ok := out.(*liveLog); ok {
+			live.flush()
+		}
+	}
 	if c.stdinR != nil {
 		// what is still written to it has nowhere to go
 		c.stdinR.CloseWithError(errors.New("the container has exited"))

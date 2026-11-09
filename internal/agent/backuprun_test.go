@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -475,7 +476,7 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 		t.Errorf("the dump ran: %+v", calls)
 	}
 	mu.Unlock()
-	if log, _ := result["log"].(string); !strings.Contains(log, "pg_dump: warning: a note") {
+	if log, _ := result["log"].(string); !strings.Contains(log, "pg_dump: warning: a note") || strings.Contains(log, relayReady) {
 		t.Errorf("the log:\n%s", log)
 	}
 	job := r.lastJob(t)
@@ -529,6 +530,76 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 	}
 	if r.jobCount() != jobs {
 		t.Error("a job ran for a database that is not running")
+	}
+}
+
+// TestADumpStartsOnceResticReadsIt (review of #29): restic may wait for the
+// repository's lock, or fail, before it runs the relay, and a dump started
+// with the job would hold the database's locks all that time, or run for
+// nothing; the agent starts it once the backup tool says restic reads it,
+// and never when the job ends first. The tool's line stays out of the log.
+func TestADumpStartsOnceResticReadsIt(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	db := r.engine.AddContainer("app-db-1", "postgres:16", nil)
+	var mu sync.Mutex
+	var execs []string
+	r.engine.OnExec = func(*fakedocker.ExecCall, []byte) fakedocker.ExecResult {
+		mu.Lock()
+		defer mu.Unlock()
+		// what restic had done when the dump started
+		execs = append(execs, strings.Join(resticCommands(t, r.root), " "))
+		return fakedocker.ExecResult{Stdout: "CREATE TABLE t;\n"}
+	}
+	dumps := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(execs)
+	}
+	run := func(repo *agentv1.BackupRepository) (map[string]any, error) {
+		return r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+			Repository: repo, StdinCommand: []string{"pg_dump"}, StdinContainer: db, StdinFileName: "app-db.sql",
+			Tags: []string{"pocketcloud", "job:j12"}, HostName: "nas",
+		}), &Reporter{})
+	}
+
+	// restic that fails before it runs the relay: no dump
+	wrong := &agentv1.BackupRepository{TargetId: repo.GetTargetId(), Url: repo.GetUrl(), Password: "another-password", Env: repo.GetEnv()}
+	if _, err := run(wrong); err == nil || !strings.Contains(err.Error(), "the password is not its own") {
+		t.Errorf("a wrong password: %v", err)
+	}
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "2")
+	if _, err := run(repo); err == nil || !strings.Contains(err.Error(), "is already locked exclusively") {
+		t.Errorf("a repository that stays locked: %v", err)
+	}
+	if len(dumps()) != 0 {
+		t.Errorf("dumps ran while restic did not read them: %q", dumps())
+	}
+
+	// one that waited for the lock reads the dump once it has it
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "3")
+	result, err := run(repo)
+	if err != nil {
+		t.Fatalf("%v: %v", err, result)
+	}
+	if ran := dumps(); len(ran) != 1 || !strings.HasSuffix(ran[0], " backup unlock backup") {
+		t.Errorf("the dump started after restic ran %q", ran)
+	}
+	snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl())
+	if len(snapshots) != 1 || snapshots[0].Files["/app-db.sql"] != "CREATE TABLE t;\n" {
+		t.Errorf("the snapshots: %+v", snapshots)
+	}
+	if log, _ := result["log"].(string); strings.Contains(log, relayReady) || !strings.Contains(log, "Backing up the dump as app-db.sql") {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// a job killed once restic reads the dump is no error of the tool's line
+	r.engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
+		fmt.Fprintln(job.Stderr, relayReady)
+		return fakedocker.JobResult{Code: 137}
+	}
+	if _, err := run(repo); err == nil || err.Error() != "exit code 137" {
+		t.Errorf("a job killed while it reads the dump: %v", err)
 	}
 }
 

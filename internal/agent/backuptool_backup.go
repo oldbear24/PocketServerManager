@@ -136,7 +136,7 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	var dump *dumpRelay
 	if run.stdinName != "" {
 		var err error
-		if dump, err = startRelay(run.relay, stdin); err != nil {
+		if dump, err = startRelay(run.relay, stdin, r.mark); err != nil {
 			return nil, err
 		}
 		defer dump.close()
@@ -288,17 +288,19 @@ type dumpVerdict struct {
 // restic ended.
 const dumpVerdictWait = 5 * time.Second
 
-func startRelay(socket string, stdin io.Reader) (*dumpRelay, error) {
+// startRelay listens for restic's relay, and serves it stdin; mark, when
+// set, says relayReady once the relay has connected.
+func startRelay(socket string, stdin io.Reader, mark func(string)) (*dumpRelay, error) {
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("the dump's relay cannot listen: %w", err)
 	}
 	d := &dumpRelay{listener: listener, accepted: make(chan struct{}), verdict: make(chan dumpVerdict, 1)}
-	go d.serve(stdin)
+	go d.serve(stdin, mark)
 	return d, nil
 }
 
-func (d *dumpRelay) serve(stdin io.Reader) {
+func (d *dumpRelay) serve(stdin io.Reader, mark func(string)) {
 	conn, err := d.listener.Accept()
 	if err == nil {
 		d.conn = conn
@@ -307,6 +309,11 @@ func (d *dumpRelay) serve(stdin io.Reader) {
 	if err != nil {
 		// restic ended without running the relay
 		return
+	}
+	// restic has the repository's lock and runs the relay: the agent may
+	// start the dump, which nothing read until now
+	if mark != nil {
+		mark(relayReady)
 	}
 	defer conn.Close()
 	watch, passed := io.Pipe()

@@ -621,11 +621,23 @@ func RunJobs(engine *fakedocker.Engine, tool Tool) {
 				}
 			}()
 		}
-		var stdout, stderr bytes.Buffer
-		if err := tool(ctx, args, env, stdin, &stdout, &stderr); err != nil {
-			fmt.Fprintln(&stderr, "error:", err)
-			return fakedocker.JobResult{Code: 1, Stdout: stdout.String(), Stderr: stderr.String()}
+		var stdout bytes.Buffer
+		var stderr io.Writer = &bytes.Buffer{}
+		if job.Stderr != nil {
+			// as it comes, as the agent watches it for the relay
+			stderr = job.Stderr
 		}
-		return fakedocker.JobResult{Stdout: stdout.String(), Stderr: stderr.String()}
+		err := tool(ctx, args, env, stdin, &stdout, stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+		}
+		result := fakedocker.JobResult{Stdout: stdout.String()}
+		if buffered, ok := stderr.(*bytes.Buffer); ok {
+			result.Stderr = buffered.String()
+		}
+		if err != nil {
+			result.Code = 1
+		}
+		return result
 	}
 }

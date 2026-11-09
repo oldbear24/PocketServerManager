@@ -461,6 +461,31 @@ func TestADumpReachesResticThroughTheRelay(t *testing.T) {
 	}
 }
 
+// TestTheToolSaysWhenResticReadsTheDump (review of #29): the backup tool
+// writes its line to its error output once restic has run the relay, as
+// it is, even where a secret would be taken out of it, and never when
+// restic fails before.
+func TestTheToolSaysWhenResticReadsTheDump(t *testing.T) {
+	fakerestic.Install(t)
+	// a password that is a word of the line, which the log hides elsewhere
+	env := map[string]string{"RESTIC_REPOSITORY": "rest:http://backup-node:8000/dumps/", "RESTIC_PASSWORD": "dump"}
+	if _, _, err := runBackupTool(t, env, "init"); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:db", "--stdin-name", "db.sql", "--relay", filepath.Join(t.TempDir(), "dump.sock")}
+	_, log, err := runBackup(t, env, dumpFrames(t, "CREATE TABLE t;\n", &backup.DumpEnd{}), args...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log)
+	}
+	if strings.Count(log, "\n"+relayReady+"\n") != 1 || !strings.Contains(log, "Backing up the *** as db.sql") {
+		t.Errorf("the log:\n%s", log)
+	}
+	env["RESTIC_PASSWORD"] = "another"
+	if _, log, err := runBackup(t, env, dumpFrames(t, "x", &backup.DumpEnd{}), args...); err == nil || strings.Contains(log, relayReady) {
+		t.Errorf("restic that never ran the relay: %v\n%s", err, log)
+	}
+}
+
 // TestTheRelayOpEndsWithTheDumpsCode (#29): the op restic runs writes the
 // dump to its output and ends with the dump's exit code.
 func TestTheRelayOpEndsWithTheDumpsCode(t *testing.T) {
