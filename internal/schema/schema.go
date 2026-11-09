@@ -281,7 +281,7 @@ var Encrypted = map[string][]string{
 	DBServers:               {"admin_password"},
 	DBUsers:                 {"password", "pending_password"},
 	DBMoves:                 {"secrets"},
-	"backup_targets":        {"credentials", "repo_password"},
+	BackupTargets:           {"credentials", "repo_password"},
 }
 
 // AuditedCollection describes how changes of one collection are audited.
@@ -342,7 +342,7 @@ var Audited = []AuditedCollection{
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
-	{Name: "backup_targets", Label: "name", Ignore: []string{"capacity_bytes", "used_bytes"}},
+	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes"}},
 	{Name: "backup_jobs", Label: "name", Host: "host"},
 }
 

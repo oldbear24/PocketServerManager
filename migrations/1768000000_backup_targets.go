@@ -27,6 +27,8 @@ func upBackupTargets(app core.App) error {
 		// the server whose agent reaches the target, and holds a local one
 		&core.RelationField{Name: "host", Required: true, CollectionId: hosts.Id, MaxSelect: 1},
 		&core.JSONField{Name: "config", MaxSize: 16 << 10},
+		// where it is as people read it, from the config (backup.Where)
+		&core.TextField{Name: "location", Max: 1000},
 		&core.TextField{Name: "credentials", Max: maxSealed, Hidden: true},
 		&core.TextField{Name: "repo_password", Max: maxSealed, Hidden: true},
 		// restic's id of the repository, from its config

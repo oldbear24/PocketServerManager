@@ -169,6 +169,7 @@ func (p *Panel) Register() {
 	p.registerPHPSites()
 	p.registerTasks()
 	p.registerProvision()
+	p.registerBackups()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -217,6 +218,7 @@ func (p *Panel) Register() {
 		p.bindMailRoutes(group)
 		p.bindProvisionRoutes(group)
 		p.bindLANRoutes(group)
+		p.bindBackupRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		p.Commands.BindRoutes(group)
