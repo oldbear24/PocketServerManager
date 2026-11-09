@@ -59,6 +59,9 @@ func upBackupJobs(app core.App) error {
 		&core.SelectField{Name: "origin", Required: true, MaxSelect: 1, Values: []string{schema.JobManual, schema.JobLabel}},
 		// a label's job whose label is gone, kept until someone removes it
 		&core.BoolField{Name: "label_removed"},
+		// what a label's job takes from its labels besides what it backs up:
+		// schedule, targets, retention; the rest an admin may change
+		&core.JSONField{Name: "label_sets", MaxSize: 1 << 10},
 		// what keeps the job from running, such as a label naming no target
 		&core.TextField{Name: "problem", Max: 1000},
 		&core.DateField{Name: "next_run_at"},

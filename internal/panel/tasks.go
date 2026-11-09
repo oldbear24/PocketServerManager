@@ -404,14 +404,7 @@ func (p *Panel) pruneTaskRuns() {
 // both the day of the month and the day of the week are restricted, either
 // one matching is enough, where PocketBase's schedule asks for both.
 func taskDue(expr string, moment *cron.Moment) bool {
-	fields := strings.Fields(expr)
-	if len(fields) == 5 && fields[2] != "*" && fields[4] != "*" {
-		byDay, err1 := cron.NewSchedule(strings.Join([]string{fields[0], fields[1], fields[2], fields[3], "*"}, " "))
-		byWeekday, err2 := cron.NewSchedule(strings.Join([]string{fields[0], fields[1], "*", fields[3], fields[4]}, " "))
-		return err1 == nil && err2 == nil && (byDay.IsDue(moment) || byWeekday.IsDue(moment))
-	}
-	schedule, err := cron.NewSchedule(expr)
-	return err == nil && schedule.IsDue(moment)
+	return parseCronRule(expr).due(moment)
 }
 
 // taskLabel names a task in events and commands: its target and its command.
