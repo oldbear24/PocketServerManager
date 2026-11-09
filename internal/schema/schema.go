@@ -109,11 +109,14 @@ const (
 	RunRunning   = "running"
 	RunSucceeded = "succeeded"
 	RunFailed    = "failed"
-	// RunSkipped is a run that did not start: its server was offline, or the
-	// run before it was still going.
+	// RunSkipped is a run that did not start: its server was offline at its
+	// minute, the run before it was still going, or it waited its whole time,
+	// in the panel's queue or for a free worker of the agent, and never
+	// started.
 	RunSkipped = "skipped"
-	// RunCancelled is a run stopped by hand, or one whose command never reached
-	// a server: no failure of the job.
+	// RunCancelled is a run someone cancelled, or one not delivered because
+	// its job no longer backs up to its target (the target left the job, or
+	// the job's label went), or whose command is gone: no failure of the job.
 	RunCancelled = "cancelled"
 )
 
