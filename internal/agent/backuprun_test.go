@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -278,6 +279,112 @@ func TestWhatABackupRunCannotReadIsRefused(t *testing.T) {
 	}
 	if err := checkBackupPath("/var/lib/app"); err != nil {
 		t.Errorf("/var/lib/app: %v", err)
+	}
+}
+
+// TestADirectoryIsFollowedOnTheServerBeforeItIsMounted (review of #29): the
+// Engine would follow a symbolic link of the server past the checks, such as
+// /var/run to /run, so the agent follows it first, through the server's /
+// as it sees it, and checks and mounts where it leads; an absolute link
+// leads from the server's /, and none out of it.
+func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	root := t.TempDir()
+	r.Config.HostRoot = root
+	// what the server holds: a disk mounted elsewhere, and links
+	disk := filepath.Join(t.TempDir(), "disk", "data")
+	writeFiles(t, disk, map[string]string{"photo.jpg": "cheese"})
+	plain := t.TempDir()
+	for _, dir := range []string{disk, plain, "/run/pocketcloud", "/proc/1"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFiles(t, filepath.Join(root, "srv"), map[string]string{"notes.txt": "a file"})
+	for link, target := range map[string]string{
+		"/var/run":     "../run",
+		"/srv/run":     "/run",
+		"/srv/varrun":  "../var/run/",
+		"/srv/data":    disk,
+		"/srv/mnt":     "data",
+		"/srv/kernel":  "/proc/1",
+		"/srv/escape":  "../../../../../../.." + disk,
+		"/srv/outside": "../../../../../../../etc",
+		"/srv/loop":    "loop",
+		"/srv/notes":   "notes.txt",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, link)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(dir string) (map[string]any, error) {
+		return r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+			Repository: repo, Paths: []string{dir}, Tags: []string{"pocketcloud", "job:j9"}, HostName: "nas",
+		}), &Reporter{})
+	}
+
+	jobs := r.jobCount()
+	for dir, want := range map[string]string{
+		"/srv/run":            "/run would hide the backup job's own /run/pocketcloud",
+		"/srv/varrun":         "/run would hide the backup job's own /run/pocketcloud",
+		"/var/run":            "/var/run is a symbolic link in the backup job",
+		"/srv/kernel":         "/proc/1 is the kernel's",
+		"/srv/outside":        "the directory /srv/outside does not exist on this server",
+		"/srv/loop":           "the directory /srv/loop leads through more than 40 symbolic links on this server",
+		"/srv/notes":          "/srv/notes is not a directory on this server",
+		"/srv/notes/x":        "the directory /srv/notes/x does not exist on this server",
+		"/srv/none":           "the directory /srv/none does not exist on this server",
+		"/var/spool/mail/bob": "/var/spool/mail is a symbolic link in the backup job",
+	} {
+		if _, err := run(dir); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", dir, err, want)
+		}
+	}
+	if r.jobCount() != jobs {
+		t.Errorf("%d jobs ran", r.jobCount()-jobs)
+	}
+
+	// a link, and one that would climb out of /, lead to the disk, which is
+	// mounted where it is, and backed up as such
+	for _, dir := range []string{"/srv/mnt", "/srv/escape"} {
+		result, err := run(dir)
+		if err != nil {
+			t.Fatalf("%s: %v: %v", dir, err, result)
+		}
+		job := r.lastJob(t)
+		if mount := mountsOf(job)[disk]; mount["Type"] != "bind" || mount["Source"] != disk || mount["ReadOnly"] != true || len(mountsOf(job)) != 2 {
+			t.Errorf("%s: the mounts: %v", dir, mountsOf(job))
+		}
+		if i := slices.Index(job.Cmd, "--path"); i < 0 || job.Cmd[i+1] != disk {
+			t.Errorf("%s: the job's command: %q", dir, job.Cmd)
+		}
+		if log, _ := result["log"].(string); !strings.HasPrefix(log, "The directory "+dir+" leads to "+disk+" on this server: backing up "+disk+"\n") {
+			t.Errorf("%s: the log:\n%s", dir, log)
+		}
+	}
+	snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl())
+	if len(snapshots) != 2 || !slices.Equal(snapshots[1].Paths, []string{disk}) || snapshots[1].Files[disk+"/photo.jpg"] != "cheese" {
+		t.Errorf("the snapshots: %+v", snapshots)
+	}
+	// two that lead to one are one
+	if _, err := r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+		Repository: repo, Paths: []string{"/srv/data", "/srv/mnt"}, Tags: []string{"pocketcloud", "job:j9"}, HostName: "nas",
+	}), &Reporter{}); err == nil || err.Error() != "the directory "+disk+" is there twice" {
+		t.Errorf("two links to one directory: %v", err)
+	}
+	// a directory without links is mounted as it is, and the log says nothing of it
+	result, err := run(plain)
+	if mount := mountsOf(r.lastJob(t))[plain]; mount["Source"] != plain || err != nil || strings.Contains(result["log"].(string), "leads to") {
+		t.Errorf("a plain directory: %v %v %v", mount, err, result)
+	}
+	// an agent that does not see the server's / checks nothing, and mounts nothing
+	r.Config.HostRoot = filepath.Join(root, "gone")
+	if _, err := run(plain); err == nil || !strings.HasPrefix(err.Error(), "the agent cannot see the server's directories at "+r.Config.HostRoot) {
+		t.Errorf("without the server's /: %v", err)
 	}
 }
 

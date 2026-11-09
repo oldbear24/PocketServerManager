@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -25,10 +28,13 @@ import (
 // job's retention. What it backs up is mounted read-only: each Docker volume
 // at /volumes/<name>, and each directory of the server at its own path, so
 // that snapshots name the server's paths; restic never runs in the agent's
-// own container, and its /host is no part of the job. A database dump runs in
-// the database's own container with docker exec, and the agent writes what
-// it prints to the job's attached standard input, as the relay's frames (see
-// internal/backup/relay.go), which the backup tool hands to restic.
+// own container, and its /host is no part of the job: the agent only follows
+// a directory's symbolic links through it first, so that it checks and
+// mounts where they lead, which the Engine would follow unchecked. A
+// database dump runs in the database's own container with docker exec, and
+// the agent writes what it prints to the job's attached standard input, as
+// the relay's frames (see internal/backup/relay.go), which the backup tool
+// hands to restic.
 
 const (
 	// backupVolumes is where a job mounts the volumes it backs up.
@@ -52,6 +58,11 @@ var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 var backupJobDirs = []string{"/bin", "/sbin", "/lib", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/local/bin",
 	"/tmp", "/run/pocketcloud", "/var/lib/pocketcloud", resticCacheDir, backup.LocalMount, backupVolumes}
 
+// backupJobLinks are symbolic links of the backup job's image: a directory
+// mounted at one of them, or in one, would land where it leads in the job,
+// such as /var/run on its /run.
+var backupJobLinks = []string{"/var/run", "/var/lock", "/var/spool/mail"}
+
 // handleBackupRun backs up a job's volumes, directories or database dump to a
 // target's repository, and applies the job's retention.
 func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
@@ -64,7 +75,11 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 		return nil, err
 	}
 	log := &tailBuffer{limit: backupLogTail}
-	out, err := a.backupJob(ctx, payload.GetRepository(), job, io.MultiWriter(reporter, log))
+	output := io.MultiWriter(reporter, log)
+	for _, note := range job.notes {
+		fmt.Fprintln(output, note)
+	}
+	out, err := a.backupJob(ctx, payload.GetRepository(), job, output)
 	answer := map[string]any{"log": log.String()}
 	var result backupRunResult
 	saved := len(out) > 0 && json.Unmarshal(out, &result) == nil && result.SnapshotID != ""
@@ -171,15 +186,30 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			args = append(args, "--path", target)
 		}
 	case len(paths) > 0:
-		for i, dir := range paths {
+		var resolved []string
+		for _, dir := range paths {
 			if err := checkBackupPath(dir); err != nil {
 				return job, err
 			}
-			if slices.Contains(paths[:i], dir) {
-				return job, fmt.Errorf("the directory %s is there twice", dir)
+			// the Engine would follow a symbolic link on the way, past
+			// what the checks refuse: what is checked and mounted is
+			// where it leads
+			real, err := resolveServerDir(a.hostRoot(), dir)
+			if err != nil {
+				return job, err
 			}
-			job.mounts = append(job.mounts, map[string]any{"Type": "bind", "Source": dir, "Target": dir, "ReadOnly": true})
-			args = append(args, "--path", dir)
+			if err := checkBackupPath(real); err != nil {
+				return job, err
+			}
+			if slices.Contains(resolved, real) {
+				return job, fmt.Errorf("the directory %s is there twice", real)
+			}
+			if real != dir {
+				job.notes = append(job.notes, fmt.Sprintf("The directory %s leads to %s on this server: backing up %s", dir, real, real))
+			}
+			resolved = append(resolved, real)
+			job.mounts = append(job.mounts, map[string]any{"Type": "bind", "Source": real, "Target": real, "ReadOnly": true})
+			args = append(args, "--path", real)
 		}
 	default:
 		name := payload.GetStdinFileName()
@@ -226,7 +256,9 @@ func mergedEnv(a, b map[string]string) map[string]string {
 }
 
 // checkBackupPath checks a directory of the server to back up: absolute,
-// clean, neither / nor the kernel's, and none that would hide the job's own.
+// clean, neither / nor the kernel's, and none that would hide the job's own
+// or land elsewhere in the job. A run checks the directory as the panel
+// names it, and again where its symbolic links lead.
 func checkBackupPath(dir string) error {
 	if !path.IsAbs(dir) || strings.ContainsAny(dir, "\n\r\x00") || path.Clean(dir) != dir {
 		return fmt.Errorf("a directory to back up is absolute and clean, such as /srv/app, not %q", dir)
@@ -249,7 +281,81 @@ func checkBackupPath(dir string) error {
 			return fmt.Errorf("%s is in the backup job's own %s: it cannot be mounted at its own path", dir, mount)
 		}
 	}
+	for _, link := range backupJobLinks {
+		if dir == link || strings.HasPrefix(dir, link+"/") {
+			return fmt.Errorf("%s is a symbolic link in the backup job, which cannot mount %s at its own path: back up where it leads", link, dir)
+		}
+	}
 	return nil
+}
+
+// maxLinks is how many symbolic links a directory of the server may lead
+// through, as many as the kernel follows.
+const maxLinks = 40
+
+// hostRoot is where the agent sees the server's /.
+func (a *Agent) hostRoot() string {
+	if a.Config.HostRoot == "" {
+		return "/"
+	}
+	return a.Config.HostRoot
+}
+
+// resolveServerDir follows dir, a directory of the server, through root,
+// where the agent sees the server's /, as the server would: each symbolic
+// link on the way leads where it does on the server, an absolute one from the
+// server's /, and none ever out of it. It says the directory with no link
+// left in it.
+func resolveServerDir(root, dir string) (string, error) {
+	if _, err := os.Stat(root); err != nil {
+		return "", fmt.Errorf("the agent cannot see the server's directories at %s, where the server's / is mounted: %w", root, err)
+	}
+	resolved := "/"
+	rest := strings.Split(dir, "/")
+	links := 0
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			// never above the server's /
+			resolved = path.Dir(resolved)
+			continue
+		}
+		next := path.Join(resolved, name)
+		file := filepath.Join(root, filepath.FromSlash(next))
+		info, err := os.Lstat(file)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return "", fmt.Errorf("the directory %s does not exist on this server", dir)
+		case err != nil:
+			return "", fmt.Errorf("the directory %s cannot be read on this server: %w", dir, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			if links++; links > maxLinks {
+				return "", fmt.Errorf("the directory %s leads through more than %d symbolic links on this server", dir, maxLinks)
+			}
+			target, err := os.Readlink(file)
+			if err != nil {
+				return "", fmt.Errorf("the directory %s cannot be read on this server: %w", dir, err)
+			}
+			if path.IsAbs(target) {
+				resolved = "/"
+			}
+			rest = append(strings.Split(target, "/"), rest...)
+			continue
+		}
+		if !info.IsDir() {
+			if strings.Join(rest, "") != "" {
+				return "", fmt.Errorf("the directory %s does not exist on this server", dir)
+			}
+			return "", fmt.Errorf("%s is not a directory on this server: a backup job backs up directories", dir)
+		}
+		resolved = next
+	}
+	return resolved, nil
 }
 
 // feedDump runs a dump's command in its container with docker exec, and

@@ -86,6 +86,8 @@ type backupJobSpec struct {
 	// feed, when set, writes the job's standard input once it has started,
 	// and closes it; it stops when its context ends
 	feed func(ctx context.Context, stdin io.WriteCloser)
+	// notes are lines for the run's log, said before the job starts
+	notes []string
 }
 
 // checkRepository checks that the panel completed a command's repository.
