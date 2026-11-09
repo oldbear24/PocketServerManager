@@ -10,6 +10,8 @@ export type ListOptions = {
   sort?: string;
   perPage?: number;
   expand?: string;
+  /** Only these fields, as for a list that needs not a record's long ones. */
+  fields?: string;
   /** Set to false to wait, for example until a selection has been made. */
   enabled?: boolean;
 };
@@ -30,7 +32,7 @@ export function useLiveList<T extends RecordModel>(
   collection: string,
   options: ListOptions = {},
 ): ListState<T> {
-  const { filter, sort, perPage = 200, expand, enabled = true } = options;
+  const { filter, sort, perPage = 200, expand, fields, enabled = true } = options;
 
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
@@ -43,7 +45,9 @@ export function useLiveList<T extends RecordModel>(
   const load = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const list = await pb.collection(collection).getList<T>(1, perPage, { filter, sort, expand });
+      const list = await pb
+        .collection(collection)
+        .getList<T>(1, perPage, { filter, sort, expand, fields });
       if (current === generation.current) {
         setItems(list.items);
         setTotal(list.totalItems);
@@ -58,7 +62,7 @@ export function useLiveList<T extends RecordModel>(
         setLoading(false);
       }
     }
-  }, [collection, filter, sort, perPage, expand]);
+  }, [collection, filter, sort, perPage, expand, fields]);
 
   useEffect(() => {
     if (!enabled) {
@@ -79,19 +83,23 @@ export function useLiveList<T extends RecordModel>(
     const pendingLoads = generation;
 
     pb.collection(collection)
-      .subscribe<T>("*", ({ action, record }) => {
-        if (action !== "update" || filter || expand) {
-          schedule();
-          return;
-        }
-        setItems((current) => {
-          if (!current.some((item) => item.id === record.id)) {
+      .subscribe<T>(
+        "*",
+        ({ action, record }) => {
+          if (action !== "update" || filter || expand) {
             schedule();
-            return current;
+            return;
           }
-          return current.map((item) => (item.id === record.id ? record : item));
-        });
-      })
+          setItems((current) => {
+            if (!current.some((item) => item.id === record.id)) {
+              schedule();
+              return current;
+            }
+            return current.map((item) => (item.id === record.id ? record : item));
+          });
+        },
+        fields ? { fields } : undefined,
+      )
       .then((stop) => {
         if (cancelled) {
           void stop();
@@ -109,9 +117,121 @@ export function useLiveList<T extends RecordModel>(
       }
       void unsubscribe?.();
     };
-  }, [collection, enabled, expand, filter, load]);
+  }, [collection, enabled, expand, fields, filter, load]);
 
   return { items, total, loading, error, reload: load };
+}
+
+type RecordEvent<T> = { action: string; record: T };
+
+/** An event applied to records by id: a deleted record leaves, any other
+ * takes its place unless the copy there is newer, as one loaded after it. */
+function applyEvent<T extends RecordModel>(records: Map<string, T>, event: RecordEvent<T>) {
+  if (event.action === "delete") {
+    records.delete(event.record.id);
+    return;
+  }
+  const known = records.get(event.record.id);
+  if (!known || !(known.updated > event.record.updated)) {
+    records.set(event.record.id, event.record);
+  }
+}
+
+/**
+ * Loads every record a filter matches, page by page, and keeps them live in
+ * place: realtime sends only what the same filter matches, so a new record
+ * joins, a changed one replaces its copy and a deleted one leaves, without
+ * loading the list again. For lists too long to reload on every change, such
+ * as two weeks of backup runs. The records come in no order; `fields` must
+ * name `updated`.
+ */
+export function useLiveRecords<T extends RecordModel>(
+  collection: string,
+  options: { filter?: string; fields?: string; enabled?: boolean } = {},
+): ListState<T> {
+  const { filter, fields, enabled = true } = options;
+
+  const [items, setItems] = useState<T[]>([]);
+  const [loading, setLoading] = useState(enabled);
+  const [error, setError] = useState<unknown>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    let cancelled = false;
+    let unsubscribe: (() => Promise<void>) | undefined;
+    // what arrives before the list is applied to it once it is there
+    let early: RecordEvent<T>[] | null = [];
+
+    pb.collection(collection)
+      .subscribe<T>(
+        "*",
+        (event) => {
+          if (cancelled) {
+            return;
+          }
+          if (early) {
+            early.push(event);
+            return;
+          }
+          setItems((current) => {
+            const records = new Map(current.map((item) => [item.id, item]));
+            applyEvent(records, event);
+            return [...records.values()];
+          });
+        },
+        { filter, fields },
+      )
+      .then((stop) => {
+        if (cancelled) {
+          void stop();
+        } else {
+          unsubscribe = stop;
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err);
+        }
+      });
+
+    pb.collection(collection)
+      .getFullList<T>({ filter, fields, batch: 1000 })
+      .then((list) => {
+        if (cancelled) {
+          return;
+        }
+        const records = new Map(list.map((item) => [item.id, item]));
+        for (const event of early ?? []) {
+          applyEvent(records, event);
+        }
+        early = null;
+        setItems([...records.values()]);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      void unsubscribe?.();
+    };
+  }, [collection, enabled, fields, filter, version]);
+
+  const reload = useCallback(() => setVersion((current) => current + 1), []);
+
+  return { items, total: items.length, loading, error, reload };
 }
 
 /** Loads one record and keeps it live. */
