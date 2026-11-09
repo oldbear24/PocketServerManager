@@ -29,6 +29,7 @@ import {
   sameHostKeys,
   targetConfig,
   targetCredentials,
+  targetKept,
   targetKinds,
   targetTone,
   targetUsage,
@@ -601,7 +602,14 @@ export function AddTargetDialog({ hosts, onClose }: { hosts: Host[]; onClose: ()
         onClose();
       }
     } catch (err) {
-      if (mounted.current) {
+      if (targetKept(err)) {
+        // the panel keeps the target, pending, and says what to do with it:
+        // adding it again could only fail as a duplicate
+        toast.error(err);
+        if (mounted.current) {
+          onClose();
+        }
+      } else if (mounted.current) {
         setError(errorMessage(err));
       } else {
         // closed while restic was at it: the toast is all that is left

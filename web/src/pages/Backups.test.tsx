@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ClientResponseError } from "pocketbase";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -304,6 +305,50 @@ describe("the backup targets", () => {
     expect(await screen.findByText("The target Panel disk was added.")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Add a backup target" })).toBeInTheDocument();
     expect(screen.getByLabelText("Name")).toHaveValue("Second copy");
+  });
+
+  it("closes the add dialog when the agent did not answer, and the panel kept the target", async () => {
+    const kept =
+      "The agent of pve-01 did not answer in time. The target is kept, waiting: check it again to finish adding it, or remove it.";
+    const list = [bucket];
+    signInAs("admin");
+    live.lists = { backup_targets: list, hosts };
+    wrap(<BackupsPage />);
+    let fail: (error: unknown) => void = () => {};
+    vi.spyOn(backupsApi, "add").mockReturnValue(
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add target" }));
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "local" } });
+    type("Name", "Panel disk");
+    fireEvent.change(screen.getByLabelText("Server"), { target: { value: "h1" } });
+    type("Directory", "/srv/backups/restic");
+    fireEvent.click(screen.getAllByRole("button", { name: "Add target" }).at(-1)!);
+    await screen.findByRole("button", { name: "Checking with restic…" });
+
+    // realtime brings the pending target the panel kept
+    list.push(
+      target({
+        ...disk,
+        host: "h1",
+        status: "pending",
+        last_error: "The agent of pve-01 did not answer in time.",
+        checked_at: "",
+        usage_at: "",
+      }),
+    );
+    fail(new ClientResponseError({ status: 504, response: { message: kept } }));
+
+    expect(await screen.findByText(kept)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Add a backup target" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const row = item("Panel disk");
+    expect(row.getByText("Not checked yet")).toBeInTheDocument();
+    expect(row.getByText("The agent of pve-01 did not answer in time.")).toBeInTheDocument();
+    expect(row.getByRole("button", { name: "Refresh Panel disk" })).toBeEnabled();
   });
 
   it("tells how a refresh went, with restic's error when it failed", async () => {

@@ -1,4 +1,4 @@
-import type { RecordModel } from "pocketbase";
+import { ClientResponseError, type RecordModel } from "pocketbase";
 
 import type { Tone } from "../components/ui";
 import { formatBytes, formatNumber, percentOf } from "./format";
@@ -100,6 +100,13 @@ export const backupsApi = {
   /** the repository's data stays where it is */
   remove: (id: string) => pb.send(`/api/pc/backup-targets/${id}`, { method: "DELETE" }),
 };
+
+/** Whether adding a target ended with the agent not answering (504) or not
+ * reachable (502): the panel keeps the target then, pending, and its message
+ * says how to finish adding it. */
+export function targetKept(error: unknown): boolean {
+  return error instanceof ClientResponseError && (error.status === 504 || error.status === 502);
+}
 
 export function targetTone(status: BackupTargetStatus | ""): Tone {
   switch (status) {

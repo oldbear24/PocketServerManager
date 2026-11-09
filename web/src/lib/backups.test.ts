@@ -1,3 +1,4 @@
+import { ClientResponseError } from "pocketbase";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import i18n from "../i18n";
@@ -13,6 +14,7 @@ import {
   sameHostKeys,
   targetConfig,
   targetCredentials,
+  targetKept,
   targetTone,
   targetUsage,
   type TargetForm,
@@ -311,6 +313,17 @@ describe("Object Lock days", () => {
     expect(parseDays("abc")).toBeNull();
     expect(parseDays("36500")).toBe(36500);
     expect(parseDays("36501")).toBeNull();
+  });
+});
+
+describe("a target the panel kept", () => {
+  it("is one whose agent did not answer, or could not be reached", () => {
+    const status = (code: number) => new ClientResponseError({ status: code, response: {} });
+    expect(targetKept(status(504))).toBe(true);
+    expect(targetKept(status(502))).toBe(true);
+    expect(targetKept(status(400))).toBe(false);
+    expect(targetKept(status(409))).toBe(false);
+    expect(targetKept(new Error("504"))).toBe(false);
   });
 });
 
