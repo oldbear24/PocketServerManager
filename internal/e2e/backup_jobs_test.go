@@ -1125,8 +1125,13 @@ func TestABackupWaitsForItsServerToReconnect(t *testing.T) {
 
 // TestABackupThePanelMissedIsCaughtUp (#29): a job whose minute passed while
 // the panel was down, less than a day ago, runs once for that minute when the
-// panel is back.
+// panel is back, in the scheduler's first pass.
 func TestABackupThePanelMissedIsCaughtUp(t *testing.T) {
+	// the panel's own scheduler makes its first pass at the start of the
+	// minute after the panel started: this test's comes first
+	if now := time.Now(); now.Second() > 30 {
+		time.Sleep(now.Truncate(time.Minute).Add(time.Minute + time.Second).Sub(now))
+	}
 	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
 	now := time.Now().UTC()
 	missed := now.Truncate(time.Minute).Add(-2 * time.Hour)
@@ -1138,7 +1143,7 @@ func TestABackupThePanelMissedIsCaughtUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	j.panel.CatchUpBackups(now)
+	j.panel.RunDueBackups(now)
 	runs := j.runs(id)
 	if len(runs) != 1 || runs[0].GetString("trigger") != schema.RunSchedule || !runs[0].GetDateTime("scheduled_at").Time().Equal(missed) {
 		t.Fatalf("the runs: %v", runs)

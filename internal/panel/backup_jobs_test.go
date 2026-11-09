@@ -1120,10 +1120,15 @@ func TestARunIsQueuedUnlessItsServerIsOffline(t *testing.T) {
 
 // TestAMinuteThePanelMissedIsCaughtUp (#29): a job whose next run passed
 // while the panel was down, less than a day ago, runs once for that minute
-// when the panel is back, in the scheduler's first pass; one due at that
-// very minute runs for it instead, and a disabled one, or one that was due
-// longer ago, does not.
+// when the panel is back, in the scheduler's first pass, as the panel's
+// registration has it; one due at that very minute runs for it instead, and
+// a disabled one, or one that was due longer ago, does not.
 func TestAMinuteThePanelMissedIsCaughtUp(t *testing.T) {
+	// the panel's own scheduler, which runs in the tests too, makes its
+	// first pass at the start of the next minute: this test's comes first
+	if now := time.Now(); now.Second() > 45 {
+		time.Sleep(now.Truncate(time.Minute).Add(time.Minute + time.Second).Sub(now))
+	}
 	f := newJobFixture(t)
 	month := time.Now().UTC().Month()%12 + 1
 	now := time.Date(2030, month, 9, 5, 10, 20, 0, time.UTC)
@@ -1144,7 +1149,6 @@ func TestAMinuteThePanelMissedIsCaughtUp(t *testing.T) {
 		return runs
 	}
 
-	f.p.backupCatchUp.Store(true)
 	f.p.RunDueBackups(now)
 	caught := runs(missed)
 	if len(caught) != 1 || caught[0].GetString("trigger") != schema.RunSchedule || !caught[0].GetDateTime("scheduled_at").Time().Equal(at(9, 3, 0)) ||
