@@ -2140,6 +2140,11 @@
       "skipped": "Přeskočeno",
       "cancelled": "Zrušeno"
     },
+    "runRetention": {
+      "deferredShort": "retence odložena",
+      "deferred": "retence odložena: repozitář byl zaneprázdněný",
+      "failed": "retence selhala"
+    },
     "keep": {
       "last": "Posledních",
       "hourly": "Hodinových",

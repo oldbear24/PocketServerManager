@@ -77,13 +77,20 @@ export type BackupRun = RecordModel & {
   files_new: number;
   files_changed: number;
   forgotten: number;
+  /** of a run that backed up, what became of the job's retention */
+  retention: RunRetention;
   /** restic's error, or why the run did not start */
   error: string;
 };
 
+/** What became of a run's retention: restic forgot the old snapshots, it
+ * left them for the next run because another run held the repository, or it
+ * failed; empty when the job keeps every snapshot or the run did not back up. */
+export type RunRetention = "applied" | "deferred" | "failed" | "";
+
 /** What the Jobs card reads of a run: never its log, which can be long. */
 export const runFields =
-  "id,collectionId,collectionName,created,updated,job,target,status,trigger,scheduled_at,started_at,finished_at,bytes_added,error";
+  "id,collectionId,collectionName,created,updated,job,target,status,trigger,scheduled_at,started_at,finished_at,bytes_added,retention,error";
 
 /** A new job, as the panel takes it: only the fields of its source kind. */
 export type NewBackupJob = {
@@ -475,10 +482,22 @@ const statusRank: Record<RunStatus, number> = {
   succeeded: 5,
 };
 
+/** Of runs that went the same way, a failed retention is worse than one put
+ * off, and that worse than one that was applied or none. */
+const retentionRank: Record<RunRetention, number> = {
+  failed: 0,
+  deferred: 1,
+  applied: 2,
+  "": 2,
+};
+
+type ShownRun = Pick<BackupRun, "job" | "target" | "status" | "created"> &
+  Partial<Pick<BackupRun, "retention">>;
+
 /** The run a job's Last run shows: the newest of each of its targets, and of
  * those the worst, so that one target's failure is not hidden behind
- * another's success. null when no run is loaded. */
-export function lastRun<R extends Pick<BackupRun, "job" | "target" | "status" | "created">>(
+ * another's success, nor its retention's. null when no run is loaded. */
+export function lastRun<R extends ShownRun>(
   job: Pick<BackupJob, "id" | "targets">,
   runs: R[],
 ): R | null {
@@ -493,13 +512,13 @@ export function lastRun<R extends Pick<BackupRun, "job" | "target" | "status" | 
       newest.set(run.target, run);
     }
   }
+  const worse = (a: R, b: R) =>
+    statusRank[a.status] - statusRank[b.status] ||
+    (retentionRank[a.retention ?? ""] ?? 2) - (retentionRank[b.retention ?? ""] ?? 2);
   let shown: R | null = null;
   for (const run of newest.values()) {
-    if (
-      !shown ||
-      statusRank[run.status] < statusRank[shown.status] ||
-      (statusRank[run.status] === statusRank[shown.status] && run.created > shown.created)
-    ) {
+    const order = shown ? worse(run, shown) : -1;
+    if (!shown || order < 0 || (order === 0 && run.created > shown.created)) {
       shown = run;
     }
   }

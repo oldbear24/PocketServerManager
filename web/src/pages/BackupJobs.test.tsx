@@ -229,6 +229,7 @@ function run(id: string, fields: Partial<BackupRun>): BackupRun {
     files_new: 0,
     files_changed: 0,
     forgotten: 0,
+    retention: "",
     error: "",
     ...fields,
   } as BackupRun;
@@ -420,6 +421,45 @@ describe("the jobs", () => {
     expect(vw.getByText("Error · 12:00")).toBeInTheDocument();
     expect(vw.getByText("Panel disk: Fatal: no space left on device")).toBeInTheDocument();
     expect(vw.queryByText("+84 MB")).not.toBeInTheDocument();
+  });
+
+  it("says when a backup's retention was put off or failed", () => {
+    showPage("viewer", {
+      backup_runs: [
+        // put off on one target, applied on the other, a moment later
+        run("r1", {
+          created: "2026-11-09 11:00:00.000Z",
+          bytes_added: 84e6,
+          retention: "deferred",
+        }),
+        run("r2", { target: "t2", created: "2026-11-09 11:00:01.000Z", retention: "applied" }),
+        run("r3", {
+          job: "j2",
+          target: "t3",
+          created: "2026-11-09 02:00:00.000Z",
+          bytes_added: 5e6,
+          retention: "failed",
+        }),
+        run("r4", { job: "j3", target: "t3", created: "2026-11-09 00:30:00.000Z" }),
+      ],
+    });
+    const vw = row("vaultwarden");
+    expect(vw.getByText("OK · 12:00")).toBeInTheDocument();
+    expect(vw.getByText("+84 MB")).toBeInTheDocument();
+    const deferred = vw.getByText("retention postponed");
+    expect(deferred).toHaveClass("run-retention", "deferred");
+    expect(deferred).toHaveAttribute(
+      "title",
+      "Backblaze B2: retention postponed: the repository was busy",
+    );
+
+    const failed = row("photos").getByText("retention failed");
+    expect(failed).toHaveClass("run-retention", "failed");
+    expect(failed).toHaveAttribute("title", "retention failed");
+    expect(row("photos").getByText("+5 MB")).toBeInTheDocument();
+
+    // none set, or applied: nothing to say
+    expect(row("umami-db").queryByText(/retention/)).not.toBeInTheDocument();
   });
 
   it("draws 14 local days, each the colour of its worst run", () => {

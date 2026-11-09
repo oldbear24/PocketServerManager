@@ -15,6 +15,7 @@ import {
   parseKeep,
   parseTime,
   presetCron,
+  runFields,
   runStrip,
   runsSince,
   shortError,
@@ -190,6 +191,7 @@ function run(created: string, status: RunStatus, fields: Partial<BackupRun> = {}
     files_new: 0,
     files_changed: 0,
     forgotten: 0,
+    retention: "",
     error: "",
     ...fields,
   } as BackupRun;
@@ -318,6 +320,27 @@ describe("a job's last run", () => {
     ];
     expect(lastRun(job, runs)?.target).toBe("t2");
     expect(lastRun(job, [])).toBeNull();
+  });
+
+  it("shows a retention that failed or was put off, before one that was applied", () => {
+    const deferred = run("2026-11-09 03:00:00.000Z", "succeeded", {
+      target: "t1",
+      retention: "deferred",
+    });
+    const applied = run("2026-11-09 03:00:05.000Z", "succeeded", {
+      target: "t2",
+      retention: "applied",
+    });
+    expect(lastRun(job, [deferred, applied])).toBe(deferred);
+    const failed = { ...applied, retention: "failed" as const };
+    expect(lastRun(job, [deferred, failed])).toBe(failed);
+    // a run that failed is worse still
+    const broken = { ...applied, status: "failed" as const, retention: "" as const };
+    expect(lastRun(job, [deferred, broken])).toBe(broken);
+  });
+
+  it("reads each run's retention for the Jobs card", () => {
+    expect(runFields.split(",")).toContain("retention");
   });
 
   it("keeps the first line of an error for its cell", () => {

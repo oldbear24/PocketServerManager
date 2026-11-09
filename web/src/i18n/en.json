@@ -2046,6 +2046,11 @@
       "skipped": "Skipped",
       "cancelled": "Cancelled"
     },
+    "runRetention": {
+      "deferredShort": "retention postponed",
+      "deferred": "retention postponed: the repository was busy",
+      "failed": "retention failed"
+    },
     "keep": {
       "last": "Last",
       "hourly": "Hourly",

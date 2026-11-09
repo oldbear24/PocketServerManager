@@ -261,6 +261,11 @@ function LastRun({
           size: run.bytes_added > 0 ? formatBytes(run.bytes_added) : `${formatNumber(0)} B`,
         })
       : [target?.name, shortError(run.error)].filter(Boolean).join(": ");
+  // the backup is there, but restic did not forget the old snapshots
+  const retention =
+    run.status === "succeeded" && (run.retention === "deferred" || run.retention === "failed")
+      ? run.retention
+      : null;
   return (
     <>
       <div className={`run-status ${statusClass[run.status]}`}>
@@ -272,6 +277,16 @@ function LastRun({
       {detail && (
         <div className="run-detail" title={run.error || undefined}>
           {detail}
+        </div>
+      )}
+      {retention && (
+        <div
+          className={`run-retention ${retention}`}
+          title={[target?.name, t(`backups.runRetention.${retention}`)].filter(Boolean).join(": ")}
+        >
+          {retention === "deferred"
+            ? t("backups.runRetention.deferredShort")
+            : t("backups.runRetention.failed")}
         </div>
       )}
     </>
