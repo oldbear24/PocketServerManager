@@ -1018,3 +1018,42 @@ func TestBackupAlertsGoWithTheirJobAndTarget(t *testing.T) {
 		t.Errorf("after the job was removed: %v", alerts)
 	}
 }
+
+// TestABackupJobOfARemovedStackStopsUntilItIsChanged (#29): a job an admin
+// made of a stack stops when the stack is removed, instead of failing at
+// each of its runs, and says why; pointed at another stack, it runs again
+// without the problem.
+func TestABackupJobOfARemovedStackStopsUntilItIsChanged(t *testing.T) {
+	j := newJobsHarness(t, nil)
+	_, operator := testutil.NewUser(t, j.app, "operator@example.com", schema.RoleOperator)
+	shop := j.saveStack(j.host.Id, "shop", "services: {}\n")
+	other := j.saveStack(j.host.Id, "other", "services: {}\n")
+	now := time.Now().UTC()
+	id := j.addJob(map[string]any{"name": "shop", "source_kind": "stack", "stack": shop, "schedule": dueNow(now)})["id"].(string)
+
+	if status, out := j.send(http.MethodDelete, "/api/collections/stacks/records/"+shop, operator, nil); status != http.StatusNoContent {
+		t.Fatalf("remove the stack: %d %v", status, out)
+	}
+	j.waitFor("the job to stop", func() bool { return !j.job(id).GetBool("enabled") })
+	job := j.job(id)
+	if job.GetString("problem") != "Its stack was removed." || !job.GetDateTime("next_run_at").IsZero() {
+		t.Errorf("the job: %v", job.FieldsData())
+	}
+	// the event follows the job's save
+	j.waitFor("the event of the stopped job", func() bool {
+		events, err := j.app.FindRecordsByFilter(schema.Events, "kind='backup.job_disabled'", "", 0, 0)
+		return err == nil && len(events) == 1
+	})
+	j.panel.RunDueBackups(now)
+	if runs := j.runs(id); len(runs) != 0 {
+		t.Errorf("it ran: %v", runs[0].FieldsData())
+	}
+	if alerts := j.openAlerts("backup_failed"); len(alerts) != 0 {
+		t.Errorf("alerts: %v", alerts)
+	}
+
+	status, out := j.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, j.admin, map[string]any{"stack": other, "enabled": true})
+	if status != http.StatusOK || out["problem"] != "" || out["enabled"] != true || out["next_run_at"] == "" {
+		t.Errorf("point it at another stack: %d %v", status, out)
+	}
+}

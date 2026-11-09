@@ -13,6 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
+	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/stacks"
 )
@@ -201,17 +202,22 @@ func (p *Panel) freeJobName(name string) string {
 	return base + "-" + strings.ToLower(core.GenerateDefaultRandomId()[:6])
 }
 
+// stackRemoved is the problem of a job an admin made of a stack that was
+// removed: it is disabled until it backs up something else, or is removed.
+const stackRemoved = "Its stack was removed."
+
 // markOrphanedLabelJobs marks the label jobs of stacks that are gone, as
-// their labels are, and says of the other jobs of a removed stack that it is
-// gone.
+// their labels are, and disables the other jobs of a removed stack, which
+// would fail at each of their runs, saying why.
 func (p *Panel) markOrphanedLabelJobs() {
 	records, err := p.App.FindRecordsByFilter(schema.BackupJobs,
-		"stack='' && ((origin={:label} && label_removed=false) || (origin!={:label} && (source_kind={:stack} || source_kind={:dump}) && problem=''))", "", 0, 0,
-		dbx.Params{"label": schema.JobLabel, "stack": schema.SourceStack, "dump": schema.SourceDump})
+		"stack='' && ((origin={:label} && label_removed=false) || (origin!={:label} && (source_kind={:stack} || source_kind={:dump}) && (enabled=true || problem!={:removed})))", "", 0, 0,
+		dbx.Params{"label": schema.JobLabel, "stack": schema.SourceStack, "dump": schema.SourceDump, "removed": stackRemoved})
 	if err != nil {
 		return
 	}
 	for _, record := range records {
+		disabled := false
 		err := p.update(context.Background(), record, func(fresh *core.Record) error {
 			if fresh.GetString("stack") != "" {
 				return errUnchanged
@@ -225,14 +231,24 @@ func (p *Panel) markOrphanedLabelJobs() {
 				fresh.Set("next_run_at", "")
 				return nil
 			}
-			if fresh.GetString("problem") != "" {
+			if kind := fresh.GetString("source_kind"); (kind != schema.SourceStack && kind != schema.SourceDump) ||
+				(!fresh.GetBool("enabled") && fresh.GetString("problem") == stackRemoved) {
 				return errUnchanged
 			}
-			fresh.Set("problem", "Its stack was removed.")
+			disabled = fresh.GetBool("enabled")
+			fresh.Set("problem", stackRemoved)
+			fresh.Set("enabled", false)
+			fresh.Set("next_run_at", "")
 			return nil
 		})
 		if err != nil {
 			p.Log.Error("failed to mark a backup job of a removed stack", "job", record.Id, "error", err)
+			continue
+		}
+		if disabled {
+			events.Log(p.App, record.GetString("host"), "backup.job_disabled", schema.SeverityWarning,
+				fmt.Sprintf("The backup job %s was disabled: its stack was removed. Choose what it backs up now, or remove it.", record.GetString("name")),
+				map[string]any{"job": record.Id})
 		}
 	}
 }

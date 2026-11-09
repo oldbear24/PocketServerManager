@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -81,5 +82,59 @@ func TestLabelJobsFollowTheirLabels(t *testing.T) {
 		if !job.GetBool("label_removed") || job.GetBool("enabled") {
 			t.Errorf("%s of a removed stack: %v", service, job)
 		}
+	}
+}
+
+// TestAJobOfARemovedStackStopsUntilItIsChanged (#29): a job an admin made of
+// a stack's volumes or of its database stops when the stack is removed, as it
+// would fail at each run, and says why; once it backs up something else its
+// problem is gone, as it was just checked.
+func TestAJobOfARemovedStackStopsUntilItIsChanged(t *testing.T) {
+	f := newJobFixture(t)
+	shop := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "shop"})
+	other := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "other"})
+	status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, map[string]any{"name": "shop", "source_kind": "stack", "stack": shop.Id,
+		"targets": []string{f.target.Id}, "schedule": "@daily"})
+	if status != http.StatusCreated {
+		t.Fatalf("add: %d %v", status, out)
+	}
+	id := out["id"].(string)
+	dump := f.job("shop-db", map[string]any{"source_kind": schema.SourceDump, "stack": shop.Id, "service": "db", "engine": schema.DumpPostgres, "targets": []string{}, "problem": noTarget})
+	volume := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+
+	if err := f.app.Delete(shop); err != nil {
+		t.Fatal(err)
+	}
+	f.p.markOrphanedLabelJobs()
+	for _, jobID := range []string{id, dump.Id} {
+		job, err := f.app.FindRecordById(schema.BackupJobs, jobID)
+		if err != nil || job.GetString("problem") != "Its stack was removed." || job.GetBool("enabled") || !job.GetDateTime("next_run_at").IsZero() {
+			t.Errorf("a job of the removed stack: %v %v", job, err)
+		}
+	}
+	if job, _ := f.app.FindRecordById(schema.BackupJobs, volume.Id); !job.GetBool("enabled") || job.GetString("problem") != "" {
+		t.Errorf("a job of a volume: %v", job)
+	}
+	events, err := f.app.FindRecordsByFilter(schema.Events, "kind='backup.job_disabled'", "", 0, 0)
+	if err != nil || len(events) != 2 || !strings.Contains(events[0].GetString("message"), "its stack was removed") {
+		t.Errorf("events: %v %v", events, err)
+	}
+	// once is enough
+	f.p.markOrphanedLabelJobs()
+	if events, _ := f.app.FindRecordsByFilter(schema.Events, "kind='backup.job_disabled'", "", 0, 0); len(events) != 2 {
+		t.Errorf("%d events", len(events))
+	}
+
+	// it runs again once it backs up another stack
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, f.admin, map[string]any{"stack": other.Id, "enabled": true}); status != http.StatusOK ||
+		out["problem"] != "" || out["enabled"] != true || out["next_run_at"] == "" {
+		t.Errorf("point it at another stack: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+dump.Id, f.admin, map[string]any{"source_kind": "volume", "source": "shop_data",
+		"targets": []string{f.target.Id}}); status != http.StatusOK || out["problem"] != "" {
+		t.Errorf("make it a volume's: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+dump.Id, f.admin, map[string]any{"targets": []string{}}); status != http.StatusOK || out["problem"] != noTarget {
+		t.Errorf("take its target out: %d %v", status, out)
 	}
 }

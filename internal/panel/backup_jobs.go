@@ -516,12 +516,14 @@ func localElsewhere(target *core.Record) string {
 }
 
 // jobProblem is what keeps a job from running, as it is saved: no target, or
-// what its labels said at the last deploy.
+// for a label's job what its labels said at the last deploy. A job an admin
+// made has no other problem: what it backs up was just checked, so a stack
+// that was removed is behind it.
 func jobProblem(job *core.Record) string {
 	switch problem := job.GetString("problem"); {
 	case len(job.GetStringSlice("targets")) == 0:
 		return noTarget
-	case problem == noTarget:
+	case problem == noTarget || job.GetString("origin") != schema.JobLabel:
 		return ""
 	default:
 		return problem
