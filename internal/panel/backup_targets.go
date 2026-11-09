@@ -398,7 +398,8 @@ func (p *Panel) keepTargetsServer(e *core.RecordRequestEvent) error {
 	for _, target := range targets {
 		names = append(names, target.GetString("name"))
 	}
-	return e.BadRequestError(fmt.Sprintf("%s reaches the backup targets %s: move them to another server first, or remove them, which forgets their repositories' passwords.",
+	// the API begins every answer with a capital: a server's name does not
+	return e.BadRequestError(fmt.Sprintf("The server %s reaches the backup targets %s: move them to another server first, or remove them, which forgets their repositories' passwords.",
 		e.Record.GetString("name"), strings.Join(names, ", ")), nil)
 }
 
@@ -780,7 +781,7 @@ func (p *Panel) sealTarget(target *core.Record, creds backup.Credentials, passwo
 
 // offlineTarget says that a target's server cannot check it now.
 func offlineTarget(host *core.Record) string {
-	return fmt.Sprintf("%s is offline: its agent checks the target with restic.", host.GetString("name"))
+	return fmt.Sprintf("The server %s is offline: its agent checks the target with restic.", host.GetString("name"))
 }
 
 // targetName checks a target's name, which no other target has.

@@ -599,7 +599,7 @@ func TestAServerThatReachesTargetsIsNotRemoved(t *testing.T) {
 		t.Fatalf("add: %d %v", status, out)
 	}
 	status, out := b.send(http.MethodDelete, "/api/collections/hosts/records/"+b.host.Id, b.admin, nil)
-	if status != http.StatusBadRequest || !strings.Contains(out["message"].(string), "reaches the backup targets b2: move them to another server first") {
+	if status != http.StatusBadRequest || !strings.Contains(out["message"].(string), "The server backup-node reaches the backup targets b2: move them to another server first") {
 		t.Errorf("remove the server: %d %v", status, out)
 	}
 	if _, err := b.app.FindRecordById(schema.Hosts, b.host.Id); err != nil {

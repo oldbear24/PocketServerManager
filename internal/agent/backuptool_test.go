@@ -179,13 +179,13 @@ subprocess ssh: Offending ED25519 key in /run/pocketcloud/known_hosts:1
 subprocess ssh: Host key for [192.0.2.2]:2222 has changed and you have requested strict checking.
 Fatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session, error: error receiving version packet from server: server unexpectedly closed connection: unexpected EOF
 `
-	want := "ssh: Offending ED25519 key in /run/pocketcloud/known_hosts:1 Host key for [192.0.2.2]:2222 has changed and you have requested strict checking. " +
+	want := "SSH: Offending ED25519 key in /run/pocketcloud/known_hosts:1 Host key for [192.0.2.2]:2222 has changed and you have requested strict checking. " +
 		"Fatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session, error: error receiving version packet from server: server unexpectedly closed connection: unexpected EOF"
 	if got := r.said([]byte(changed)); got != want {
 		t.Errorf("a changed host key:\n%s\nwant\n%s", got, want)
 	}
 	denied := "subprocess ssh: backup@192.0.2.2: Permission denied (publickey,password,keyboard-interactive).\nFatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session\n"
-	if got := r.said([]byte(denied)); !strings.HasPrefix(got, "ssh: backup@192.0.2.2: Permission denied (publickey,password,keyboard-interactive). Fatal:") {
+	if got := r.said([]byte(denied)); !strings.HasPrefix(got, "SSH: backup@192.0.2.2: Permission denied (publickey,password,keyboard-interactive). Fatal:") {
 		t.Errorf("a refused key: %s", got)
 	}
 }

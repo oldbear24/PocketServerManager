@@ -216,7 +216,7 @@ func (r restic) said(stderr []byte) string {
 		ssh = ssh[len(ssh)-2:]
 	}
 	if len(ssh) > 0 {
-		lines = append([]string{"ssh: " + strings.Join(ssh, " ")}, lines...)
+		lines = append([]string{"SSH: " + strings.Join(ssh, " ")}, lines...)
 	}
 	text := backup.Redact(strings.Join(lines, " "), r.secrets...)
 	if len(text) > 1000 {
