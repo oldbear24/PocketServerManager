@@ -1007,6 +1007,47 @@ func TestBackupAlertsGoWithWhatTheyAreAbout(t *testing.T) {
 	}
 }
 
+// TestATargetTakenOutDuringAPassGetsNoAlert (#29): the scheduler's pass
+// reads every job at its start; a target an admin takes out of a job while
+// the pass runs gets no skipped run, and no alert that nothing would resolve,
+// from the job as the pass read it.
+func TestATargetTakenOutDuringAPassGetsNoAlert(t *testing.T) {
+	f := newJobFixture(t)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	month := time.Now().UTC().Month()%12 + 1
+	stale := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": fmt.Sprintf("15 3 * %d *", month),
+		"targets": []string{f.target.Id, nas.Id}})
+	// the server is marked offline, long after the panel started
+	f.p.SetStarted(time.Now().Add(-3 * time.Minute))
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+stale.Id, f.admin, map[string]any{"targets": []string{f.target.Id}}); status != http.StatusOK {
+		t.Fatalf("take nas out: %d %v", status, out)
+	}
+
+	f.p.runOnSchedule(stale, time.Date(2030, month, 9, 3, 15, 0, 0, time.UTC))
+	runs, err := f.app.FindAllRecords(schema.BackupRuns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].GetString("target") != f.target.Id || runs[0].GetString("status") != schema.RunSkipped {
+		t.Errorf("%d runs", len(runs))
+		for _, run := range runs {
+			t.Logf("a run to %s: %s", run.GetString("target"), run.GetString("status"))
+		}
+	}
+	// an alert raised from the job as it was read before the change
+	f.p.raiseJobAlert(alertBackupFailed, stale, nas, schema.SeverityCritical, "Backup data → nas failed.")
+	alerts, err := f.app.FindRecordsByFilter(schema.Alerts, "status!='resolved'", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].GetString("target") != stale.Id+":"+f.target.Id || alerts[0].GetString("rule") != alertBackupSkipped {
+		t.Errorf("%d open alerts", len(alerts))
+		for _, alert := range alerts {
+			t.Logf("an open alert: %s %s", alert.GetString("rule"), alert.GetString("target"))
+		}
+	}
+}
+
 // TestARunIsQueuedUnlessItsServerIsOffline (#29): at a job's minute, a
 // server without a connection that is not marked offline, being between two
 // connections, gets its run queued, to be delivered once its agent is back;

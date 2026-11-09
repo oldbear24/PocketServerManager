@@ -668,8 +668,14 @@ func (p *Panel) offline(host *core.Record) bool {
 }
 
 // runOnSchedule starts a job's runs of a minute: skipped when its server is
-// offline or the run before is still going.
+// offline or the run before is still going. It reads the job again, as the
+// pass read every job at its start: a target taken out of it meanwhile gets
+// no run.
 func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
+	job, err := p.App.FindRecordById(schema.BackupJobs, job.Id)
+	if err != nil {
+		return
+	}
 	host, err := p.App.FindRecordById(schema.Hosts, job.GetString("host"))
 	if err != nil {
 		return
@@ -873,12 +879,19 @@ func (p *Panel) alertFailure(job, target, run *core.Record, reason string) {
 
 // raiseJobAlert raises an alert of a job to a target. A job no longer alerts
 // about a target it does not back up to, nor once its label is gone: their
-// alerts were resolved as the job changed (see resolveBackupAlerts).
+// alerts were resolved as the job changed (see resolveBackupAlerts). It reads
+// the job as it is now, in the transaction that raises the alert: a change of
+// the job saved meanwhile is seen, or resolves the alert after it.
 func (p *Panel) raiseJobAlert(rule string, job, target *core.Record, severity, message string) {
-	if !backsUpTo(job, target) {
-		return
-	}
-	if err := events.RaiseAlert(p.App, rule, alertKey(job.Id, target.Id), job.GetString("host"), severity, message); err != nil {
+	err := p.App.RunInTransaction(func(tx core.App) error {
+		fresh, err := tx.FindRecordById(schema.BackupJobs, job.Id)
+		if err != nil || !backsUpTo(fresh, target) {
+			// a job removed meanwhile alerts about nothing
+			return nil //nolint:nilerr // nothing to raise
+		}
+		return events.RaiseAlert(tx, rule, alertKey(job.Id, target.Id), fresh.GetString("host"), severity, message)
+	})
+	if err != nil {
 		p.Log.Error("failed to raise an alert", "rule", rule, "error", err)
 	}
 }
