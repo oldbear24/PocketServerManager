@@ -820,6 +820,33 @@ message BackupRun {
   repeated string tags = 7;
   // env holds the environment of the dump command.
   map<string, string> env = 8 [(pocketcloud.options.v1.sensitive) = true];
+  // stdin_container is the container in which stdin_command runs, through
+  // Docker exec: its output reaches restic in the job container (#29).
+  string stdin_container = 9;
+  // host_name is restic's `--host` of the snapshot: the server's name, so
+  // that snapshots do not name the job container.
+  string host_name = 10;
+  // retention is applied to the job's snapshots after the backup, with
+  // `restic forget --prune`; none keeps every snapshot.
+  BackupRetention retention = 11;
+}
+
+// BackupRetention is how many snapshots of a job a repository keeps, as
+// restic's `--keep-*` options: the newest of each hour, day, week, month and
+// year, and the last ones whatever their age. Zero leaves an option out.
+message BackupRetention {
+  // last is restic's `--keep-last`.
+  int32 last = 1;
+  // hourly is restic's `--keep-hourly`.
+  int32 hourly = 2;
+  // daily is restic's `--keep-daily`.
+  int32 daily = 3;
+  // weekly is restic's `--keep-weekly`.
+  int32 weekly = 4;
+  // monthly is restic's `--keep-monthly`.
+  int32 monthly = 5;
+  // yearly is restic's `--keep-yearly`.
+  int32 yearly = 6;
 }
 
 // BackupRestore restores a snapshot in a job container.
