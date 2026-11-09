@@ -425,7 +425,7 @@ func TestRetentionKeepsWhatThePolicySays(t *testing.T) {
 	forgotten := []int{}
 	for range 3 {
 		run := j.runNow(app)[0]
-		if run.GetString("status") != schema.RunSucceeded {
+		if run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "applied" {
 			t.Fatalf("a run: %v", run.FieldsData())
 		}
 		forgotten = append(forgotten, run.GetInt("forgotten"))
@@ -448,7 +448,7 @@ func TestRetentionKeepsWhatThePolicySays(t *testing.T) {
 	// a retention that fails leaves the backup, and alerts
 	t.Setenv("FAKE_RESTIC_FORGET_FAIL", "Fatal: unable to create exclusive lock: repository is already locked by PID 4242")
 	run := j.runNow(app)[0]
-	if run.GetString("status") != schema.RunSucceeded || run.GetString("snapshot_id") == "" {
+	if run.GetString("status") != schema.RunSucceeded || run.GetString("snapshot_id") == "" || run.GetString("retention") != "failed" {
 		t.Errorf("the run whose retention failed: %v", run.FieldsData())
 	}
 	alert := j.openAlerts("backup_retention")[app+":"+j.disk.Id]
@@ -1203,5 +1203,69 @@ func TestABackupThatNeverStartsIsSkippedWithAnAlert(t *testing.T) {
 	release()
 	if run := j.runEnded(firstRun); run.GetString("status") != schema.RunSucceeded {
 		t.Errorf("the first run: %v", run.FieldsData())
+	}
+}
+
+// TestBackupRetentionWaitsForABusyRepository (#29): a forget that cannot
+// have the repository to itself, even after restic removed the stale locks
+// and tried again, postpones the retention: the run succeeds with its
+// snapshot and keeps the old ones, an event says so, and the alert waits
+// until no run applied the retention for three days. A retention applied
+// again resolves it. It needs the agent's retention_deferred and the fake
+// restic's FAKE_RESTIC_FORGET_LOCKED (forget fails as restic does on a
+// locked repository, exit code 11, that many times).
+func TestBackupRetentionWaitsForABusyRepository(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
+	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "retention": map[string]any{"last": 1}})["id"].(string)
+	key := id + ":" + j.disk.Id
+	if run := j.runNow(id)[0]; run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "applied" {
+		t.Fatalf("the first run: %v", run.FieldsData())
+	}
+
+	// locked at the first try and after the unlock
+	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "2")
+	run := j.runNow(id)[0]
+	if run.GetString("status") != schema.RunSucceeded || run.GetString("retention") != "deferred" || run.GetString("snapshot_id") == "" || run.GetInt("forgotten") != 0 {
+		t.Errorf("a run whose retention was postponed: %v", run.FieldsData())
+	}
+	if snapshots := j.snapshotsOf(id); len(snapshots) != 2 {
+		t.Errorf("%d snapshots kept", len(snapshots))
+	}
+	if alert := j.openAlerts("backup_retention")[key]; alert != nil {
+		t.Errorf("a new job's postponed retention alerted: %v", alert.FieldsData())
+	}
+	events, err := j.app.FindRecordsByFilter(schema.Events, "kind='backup.retention_deferred'", "", 0, 0)
+	if err != nil || len(events) != 1 || events[0].GetString("severity") != schema.SeverityInfo || !strings.Contains(events[0].GetString("message"), "already locked") {
+		t.Errorf("events: %v %v", events, err)
+	}
+	calls := fakerestic.Calls(t, j.restic)
+	if !strings.Contains(calls, "restic unlock") || strings.Contains(calls, "--remove-all") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+
+	// three days later, with no retention applied since
+	for _, query := range []string{
+		"UPDATE backup_jobs SET created={:old} WHERE id={:job}",
+		"UPDATE backup_runs SET finished_at={:old} WHERE job={:job}",
+	} {
+		if _, err := j.app.DB().NewQuery(query).Bind(dbx.Params{"old": time.Now().UTC().Add(-4 * 24 * time.Hour).Format("2006-01-02 15:04:05.000Z"), "job": id}).Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "1000")
+	if run := j.runNow(id)[0]; run.GetString("retention") != "deferred" {
+		t.Errorf("a run whose retention was postponed again: %v", run.FieldsData())
+	}
+	alert := j.openAlerts("backup_retention")[key]
+	if alert == nil || alert.GetString("severity") != schema.SeverityWarning || !strings.Contains(alert.GetString("message"), "has not applied its retention for 3 days") {
+		t.Errorf("the alert: %v", alert)
+	}
+
+	t.Setenv("FAKE_RESTIC_FORGET_LOCKED", "")
+	if run := j.runNow(id)[0]; run.GetString("retention") != "applied" || run.GetInt("forgotten") != 3 {
+		t.Errorf("a run whose retention was applied: %v", run.FieldsData())
+	}
+	if alert := j.openAlerts("backup_retention")[key]; alert != nil {
+		t.Errorf("the alert is still open: %v", alert.FieldsData())
 	}
 }

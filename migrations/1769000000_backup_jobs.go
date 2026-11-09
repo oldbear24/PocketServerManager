@@ -99,6 +99,11 @@ func upBackupJobs(app core.App) error {
 		&core.NumberField{Name: "files_changed", OnlyInt: true},
 		// the snapshots the retention removed after the backup
 		&core.NumberField{Name: "forgotten", OnlyInt: true},
+		// how the retention went after a backup that succeeded: applied,
+		// deferred (restic could not have the repository to itself, as
+		// another server's backup had it: the next run tries again) or
+		// failed; empty for a job that keeps every snapshot
+		&core.SelectField{Name: "retention", MaxSelect: 1, Values: []string{"applied", "deferred", "failed"}},
 		// restic's error, or why the run did not start
 		&core.TextField{Name: "error", Max: 4096},
 		// the end of the job's output, with its secrets hidden

@@ -62,6 +62,18 @@ const (
 	// catchUpWithin is how long ago a job's minute that the panel missed,
 	// being down, may be for the job to run for it once the panel is back.
 	catchUpWithin = 24 * time.Hour
+	// retentionPatience is how long a job's retention may be postponed, its
+	// repository being busy, before it alerts.
+	retentionPatience = 3 * 24 * time.Hour
+)
+
+// How a run's retention went: applied, postponed because restic could not
+// have the repository to itself, or failed. A run of a job that keeps every
+// snapshot, or whose backup failed, has none.
+const (
+	retentionApplied  = "applied"
+	retentionDeferred = "deferred"
+	retentionFailed   = "failed"
 )
 
 // Rules of the alerts of backups, each keyed by job and target.
@@ -1054,14 +1066,31 @@ func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun
 // backupRunPayload is what the finisher reads of a backup.run.
 type backupRunPayload struct {
 	RunID string `json:"run_id"`
+	// Retention is what restic was to keep; none keeps every snapshot.
+	Retention map[string]float64 `json:"retention"`
 }
 
 // runOfCommand is the run a backup.run backs up.
 func (p *Panel) runOfCommand(command *core.Record) (*core.Record, error) {
+	return p.App.FindRecordById(schema.BackupRuns, runPayloadOf(command).RunID)
+}
+
+// runPayloadOf reads what the finisher needs of a backup.run's payload.
+func runPayloadOf(command *core.Record) backupRunPayload {
 	var payload backupRunPayload
 	raw, _ := json.Marshal(command.Get("payload"))
 	_ = json.Unmarshal(raw, &payload)
-	return p.App.FindRecordById(schema.BackupRuns, payload.RunID)
+	return payload
+}
+
+// keepsSome tells whether a run's retention forgets anything.
+func (payload backupRunPayload) keepsSome() bool {
+	for _, count := range payload.Retention {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // backupRunStarted marks a run as running once its agent started it.
@@ -1094,11 +1123,17 @@ type backupRunResult struct {
 	Forgotten      float64 `json:"forgotten"`
 	Log            string  `json:"log"`
 	RetentionError string  `json:"retention_error"`
+	// RetentionDeferred is restic's lock line when forget could not have
+	// the repository to itself, even after it removed stale locks and tried
+	// again: the next run tries again.
+	RetentionDeferred string `json:"retention_deferred"`
 }
 
 // backupRunFinished keeps how a run went, and alerts: a failure with
-// restic's error, a retention that failed after a backup that did not; a run
-// that succeeds resolves its job's alerts to its target.
+// restic's error, a run that never started, a retention that failed after a
+// backup that did not, or that the repository being busy postponed for
+// retentionPatience; a run that succeeds resolves its job's alerts to its
+// target, its retention's once it is applied.
 func (p *Panel) backupRunFinished(command *core.Record) {
 	run, err := p.runOfCommand(command)
 	if err != nil {
@@ -1159,8 +1194,20 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	hide := p.targetSecretValues(target)
 	message = capitalize(backup.Redact(message, hide...))
 	retentionError := backup.Redact(result.RetentionError, hide...)
+	retentionDeferredBy := backup.Redact(result.RetentionDeferred, hide...)
+	retention := ""
+	if status == schema.RunSucceeded {
+		switch {
+		case retentionError != "":
+			retention = retentionFailed
+		case retentionDeferredBy != "":
+			retention = retentionDeferred
+		case runPayloadOf(command).keepsSome():
+			retention = retentionApplied
+		}
+	}
 
-	fields := map[string]any{
+	fields := map[string]any{"retention": retention,
 		"status": status, "finished_at": finished, "error": cutText(message, 4096),
 		"snapshot_id": cutText(result.SnapshotID, 100), "bytes_added": int64(result.BytesAdded), "total_bytes": int64(result.TotalBytes),
 		"files_new": int64(result.FilesNew), "files_changed": int64(result.FilesChanged), "forgotten": int64(result.Forgotten),
@@ -1205,15 +1252,48 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 				p.Log.Error("failed to resolve an alert", "rule", rule, "error", err)
 			}
 		}
-		if retentionError != "" {
+		switch retention {
+		case retentionFailed:
 			text := cutText(fmt.Sprintf("%s kept every snapshot: restic could not forget the old ones: %s", backupLabel(job, target), sentenceText(retentionError)), 2048)
 			events.Log(p.App, host, "backup.retention_failed", schema.SeverityWarning, text, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
 			p.raiseJobAlert(alertBackupRetention, job, target, schema.SeverityWarning, text)
-		} else if err := events.ResolveAlert(p.App, alertBackupRetention, key); err != nil {
-			p.Log.Error("failed to resolve an alert", "rule", alertBackupRetention, "error", err)
+		case retentionDeferred:
+			p.retentionPostponed(job, target, run, retentionDeferredBy)
+		default:
+			// applied, or none to apply
+			if err := events.ResolveAlert(p.App, alertBackupRetention, key); err != nil {
+				p.Log.Error("failed to resolve an alert", "rule", alertBackupRetention, "error", err)
+			}
 		}
 	}
 	p.noteJobRun(job.Id)
+}
+
+// retentionPostponed notes a retention that restic postponed, as another
+// server's backup or prune had the repository: the next run tries again. It
+// alerts only once no run of the job to the target has applied its retention
+// for retentionPatience, and the job is older than that.
+func (p *Panel) retentionPostponed(job, target, run *core.Record, lock string) {
+	since, err := types.ParseDateTime(time.Now().Add(-retentionPatience))
+	if err != nil {
+		return
+	}
+	applied, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && target={:target} && retention={:applied} && finished_at>={:since}", "", 1, 0,
+		dbx.Params{"job": job.Id, "target": target.Id, "applied": retentionApplied, "since": since.String()})
+	if err != nil {
+		p.Log.Error("failed to read the backup runs", "job", job.Id, "error", err)
+		return
+	}
+	data := map[string]any{"job": job.Id, "target": target.Id, "run": run.Id}
+	if len(applied) > 0 || job.GetDateTime("created").After(since) {
+		text := cutText(fmt.Sprintf("%s kept its old snapshots for now: the repository was busy, so the next run applies the retention: %s", backupLabel(job, target), sentenceText(lock)), 2048)
+		events.Log(p.App, job.GetString("host"), "backup.retention_deferred", schema.SeverityInfo, text, data)
+		return
+	}
+	text := cutText(fmt.Sprintf("%s has not applied its retention for %d days: the repository was busy at each run: %s",
+		backupLabel(job, target), int(retentionPatience.Hours()/24), sentenceText(lock)), 2048)
+	events.Log(p.App, job.GetString("host"), "backup.retention_deferred", schema.SeverityWarning, text, data)
+	p.raiseJobAlert(alertBackupRetention, job, target, schema.SeverityWarning, text)
 }
 
 // targetSecretValues are a target's secrets, to hide from what is kept.
