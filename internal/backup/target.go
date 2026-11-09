@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -178,17 +179,9 @@ func Check(kind string, config Config, creds Credentials) (Config, Credentials, 
 		}
 		creds = Credentials{Username: creds.Username, Password: creds.Password}
 	case KindLocal:
-		if !path.IsAbs(config.Path) || strings.ContainsAny(config.Path, "\n\r\x00") {
-			return config, creds, errors.New("give an absolute directory on the server, such as /srv/backups/restic")
-		}
-		clean := path.Clean(config.Path)
-		if clean == "/" {
-			return config, creds, errors.New("the repository needs a directory of its own, not /")
-		}
-		for _, system := range forbidden {
-			if clean == system || strings.HasPrefix(clean, system+"/") {
-				return config, creds, fmt.Errorf("%s is the system's: choose a directory elsewhere, such as /srv/backups", system)
-			}
+		clean, err := LocalPath(config.Path)
+		if err != nil {
+			return config, creds, err
 		}
 		config = Config{Path: clean}
 		creds = Credentials{}
@@ -196,6 +189,25 @@ func Check(kind string, config Config, creds Credentials) (Config, Credentials, 
 		return config, creds, fmt.Errorf("a target is %s, not %q", strings.Join(Kinds, ", "), kind)
 	}
 	return config, creds, nil
+}
+
+// LocalPath checks a local target's directory on its server and returns it
+// cleaned: absolute, not / and outside the system's directories. The agent
+// checks it again before it mounts it.
+func LocalPath(dir string) (string, error) {
+	if !path.IsAbs(dir) || strings.ContainsAny(dir, "\n\r\x00") {
+		return "", errors.New("give an absolute directory on the server, such as /srv/backups/restic")
+	}
+	clean := path.Clean(dir)
+	if clean == "/" {
+		return "", errors.New("the repository needs a directory of its own, not /")
+	}
+	for _, system := range forbidden {
+		if clean == system || strings.HasPrefix(clean, system+"/") {
+			return "", fmt.Errorf("%s is the system's: choose a directory elsewhere, such as /srv/backups", system)
+		}
+	}
+	return clean, nil
 }
 
 // Locate is where restic finds a checked target's repository.
@@ -276,6 +288,27 @@ func NewPassword() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// Secrets are the values to keep out of what restic says about a
+// repository: its password, the storage's credentials and the lines of an
+// SFTP key.
+func Secrets(password string, env map[string]string, sshKey string) []string {
+	secrets := []string{password}
+	for name, value := range env {
+		// a region is no secret, and restic's errors name it
+		if !strings.HasSuffix(name, "_REGION") {
+			secrets = append(secrets, value)
+		}
+	}
+	for _, line := range strings.Split(sshKey, "\n") {
+		if line = strings.TrimSpace(line); len(line) >= 16 && !strings.HasPrefix(line, "-----") {
+			secrets = append(secrets, line)
+		}
+	}
+	// the longest first, so that one inside another goes whole
+	slices.SortFunc(secrets, func(a, b string) int { return len(b) - len(a) })
+	return secrets
 }
 
 // Redact replaces the secrets in what restic said, as its errors may repeat a
