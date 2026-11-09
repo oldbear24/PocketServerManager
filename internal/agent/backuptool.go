@@ -151,7 +151,8 @@ type restic struct {
 func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, error) {
 	full := []string{"--no-cache"}
 	if r.cache != "" {
-		full = []string{"--cache-dir", r.cache}
+		// what restic has not used for 30 days goes, as a removed target's
+		full = []string{"--cache-dir", r.cache, "--cleanup-cache"}
 	}
 	for _, option := range r.options {
 		full = append(full, "-o", option)

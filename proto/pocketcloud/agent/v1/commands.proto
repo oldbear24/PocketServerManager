@@ -796,6 +796,10 @@ message BackupInit {
   // usage asks how much the repository holds as well: restic reads every
   // snapshot for it, which takes a while on a large repository.
   bool usage = 3;
+  // change marks the check of settings the panel has not stored yet; the
+  // agent does not read it. A panel that restarted meanwhile no longer has
+  // them, and fails the check rather than complete it with the stored ones.
+  bool change = 4;
 }
 
 // BackupRun runs one backup job for one target.

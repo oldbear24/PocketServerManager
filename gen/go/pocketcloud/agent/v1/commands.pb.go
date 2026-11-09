@@ -4699,7 +4699,11 @@ type BackupInit struct {
 	RepoId string `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
 	// usage asks how much the repository holds as well: restic reads every
 	// snapshot for it, which takes a while on a large repository.
-	Usage         bool `protobuf:"varint,3,opt,name=usage,proto3" json:"usage,omitempty"`
+	Usage bool `protobuf:"varint,3,opt,name=usage,proto3" json:"usage,omitempty"`
+	// change marks the check of settings the panel has not stored yet; the
+	// agent does not read it. A panel that restarted meanwhile no longer has
+	// them, and fails the check rather than complete it with the stored ones.
+	Change        bool `protobuf:"varint,4,opt,name=change,proto3" json:"change,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4751,6 +4755,13 @@ func (x *BackupInit) GetRepoId() string {
 func (x *BackupInit) GetUsage() bool {
 	if x != nil {
 		return x.Usage
+	}
+	return false
+}
+
+func (x *BackupInit) GetChange() bool {
+	if x != nil {
+		return x.Change
 	}
 	return false
 }
@@ -6108,14 +6119,15 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
 	"\fOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9b\x01\n" +
 	"\n" +
 	"BackupInit\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
 	"repository\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
-	"\x05usage\x18\x03 \x01(\bR\x05usage\"\xf5\x02\n" +
+	"\x05usage\x18\x03 \x01(\bR\x05usage\x12\x16\n" +
+	"\x06change\x18\x04 \x01(\bR\x06change\"\xf5\x02\n" +
 	"\tBackupRun\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12F\n" +
 	"\n" +

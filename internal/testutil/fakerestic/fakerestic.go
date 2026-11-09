@@ -39,7 +39,7 @@ case "$AWS_SECRET_ACCESS_KEY$RESTIC_REST_PASSWORD" in
 esac
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--no-cache|--no-lock) shift;;
+	--no-cache|--no-lock|--cleanup-cache) shift;;
 	-o|--cache-dir) shift 2;;
 	*) break;;
 	esac

@@ -32,7 +32,11 @@ var perTypeLimits = map[string]int{
 	"stack.":      3,
 	"site.deploy": 2,
 	"backup.":     2,
-	"db.":         3,
+	// a backup target's check is quick and someone waits for it; a measure
+	// may read for an hour: it never takes the check's slots (#28)
+	"backup-check": 2,
+	"backup-usage": 1,
+	"db.":          3,
 	// scheduled tasks may run for hours: they never take every worker
 	"task.": 4,
 }
@@ -179,7 +183,7 @@ func (x *Executor) run(ctx context.Context, cancel context.CancelFunc, command *
 		x.mu.Unlock()
 	}()
 
-	release, err := x.acquire(ctx, command.GetType())
+	release, err := x.acquire(ctx, limitKey(command))
 	if err != nil {
 		x.finish(id, stateCancelled, "The command was cancelled while waiting for a free worker.", nil)
 		return
@@ -222,6 +226,18 @@ func (x *Executor) safely(ctx context.Context, handler Handler, command *agentv1
 		}
 	}()
 	return handler(ctx, command, reporter)
+}
+
+// limitKey is what a command counts against in perTypeLimits: its type, but
+// for a backup target's check or measure a limit of its own.
+func limitKey(command *agentv1.Command) string {
+	if init := command.GetBackupInit(); init != nil {
+		if init.GetUsage() {
+			return "backup-usage"
+		}
+		return "backup-check"
+	}
+	return command.GetType()
 }
 
 func (x *Executor) acquire(ctx context.Context, commandType string) (func(), error) {

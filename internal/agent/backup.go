@@ -49,6 +49,12 @@ func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, 
 		args = append(args, "--usage")
 	}
 	out, err := a.backupJob(ctx, payload.GetRepository(), args, reporter)
+	var refused *backupRefused
+	if errors.As(err, &refused) {
+		// the job ran and restic, or the tool, said no: the panel may forget
+		// a new target, as no repository was made with its password
+		return map[string]any{"refused": true}, err
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -147,11 +153,21 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 		}
 		return nil
 	}, &stdout, &redactingWriter{w: log, secrets: secrets})
+	var exit *exitError
+	if errors.As(err, &exit) && !exit.oom {
+		return nil, &backupRefused{backup.Redact(err.Error(), secrets...)}
+	}
 	if err != nil {
 		return nil, errors.New(backup.Redact(err.Error(), secrets...))
 	}
 	return lastLine(stdout.Bytes()), nil
 }
+
+// backupRefused is what the backup tool said when it ended with an error: it
+// ran, and restic or the tool refused, rather than the job not running.
+type backupRefused struct{ message string }
+
+func (b *backupRefused) Error() string { return b.message }
 
 // cleanupBackupJobs removes the job containers of backup commands the agent
 // was running when it stopped: the commands ended with it.

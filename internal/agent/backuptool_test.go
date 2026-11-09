@@ -155,7 +155,7 @@ func TestABucketThatIsNotThereYetIsMade(t *testing.T) {
 	if err != nil || !result.Created {
 		t.Fatalf("a new bucket: %+v %v", result, err)
 	}
-	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "restic --cache-dir /cache --no-lock cat config") || strings.Count(calls, "--no-cache") != 1 {
+	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "restic --cache-dir /cache --cleanup-cache --no-lock cat config") || strings.Count(calls, "--no-cache") != 1 {
 		t.Errorf("restic ran:\n%s", calls)
 	}
 }

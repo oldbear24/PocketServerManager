@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
@@ -104,8 +105,8 @@ func TestABackupTargetIsCreatedOnceInAJobOfItsOwn(t *testing.T) {
 		t.Errorf("a remote target's job mounts %v, may %v", mounts, job.Host["CapAdd"])
 	}
 	calls := fakerestic.Calls(t, root)
-	if !strings.Contains(calls, "restic --cache-dir /cache -o s3.bucket-lookup=path --no-lock cat config") ||
-		!strings.Contains(calls, "restic --cache-dir /cache -o s3.bucket-lookup=path init --json") || strings.Count(calls, " init --json\n") != 1 ||
+	if !strings.Contains(calls, "restic --cache-dir /cache --cleanup-cache -o s3.bucket-lookup=path --no-lock cat config") ||
+		!strings.Contains(calls, "restic --cache-dir /cache --cleanup-cache -o s3.bucket-lookup=path init --json") || strings.Count(calls, " init --json\n") != 1 ||
 		strings.Contains(calls, " stats ") {
 		t.Errorf("restic ran:\n%s", calls)
 	}
@@ -225,6 +226,15 @@ func TestWhatResticSaysKeepsNoSecret(t *testing.T) {
 		t.Errorf("the output:\n%s", out.String())
 	}
 
+	// the job ran and said no: the panel may forget a new target
+	result, err := a.handleBackupInit(context.Background(), initCommand(&agentv1.BackupRepository{
+		TargetId: "t5", Url: "s3:http://minio:9000/backups", Password: "repo-password-5",
+		Env: map[string]string{"AWS_ACCESS_KEY_ID": "minio-key", "AWS_SECRET_ACCESS_KEY": secret},
+	}), &Reporter{})
+	if err == nil || result["refused"] != true {
+		t.Errorf("a refusal: %v %v", result, err)
+	}
+
 	// a command the panel did not complete
 	if _, err := a.handleBackupInit(context.Background(), initCommand(&agentv1.BackupRepository{TargetId: "t6", Url: "rest:http://x/"}), &Reporter{}); err == nil ||
 		!strings.Contains(err.Error(), "no password") {
@@ -254,4 +264,35 @@ func anyStrings(value any) []string {
 		}
 	}
 	return out
+}
+
+// TestABackupTargetsMeasureNeverTakesTheSlotsOfItsCheck (#28): measures may
+// read a large repository for an hour; a check someone waits for has slots
+// of its own.
+func TestABackupTargetsMeasureNeverTakesTheSlotsOfItsCheck(t *testing.T) {
+	measure := &agentv1.Command{Type: "backup.init", Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Usage: true}}}
+	check := &agentv1.Command{Type: "backup.init", Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{}}}
+	run := &agentv1.Command{Type: "backup.run", Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{}}}
+	if limitKey(measure) != "backup-usage" || limitKey(check) != "backup-check" || limitKey(run) != "backup.run" {
+		t.Errorf("keys: %s %s %s", limitKey(measure), limitKey(check), limitKey(run))
+	}
+	x := newExecutor(nil, slog.New(slog.DiscardHandler))
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	// a measure holds its slot; a second waits, while checks still run
+	release, err := x.acquire(ctx, limitKey(measure))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	for range 2 {
+		got, err := x.acquire(ctx, limitKey(check))
+		if err != nil {
+			t.Fatalf("a check waited behind a measure: %v", err)
+		}
+		defer got()
+	}
+	if _, err := x.acquire(ctx, limitKey(measure)); err == nil {
+		t.Error("a second measure ran beside the first")
+	}
 }
