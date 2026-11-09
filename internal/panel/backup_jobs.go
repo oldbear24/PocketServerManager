@@ -1037,24 +1037,27 @@ func (p *Panel) targetSecretValues(target *core.Record) []string {
 	return backup.Secrets(secrets.password, repo.Env, repo.SSHKey)
 }
 
-// noteJobRun keeps the state of a job's newest run on the job.
+// noteJobRun keeps the state of a job's newest run on the job. The run is
+// read in the transaction that writes the job: a run's start and its end
+// noted at once leave the job with the later state, whichever is noted last.
 func (p *Panel) noteJobRun(jobID string) {
-	runs, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job}", "-created,-id", 1, 0, dbx.Params{"job": jobID})
-	if err != nil || len(runs) == 0 {
-		return
-	}
-	newest := runs[0]
-	job, err := p.App.FindRecordById(schema.BackupJobs, jobID)
-	if err != nil {
-		return
-	}
-	err = p.update(context.Background(), job, func(fresh *core.Record) error {
-		if fresh.GetString("last_status") == newest.GetString("status") && fresh.GetDateTime("last_run_at").Equal(newest.GetDateTime("created")) {
-			return errUnchanged
+	err := p.App.RunInTransaction(func(tx core.App) error {
+		runs, err := tx.FindRecordsByFilter(schema.BackupRuns, "job={:job}", "-created,-id", 1, 0, dbx.Params{"job": jobID})
+		if err != nil || len(runs) == 0 {
+			return err
 		}
-		fresh.Set("last_status", newest.GetString("status"))
-		fresh.Set("last_run_at", newest.GetDateTime("created"))
-		return nil
+		newest := runs[0]
+		job, err := tx.FindRecordById(schema.BackupJobs, jobID)
+		if err != nil {
+			// a job removed meanwhile has nothing to keep
+			return nil //nolint:nilerr // nothing to do
+		}
+		if job.GetString("last_status") == newest.GetString("status") && job.GetDateTime("last_run_at").Equal(newest.GetDateTime("created")) {
+			return nil
+		}
+		job.Set("last_status", newest.GetString("status"))
+		job.Set("last_run_at", newest.GetDateTime("created"))
+		return tx.Save(job)
 	})
 	if err != nil {
 		p.Log.Error("failed to keep the last run of a backup job", "job", jobID, "error", err)
