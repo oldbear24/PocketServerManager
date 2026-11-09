@@ -208,6 +208,10 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			if err := checkBackupPath(real); err != nil {
 				return job, err
 			}
+			// where it leads only, which is what the job mounts
+			if err := checkJobLinks(real); err != nil {
+				return job, err
+			}
 			if slices.Contains(resolved, real) {
 				return job, fmt.Errorf("the directory %s is there twice", real)
 			}
@@ -270,10 +274,10 @@ func mergedEnv(a, b map[string]string) map[string]string {
 	return merged
 }
 
-// checkBackupPath checks a directory of the server to back up: absolute,
-// clean, neither / nor the kernel's, and none that would hide the job's own
-// or land elsewhere in the job. A run checks the directory as the panel
-// names it, and again where its symbolic links lead.
+// checkBackupPath checks a directory of the server to back up by its name:
+// absolute, clean, neither / nor the kernel's, and none that would hide the
+// job's own. A run checks the directory as the panel names it, and again
+// where its symbolic links lead.
 func checkBackupPath(dir string) error {
 	if !path.IsAbs(dir) || strings.ContainsAny(dir, "\n\r\x00") || path.Clean(dir) != dir {
 		return fmt.Errorf("a directory to back up is absolute and clean, such as /srv/app, not %q", dir)
@@ -296,6 +300,15 @@ func checkBackupPath(dir string) error {
 			return fmt.Errorf("%s is in the backup job's own %s: it cannot be mounted at its own path", dir, mount)
 		}
 	}
+	return nil
+}
+
+// checkJobLinks checks a directory of the server, with no symbolic link left
+// in it, against the links of the backup job's image: mounted at one, or in
+// one, it would land where the link leads in the job. A directory that leads
+// through a link on the server is mounted where it leads, so only that is
+// checked: /var/spool/mail that leads to /var/mail is backed up there.
+func checkJobLinks(dir string) error {
 	for _, link := range backupJobLinks {
 		if dir == link || strings.HasPrefix(dir, link+"/") {
 			return fmt.Errorf("%s is a symbolic link in the backup job, which cannot mount %s at its own path: back up where it leads", link, dir)

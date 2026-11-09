@@ -334,14 +334,14 @@ func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
 	for dir, want := range map[string]string{
 		"/srv/run":            "/run would hide the backup job's own /run/pocketcloud",
 		"/srv/varrun":         "/run would hide the backup job's own /run/pocketcloud",
-		"/var/run":            "/var/run is a symbolic link in the backup job",
+		"/var/run":            "/run would hide the backup job's own /run/pocketcloud",
 		"/srv/kernel":         "/proc/1 is the kernel's",
 		"/srv/outside":        "the directory /srv/outside does not exist on this server",
 		"/srv/loop":           "the directory /srv/loop leads through more than 40 symbolic links on this server",
 		"/srv/notes":          "/srv/notes is not a directory on this server",
 		"/srv/notes/x":        "the directory /srv/notes/x does not exist on this server",
 		"/srv/none":           "the directory /srv/none does not exist on this server",
-		"/var/spool/mail/bob": "/var/spool/mail is a symbolic link in the backup job",
+		"/var/spool/mail/bob": "the directory /var/spool/mail/bob does not exist on this server",
 	} {
 		if _, err := run(dir); err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", dir, err, want)
@@ -388,6 +388,64 @@ func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
 	r.Config.HostRoot = filepath.Join(root, "gone")
 	if _, err := run(plain); err == nil || !strings.HasPrefix(err.Error(), "the agent cannot see the server's directories at "+r.Config.HostRoot) {
 		t.Errorf("without the server's /: %v", err)
+	}
+}
+
+// TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads (review of #29): a
+// directory mounted at a symbolic link of the job's image, or in one, would
+// land where the link leads in the job, so the agent refuses it; but only
+// where the directory leads on the server, which is what the job mounts: on
+// Debian, where /var/spool/mail leads to /var/mail, it is backed up as
+// /var/mail, and where it is a directory of its own, it is refused.
+func TestADirectoryIsCheckedAgainstTheJobsImageWhereItLeads(t *testing.T) {
+	r := newRunAgent(t)
+	// a Debian server, and an older one, where /var/spool/mail and /var/run
+	// are directories of their own
+	debian, older := t.TempDir(), t.TempDir()
+	for _, dir := range []string{debian + "/var/spool", debian + "/var/mail", debian + "/srv/app", older + "/var/spool/mail", older + "/var/run/app"} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../mail", debian+"/var/spool/mail"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		server, dir string
+		// mounted is where the job mounts the directory; refused, what the
+		// agent says when it does not
+		mounted, refused string
+	}{
+		{debian, "/var/spool/mail", "/var/mail", ""},
+		{debian, "/srv/app", "/srv/app", ""},
+		{older, "/var/spool/mail", "", "/var/spool/mail is a symbolic link in the backup job"},
+		{older, "/var/run/app", "", "/var/run is a symbolic link in the backup job"},
+	} {
+		r.Config.HostRoot = tc.server
+		job, err := r.backupRunJob(context.Background(), &agentv1.BackupRun{
+			Paths: []string{tc.dir}, Tags: []string{"pocketcloud", "job:j11"}, HostName: "nas",
+		})
+		if tc.refused != "" {
+			if err == nil || !strings.HasPrefix(err.Error(), tc.refused) {
+				t.Errorf("%s: %v, want %q", tc.dir, err, tc.refused)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", tc.dir, err)
+			continue
+		}
+		if len(job.mounts) != 1 || job.mounts[0]["Source"] != tc.mounted || job.mounts[0]["Target"] != tc.mounted {
+			t.Errorf("%s: the mounts: %v", tc.dir, job.mounts)
+		}
+		if i := slices.Index(job.args, "--path"); i < 0 || job.args[i+1] != tc.mounted {
+			t.Errorf("%s: the job's command: %q", tc.dir, job.args)
+		}
+		leads := "The directory " + tc.dir + " leads to " + tc.mounted + " on this server: backing up " + tc.mounted
+		if slices.Contains(job.notes, leads) != (tc.dir != tc.mounted) {
+			t.Errorf("%s: the notes: %q", tc.dir, job.notes)
+		}
 	}
 }
 
