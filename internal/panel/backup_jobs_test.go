@@ -259,14 +259,15 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 	other := testutil.NewHost(t, f.app, "node-2")
 	job := f.job("data", map[string]any{"host": other.Id, "source_kind": schema.SourceVolume, "source": "app_data"})
 	run := f.run(job)
+	// its first delivery, unless a check says otherwise
+	delivery := schema.CommandQueued
 	deliver := func(host string, target *core.Record) (*agentv1.Command, error) {
 		t.Helper()
 		record := core.NewRecord(core.NewBaseCollection(schema.Commands))
 		record.Id = "deliveredrun001"
 		record.Set("host", host)
 		record.Set("type", "backup.run")
-		// its first delivery
-		record.Set("status", schema.CommandQueued)
+		record.Set("status", delivery)
 		command := &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{
 			RunId: run.Id, Repository: &agentv1.BackupRepository{TargetId: target.Id, Url: "s3:https://s3.example.com/backups/node"},
 		}}}
@@ -328,6 +329,16 @@ func TestARunIsDeliveredToItsJobsServer(t *testing.T) {
 	if _, err := deliver(other.Id, f.target); err == nil || err.Error() != "the pocketcloud.backup label of the job is gone" {
 		t.Errorf("a label that is gone: %v", err)
 	}
+	// sent again as its agent reconnected, the command reached the agent
+	// with the secrets already, and may be running: it goes as before
+	for _, status := range []string{schema.CommandDispatched, schema.CommandRunning} {
+		delivery = status
+		command, err = deliver(other.Id, f.target)
+		if err != nil || command.GetBackupRun().GetRepository().GetPassword() != "repo-password-b2" {
+			t.Errorf("sent again while %s, its label gone: %v", status, err)
+		}
+	}
+	delivery = schema.CommandQueued
 
 	// such a run did not start: it is cancelled, and alerts nobody
 	job.Load(map[string]any{"targets": []string{second.Id}, "origin": schema.JobManual, "label_removed": false})
