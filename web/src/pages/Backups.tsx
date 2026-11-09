@@ -21,11 +21,12 @@ import {
   backupsApi,
   emptyTargetForm,
   halfCredentials,
-  hostKeyLine,
+  hostKeys,
   keyscanCommand,
   maxImmutableDays,
   parseDays,
   requiredFields,
+  sameHostKeys,
   targetConfig,
   targetCredentials,
   targetKinds,
@@ -94,7 +95,7 @@ export function TargetsCard({
     setRefreshing((current) => new Set(current).add(target.id));
     try {
       const result = await backupsApi.refresh(target.id);
-      if (result.status === "failed") {
+      if (result.status === "failed" || (result.status === "pending" && result.last_error)) {
         toast.error(
           t("backups.refreshFailed", {
             name: result.name,
@@ -119,11 +120,13 @@ export function TargetsCard({
     if (!removing) {
       return;
     }
+    const { id, name } = removing;
     setRemoveBusy(true);
     try {
-      await backupsApi.remove(removing.id);
-      toast.success(t("backups.removed", { name: removing.name }));
-      setRemoving(null);
+      await backupsApi.remove(id);
+      toast.success(t("backups.removed", { name }));
+      // the admin may have cancelled and asked to remove another meanwhile
+      setRemoving((current) => (current?.id === id ? null : current));
     } catch (err) {
       toast.error(err);
     } finally {
@@ -273,8 +276,8 @@ function TargetItem({
         {meta.length > 0 && <span>{meta.join(" · ")}</span>}
         {actions}
       </div>
-      {status === "failed" && target.last_error && (
-        <pre className="backup-target-error">{target.last_error}</pre>
+      {(status === "failed" || status === "pending") && target.last_error && (
+        <pre className={`backup-target-error ${status}`}>{target.last_error}</pre>
       )}
     </li>
   );
@@ -411,7 +414,7 @@ function KindFields({
                 {text("user", t("backups.field.user"), { placeholder: "backup" })}
               </div>
               {text("path", t("backups.field.path"), { placeholder: "/srv/restic" })}
-              <HostKeyField form={form} set={set} />
+              <HostKeyField form={form} set={set} required={required} />
             </>
           )}
           <Field label={t("backups.field.privateKey")} htmlFor="target-private_key">
@@ -455,21 +458,35 @@ function KindFields({
   }
 }
 
+/** Something typed in the host key field, but no key in it. */
+function noHostKey(form: TargetForm) {
+  return form.host_key.trim() !== "" && hostKeys(form.host_key) === "";
+}
+
+/** The SFTP server's host keys, pasted as ssh-keyscan prints them. */
 function HostKeyField({
   form,
   set,
+  required = false,
 }: {
   form: TargetForm;
   set: (field: keyof TargetForm, value: string) => void;
+  required?: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <Field label={t("backups.field.hostKey")} htmlFor="target-host_key">
-      <input
+    <Field
+      label={t("backups.field.hostKey")}
+      htmlFor="target-host_key"
+      error={noHostKey(form) ? t("backups.hostKeyInvalid") : undefined}
+    >
+      <textarea
         id="target-host_key"
         className="input mono"
+        rows={3}
         autoComplete="off"
         spellCheck={false}
+        required={required}
         placeholder="ssh-ed25519 AAAA…"
         value={form.host_key}
         onChange={(event) => set("host_key", event.target.value)}
@@ -538,7 +555,7 @@ export function AddTargetDialog({ hosts, onClose }: { hosts: Host[]; onClose: ()
   const [form, setForm] = useState<TargetForm>(emptyTargetForm);
   const [days, setDays] = useState("");
   const [note, setNote] = useState("");
-  // only for a repository that exists already, as after a reinstall
+  // the admin's own password, or that of a repository restic already has
   const [repoPassword, setRepoPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -549,7 +566,13 @@ export function AddTargetDialog({ hosts, onClose }: { hosts: Host[]; onClose: ()
     const value = form[field];
     return typeof value === "string" && value.trim() === "";
   });
-  const ready = name.trim() !== "" && host !== "" && !missing && !half && immutableDays !== null;
+  const ready =
+    name.trim() !== "" &&
+    host !== "" &&
+    !missing &&
+    !half &&
+    !(kind === "sftp" && noHostKey(form)) &&
+    immutableDays !== null;
   const server = hosts.find((item) => item.id === host)?.name ?? "";
 
   const set = (field: keyof TargetForm, value: string | boolean) =>
@@ -573,7 +596,10 @@ export function AddTargetDialog({ hosts, onClose }: { hosts: Host[]; onClose: ()
         ...(repoPassword !== "" ? { password: repoPassword } : {}),
       });
       toast.success(t("backups.added", { name: target.name }));
-      onClose();
+      // closed while restic was at it: whatever is open now is another's
+      if (mounted.current) {
+        onClose();
+      }
     } catch (err) {
       if (mounted.current) {
         setError(errorMessage(err));
@@ -710,13 +736,15 @@ export function EditTargetDialog({
   const immutableDays = kind === "s3" ? parseDays(days) : 0;
   const credentials = anyCredential(kind, form) ? targetCredentials(kind, form) : undefined;
   const half = halfCredentials(kind, form);
-  const hostKey = hostKeyLine(form.host_key);
-  const hostKeyChanged = kind === "sftp" && hostKey !== "" && hostKey !== (config.host_key ?? "");
+  const hostKey = hostKeys(form.host_key);
+  const hostKeyChanged =
+    kind === "sftp" && hostKey !== "" && !sameHostKeys(hostKey, config.host_key ?? "");
   // a local target's data is on its server: it cannot move
   const hostChanged = kind !== "local" && host !== "" && host !== target.host;
   // restic checks new settings before they replace the stored ones
   const checks = credentials !== undefined || hostKeyChanged || hostChanged;
-  const ready = name.trim() !== "" && !half && immutableDays !== null;
+  const ready =
+    name.trim() !== "" && !half && !(kind === "sftp" && noHostKey(form)) && immutableDays !== null;
   const server = hosts.find((item) => item.id === host)?.name ?? "–";
 
   const set = (field: keyof TargetForm, value: string | boolean) =>
@@ -750,7 +778,9 @@ export function EditTargetDialog({
     try {
       const saved = await backupsApi.change(target.id, body);
       toast.success(t("backups.saved", { name: saved.name }));
-      onClose();
+      if (mounted.current) {
+        onClose();
+      }
     } catch (err) {
       if (mounted.current) {
         setError(errorMessage(err));
@@ -824,7 +854,7 @@ export function EditTargetDialog({
             </>
           )}
         </fieldset>
-        {busy && checks && <Banner tone="info">{t("backups.checkingNote", { server })}</Banner>}
+        {busy && checks && <Banner tone="info">{t("backups.checkingEditNote", { server })}</Banner>}
         {error && <Banner tone="err">{error}</Banner>}
       </div>
     </ConfirmDialog>

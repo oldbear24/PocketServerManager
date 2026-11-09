@@ -20,6 +20,7 @@ export type BackupTargetConfig = {
   // sftp
   address?: string;
   user?: string;
+  /** every key the server may show, one "type base64" per line */
   host_key?: string;
   // sftp, local
   path?: string;
@@ -41,9 +42,12 @@ export type BackupTarget = RecordModel & {
   location: string;
   repo_id: string;
   status: BackupTargetStatus;
-  /** restic's last lines when the last check failed */
+  /** restic's last lines when the last check failed, or why a new target
+   * still waits for its first */
   last_error: string;
   checked_at: string;
+  /** when the usage was measured, after the repository opened; "" until then */
+  usage_at: string;
   used_bytes: number;
   /** 0: unknown, or no limit */
   capacity_bytes: number;
@@ -60,8 +64,9 @@ export type NewBackupTarget = {
   credentials: Record<string, string>;
   immutable_days: number;
   note: string;
-  /** the password of an existing repository, to add it; without one, the
-   * panel makes a new password and creates the repository if there is none */
+  /** the repository's password: one of the admin's own, or that of a
+   * repository restic already has; without one, the panel makes a password
+   * it never shows and creates the repository if there is none */
   password?: string;
 };
 
@@ -78,14 +83,17 @@ export type BackupTargetChange = {
 };
 
 export const backupsApi = {
-  /** restic opens the repository, or creates it: up to about two minutes */
+  /** restic opens the repository, or creates it: up to about two minutes.
+   * The target is saved as pending first, and stays so when the agent does
+   * not answer in time (504); its usage is measured afterwards. */
   add: (body: NewBackupTarget) =>
     pb.send<BackupTarget>("/api/pc/backup-targets", { method: "POST", body }),
 
   change: (id: string, body: BackupTargetChange) =>
     pb.send<BackupTarget>(`/api/pc/backup-targets/${id}`, { method: "PATCH", body }),
 
-  /** checks the target again; a failed check comes back as its status */
+  /** opens the repository again, which finishes adding a pending target; a
+   * failed check comes back as its status, and the usage follows by realtime */
   refresh: (id: string) =>
     pb.send<BackupTarget>(`/api/pc/backup-targets/${id}/refresh`, { method: "POST" }),
 
@@ -114,13 +122,15 @@ export type Usage =
   | { kind: "unlimited"; used: string }
   /** "0.6 TB": a server that reports no capacity */
   | { kind: "used"; used: string }
-  /** not checked yet */
+  /** not measured yet */
   | { kind: "unknown" };
 
+/** The usage is measured after the repository opened, and arrives on its own:
+ * until then there is nothing to say. */
 export function targetUsage(
-  target: Pick<BackupTarget, "kind" | "used_bytes" | "capacity_bytes" | "checked_at">,
+  target: Pick<BackupTarget, "kind" | "used_bytes" | "capacity_bytes" | "usage_at">,
 ): Usage {
-  if (!target.checked_at) {
+  if (!target.usage_at) {
     return { kind: "unknown" };
   }
   const used = Math.max(0, target.used_bytes || 0);
@@ -223,7 +233,7 @@ export function targetConfig(kind: BackupTargetKind, form: TargetForm): BackupTa
         address: form.address.trim(),
         user: form.user.trim(),
         path: form.path.trim(),
-        host_key: hostKeyLine(form.host_key),
+        host_key: hostKeys(form.host_key),
       };
     case "rest":
       return { url: form.url.trim() };
@@ -278,23 +288,35 @@ function privateKey(text: string): string {
   return key ? `${key}\n` : "";
 }
 
-/** The host key as one line, "ssh-ed25519 AAAA…": the first key line of what
- * ssh-keyscan prints, without the host name it starts with. */
-export function hostKeyLine(text: string): string {
-  const line =
-    text
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .find((item) => item !== "" && !item.startsWith("#")) ?? "";
-  const parts = line.split(/\s+/);
-  if (
-    parts.length >= 3 &&
-    /^(ssh-|ecdsa-|sk-)/.test(parts[1]) &&
-    !/^(ssh-|ecdsa-|sk-)/.test(parts[0])
-  ) {
-    return parts.slice(1).join(" ");
+const keyType = /^(ssh-|ecdsa-|sk-)/;
+const keyData = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** Every host key in what ssh-keyscan prints, as the panel pins them: one
+ * "type base64" per line, without its comments, the host name in front of
+ * each key, or a comment after it. "" when there is no key in it. */
+export function hostKeys(text: string): string {
+  const keys: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) {
+      continue;
+    }
+    let fields = line.split(/\s+/);
+    if (fields.length >= 3 && !keyType.test(fields[0]) && keyType.test(fields[1])) {
+      fields = fields.slice(1);
+    }
+    if (fields.length >= 2 && keyType.test(fields[0]) && keyData.test(fields[1])) {
+      keys.push(`${fields[0]} ${fields[1]}`);
+    }
   }
-  return line;
+  return [...new Set(keys)].join("\n");
+}
+
+/** Whether two host key texts pin the same keys, in any order. */
+export function sameHostKeys(a: string, b: string): boolean {
+  const first = new Set(hostKeys(a).split("\n").filter(Boolean));
+  const second = new Set(hostKeys(b).split("\n").filter(Boolean));
+  return first.size === second.size && [...first].every((key) => second.has(key));
 }
 
 /** The command that prints an SFTP server's host key, for its address. */

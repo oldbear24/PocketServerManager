@@ -1883,6 +1883,7 @@
     "addTitle": "Add a backup target",
     "checking": "Checking with restic…",
     "checkingNote": "The agent of {{server}} opens the repository with restic, or creates it when there is none. This can take up to two minutes.",
+    "checkingEditNote": "The agent of {{server}} opens the repository with restic with the new settings. This can take up to two minutes.",
     "added": "The target {{name}} was added.",
     "noTargetsTitle": "No targets yet",
     "noTargetsText": "A target is where backups go: an S3 bucket, an SFTP server, a rest-server or a directory on a server. restic encrypts the data before it leaves the agent.",
@@ -1901,7 +1902,7 @@
     "refresh": "Refresh",
     "refreshName": "Refresh {{name}}",
     "refreshing": "Checking…",
-    "refreshed": "{{name}} was checked: the repository is fine.",
+    "refreshed": "{{name}} answers; what it holds follows shortly.",
     "refreshFailed": "{{name}} failed its check: {{error}}",
     "editName": "Edit {{name}}",
     "editTitle": "Edit {{name}}",
@@ -1944,6 +1945,7 @@
     "keepCredentials": "Leave them blank to keep the stored ones. New ones are checked with restic before they replace them.",
     "bothOrNeither": "Fill in both, or neither.",
     "daysInvalid": "A whole number of days, from 0 to 36500.",
+    "hostKeyInvalid": "There is no host key in this: paste the lines ssh-keyscan prints, such as ssh-ed25519 AAAA…",
     "field": {
       "endpoint": "Endpoint",
       "bucket": "Bucket",
@@ -1961,19 +1963,19 @@
       "username": "User (optional)",
       "password": "Password (optional)",
       "localPath": "Directory",
-      "repoPassword": "Repository password (only for an existing repository)",
+      "repoPassword": "Repository password (optional)",
       "immutableDays": "Object Lock in days (optional)",
       "note": "Note (optional)"
     },
     "hint": {
       "pathStyle": "MinIO needs them; Backblaze B2, Wasabi and AWS do not.",
       "address": "host or host:port",
-      "hostKey": "Paste the line this prints:",
+      "hostKey": "Paste what this prints:",
       "privateKey": "OpenSSH or PEM, without a passphrase. Its public key goes in the user's authorized_keys.",
       "url": "No user or password in the address.",
       "restCredentials": "Only when the rest-server asks for them: both, or neither.",
       "localPath": "A directory on that server; created if missing.",
-      "repoPassword": "Leave it empty for a new repository: PocketCloud makes its password and keeps it sealed. Fill it in to add a repository restic already has, as after a reinstall.",
+      "repoPassword": "Leave it empty and PocketCloud makes a password, keeps it sealed and never shows it: the repository then opens only with this panel's database and master key. Set your own and keep a copy to be able to add the repository again elsewhere, or enter the password of a repository restic already has.",
       "immutableDays": "How long the bucket's Object Lock keeps objects, as set at the provider. Only a note: PocketCloud does not set the lock."
     }
   }

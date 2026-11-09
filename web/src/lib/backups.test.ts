@@ -7,9 +7,10 @@ import {
   emptyTargetForm,
   formatUsedOf,
   halfCredentials,
-  hostKeyLine,
+  hostKeys,
   keyscanCommand,
   parseDays,
+  sameHostKeys,
   targetConfig,
   targetCredentials,
   targetTone,
@@ -25,7 +26,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const checked = "2026-11-09 09:00:00.000Z";
+const measured = "2026-11-09 09:00:00.000Z";
 
 describe("the usage of a target", () => {
   it("reads used / capacity in the capacity's unit, with a share for the bar", () => {
@@ -34,7 +35,7 @@ describe("the usage of a target", () => {
         kind: "local",
         used_bytes: 0.6 * TB,
         capacity_bytes: 4 * TB,
-        checked_at: checked,
+        usage_at: measured,
       }),
     ).toEqual({
       kind: "capacity",
@@ -46,7 +47,7 @@ describe("the usage of a target", () => {
         kind: "local",
         used_bytes: 0.3 * GB,
         capacity_bytes: 20 * GB,
-        checked_at: checked,
+        usage_at: measured,
       }),
     ).toEqual({
       kind: "capacity",
@@ -57,7 +58,7 @@ describe("the usage of a target", () => {
 
   it("says a bucket without a capacity has no limit", () => {
     expect(
-      targetUsage({ kind: "s3", used_bytes: 1.2 * TB, capacity_bytes: 0, checked_at: checked }),
+      targetUsage({ kind: "s3", used_bytes: 1.2 * TB, capacity_bytes: 0, usage_at: measured }),
     ).toEqual({
       kind: "unlimited",
       used: "1.2 TB",
@@ -66,34 +67,38 @@ describe("the usage of a target", () => {
 
   it("gives just the used size of another target that reports no capacity", () => {
     expect(
-      targetUsage({ kind: "sftp", used_bytes: 600 * GB, capacity_bytes: 0, checked_at: checked }),
+      targetUsage({ kind: "sftp", used_bytes: 600 * GB, capacity_bytes: 0, usage_at: measured }),
     ).toEqual({
       kind: "used",
       used: "600 GB",
     });
     expect(
-      targetUsage({ kind: "rest", used_bytes: 84e6, capacity_bytes: 0, checked_at: checked }),
+      targetUsage({ kind: "rest", used_bytes: 84e6, capacity_bytes: 0, usage_at: measured }),
     ).toEqual({
       kind: "used",
       used: "84 MB",
     });
   });
 
-  it("says nothing of a target not checked yet", () => {
-    expect(targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, checked_at: "" })).toEqual({
+  it("says nothing until the usage is measured, whatever the bytes say", () => {
+    expect(targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, usage_at: "" })).toEqual({
       kind: "unknown",
     });
+    // the repository opened, and its size has not arrived yet
+    expect(
+      targetUsage({ kind: "local", used_bytes: 5 * GB, capacity_bytes: 20 * GB, usage_at: "" }),
+    ).toEqual({ kind: "unknown" });
   });
 
-  it("says a new repository, checked, holds nothing yet", () => {
+  it("says a new repository, measured, holds nothing yet", () => {
     expect(
-      targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, checked_at: checked }),
+      targetUsage({ kind: "s3", used_bytes: 0, capacity_bytes: 0, usage_at: measured }),
     ).toEqual({
       kind: "unlimited",
       used: "0 B",
     });
     expect(
-      targetUsage({ kind: "sftp", used_bytes: 0, capacity_bytes: 0, checked_at: checked }),
+      targetUsage({ kind: "sftp", used_bytes: 0, capacity_bytes: 0, usage_at: measured }),
     ).toEqual({
       kind: "used",
       used: "0 B",
@@ -105,7 +110,7 @@ describe("the usage of a target", () => {
       kind: "local",
       used_bytes: 5 * TB,
       capacity_bytes: 4 * TB,
-      checked_at: checked,
+      usage_at: measured,
     });
     expect(usage.kind === "capacity" && usage.percent).toBe(100);
   });
@@ -177,7 +182,7 @@ describe("the settings of a kind", () => {
     address: "backup-node",
     user: "backup",
     path: "/srv/restic",
-    host_key: "backup-node ssh-ed25519 AAAAC3Nza",
+    host_key: "# backup-node:22 SSH-2.0-OpenSSH_9.6\nbackup-node ssh-ed25519 AAAAC3Nza",
     private_key: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----",
     url: "https://backup-node:8000/homelab/",
   });
@@ -241,21 +246,51 @@ describe("the settings of a kind", () => {
   });
 });
 
-describe("an SFTP host key", () => {
-  it("keeps one line, without the host name ssh-keyscan puts in front", () => {
-    expect(hostKeyLine("backup-node ssh-ed25519 AAAAC3Nza\n")).toBe("ssh-ed25519 AAAAC3Nza");
-    expect(hostKeyLine("[backup-node]:2222 ssh-ed25519 AAAAC3Nza")).toBe("ssh-ed25519 AAAAC3Nza");
-    expect(
-      hostKeyLine("# backup-node:22 SSH-2.0-OpenSSH_9.6\nbackup-node ecdsa-sha2-nistp256 AAAAE2"),
-    ).toBe("ecdsa-sha2-nistp256 AAAAE2");
+describe("SFTP host keys", () => {
+  const keyscan = [
+    "# backup-node:22 SSH-2.0-OpenSSH_9.6",
+    "backup-node ssh-rsa AAAAB3NzaC1yc2E=",
+    "# backup-node:22 SSH-2.0-OpenSSH_9.6",
+    "backup-node ecdsa-sha2-nistp256 AAAAE2VjZHNh",
+    "",
+    "backup-node ssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
+  ].join("\n");
+
+  it("takes every key ssh-keyscan prints, without its comments and the host name", () => {
+    expect(hostKeys(keyscan)).toBe(
+      [
+        "ssh-rsa AAAAB3NzaC1yc2E=",
+        "ecdsa-sha2-nistp256 AAAAE2VjZHNh",
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
+      ].join("\n"),
+    );
+    expect(hostKeys("[backup-node]:2222 ssh-ed25519 AAAAC3Nza\r\n")).toBe("ssh-ed25519 AAAAC3Nza");
   });
 
-  it("leaves a key line alone, comment included", () => {
-    expect(hostKeyLine("  ssh-ed25519 AAAAC3Nza  ")).toBe("ssh-ed25519 AAAAC3Nza");
-    expect(hostKeyLine("ssh-ed25519 AAAAC3Nza root@backup-node")).toBe(
-      "ssh-ed25519 AAAAC3Nza root@backup-node",
+  it("takes a key line as it is, without a comment after it, and each key once", () => {
+    expect(hostKeys("  ssh-ed25519 AAAAC3Nza  ")).toBe("ssh-ed25519 AAAAC3Nza");
+    expect(hostKeys("ssh-ed25519 AAAAC3Nza root@backup-node")).toBe("ssh-ed25519 AAAAC3Nza");
+    expect(hostKeys("a ssh-ed25519 AAAAC3Nza\nb ssh-ed25519 AAAAC3Nza")).toBe(
+      "ssh-ed25519 AAAAC3Nza",
     );
-    expect(hostKeyLine("")).toBe("");
+  });
+
+  it("finds no key in what holds none", () => {
+    expect(hostKeys("")).toBe("");
+    // a single line input joins ssh-keyscan's two into one comment
+    expect(hostKeys("# backup-node:22 SSH-2.0-OpenSSH_9.6 backup-node ssh-ed25519 AAAA")).toBe("");
+    expect(hostKeys("backup-node")).toBe("");
+    expect(hostKeys("ssh-ed25519 AAAA…")).toBe("");
+  });
+
+  it("knows the same keys in another order, or as ssh-keyscan prints them", () => {
+    const stored = "ecdsa-sha2-nistp256 AAAAE2VjZHNh\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5";
+    expect(
+      sameHostKeys("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\necdsa-sha2-nistp256 AAAAE2VjZHNh", stored),
+    ).toBe(true);
+    expect(sameHostKeys(stored, stored)).toBe(true);
+    expect(sameHostKeys("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5", stored)).toBe(false);
+    expect(sameHostKeys(keyscan, stored)).toBe(false);
   });
 
   it("is printed by a command for the server's address", () => {

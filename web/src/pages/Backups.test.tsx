@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -80,6 +80,7 @@ function target(fields: Partial<BackupTarget>): BackupTarget {
     status: "ok",
     last_error: "",
     checked_at: "2026-11-09 11:55:00.000Z",
+    usage_at: "2026-11-09 11:56:00.000Z",
     used_bytes: 1.2e12,
     capacity_bytes: 0,
     immutable_days: 30,
@@ -115,6 +116,7 @@ const node = target({
   location: "sftp:backup@backup-node:/srv/restic",
   status: "failed",
   last_error: "Fatal: unable to open repository: ssh: handshake failed: host key mismatch",
+  usage_at: "",
   used_bytes: 0,
   immutable_days: 0,
 });
@@ -167,6 +169,37 @@ describe("the backup targets", () => {
     expect(
       sftp.getByText("Fatal: unable to open repository: ssh: handshake failed: host key mismatch"),
     ).toBeInTheDocument();
+    // never opened, never measured: nothing on the right
+    expect(sftp.queryByText(/ B$|no limit/)).not.toBeInTheDocument();
+  });
+
+  it("shows a target the agent did not answer for as pending, with why", () => {
+    const waiting = target({
+      id: "t4",
+      name: "Wasabi",
+      status: "pending",
+      last_error: "The agent of pve-01 did not answer in time.",
+      checked_at: "",
+      usage_at: "",
+      used_bytes: 0,
+      immutable_days: 0,
+    });
+    showPage("admin", [waiting]);
+
+    const row = item("Wasabi");
+    expect(row.getByText("Not checked yet").closest(".pill")).toHaveClass("info");
+    expect(row.getByText("The agent of pve-01 did not answer in time.")).toBeInTheDocument();
+    expect(row.getByText("through the agent of pve-01")).toBeInTheDocument();
+    expect(row.queryByText(/ B$|no limit/)).not.toBeInTheDocument();
+    expect(row.getByRole("button", { name: "Refresh Wasabi" })).toBeEnabled();
+  });
+
+  it("measures the usage after the repository opened", () => {
+    showPage("viewer", [target({ used_bytes: 0, usage_at: "" })]);
+    expect(item("Backblaze B2").queryByText(/no limit/)).not.toBeInTheDocument();
+    cleanup();
+    showPage("viewer", [target({ used_bytes: 0 })]);
+    expect(item("Backblaze B2").getByText("0 B · no limit")).toBeInTheDocument();
   });
 
   it.each(["viewer", "operator"] as const)("shows no actions to a %s", (role) => {
@@ -221,6 +254,58 @@ describe("the backup targets", () => {
     expect(await screen.findByText("The target Backblaze B2 was removed.")).toBeInTheDocument();
   });
 
+  it("leaves another removal's confirmation open when an earlier one ends", async () => {
+    showPage("admin");
+    let done: () => void = () => {};
+    vi.spyOn(pb, "send").mockReturnValue(
+      new Promise((resolve) => {
+        done = () => resolve(undefined);
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Backblaze B2" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Remove Backblaze B2?" })).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Panel disk" }));
+    expect(screen.getByRole("dialog", { name: "Remove Panel disk?" })).toBeInTheDocument();
+
+    done();
+    expect(await screen.findByText("The target Backblaze B2 was removed.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Remove Panel disk?" })).toBeInTheDocument();
+  });
+
+  it("leaves the dialog opened since when an add closed earlier ends", async () => {
+    showPage("admin");
+    let done: (target: BackupTarget) => void = () => {};
+    vi.spyOn(backupsApi, "add").mockReturnValue(
+      new Promise((resolve) => {
+        done = resolve;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add target" }));
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "local" } });
+    type("Name", "Panel disk");
+    fireEvent.change(screen.getByLabelText("Server"), { target: { value: "h2" } });
+    type("Directory", "/srv/backups/restic");
+    fireEvent.click(screen.getAllByRole("button", { name: "Add target" }).at(-1)!);
+    await screen.findByRole("button", { name: "Checking with restic…" });
+    // closed while restic runs, and opened again for another
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Add a backup target" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add target" }));
+    type("Name", "Second copy");
+
+    done(disk);
+    expect(await screen.findByText("The target Panel disk was added.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Add a backup target" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Second copy");
+  });
+
   it("tells how a refresh went, with restic's error when it failed", async () => {
     showPage("admin");
     const refresh = vi
@@ -238,7 +323,7 @@ describe("the backup targets", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh Backblaze B2" }));
     expect(
-      await screen.findByText("Backblaze B2 was checked: the repository is fine."),
+      await screen.findByText("Backblaze B2 answers; what it holds follows shortly."),
     ).toBeInTheDocument();
   });
 });
@@ -293,7 +378,7 @@ describe("adding a target", () => {
     expect(await screen.findByText("The target Backblaze B2 was added.")).toBeInTheDocument();
   });
 
-  it("sends an SFTP server's host key as one line, and its private key", async () => {
+  it("sends the host keys ssh-keyscan printed, and the private key", async () => {
     const add = vi.spyOn(backupsApi, "add").mockResolvedValue(node);
     wrap(<AddTargetDialog hosts={hosts} onClose={vi.fn()} />);
 
@@ -305,7 +390,21 @@ describe("adding a target", () => {
     type("User", "backup");
     type("Path", "/srv/restic");
     expect(screen.getByText("ssh-keyscan -p 2222 -t ed25519 backup-node")).toBeInTheDocument();
-    type("Host key", "[backup-node]:2222 ssh-ed25519 AAAAC3Nza");
+    const hostKey = screen.getByLabelText("Host key");
+    expect(hostKey.tagName).toBe("TEXTAREA");
+    // what an input of one line makes of it: no key, and no way on
+    type("Host key", "# backup-node:22 SSH-2.0-OpenSSH_9.6 [backup-node]:2222 ssh-ed25519 AAAA");
+    expect(screen.getByText(/There is no host key in this/)).toBeInTheDocument();
+    type(
+      "Private key",
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----",
+    );
+    expect(confirmButton("Add target")).toBeDisabled();
+    type(
+      "Host key",
+      "# backup-node:22 SSH-2.0-OpenSSH_9.6\n[backup-node]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\n",
+    );
+    expect(screen.queryByText(/There is no host key in this/)).not.toBeInTheDocument();
     type(
       "Private key",
       "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----",
@@ -322,7 +421,7 @@ describe("adding a target", () => {
         address: "backup-node:2222",
         user: "backup",
         path: "/srv/restic",
-        host_key: "ssh-ed25519 AAAAC3Nza",
+        host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
       },
       credentials: {
         private_key:
@@ -360,16 +459,16 @@ describe("adding a target", () => {
     const add = vi.spyOn(backupsApi, "add").mockResolvedValue(disk);
     wrap(<AddTargetDialog hosts={hosts} onClose={vi.fn()} />);
 
-    const password = screen.getByLabelText("Repository password (only for an existing repository)");
+    const password = screen.getByLabelText("Repository password (optional)");
     expect(password).toHaveAttribute("type", "password");
     expect(
-      screen.getByText(/PocketCloud makes its password and keeps it sealed/),
+      screen.getByText(/opens only with this panel's database and master key/),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "rest" } });
     type("Name", "NAS");
     fireEvent.change(screen.getByLabelText("Server"), { target: { value: "h1" } });
     type("URL", "https://backup-node:8000/homelab/");
-    type("Repository password (only for an existing repository)", "the old one");
+    type("Repository password (optional)", "the old one");
     fireEvent.click(confirmButton("Add target"));
 
     await waitFor(() => expect(add).toHaveBeenCalled());
@@ -506,6 +605,39 @@ describe("editing a target", () => {
     ]);
   });
 
+  it("sends no host keys when the same are there, in any order", async () => {
+    const stored = target({
+      ...node,
+      config: {
+        address: "backup-node",
+        user: "backup",
+        path: "/srv/restic",
+        host_key: "ecdsa-sha2-nistp256 AAAAE2VjZHNh\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
+      },
+    });
+    const change = vi.spyOn(backupsApi, "change").mockResolvedValue(stored);
+    wrap(<EditTargetDialog target={stored} hosts={hosts} onClose={vi.fn()} />);
+
+    expect(screen.getByLabelText("Host key")).toHaveValue(
+      "ecdsa-sha2-nistp256 AAAAE2VjZHNh\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5",
+    );
+    type(
+      "Host key",
+      "# backup-node:22 SSH-2.0-OpenSSH_9.6\nbackup-node ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\nbackup-node ecdsa-sha2-nistp256 AAAAE2VjZHNh",
+    );
+    fireEvent.click(confirmButton("Save"));
+
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    expect(change.mock.calls[0]).toEqual(["t3", { name: "backup-node", note: "" }]);
+  });
+
+  it("holds back host keys that hold no key", () => {
+    wrap(<EditTargetDialog target={node} hosts={hosts} onClose={vi.fn()} />);
+    type("Host key", "backup-node");
+    expect(screen.getByText(/There is no host key in this/)).toBeInTheDocument();
+    expect(confirmButton("Save")).toBeDisabled();
+  });
+
   it("moves a target to another server, which restic checks first", async () => {
     const change = vi.spyOn(backupsApi, "change").mockReturnValue(new Promise(() => {}));
     wrap(<EditTargetDialog target={node} hosts={hosts} onClose={vi.fn()} />);
@@ -514,7 +646,12 @@ describe("editing a target", () => {
     fireEvent.click(confirmButton("Save"));
 
     expect(await screen.findByRole("button", { name: "Checking with restic…" })).toBeDisabled();
-    expect(screen.getByText(/The agent of nas opens the repository/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The agent of nas opens the repository with restic with the new settings. This can take up to two minutes.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/creates it/)).not.toBeInTheDocument();
     expect(change).toHaveBeenCalledWith("t3", { name: "backup-node", note: "", host: "h2" });
   });
 
@@ -523,6 +660,31 @@ describe("editing a target", () => {
     expect(screen.queryByLabelText("Server")).not.toBeInTheDocument();
     expect(screen.getByText("nas")).toBeInTheDocument();
     expect(screen.getByText(/The kind, the server and the location stay/)).toBeInTheDocument();
+  });
+
+  it("closes nothing when its dialog was closed before the save ended", async () => {
+    let done: (target: BackupTarget) => void = () => {};
+    vi.spyOn(backupsApi, "change").mockReturnValue(
+      new Promise((resolve) => {
+        done = resolve;
+      }),
+    );
+    const onClose = vi.fn();
+    const view = wrap(<EditTargetDialog target={bucket} hosts={hosts} onClose={onClose} />);
+    type("Name", "B2");
+    fireEvent.click(confirmButton("Save"));
+    await screen.findByRole("button", { name: "Saving…" });
+    view.rerender(
+      <MemoryRouter>
+        <AuthProvider>
+          <ToastProvider>{null}</ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    done({ ...bucket, name: "B2" });
+    expect(await screen.findByText("The target B2 was saved.")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("shows why the panel refused, and stays open", async () => {

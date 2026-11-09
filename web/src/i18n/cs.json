@@ -1971,6 +1971,7 @@
     "addTitle": "Přidat cíl záloh",
     "checking": "Ověřuji resticem…",
     "checkingNote": "Agent serveru {{server}} otevírá repozitář resticem, nebo ho zakládá, když žádný není. Může to trvat až dvě minuty.",
+    "checkingEditNote": "Agent serveru {{server}} otevírá repozitář resticem s novým nastavením. Může to trvat až dvě minuty.",
     "added": "Cíl {{name}} byl přidán.",
     "noTargetsTitle": "Zatím žádný cíl",
     "noTargetsText": "Cíl je místo, kam jdou zálohy: S3 bucket, SFTP server, rest-server nebo složka na serveru. restic data zašifruje dřív, než opustí agenta.",
@@ -1991,7 +1992,7 @@
     "refresh": "Ověřit",
     "refreshName": "Ověřit {{name}}",
     "refreshing": "Ověřuji…",
-    "refreshed": "Cíl {{name}} je ověřený, repozitář je v pořádku.",
+    "refreshed": "Cíl {{name}} odpovídá; kolik v něm je, se ukáže za chvíli.",
     "refreshFailed": "Ověření cíle {{name}} selhalo: {{error}}",
     "editName": "Upravit {{name}}",
     "editTitle": "Upravit {{name}}",
@@ -2034,6 +2035,7 @@
     "keepCredentials": "Když je necháš prázdné, zůstanou uložené. Nové PocketCloud nejdřív ověří resticem a teprve pak jimi staré nahradí.",
     "bothOrNeither": "Vyplň obojí, nebo nic.",
     "daysInvalid": "Celý počet dní, od 0 do 36500.",
+    "hostKeyInvalid": "Není v tom žádný klíč hostitele: vlož řádky, které vypíše ssh-keyscan, například ssh-ed25519 AAAA…",
     "field": {
       "endpoint": "Endpoint",
       "bucket": "Bucket",
@@ -2051,19 +2053,19 @@
       "username": "Uživatel (nepovinné)",
       "password": "Heslo (nepovinné)",
       "localPath": "Složka",
-      "repoPassword": "Heslo repozitáře (jen pro existující repozitář)",
+      "repoPassword": "Heslo repozitáře (nepovinné)",
       "immutableDays": "Object Lock ve dnech (nepovinné)",
       "note": "Poznámka (nepovinné)"
     },
     "hint": {
       "pathStyle": "MinIO je potřebuje; Backblaze B2, Wasabi ani AWS ne.",
       "address": "host nebo host:port",
-      "hostKey": "Vlož řádek, který vypíše:",
+      "hostKey": "Vlož, co vypíše:",
       "privateKey": "OpenSSH nebo PEM, bez hesla. Jeho veřejný klíč patří do authorized_keys uživatele.",
       "url": "Bez uživatele a hesla v adrese.",
       "restCredentials": "Jen když je rest-server chce: obojí, nebo nic.",
       "localPath": "Složka na tom serveru; když chybí, vznikne.",
-      "repoPassword": "U nového repozitáře ho nech prázdné: PocketCloud mu heslo vytvoří a uloží zapečetěné. Vyplň ho, když přidáváš repozitář, který už existuje, třeba po přeinstalaci.",
+      "repoPassword": "Když ho necháš prázdné, PocketCloud heslo vytvoří, uloží zapečetěné a nikdy ho neukáže: repozitář pak půjde otevřít jen s databází a hlavním klíčem tohoto panelu. Když si nastavíš vlastní a uschováš si jeho kopii, můžeš repozitář přidat znovu i jinde. Nebo zadej heslo repozitáře, který už restic má.",
       "immutableDays": "Jak dlouho drží Object Lock bucketu objekty, jak je nastavený u poskytovatele. Jen poznámka: zámek PocketCloud nenastavuje."
     }
   }

@@ -2852,3 +2852,9 @@ td .row-actions {
   padding: 0;
   border: 0;
 }
+
+/* a new target still waits for its first check: not an error yet */
+.backup-target-error.pending {
+  background: var(--accent-bg);
+  color: var(--text-2);
+}
