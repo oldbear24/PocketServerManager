@@ -2067,6 +2067,202 @@
       "localPath": "Složka na tom serveru; když chybí, vznikne.",
       "repoPassword": "Když ho necháš prázdné, PocketCloud heslo vytvoří, uloží zapečetěné a nikdy ho neukáže: repozitář pak půjde otevřít jen s databází a hlavním klíčem tohoto panelu. Když si nastavíš vlastní a uschováš si jeho kopii, můžeš repozitář přidat znovu i jinde. Nebo zadej heslo repozitáře, který už restic má.",
       "immutableDays": "Jak dlouho drží Object Lock bucketu objekty, jak je nastavený u poskytovatele. Jen poznámka: zámek PocketCloud nenastavuje."
+    },
+    "summary": {
+      "label": "Souhrn záloh",
+      "success": "Úspěšnost za 14 dní",
+      "successOf_one": "{{ok}} / {{count}} běh",
+      "successOf_few": "{{ok}} / {{count}} běhy",
+      "successOf_many": "{{ok}} / {{count}} běhu",
+      "successOf_other": "{{ok}} / {{count}} běhů",
+      "noRuns": "zatím žádný běh",
+      "stored": "Uloženo",
+      "storedNote_one": "součet za {{count}} cíl",
+      "storedNote_few": "součet za {{count}} cíle",
+      "storedNote_many": "součet za {{count}} cíle",
+      "storedNote_other": "součet za {{count}} cílů",
+      "notMeasured": "cíle zatím nejsou změřené",
+      "nextRun": "Další běh",
+      "nothingScheduled": "žádná úloha není naplánovaná"
+    },
+    "strip": {
+      "legend": "Co znamenají barvy 14 dní",
+      "ok": "úspěch",
+      "err": "chyba",
+      "warn": "přeskočeno",
+      "off": "bez běhu",
+      "count": {
+        "succeeded": "úspěšně {{count}}",
+        "failed": "s chybou {{count}}",
+        "skipped": "přeskočeno {{count}}"
+      },
+      "none": "bez běhu",
+      "label": "Posledních 14 dní: {{summary}}"
+    },
+    "source": {
+      "volume": "svazek {{name}}",
+      "stack": "svazky stacku {{name}}",
+      "db_dump": "{{tool}} · {{stack}}/{{service}}"
+    },
+    "sourceKind": {
+      "volume": "Svazek Dockeru",
+      "path": "Složka na serveru",
+      "stack": "Svazky stacku",
+      "db_dump": "Výpis databáze"
+    },
+    "sourceNote": {
+      "volume": "restic ho čte v kontejneru úlohy, který ho připojí jen pro čtení.",
+      "path": "Absolutní cesta ke složce serveru, do kontejneru úlohy připojená jen pro čtení.",
+      "stack": "Všechny pojmenované svazky stacku, jak je má v době běhu.",
+      "db_dump": "Výpis udělá běžící kontejner služby vlastními nástroji a restic ho uloží jako jeden soubor snapshotu."
+    },
+    "engineTool": {
+      "postgres": "pg_dump",
+      "mysql": "mysqldump",
+      "sqlite": "sqlite3 .dump"
+    },
+    "engineName": {
+      "postgres": "PostgreSQL (pg_dump)",
+      "mysql": "MySQL nebo MariaDB (mysqldump)",
+      "sqlite": "SQLite (sqlite3 .dump)"
+    },
+    "engineNote": {
+      "postgres": "pg_dump jako POSTGRES_USER, databáze POSTGRES_DB, obojí z prostředí kontejneru.",
+      "mysql": "Všechny databáze jako root, s MARIADB_ROOT_PASSWORD nebo MYSQL_ROOT_PASSWORD z prostředí kontejneru.",
+      "sqlite": "sqlite3 .dump souboru v kontejneru: image musí mít sqlite3."
+    },
+    "runStatus": {
+      "queued": "Ve frontě",
+      "running": "Běží",
+      "succeeded": "OK",
+      "failed": "Chyba",
+      "skipped": "Přeskočeno",
+      "cancelled": "Zrušeno"
+    },
+    "keep": {
+      "last": "Posledních",
+      "hourly": "Hodinových",
+      "daily": "Denních",
+      "weekly": "Týdenních",
+      "monthly": "Měsíčních",
+      "yearly": "Ročních"
+    },
+    "retention": {
+      "last_one": "poslední {{count}}",
+      "last_few": "poslední {{count}}",
+      "last_many": "posledních {{count}}",
+      "last_other": "posledních {{count}}",
+      "all": "ponechává všechny snapshoty",
+      "title": "Ponechané snapshoty: h hodinové, d denní, w týdenní, m měsíční, y roční"
+    },
+    "cron": {
+      "hourly": "každou hodinu",
+      "hourlyAt": "každou hodinu v :{{minute}}",
+      "daily": "denně {{time}}",
+      "weekly": {
+        "0": "v neděli {{time}}",
+        "1": "v pondělí {{time}}",
+        "2": "v úterý {{time}}",
+        "3": "ve středu {{time}}",
+        "4": "ve čtvrtek {{time}}",
+        "5": "v pátek {{time}}",
+        "6": "v sobotu {{time}}"
+      },
+      "minutes_one": "každou minutu",
+      "minutes_few": "každé {{count}} min",
+      "minutes_many": "každých {{count}} min",
+      "minutes_other": "každých {{count}} min",
+      "hours_one": "každou hodinu",
+      "hours_few": "každé {{count}} h",
+      "hours_many": "každých {{count}} h",
+      "hours_other": "každých {{count}} h",
+      "monthly": "měsíčně {{day}}. v {{time}}",
+      "utc": "{{cron}} UTC"
+    },
+    "job": {
+      "title": "Úlohy",
+      "new": "Nová úloha",
+      "newTitle": "Nová úloha zálohování",
+      "editTitle": "Upravit {{name}}",
+      "add": "Přidat úlohu",
+      "added": "Úloha {{name}} byla přidána.",
+      "saved": "Úloha {{name}} byla uložena.",
+      "removed": "Úloha {{name}} byla odebrána.",
+      "noneTitle": "Zatím žádné úlohy záloh",
+      "noneText": "Úloha podle plánu zálohuje svazek, složku, svazky stacku nebo výpis databáze do svých cílů. Vytvoří ji i label pocketcloud.backup u služby stacku.",
+      "column": {
+        "job": "Úloha",
+        "where": "Kam",
+        "schedule": "Plán · retence",
+        "lastRun": "Poslední běh",
+        "days": "14 dní"
+      },
+      "fromLabel": "z labelu pocketcloud.backup",
+      "lastRunAt": "{{status}} · {{time}}",
+      "neverRun": "zatím neběžela",
+      "bytesAdded": "+{{size}}",
+      "started_one": "Úloha {{name}} se spouští do {{count}} cíle.",
+      "started_few": "Úloha {{name}} se spouští do {{count}} cílů.",
+      "started_many": "Úloha {{name}} se spouští do {{count}} cílů.",
+      "started_other": "Úloha {{name}} se spouští do {{count}} cílů.",
+      "labelRemoved": "Label pocketcloud.backup už ve stacku není: úloha neběží.",
+      "removeName": "Odebrat úlohu {{name}}",
+      "editName": "Upravit úlohu {{name}}",
+      "runName": "Spustit {{name}} hned",
+      "run": "Spustit",
+      "starting": "Spouštím…",
+      "cannotRun": "Nemá cíl, kam zálohovat.",
+      "noTarget": "žádný cíl",
+      "paused": "pozastaveno",
+      "removeTitle": "Odebrat úlohu {{name}}?",
+      "removeText": "PocketCloud zapomene úlohu i záznamy jejích běhů. Její snapshoty zůstanou v repozitářích cílů a žádná retence je už nesmaže.",
+      "source": "Co zálohovat",
+      "labelNote": "Tuto úlohu vytvořil label pocketcloud.backup u služby stacku: zdroj i server zůstávají, jak říkají labely. Co nastavují labely pocketcloud.backup.schedule, .target a .retention, nastaví znovu při každém nasazení a panel to tady změnit nedovolí: změň raději label.",
+      "serverHint": "Zálohu spouští jeho agent, v kontejneru úlohy, který data připojí jen pro čtení.",
+      "volume": "Svazek",
+      "volumeInvalid": "Název svazku Dockeru: písmena, číslice, _ . a -, na začátku písmeno nebo číslice.",
+      "path": "Složka",
+      "pathInvalid": "Absolutní cesta ke složce, například /srv/data: ne /, ani nic v /proc, /sys nebo /dev.",
+      "stack": "Stack",
+      "chooseStack": "Vyber stack",
+      "stackOption": "{{name}} · {{server}}",
+      "service": "Služba",
+      "chooseService": "Vyber službu",
+      "engine": "Databáze",
+      "chooseEngine": "Vyber databázi",
+      "sqlitePath": "Soubor databáze",
+      "sqliteInvalid": "Absolutní cesta k souboru v kontejneru, například /data/db.sqlite3.",
+      "targets": "Kam se zálohuje",
+      "noTargets": "Zatím žádný cíl: nejdřív ho přidej v Cílech.",
+      "localOnly": "složka serveru {{server}}: zálohují do ní jen jeho úlohy",
+      "noTargetChosen": "Bez cíle úloha neběží.",
+      "schedule": "Plán",
+      "mode": {
+        "hourly": "Každou hodinu",
+        "daily": "Každý den",
+        "weekly": "Každý týden",
+        "custom": "Vlastní cron výraz (UTC)…"
+      },
+      "minute": "Minuta",
+      "weekday": "Den",
+      "day": {
+        "0": "neděle",
+        "1": "pondělí",
+        "2": "úterý",
+        "3": "středa",
+        "4": "čtvrtek",
+        "5": "pátek",
+        "6": "sobota"
+      },
+      "time": "Čas",
+      "cron": "Cron výraz (UTC)",
+      "cronHint": "Pět polí v UTC: minuta hodina den měsíc den v týdnu.",
+      "cronReads": "Ve tvém čase: {{text}}.",
+      "utcNote": "Ve tvém časovém pásmu, {{zone}}. Panel plán uloží v UTC jako {{cron}}: po přechodu na letní nebo zimní čas proto poběží o hodinu dřív nebo později.",
+      "retention": "Kolik snapshotů ponechat",
+      "retentionHint": "Po každé záloze restic zapomene ostatní snapshoty úlohy: ponechá ty poslední a nejnovější z každé z posledních hodin, dní, týdnů, měsíců a let. Teď: {{keeps}}.",
+      "retentionInvalid": "Celá čísla od 0 do 10000; prázdné pole nedrží nic toho druhu.",
+      "enabled": "Zapnuto: běží podle plánu"
     }
   }
 }
