@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
@@ -295,6 +296,76 @@ func TestARetentionLockedOutWaitsForTheNextRun(t *testing.T) {
 	// the backup itself waits as long as before
 	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, " backup --json --quiet --retry-lock 30m ") || !strings.Contains(calls, " forget --json --prune --retry-lock 5m ") {
 		t.Errorf("restic ran:\n%s", calls)
+	}
+}
+
+// stubRestic puts a restic on PATH that runs until it is stopped: on SIGTERM
+// it writes "terminated" to the file signal of dir and ends, as restic
+// removes its locks; with ignore, it notes the signal and runs on.
+func stubRestic(t *testing.T, ignore bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	onTerm := `echo terminated > "$STUB_DIR/signal"; exit 130`
+	if ignore {
+		onTerm = `echo ignored > "$STUB_DIR/signal"`
+	}
+	script := "#!/bin/sh\ntrap '" + onTerm + "' TERM\necho running > \"$STUB_DIR/running\"\nwhile :; do sleep 0.02; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "restic"), []byte(script), 0o755); err != nil { //nolint:gosec // a script
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("STUB_DIR", dir)
+	return dir
+}
+
+// stopRestic runs the stub restic, stops it once it runs, and says what it
+// got and how long it took to end.
+func stopRestic(t *testing.T, dir string) (string, time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended := make(chan error, 1)
+	go func() {
+		_, _, _, err := restic{log: io.Discard}.run(ctx, "backup")
+		ended <- err
+	}()
+	for start := time.Now(); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(dir, "running")); err == nil {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the stub restic did not start")
+		}
+	}
+	stopped := time.Now()
+	cancel()
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Error("a stopped restic said nothing")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stopped restic did not end")
+	}
+	took := time.Since(stopped)
+	signal, _ := os.ReadFile(filepath.Join(dir, "signal")) //nolint:gosec // the test's own
+	return strings.TrimSpace(string(signal)), took
+}
+
+// TestAStoppedResticRemovesItsLocks (review of #29): a job that is stopped
+// stops restic with SIGTERM, on which restic removes its locks, not with
+// SIGKILL, which leaves them to keep every other restic of the repository
+// waiting; a restic that does not end in time is killed.
+func TestAStoppedResticRemovesItsLocks(t *testing.T) {
+	if signal, _ := stopRestic(t, stubRestic(t, false)); signal != "terminated" {
+		t.Errorf("restic got %q", signal)
+	}
+
+	wait := resticStopWait
+	t.Cleanup(func() { resticStopWait = wait })
+	resticStopWait = 300 * time.Millisecond
+	if signal, took := stopRestic(t, stubRestic(t, true)); signal != "ignored" || took < resticStopWait || took > 5*time.Second {
+		t.Errorf("a restic that runs on: %q, ended after %v", signal, took)
 	}
 }
 

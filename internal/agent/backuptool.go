@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 )
@@ -81,6 +82,10 @@ const retryLock = "30m"
 // exclusive lock, which any backup to it from another server keeps out: the
 // retention then waits for the next run, rather than hold the run's slot.
 const forgetRetryLock = "5m"
+
+// resticStopWait is how long a restic that was told to stop has to end
+// before it is killed.
+var resticStopWait = 30 * time.Second
 
 // keepOptions are restic's --keep-* options that a job's retention sets.
 var keepOptions = []string{"keep-last", "keep-hourly", "keep-daily", "keep-weekly", "keep-monthly", "keep-yearly"}
@@ -248,6 +253,10 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 	}
 	full = append(full, args...)
 	command := exec.CommandContext(ctx, "restic", full...) //nolint:gosec // restic with the job's repository
+	// a restic that is stopped removes its locks, which one killed leaves
+	// for every other to wait on; one that does not end is killed
+	command.Cancel = func() error { return command.Process.Signal(gracefulStop) }
+	command.WaitDelay = resticStopWait
 	command.Env = os.Environ()
 	names := make([]string, 0, len(r.env))
 	for name := range r.env {

@@ -743,6 +743,10 @@ type jobHooks struct {
 	prepare func(id string) error
 	// started runs once it has started, before its output is read
 	started func(id string)
+	// stopGrace, when set, is how long a job whose context ends has to stop
+	// on its own, after the Engine's SIGTERM, before it is removed: a
+	// removed job is killed at once
+	stopGrace time.Duration
 }
 
 // runWith runs a job like run, with hooks.
@@ -752,6 +756,11 @@ func (d dockerSites) runWith(ctx context.Context, config map[string]any, hooks j
 		return err
 	}
 	defer func() {
+		if hooks.stopGrace > 0 && ctx.Err() != nil {
+			stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), hooks.stopGrace+cleanupTimeout)
+			_ = d.a.Docker.Stop(stop, id, int(hooks.stopGrace/time.Second))
+			cancel()
+		}
 		remove, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		_ = d.a.Docker.Remove(remove, id, true, true)

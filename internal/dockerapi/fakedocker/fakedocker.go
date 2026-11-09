@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,8 @@ type Container struct {
 	// a job's end, and its exit code (see OnJob)
 	exited   chan struct{}
 	exitCode int
+	// stop is closed once a job is stopped or removed (see Job.Stop)
+	stop chan struct{}
 	// the standard input of a container created with OpenStdin, which an
 	// attached client writes to
 	stdinR    *io.PipeReader
@@ -111,6 +114,10 @@ type Job struct {
 	// writes, which ends when it leaves one created with StdinOnce; nil for
 	// a job without OpenStdin.
 	Stdin io.Reader
+	// Stop is closed when the job's container is stopped or removed, as
+	// the Engine signals its process: a stop waits for the job to end, up
+	// to its timeout, as the Engine's does.
+	Stop <-chan struct{}
 }
 
 // JobResult is how a job ended.
@@ -246,6 +253,7 @@ func (e *Engine) RemoveContainer(id string) {
 	if container := e.containers[id]; container != nil {
 		e.stopping(container)
 		closeStdin(container)
+		stopJob(container)
 	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
@@ -572,6 +580,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		}
 		e.stopping(container)
 		closeStdin(container)
+		stopJob(container)
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
@@ -593,6 +602,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		container.Status = "running"
 		container.Started = time.Now().UTC()
 		container.exited = make(chan struct{})
+		container.stop = make(chan struct{})
 		if container.logs == nil {
 			container.logs = &logBuffer{}
 		}
@@ -618,6 +628,21 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "stop":
+		if exited := container.exited; exited != nil && container.Status == "running" {
+			// a job's process gets the signal, and the time to end
+			stopJob(container)
+			grace := 10 * time.Second
+			if seconds, err := strconv.Atoi(r.URL.Query().Get("t")); err == nil && seconds > 0 {
+				grace = time.Duration(seconds) * time.Second
+			}
+			e.mu.Unlock()
+			select {
+			case <-exited:
+			case <-time.After(grace):
+			case <-r.Context().Done():
+			}
+			e.mu.Lock()
+		}
 		e.stopping(container)
 		container.Status = "exited"
 		e.broadcast("container", "die", container.ID, nil)
@@ -889,9 +914,22 @@ func omitEmptyMountFields(host map[string]any) {
 	}
 }
 
+// stopJob tells a job's process to stop, once. It is called with the engine
+// locked.
+func stopJob(c *Container) {
+	if c.stop == nil {
+		return
+	}
+	select {
+	case <-c.stop:
+	default:
+		close(c.stop)
+	}
+}
+
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
-	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files)}
+	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR
 	}

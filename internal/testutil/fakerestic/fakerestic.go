@@ -556,7 +556,8 @@ type Tool func(ctx context.Context, args []string, env map[string]string, stdin 
 // dump's relay listens in a directory of its own, as each job has its own
 // /tmp; and the job's attached input is the tool's. The volumes and
 // directories a job backs up must be mounted read-only. The tool's error
-// ends its output.
+// ends its output. A job that is stopped cancels the tool's context, as
+// the signal the Engine sends does the backup tool's.
 func RunJobs(engine *fakedocker.Engine, tool Tool) {
 	engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
 		if len(job.Cmd) == 0 || job.Cmd[0] != "backup-tool" {
@@ -609,8 +610,19 @@ func RunJobs(engine *fakedocker.Engine, tool Tool) {
 		if job.Stdin != nil {
 			stdin = job.Stdin
 		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if job.Stop != nil {
+			go func() {
+				select {
+				case <-job.Stop:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+		}
 		var stdout, stderr bytes.Buffer
-		if err := tool(context.Background(), args, env, stdin, &stdout, &stderr); err != nil {
+		if err := tool(ctx, args, env, stdin, &stdout, &stderr); err != nil {
 			fmt.Fprintln(&stderr, "error:", err)
 			return fakedocker.JobResult{Code: 1, Stdout: stdout.String(), Stderr: stderr.String()}
 		}

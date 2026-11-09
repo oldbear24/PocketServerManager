@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
@@ -33,6 +34,11 @@ const (
 	// check would fetch every snapshot's trees again.
 	resticCache    = "pocketcloud-restic-cache"
 	resticCacheDir = "/cache"
+	// backupStopGrace is how long a backup job that is cancelled, or left by
+	// the agent, has to stop before it is removed: the backup tool stops
+	// restic, which removes its locks; a job removed at once is killed, and
+	// its locks keep other backups and retentions waiting
+	backupStopGrace = 30 * time.Second
 )
 
 func (a *Agent) registerBackupHandlers() {
@@ -177,6 +183,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	fed := make(chan struct{})
 	feeding := false
 	hooks := jobHooks{
+		stopGrace: backupStopGrace,
 		prepare: func(id string) error {
 			// ssh reads the key and the pinned host key from files
 			for _, file := range []struct {
@@ -244,7 +251,8 @@ type backupRefused struct{ message string }
 func (b *backupRefused) Error() string { return b.message }
 
 // cleanupBackupJobs removes the job containers of backup commands the agent
-// was running when it stopped: the commands ended with it.
+// was running when it stopped: the commands ended with it. One still running
+// is stopped first, so that restic removes its locks.
 func (a *Agent) cleanupBackupJobs(ctx context.Context) {
 	containers, err := a.Docker.Containers(ctx)
 	if err != nil {
@@ -252,6 +260,13 @@ func (a *Agent) cleanupBackupJobs(ctx context.Context) {
 	}
 	for _, container := range containers {
 		if _, ok := container.Labels[backupTargetLabel]; ok && container.Labels["pocketcloud.role"] == "job" {
+			if container.State == "running" {
+				stop, cancel := context.WithTimeout(ctx, backupStopGrace+cleanupTimeout)
+				if err := a.Docker.Stop(stop, container.ID, int(backupStopGrace/time.Second)); err != nil {
+					a.Log.Warn("failed to stop a backup job container", "container", container.ID, "error", err)
+				}
+				cancel()
+			}
 			if err := a.Docker.Remove(ctx, container.ID, true, true); err != nil {
 				a.Log.Warn("failed to remove a backup job container", "container", container.ID, "error", err)
 			}
