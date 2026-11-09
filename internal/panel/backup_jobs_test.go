@@ -348,22 +348,29 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 	f := newJobFixture(t)
 	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
 	key := job.Id + ":" + f.target.Id
-	finish := func(status, message string, result map[string]any) *core.Record {
+	// finishWith ends a run's command as the fields say
+	finishWith := func(fields map[string]any) *core.Record {
 		t.Helper()
 		run := f.run(job)
 		command := f.save(schema.Commands, map[string]any{"host": f.host.Id, "type": "backup.run",
 			"payload": map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"}}})
-		command.Load(map[string]any{"status": status, "error": message, "result": result, "finished_at": types.NowDateTime()})
-		// a command that timed out here never started
-		if status != schema.CommandTimedOut {
-			command.Set("started_at", types.NowDateTime().Add(-90*time.Second))
-		}
+		command.Load(map[string]any{"finished_at": types.NowDateTime()})
+		command.Load(fields)
 		f.p.backupRunFinished(command)
 		stored, err := f.app.FindRecordById(schema.BackupRuns, run.Id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return stored
+	}
+	finish := func(status, message string, result map[string]any) *core.Record {
+		t.Helper()
+		fields := map[string]any{"status": status, "error": message, "result": result}
+		// a command that timed out here never started
+		if status != schema.CommandTimedOut {
+			fields["started_at"] = types.NowDateTime().Add(-90 * time.Second)
+		}
+		return finishWith(fields)
 	}
 	alert := func(rule string) *core.Record {
 		t.Helper()
@@ -408,12 +415,42 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 		t.Error("a retention that worked again did not resolve its alert")
 	}
 
-	// a command that never reached the server is no run
-	if never := finish(schema.CommandTimedOut, "", nil); never.GetString("status") != schema.RunCancelled {
-		t.Errorf("never started: %s", never.GetString("status"))
+	// a run that waited its whole time and never started did not happen: it
+	// is skipped, with an alert, whether it never reached its server...
+	never := finish(schema.CommandTimedOut, "The server stayed offline, so the command was never delivered.", nil)
+	if never.GetString("status") != schema.RunSkipped || never.GetString("error") != "It waited 12 hours while the server node-1 stayed offline, and never started." {
+		t.Errorf("never delivered: %v", never.FieldsData())
+	}
+	if a := alert(alertBackupSkipped); a == nil || a.GetString("severity") != schema.SeverityWarning ||
+		a.GetString("message") != "Backup data → b2 was skipped: it waited 12 hours while the server node-1 stayed offline, and never started." {
+		t.Errorf("the alert of a run that was never delivered: %v", a)
 	}
 	if alert(alertBackupFailed) != nil {
-		t.Error("a run that never started alerted")
+		t.Error("a run that never started failed")
+	}
+	// ...or the agent cancelled it as its time was up while it waited for a
+	// free worker
+	now := types.NowDateTime()
+	busy := finishWith(map[string]any{"status": schema.CommandCancelled, "error": "The command was cancelled while waiting for a free worker.",
+		"dispatched_at": now.Add(-12 * time.Hour), "expires_at": now.Add(-time.Second), "finished_at": now})
+	if busy.GetString("status") != schema.RunSkipped || busy.GetString("error") != "It waited 12 hours while the server node-1 was busy with other backups, and never started." {
+		t.Errorf("never started on a busy server: %v", busy.FieldsData())
+	}
+	if a := alert(alertBackupSkipped); a == nil || !strings.Contains(a.GetString("message"), "was busy with other backups") {
+		t.Errorf("the alert of a run that waited for a free worker: %v", a)
+	}
+
+	// one someone cancelled is cancelled, and alerts nobody
+	finish(schema.CommandSucceeded, "", map[string]any{"snapshot_id": "6c4d"})
+	if alert(alertBackupSkipped) != nil {
+		t.Error("a success did not resolve the skip")
+	}
+	cancelled := finishWith(map[string]any{"status": schema.CommandCancelled, "error": "Cancelled by admin@example.com"})
+	if cancelled.GetString("status") != schema.RunCancelled || cancelled.GetString("error") != "Cancelled by admin@example.com" {
+		t.Errorf("cancelled: %v", cancelled.FieldsData())
+	}
+	if alert(alertBackupSkipped) != nil || alert(alertBackupFailed) != nil {
+		t.Error("a run someone cancelled alerted")
 	}
 }
 
@@ -573,6 +610,8 @@ func TestAnOfflineServerSkipsItsRuns(t *testing.T) {
 	month := time.Now().UTC().Month()%12 + 1
 	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": fmt.Sprintf("15 3 * %d *", month)})
 	now := time.Date(2030, month, 9, 3, 15, 20, 0, time.UTC)
+	// the server is marked offline, long after the panel started
+	f.p.SetStarted(time.Now().Add(-3 * time.Minute))
 	f.p.RunDueBackups(now.Add(-time.Minute))
 	if runs, _ := f.app.FindAllRecords(schema.BackupRuns); len(runs) != 0 {
 		t.Fatalf("%d runs before the minute", len(runs))
@@ -694,6 +733,130 @@ func TestBackupAlertsGoWithWhatTheyAreAbout(t *testing.T) {
 	}
 	if got := open(); !slices.Equal(got, want) {
 		t.Errorf("after nas was removed: %v", got)
+	}
+}
+
+// TestARunIsQueuedUnlessItsServerIsOffline (#29): at a job's minute, a
+// server without a connection that is not marked offline, being between two
+// connections, gets its run queued, to be delivered once its agent is back;
+// so does one marked offline while its agent may still be reconnecting after
+// the panel started. Only a server marked offline after that gets skipped
+// runs and an alert.
+func TestARunIsQueuedUnlessItsServerIsOffline(t *testing.T) {
+	f := newJobFixture(t)
+	between := testutil.NewHost(t, f.app, "node-2")
+	between.Set("status", schema.HostDegraded)
+	if err := f.app.Save(between); err != nil {
+		t.Fatal(err)
+	}
+	month := time.Now().UTC().Month()%12 + 1
+	schedule := fmt.Sprintf("15 3 * %d *", month)
+	offline := f.job("offline", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": schedule})
+	degraded := f.job("degraded", map[string]any{"host": between.Id, "source_kind": schema.SourceVolume, "source": "app_data", "schedule": schedule})
+	now := time.Date(2030, month, 9, 3, 15, 20, 0, time.UTC)
+	runOf := func(job *core.Record) *core.Record {
+		t.Helper()
+		runs, err := f.app.FindRecordsByFilter(schema.BackupRuns, "job={:job}", "-created,-id", 1, 0, map[string]any{"job": job.Id})
+		if err != nil || len(runs) != 1 {
+			t.Fatalf("the runs of %s: %v %v", job.GetString("name"), runs, err)
+		}
+		return runs[0]
+	}
+	queued := func(run *core.Record) bool {
+		t.Helper()
+		command, err := f.app.FindRecordById(schema.Commands, run.GetString("command"))
+		return err == nil && run.GetString("status") == schema.RunQueued && command.GetString("status") == schema.CommandQueued &&
+			command.GetString("host") == run.GetString("host")
+	}
+
+	// the panel has just started: the agents may still be reconnecting
+	f.p.RunDueBackups(now)
+	for _, job := range []*core.Record{offline, degraded} {
+		if run := runOf(job); !queued(run) {
+			t.Errorf("the run of %s just after the start: %v", job.GetString("name"), run.FieldsData())
+		}
+	}
+	if alerts, _ := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_skipped'", "", 0, 0); len(alerts) != 0 {
+		t.Errorf("%d alerts", len(alerts))
+	}
+	for _, job := range []*core.Record{offline, degraded} {
+		if err := f.p.Commands.Cancel(runOf(job).GetString("command"), "Cancelled by admin@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if run := runOf(job); run.GetString("status") != schema.RunCancelled {
+			t.Errorf("the run someone cancelled: %v", run.FieldsData())
+		}
+	}
+
+	// later
+	f.p.SetStarted(time.Now().Add(-3 * time.Minute))
+	f.p.RunDueBackups(now.Add(24 * time.Hour))
+	if run := runOf(degraded); !queued(run) {
+		t.Errorf("the run of a server between two connections: %v", run.FieldsData())
+	}
+	if run := runOf(offline); run.GetString("status") != schema.RunSkipped || run.GetString("error") != "The server node-1 was offline at 03:15 UTC." {
+		t.Errorf("the run of an offline server: %v", run.FieldsData())
+	}
+	if alerts, _ := f.app.FindRecordsByFilter(schema.Alerts, "rule='backup_skipped'", "", 0, 0); len(alerts) != 1 || alerts[0].GetString("target") != offline.Id+":"+f.target.Id {
+		t.Errorf("alerts: %v", alerts)
+	}
+}
+
+// TestAMinuteThePanelMissedIsCaughtUp (#29): a job whose next run passed
+// while the panel was down, less than a day ago, runs once for that minute
+// when the panel is back, in the scheduler's first pass; one due at that
+// very minute runs for it instead, and a disabled one, or one that was due
+// longer ago, does not.
+func TestAMinuteThePanelMissedIsCaughtUp(t *testing.T) {
+	f := newJobFixture(t)
+	month := time.Now().UTC().Month()%12 + 1
+	now := time.Date(2030, month, 9, 5, 10, 20, 0, time.UTC)
+	at := func(day, hour, minute int) time.Time {
+		return time.Date(2030, month, day, hour, minute, 0, 0, time.UTC)
+	}
+	daily := fmt.Sprintf("0 3 * %d *", month)
+	missed := f.job("missed", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": daily, "next_run_at": at(9, 3, 0)})
+	long := f.job("long", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": daily, "next_run_at": at(8, 5, 0)})
+	off := f.job("off", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": daily, "next_run_at": at(9, 3, 0), "enabled": false})
+	due := f.job("due", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "schedule": fmt.Sprintf("10 3,5 * %d *", month), "next_run_at": at(9, 3, 10)})
+	runs := func(job *core.Record) []*core.Record {
+		t.Helper()
+		runs, err := f.app.FindRecordsByFilter(schema.BackupRuns, "job={:job}", "created", 0, 0, map[string]any{"job": job.Id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runs
+	}
+
+	f.p.backupCatchUp.Store(true)
+	f.p.RunDueBackups(now)
+	caught := runs(missed)
+	if len(caught) != 1 || caught[0].GetString("trigger") != schema.RunSchedule || !caught[0].GetDateTime("scheduled_at").Time().Equal(at(9, 3, 0)) ||
+		caught[0].GetString("status") != schema.RunQueued || caught[0].GetString("command") == "" {
+		t.Fatalf("the missed minute's run: %v", caught)
+	}
+	if stored, _ := f.app.FindRecordById(schema.BackupJobs, missed.Id); !stored.GetDateTime("next_run_at").Time().Equal(at(10, 3, 0)) {
+		t.Errorf("the next run: %s", stored.GetDateTime("next_run_at"))
+	}
+	for _, job := range []*core.Record{long, off} {
+		if len(runs(job)) != 0 {
+			t.Errorf("%s was caught up", job.GetString("name"))
+		}
+	}
+	if due := runs(due); len(due) != 1 || !due[0].GetDateTime("scheduled_at").Time().Equal(at(9, 5, 10)) {
+		t.Errorf("the job due now: %v", due)
+	}
+
+	// once: the passes after the first catch nothing up, nor does a second
+	// catching up of the same minute
+	f.p.RunDueBackups(now.Add(time.Minute))
+	missed.Set("next_run_at", at(9, 3, 0))
+	if err := f.app.Save(missed); err != nil {
+		t.Fatal(err)
+	}
+	f.p.CatchUpBackups(now)
+	if len(runs(missed)) != 1 {
+		t.Errorf("%d runs of the missed minute", len(runs(missed)))
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
+	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
@@ -40,10 +41,11 @@ type jobsHarness struct {
 }
 
 // newJobsHarness starts the panel and the agent. prepare readies the engine
-// before the agent starts, so that its first inventory reports what it adds.
-func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine)) *jobsHarness {
+// before the agent starts, so that its first inventory reports what it adds;
+// the options change the gateway before it starts.
+func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), options ...func(*gateway.Server)) *jobsHarness {
 	t.Helper()
-	b := &backupHarness{harness: newHarness(t)}
+	b := &backupHarness{harness: newHarness(t, options...)}
 	j := &jobsHarness{backupHarness: b}
 	b.restic = fakerestic.Install(t)
 	b.docker.AddImage("sha256:"+strings.Repeat("a", 64), nil)
@@ -544,11 +546,15 @@ func TestAFailedBackupAlertsWithResticsError(t *testing.T) {
 	}
 }
 
-// TestAnOfflineServerSkipsItsBackups (#29): a job whose server is offline at
-// its minute gets a skipped run per target, and an alert for each; nothing
-// is queued.
+// TestAnOfflineServerSkipsItsBackups (#29): a job whose server is marked
+// offline at its minute gets a skipped run per target, and an alert for each;
+// nothing is queued. Just after the panel started, while the agents may still
+// be reconnecting, the runs are queued instead.
 func TestAnOfflineServerSkipsItsBackups(t *testing.T) {
-	j := newJobsHarness(t, nil)
+	j := newJobsHarness(t, nil, func(server *gateway.Server) {
+		server.OfflineAfter = 500 * time.Millisecond
+		server.MonitorInterval = 100 * time.Millisecond
+	})
 	b2 := j.addS3("b2", "b2-secret-key")
 	now := time.Now().UTC()
 	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "targets": []string{j.disk.Id, b2.Id},
@@ -556,11 +562,33 @@ func TestAnOfflineServerSkipsItsBackups(t *testing.T) {
 	if err := j.agent.stop(); err != nil {
 		t.Fatal(err)
 	}
-	j.waitFor("the agent to be offline", func() bool { return !j.panel.Commands.Connected(j.host.Id) })
-	before := j.commandCount(j.host.Id, "backup.run")
+	j.waitFor("the server to be marked offline", func() bool {
+		host, err := j.app.FindRecordById(schema.Hosts, j.host.Id)
+		return err == nil && host.GetString("status") == schema.HostOffline
+	})
 
+	// the panel has just started: the runs wait for the server
 	j.panel.RunDueBackups(now)
 	runs := j.runs(id)
+	if len(runs) != 2 {
+		t.Fatalf("%d runs", len(runs))
+	}
+	for _, run := range runs {
+		if run.GetString("status") != schema.RunQueued || run.GetString("command") == "" {
+			t.Errorf("a run just after the start: %v", run.FieldsData())
+		}
+		if err := j.panel.Commands.Cancel(run.GetString("command"), "Cancelled by admin@example.com"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if alerts := j.openAlerts("backup_skipped"); len(alerts) != 0 {
+		t.Errorf("alerts just after the start: %v", alerts)
+	}
+
+	j.panel.SetStarted(time.Now().Add(-3 * time.Minute))
+	before := j.commandCount(j.host.Id, "backup.run")
+	j.panel.RunDueBackups(now)
+	runs = slices.DeleteFunc(j.runs(id), func(run *core.Record) bool { return run.GetString("status") == schema.RunCancelled })
 	want := fmt.Sprintf("The server backup-node was offline at %s UTC.", now.Format("15:04"))
 	if len(runs) != 2 {
 		t.Fatalf("%d runs", len(runs))
@@ -1055,5 +1083,125 @@ func TestABackupJobOfARemovedStackStopsUntilItIsChanged(t *testing.T) {
 	status, out := j.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, j.admin, map[string]any{"stack": other, "enabled": true})
 	if status != http.StatusOK || out["problem"] != "" || out["enabled"] != true || out["next_run_at"] == "" {
 		t.Errorf("point it at another stack: %d %v", status, out)
+	}
+}
+
+// TestABackupWaitsForItsServerToReconnect (#29): a server that has no
+// connection at a job's minute but is not marked offline, as between two
+// connections, gets its run queued: the run is delivered once the agent is
+// back, and is no skip.
+func TestABackupWaitsForItsServerToReconnect(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
+	j.panel.SetStarted(time.Now().Add(-3 * time.Minute))
+	now := time.Now().UTC()
+	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "schedule": dueNow(now)})["id"].(string)
+	if err := j.agent.stop(); err != nil {
+		t.Fatal(err)
+	}
+	j.waitFor("the agent to be gone", func() bool { return !j.panel.Commands.Connected(j.host.Id) })
+
+	j.panel.RunDueBackups(now)
+	runs := j.runs(id)
+	if len(runs) != 1 || runs[0].GetString("status") != schema.RunQueued || runs[0].GetString("command") == "" {
+		t.Fatalf("the runs: %v", runs)
+	}
+	j.agent = j.start(j.agent.config)
+	run := j.runEnded(runs[0].Id)
+	if run.GetString("status") != schema.RunSucceeded || run.GetString("trigger") != schema.RunSchedule ||
+		!run.GetDateTime("scheduled_at").Time().Equal(now.Truncate(time.Minute)) || len(j.snapshotsOf(id)) != 1 {
+		t.Errorf("the run: %v", run.FieldsData())
+	}
+	if alerts := j.openAlerts("backup_skipped"); len(alerts) != 0 {
+		t.Errorf("alerts: %v", alerts)
+	}
+}
+
+// TestABackupThePanelMissedIsCaughtUp (#29): a job whose minute passed while
+// the panel was down, less than a day ago, runs once for that minute when the
+// panel is back.
+func TestABackupThePanelMissedIsCaughtUp(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
+	now := time.Now().UTC()
+	missed := now.Truncate(time.Minute).Add(-2 * time.Hour)
+	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "schedule": dueNow(missed)})["id"].(string)
+	// as the panel stopped before the minute
+	job := j.job(id)
+	job.Set("next_run_at", missed)
+	if err := j.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+
+	j.panel.CatchUpBackups(now)
+	runs := j.runs(id)
+	if len(runs) != 1 || runs[0].GetString("trigger") != schema.RunSchedule || !runs[0].GetDateTime("scheduled_at").Time().Equal(missed) {
+		t.Fatalf("the runs: %v", runs)
+	}
+	if run := j.runEnded(runs[0].Id); run.GetString("status") != schema.RunSucceeded {
+		t.Errorf("the run: %v", run.FieldsData())
+	}
+	if next := j.job(id).GetDateTime("next_run_at").Time(); !next.Equal(missed.Add(24 * time.Hour)) {
+		t.Errorf("the next run: %s", next)
+	}
+	j.panel.CatchUpBackups(now)
+	if len(j.runs(id)) != 1 {
+		t.Error("the minute was caught up twice")
+	}
+}
+
+// TestABackupThatNeverStartsIsSkippedWithAnAlert (#29): a run that waits
+// its whole time behind the runs before it of the same target, and never
+// starts, is skipped with an alert that says why; one that someone cancels
+// stays cancelled, without one.
+func TestABackupThatNeverStartsIsSkippedWithAnAlert(t *testing.T) {
+	j := newJobsHarness(t, func(engine *fakedocker.Engine) {
+		addVolume(t, engine, "app_data")
+		addVolume(t, engine, "other_data")
+	})
+	first := j.addJob(map[string]any{"name": "first", "source_kind": "volume", "source": "app_data"})["id"].(string)
+	second := j.addJob(map[string]any{"name": "second", "source_kind": "volume", "source": "other_data"})["id"].(string)
+	start := func(id string) string {
+		t.Helper()
+		status, out := j.send(http.MethodPost, "/api/pc/backup-jobs/"+id+"/run", j.admin, nil)
+		if status != http.StatusOK {
+			t.Fatalf("run %s: %d %v", id, status, out)
+		}
+		return out["runs"].([]any)[0].(string)
+	}
+
+	entered, release := j.gateJobs(isBackupRun, nil)
+	firstRun := start(first)
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the first backup did not start")
+	}
+	waiting := start(second)
+	// its time is up while it waits for the first
+	command := j.command(j.runs(second)[0].GetString("command"))
+	command.Set("expires_at", time.Now().Add(-time.Second))
+	if err := j.app.Save(command); err != nil {
+		t.Fatal(err)
+	}
+	j.panel.Commands.Reap()
+	run := j.runEnded(waiting)
+	if run.GetString("status") != schema.RunSkipped || run.GetString("error") != "It waited 12 hours while the server backup-node was busy with other backups, and never started." {
+		t.Errorf("the run that never started: %v", run.FieldsData())
+	}
+	alert := j.openAlerts("backup_skipped")[second+":"+j.disk.Id]
+	if alert == nil || alert.GetString("severity") != schema.SeverityWarning || !strings.Contains(alert.GetString("message"), "never started") {
+		t.Errorf("the alert: %v", alert)
+	}
+
+	cancelled := start(second)
+	queued := j.runs(second)[1]
+	if status, out := j.send(http.MethodPost, "/api/pc/commands/"+queued.GetString("command")+"/cancel", j.admin, nil); status != http.StatusNoContent {
+		t.Fatalf("cancel: %d %v", status, out)
+	}
+	if run := j.runEnded(cancelled); run.GetString("status") != schema.RunCancelled || run.GetString("error") != "Cancelled by admin@example.com" {
+		t.Errorf("the run someone cancelled: %v", run.FieldsData())
+	}
+	release()
+	if run := j.runEnded(firstRun); run.GetString("status") != schema.RunSucceeded {
+		t.Errorf("the first run: %v", run.FieldsData())
 	}
 }

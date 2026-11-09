@@ -37,10 +37,12 @@ import (
 // is delivered, as for every backup command (see backup_targets.go).
 //
 // The scheduler starts the due jobs every minute, in UTC, with a run per
-// target. A server that is offline at that minute gets skipped runs and an
-// alert; a run whose previous one of the same job and target is still going
-// is skipped. A failed run raises an alert with restic's error, which the
-// next run that succeeds resolves. Jobs made by labels are kept by the deploys
+// target. A server marked offline at that minute gets skipped runs and an
+// alert, once its agent had the time to reconnect after the panel started;
+// otherwise the run waits for the agent, and one that never starts is
+// skipped with an alert. A run whose previous one of the same job and target
+// is still going is skipped. A failed run raises an alert with restic's
+// error, which the next run that succeeds resolves. Jobs made by labels are kept by the deploys
 // of their stacks (see syncBackupLabels).
 
 const (
@@ -54,6 +56,12 @@ const (
 	maxJobTargets = 10
 	// maxRunLog is how much of the end of a run's output its record keeps.
 	maxRunLog = 32000
+	// reconnectGrace is how long after the panel starts its servers' agents
+	// may still be reconnecting: they try again within a minute.
+	reconnectGrace = 2 * time.Minute
+	// catchUpWithin is how long ago a job's minute that the panel missed,
+	// being down, may be for the job to run for it once the panel is back.
+	catchUpWithin = 24 * time.Hour
 )
 
 // Rules of the alerts of backups, each keyed by job and target.
@@ -89,6 +97,8 @@ var (
 func (p *Panel) registerBackupJobs() {
 	p.Commands.OnStart("backup.run", p.backupRunStarted)
 	p.Commands.OnFinish("backup.run", p.backupRunFinished)
+	// the scheduler's first pass catches up what the panel missed
+	p.backupCatchUp.Store(true)
 	p.App.Cron().MustAdd("pocketcloud_backups", "* * * * *", func() { p.RunDueBackups(time.Now()) })
 	p.App.Cron().MustAdd("pocketcloud_backup_runs_retention", "35 4 * * *", p.pruneBackupRuns)
 
@@ -566,11 +576,15 @@ func nextRunOf(job *core.Record, now time.Time) any {
 }
 
 // RunDueBackups starts the enabled jobs whose schedule says now, in UTC,
-// with a run per target: the panel calls it every minute. Then each job's
-// next run is set.
+// with a run per target: the panel calls it every minute. Its first pass
+// after the panel started also catches up the minutes the panel missed (see
+// CatchUpBackups). Then each job's next run is set.
 func (p *Panel) RunDueBackups(now time.Time) {
 	minute := now.UTC().Truncate(time.Minute)
 	moment := cron.NewMoment(minute)
+	if p.backupCatchUp.CompareAndSwap(true, false) {
+		p.catchUpBackups(minute)
+	}
 	jobs, err := p.App.FindRecordsByFilter(schema.BackupJobs, "enabled = true && label_removed = false", "created", 0, 0)
 	if err != nil {
 		p.Log.Error("failed to read the backup jobs", "error", err)
@@ -585,6 +599,62 @@ func (p *Panel) RunDueBackups(now time.Time) {
 	p.refreshNextRuns(now)
 }
 
+// CatchUpBackups runs each enabled job whose next run passed while the panel
+// was down, less than a day ago, once, now, for that minute: a minute the
+// panel missed is not silently lost. A job due at this very minute runs for
+// it instead. The scheduler's first pass after the panel starts does it;
+// then each job's next run is set.
+func (p *Panel) CatchUpBackups(now time.Time) {
+	p.catchUpBackups(now.UTC().Truncate(time.Minute))
+	p.refreshNextRuns(now)
+}
+
+func (p *Panel) catchUpBackups(minute time.Time) {
+	before, err := types.ParseDateTime(minute)
+	if err != nil {
+		return
+	}
+	since, err := types.ParseDateTime(minute.Add(-catchUpWithin))
+	if err != nil {
+		return
+	}
+	jobs, err := p.App.FindRecordsByFilter(schema.BackupJobs,
+		"enabled = true && label_removed = false && next_run_at != '' && next_run_at < {:before} && next_run_at > {:since}", "created", 0, 0,
+		dbx.Params{"before": before.String(), "since": since.String()})
+	if err != nil {
+		p.Log.Error("failed to read the backup jobs", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		if len(job.GetStringSlice("targets")) == 0 || parseCronRule(job.GetString("schedule")).due(cron.NewMoment(minute)) {
+			continue
+		}
+		missed := job.GetDateTime("next_run_at")
+		// once, whoever catches it up
+		done, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && scheduled_at={:missed}", "", 1, 0,
+			dbx.Params{"job": job.Id, "missed": missed.String()})
+		if err != nil || len(done) > 0 {
+			continue
+		}
+		p.Log.Info("catching up a backup the panel missed", "job", job.Id, "minute", missed.String())
+		p.runOnSchedule(job, missed.Time().UTC())
+	}
+}
+
+// SetStarted says when the panel started: for reconnectGrace after, its
+// servers' agents may still be reconnecting. Tests set it back.
+func (p *Panel) SetStarted(at time.Time) { p.started.Store(at.UnixNano()) }
+
+// offline tells whether a server's runs of a minute are skipped: it is
+// marked offline, and the panel has run long enough for its agent to have
+// reconnected. Runs of a server that is only between two connections, or
+// whose agent may still be reconnecting after the panel started, are queued:
+// they are delivered once it is back, and skipped with an alert if they never
+// start (see backupRunFinished).
+func (p *Panel) offline(host *core.Record) bool {
+	return host.GetString("status") == schema.HostOffline && time.Since(time.Unix(0, p.started.Load())) >= reconnectGrace
+}
+
 // runOnSchedule starts a job's runs of a minute: skipped when its server is
 // offline or the run before is still going.
 func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
@@ -592,10 +662,10 @@ func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
 	if err != nil {
 		return
 	}
-	online := p.Commands.Connected(host.Id)
+	offline := p.offline(host)
 	for _, target := range p.jobTargets(job) {
 		switch {
-		case !online:
+		case offline:
 			p.skipRun(job, target, host, minute, fmt.Sprintf("The server %s was offline at %s UTC.", host.GetString("name"), minute.Format("15:04")), true)
 		case p.runGoing(job, target):
 			p.skipRun(job, target, host, minute, "The run before it was still going.", false)
@@ -733,12 +803,38 @@ func (p *Panel) skipRun(job, target, host *core.Record, minute time.Time, reason
 		p.Log.Error("failed to keep a skipped backup run", "job", job.Id, "error", err)
 		return
 	}
+	p.noteSkip(job, target, run, reason, alert)
+	p.noteJobRun(job.Id)
+}
+
+// noteSkip says in the events that a run was skipped, and raises the alert of
+// a run that should have run.
+func (p *Panel) noteSkip(job, target, run *core.Record, reason string, alert bool) {
 	message := cutText(fmt.Sprintf("%s was skipped: %s", backupLabel(job, target), strings.ToLower(reason[:1])+reason[1:]), 2048)
-	events.Log(p.App, host.Id, "backup.skipped", schema.SeverityWarning, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
+	events.Log(p.App, job.GetString("host"), "backup.skipped", schema.SeverityWarning, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
 	if alert {
 		p.raiseJobAlert(alertBackupSkipped, job, target, schema.SeverityWarning, message)
 	}
-	p.noteJobRun(job.Id)
+}
+
+// neverStarted says why a run whose command waited its whole time never
+// started: its server stayed offline, or was busy with other backups, as
+// those of the same target before it, which run one after another.
+func (p *Panel) neverStarted(command *core.Record) string {
+	why := "was busy with other backups"
+	if command.GetDateTime("dispatched_at").IsZero() && !p.Commands.Connected(command.GetString("host")) {
+		why = "stayed offline"
+	}
+	return fmt.Sprintf("It waited %d hours while the server %s %s, and never started.", int(backupRunQueue.Hours()), command.GetString("host_name"), why)
+}
+
+// cancelledByItsTime tells whether a command that did not start was
+// cancelled because its time was up, as the agent does with one that waits
+// for a free worker until its deadline, not by someone: the commands keep no
+// other trace of who cancelled them. A minute is left for the clocks.
+func cancelledByItsTime(command *core.Record, finished types.DateTime) bool {
+	expires := command.GetDateTime("expires_at")
+	return !expires.IsZero() && !finished.Time().Before(expires.Time().Add(-time.Minute))
 }
 
 // runFailed fails a run that could not start, and alerts.
@@ -1024,21 +1120,35 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	_ = json.Unmarshal(raw, &result)
 
 	started := command.GetDateTime("started_at")
+	finished := command.GetDateTime("finished_at")
+	if finished.IsZero() {
+		finished = types.NowDateTime()
+	}
 	status := schema.RunFailed
 	switch commandStatus := command.GetString("status"); {
 	case commandStatus == schema.CommandSucceeded:
 		status = schema.RunSucceeded
+	case !started.IsZero():
+		if commandStatus == schema.CommandCancelled {
+			status = schema.RunCancelled
+		}
+	case commandStatus == schema.CommandTimedOut, commandStatus == schema.CommandCancelled && cancelledByItsTime(command, finished):
+		// it waited its whole time, in the panel's queue or for a free
+		// worker of the agent, and never started: the backup did not
+		// happen, which is skipped and alerted, not cancelled
+		status = schema.RunSkipped
 	case commandStatus == schema.CommandCancelled:
-		status = schema.RunCancelled
-	case commandStatus == schema.CommandTimedOut && started.IsZero():
-		// never delivered, as to a server that stayed offline: no run
+		// someone cancelled it
 		status = schema.RunCancelled
 	}
-	if status == schema.RunFailed && started.IsZero() && !backsUpTo(job, target) {
+	if (status == schema.RunFailed || status == schema.RunSkipped) && started.IsZero() && !backsUpTo(job, target) {
 		// not delivered: the job no longer backs up to the target
 		status = schema.RunCancelled
 	}
 	message := command.GetString("error")
+	if status == schema.RunSkipped {
+		message = p.neverStarted(command)
+	}
 	if status == schema.RunFailed && message == "" {
 		message = "The backup failed."
 		if command.GetString("status") == schema.CommandTimedOut {
@@ -1050,10 +1160,6 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	message = capitalize(backup.Redact(message, hide...))
 	retentionError := backup.Redact(result.RetentionError, hide...)
 
-	finished := command.GetDateTime("finished_at")
-	if finished.IsZero() {
-		finished = types.NowDateTime()
-	}
 	fields := map[string]any{
 		"status": status, "finished_at": finished, "error": cutText(message, 4096),
 		"snapshot_id": cutText(result.SnapshotID, 100), "bytes_added": int64(result.BytesAdded), "total_bytes": int64(result.TotalBytes),
@@ -1091,6 +1197,8 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	switch status {
 	case schema.RunFailed:
 		p.alertFailure(job, target, run, message)
+	case schema.RunSkipped:
+		p.noteSkip(job, target, run, message, true)
 	case schema.RunSucceeded:
 		for _, rule := range []string{alertBackupFailed, alertBackupSkipped} {
 			if err := events.ResolveAlert(p.App, rule, key); err != nil {
