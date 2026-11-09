@@ -2008,6 +2008,7 @@
     "source": {
       "volume": "volume {{name}}",
       "stack": "volumes of stack {{name}}",
+      "serviceVolumes": "volumes of service {{service}}: {{names}}",
       "db_dump": "{{tool}} · {{stack}}/{{service}}"
     },
     "sourceKind": {

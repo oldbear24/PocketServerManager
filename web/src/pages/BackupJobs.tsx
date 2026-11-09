@@ -187,7 +187,7 @@ const statusClass: Record<RunStatus, string> = {
 };
 
 /** What a job's source is, in a line: volume vw-data, a directory, the
- * volumes of a stack, or a dump of a service. */
+ * volumes of a stack, those of one service, or a dump of a service. */
 export function describeSource(job: BackupJob, stacks: StackName[], t: Translate): string {
   const stack = stacks.find((item) => item.id === job.stack)?.name ?? "–";
   let text: string;
@@ -198,9 +198,19 @@ export function describeSource(job: BackupJob, stacks: StackName[], t: Translate
     case "path":
       text = job.source;
       break;
-    case "stack":
-      text = t("backups.source.stack", { name: stack });
+    case "stack": {
+      // a service's label names its own volumes; with none named, the job
+      // backs up every volume of the stack
+      const names = job.source
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+      text =
+        job.service && names.length > 0
+          ? t("backups.source.serviceVolumes", { service: job.service, names: names.join(", ") })
+          : t("backups.source.stack", { name: stack });
       break;
+    }
     case "db_dump":
       text = t("backups.source.db_dump", {
         tool: job.engine ? t(`backups.engineTool.${job.engine}`) : "–",

@@ -2102,6 +2102,7 @@
     "source": {
       "volume": "svazek {{name}}",
       "stack": "svazky stacku {{name}}",
+      "serviceVolumes": "svazky služby {{service}}: {{names}}",
       "db_dump": "{{tool}} · {{stack}}/{{service}}"
     },
     "sourceKind": {

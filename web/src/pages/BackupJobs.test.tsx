@@ -4,13 +4,14 @@ import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/toast";
+import i18n from "../i18n";
 import { AuthProvider } from "../lib/auth";
 import { jobsApi, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import type { BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Container, Host, Volume } from "../lib/types";
 import { BackupsPage } from "./Backups";
-import { JobDialog, type StackName } from "./BackupJobs";
+import { describeSource, JobDialog, type StackName } from "./BackupJobs";
 
 // Monday 13:00 in Prague, on winter time: an hour ahead of UTC
 const now = Date.parse("2026-11-09T12:00:00Z");
@@ -173,13 +174,15 @@ const umami = job({
   origin: "label",
   next_run_at: "2026-11-10 00:30:00.000Z",
 });
+// a service's label names its own volumes, as the panel saves them
 const gone = job({
   id: "j4",
   name: "old-db",
   host: "h1",
   source_kind: "stack",
-  source: "",
+  source: "umami_db-data,umami_db-backups",
   stack: "s1",
+  service: "db",
   targets: ["t1"],
   origin: "label",
   label_removed: true,
@@ -193,8 +196,9 @@ const unplaced = job({
   name: "umami-cache",
   host: "h1",
   source_kind: "stack",
-  source: "",
+  source: "umami_cache-data",
   stack: "s1",
+  service: "cache",
   targets: [],
   origin: "label",
   problem: "Choose where it goes: no target.",
@@ -317,6 +321,33 @@ describe("the backups summary", () => {
   });
 });
 
+describe("a job's source", () => {
+  const t = i18n.getFixedT("en");
+  const cs = i18n.getFixedT("cs");
+
+  it("is every volume of a stack, when no service names its own", () => {
+    const whole = job({ source_kind: "stack", source: "", stack: "s1", service: "" });
+    expect(describeSource(whole, stacks, t)).toBe("volumes of stack umami");
+    expect(describeSource(whole, stacks, cs)).toBe("svazky stacku umami");
+  });
+
+  it("is the volumes a service's label names, of that service only", () => {
+    const label = job({
+      source_kind: "stack",
+      source: "shop_app-data,shop_uploads",
+      stack: "s1",
+      service: "app",
+      origin: "label",
+    });
+    expect(describeSource(label, stacks, t)).toBe(
+      "volumes of service app: shop_app-data, shop_uploads · from label pocketcloud.backup",
+    );
+    expect(describeSource(label, stacks, cs)).toBe(
+      "svazky služby app: shop_app-data, shop_uploads · z labelu pocketcloud.backup",
+    );
+  });
+});
+
 describe("the jobs", () => {
   it("lists what each backs up, where to, when, how long and how it went", () => {
     showPage("viewer");
@@ -354,7 +385,19 @@ describe("the jobs", () => {
     // its note says why it does not run
     expect(row("old-db").queryByText(/paused/)).not.toBeInTheDocument();
 
+    // a label's volumes are its service's, not every volume of the stack
+    expect(
+      row("old-db").getByText(
+        "volumes of service db: umami_db-data, umami_db-backups · from label pocketcloud.backup",
+      ),
+    ).toBeInTheDocument();
+
     const unplacedRow = row("umami-cache");
+    expect(
+      unplacedRow.getByText(
+        "volumes of service cache: umami_cache-data · from label pocketcloud.backup",
+      ),
+    ).toBeInTheDocument();
     expect(unplacedRow.getByText("· paused")).toBeInTheDocument();
     expect(unplacedRow.getByText("no target")).toBeInTheDocument();
     expect(unplacedRow.getByText("Choose where it goes: no target.")).toBeInTheDocument();
@@ -801,6 +844,16 @@ describe("changing a job", () => {
         retention: { last: 0, hourly: 0, daily: 14, weekly: 4, monthly: 0, yearly: 0 },
       },
     ]);
+  });
+
+  it("names the volumes a label's job backs up", () => {
+    openDialog(unplaced);
+    expect(screen.queryByLabelText("What to back up")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "volumes of service cache: umami_cache-data · from label pocketcloud.backup",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows what a label's labels set read-only, and never sends it", async () => {
