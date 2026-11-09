@@ -144,6 +144,10 @@ function applyEvent<T extends RecordModel>(records: Map<string, T>, event: Recor
  * loading the list again. For lists too long to reload on every change, such
  * as two weeks of backup runs. The records come in no order; `fields` must
  * name `updated`.
+ *
+ * The list is read once the subscription is in place, so that nothing changes
+ * unseen between the two, and again after each reconnect of the realtime
+ * connection: what changed while it was down never arrives.
  */
 export function useLiveRecords<T extends RecordModel>(
   collection: string,
@@ -163,8 +167,59 @@ export function useLiveRecords<T extends RecordModel>(
 
     let cancelled = false;
     let unsubscribe: (() => Promise<void>) | undefined;
-    // what arrives before the list is applied to it once it is there
+    let stopConnect: (() => Promise<void>) | undefined;
+    // once the subscription is in place, a connect is a reconnect
+    let subscribed = false;
+    // the subscription failed: the list is not live, which a read does not change
+    let broken = false;
+    // what arrives while the list is read is applied to it once it is there
     let early: RecordEvent<T>[] | null = [];
+    // only the newest read counts
+    let reads = 0;
+
+    const applyShown = (events: RecordEvent<T>[]) =>
+      setItems((shown) => {
+        const records = new Map(shown.map((item) => [item.id, item]));
+        for (const event of events) {
+          applyEvent(records, event);
+        }
+        return [...records.values()];
+      });
+
+    const read = () => {
+      const current = ++reads;
+      early ??= [];
+      pb.collection(collection)
+        .getFullList<T>({ filter, fields, batch: 1000 })
+        .then((list) => {
+          if (cancelled || current !== reads) {
+            return;
+          }
+          const records = new Map(list.map((item) => [item.id, item]));
+          for (const event of early ?? []) {
+            applyEvent(records, event);
+          }
+          early = null;
+          setItems([...records.values()]);
+          if (!broken) {
+            setError(null);
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled && current === reads) {
+            // what is shown stays live, though it may miss what the read had
+            const missed = early ?? [];
+            early = null;
+            applyShown(missed);
+            setError(err);
+          }
+        })
+        .finally(() => {
+          if (!cancelled && current === reads) {
+            setLoading(false);
+          }
+        });
+    };
 
     pb.collection(collection)
       .subscribe<T>(
@@ -175,57 +230,54 @@ export function useLiveRecords<T extends RecordModel>(
           }
           if (early) {
             early.push(event);
-            return;
+          } else {
+            applyShown([event]);
           }
-          setItems((current) => {
-            const records = new Map(current.map((item) => [item.id, item]));
-            applyEvent(records, event);
-            return [...records.values()];
-          });
         },
         { filter, fields },
       )
       .then((stop) => {
         if (cancelled) {
           void stop();
-        } else {
-          unsubscribe = stop;
+          return;
         }
+        unsubscribe = stop;
+        subscribed = true;
+        read();
       })
       .catch((err: unknown) => {
         if (!cancelled) {
+          broken = true;
           setError(err);
+          // the records still, though they do not change
+          read();
         }
       });
 
-    pb.collection(collection)
-      .getFullList<T>({ filter, fields, batch: 1000 })
-      .then((list) => {
+    // PocketBase's client reconnects by itself, with a new client id: the
+    // events between are lost. The connect that makes the subscription comes
+    // before it is in place and is no reconnect.
+    pb.realtime
+      .subscribe("PB_CONNECT", () => {
+        if (subscribed && !cancelled) {
+          read();
+        }
+      })
+      .then((stop) => {
         if (cancelled) {
-          return;
-        }
-        const records = new Map(list.map((item) => [item.id, item]));
-        for (const event of early ?? []) {
-          applyEvent(records, event);
-        }
-        early = null;
-        setItems([...records.values()]);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err);
+          void stop();
+        } else {
+          stopConnect = stop;
         }
       })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
+      .catch(() => {
+        // the records' own subscription says why
       });
 
     return () => {
       cancelled = true;
       void unsubscribe?.();
+      void stopConnect?.();
     };
   }, [collection, enabled, fields, filter, version]);
 
