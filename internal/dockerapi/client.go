@@ -687,6 +687,28 @@ func (c *Client) ExecStart(ctx context.Context, execID string, tty bool) (io.Rea
 	return connection, nil
 }
 
+// Attach opens the standard input of a container created with OpenStdin,
+// before it starts: what is written to the connection is what its process
+// reads, and closing it ends that input for a container created with
+// StdinOnce.
+func (c *Client) Attach(ctx context.Context, id string) (io.WriteCloser, error) {
+	res, err := c.request(ctx, http.MethodPost, "/containers/"+id+"/attach", url.Values{"stream": {"1"}, "stdin": {"1"}}, nil, map[string]string{
+		"Connection": "Upgrade",
+		"Upgrade":    "tcp",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	connection, ok := res.Body.(io.ReadWriteCloser)
+	if !ok {
+		res.Body.Close()
+		return nil, errors.New("the Docker Engine did not upgrade the attach connection")
+	}
+
+	return connection, nil
+}
+
 // ExecResize resizes the TTY of a running process.
 func (c *Client) ExecResize(ctx context.Context, execID string, cols, rows uint32) error {
 	return c.do(ctx, http.MethodPost, "/exec/"+execID+"/resize", url.Values{

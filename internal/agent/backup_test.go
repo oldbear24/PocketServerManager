@@ -218,7 +218,7 @@ func TestWhatResticSaysKeepsNoSecret(t *testing.T) {
 	_, err := a.backupJob(context.Background(), &agentv1.BackupRepository{
 		TargetId: "t5", Url: "s3:http://minio:9000/backups", Password: "repo-password-5",
 		Env: map[string]string{"AWS_ACCESS_KEY_ID": "minio-key", "AWS_SECRET_ACCESS_KEY": secret},
-	}, []string{"init"}, &out)
+	}, backupJobSpec{args: []string{"init"}}, &out)
 	if err == nil || !strings.Contains(err.Error(), "Access Denied") || strings.Contains(err.Error(), secret) {
 		t.Errorf("the error: %v", err)
 	}
@@ -243,15 +243,23 @@ func TestWhatResticSaysKeepsNoSecret(t *testing.T) {
 }
 
 // TestBackupJobsLeftByARestartAreRemoved (#28): the commands of jobs the
-// agent was running when it stopped ended with it.
+// agent was running when it stopped ended with it; one still running is
+// stopped first, so that restic removes its locks (review of #29).
 func TestBackupJobsLeftByARestartAreRemoved(t *testing.T) {
 	a, engine, _ := backupAgent(t)
-	engine.AddContainer("backup-job", agentImage, map[string]string{"pocketcloud.role": "job", backupTargetLabel: "t1"})
+	running := engine.AddContainer("backup-job", agentImage, map[string]string{"pocketcloud.role": "job", backupTargetLabel: "t1"})
+	exited := engine.AddContainer("backup-job-2", agentImage, map[string]string{"pocketcloud.role": "job", backupTargetLabel: "t2"})
+	engine.SetStatus(exited, "exited")
 	engine.AddContainer("someones-job", "busybox", map[string]string{"pocketcloud.role": "job"})
 	a.cleanupBackupJobs(context.Background())
 	names := engine.Names()
-	if slices.Contains(names, "backup-job") || !slices.Contains(names, "someones-job") {
+	if slices.Contains(names, "backup-job") || slices.Contains(names, "backup-job-2") || !slices.Contains(names, "someones-job") {
 		t.Errorf("containers: %v", names)
+	}
+	stop := slices.Index(engine.Calls(), "POST /containers/"+running+"/stop?t=30")
+	remove := slices.IndexFunc(engine.Calls(), func(call string) bool { return strings.HasPrefix(call, "DELETE /containers/"+running+"?") })
+	if stop < 0 || remove < stop || engine.Called("/containers/"+exited+"/stop") {
+		t.Errorf("calls: %q", engine.Calls())
 	}
 }
 

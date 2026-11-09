@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -50,11 +51,16 @@ func main() {
 	case "site-tool":
 		err = agent.SiteTool(ctx, os.Args[2:], agent.SiteToolEnv(os.Getenv), os.Stdout, os.Stderr)
 	case "backup-tool":
-		err = agent.BackupTool(ctx, os.Args[2:], agent.BackupToolEnv(os.Environ()), os.Stdout, os.Stderr)
+		err = agent.BackupTool(ctx, os.Args[2:], agent.BackupToolEnv(os.Environ()), os.Stdin, os.Stdout, os.Stderr)
 	default:
 		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics or version", command)
 	}
 
+	// the backup tool's relay ends with a dump's own exit code, having said why
+	var exit *agent.ToolExit
+	if errors.As(err, &exit) {
+		os.Exit(exit.Code)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

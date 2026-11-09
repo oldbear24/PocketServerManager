@@ -90,6 +90,13 @@ type Panel struct {
 	// for tests that send edge.apply themselves.
 	ManualEdges atomic.Bool
 
+	// started is when the panel started, in Unix nanoseconds (see
+	// SetStarted).
+	started atomic.Int64
+	// backupCatchUp is set until the backup scheduler's first pass, which
+	// catches up the runs the panel missed while it was down.
+	backupCatchUp atomic.Bool
+
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
 
@@ -109,6 +116,7 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Commands: commands.NewManager(app),
 	}
 	p.SetEdgeImage(version.EdgeRef())
+	p.SetStarted(time.Now())
 	p.acme.init()
 	p.Updates = newUpdateBatches(p)
 	p.Streams = streams.New(p.Commands)
@@ -173,6 +181,7 @@ func (p *Panel) Register() {
 	p.registerTasks()
 	p.registerProvision()
 	p.registerBackups()
+	p.registerBackupJobs()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -222,6 +231,7 @@ func (p *Panel) Register() {
 		p.bindProvisionRoutes(group)
 		p.bindLANRoutes(group)
 		p.bindBackupRoutes(group)
+		p.bindBackupJobRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		p.Commands.BindRoutes(group)

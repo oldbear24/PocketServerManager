@@ -27,11 +27,14 @@ const (
 
 // perTypeLimits caps commands of a kind on top of the global worker limit: pulls
 // and backups are heavy, and the panel already orders commands per resource.
+// A command counts against the longest prefix of its kind.
 var perTypeLimits = map[string]int{
 	"image.pull":  2,
 	"stack.":      3,
 	"site.deploy": 2,
 	"backup.":     2,
+	// a backup reads all of what it backs up, a run per job and target (#29)
+	"backup.run": 2,
 	// a backup target's check is quick and someone waits for it; a measure
 	// may read for an hour: it never takes the check's slots (#28)
 	"backup-check": 2,
@@ -242,10 +245,10 @@ func limitKey(command *agentv1.Command) string {
 
 func (x *Executor) acquire(ctx context.Context, commandType string) (func(), error) {
 	var limit chan struct{}
+	longest := -1
 	for prefix, candidate := range x.limits {
-		if strings.HasPrefix(commandType, prefix) {
-			limit = candidate
-			break
+		if strings.HasPrefix(commandType, prefix) && len(prefix) > longest {
+			limit, longest = candidate, len(prefix)
 		}
 	}
 

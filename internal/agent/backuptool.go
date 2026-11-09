@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 )
@@ -33,6 +35,23 @@ import (
 //	       directory that holds other files and no repository is refused.
 //	       --expect ID: the repository is the one with this id, which is only
 //	       opened; a missing or another one is an error.
+//	backup back up the directories of --path, or a database dump (#29): with
+//	       --stdin-name FILE, the dump comes in on the tool's standard input
+//	       as the relay's frames, and the tool serves them to restic's
+//	       relay on the unix socket --relay SOCKET. The snapshot takes
+//	       --host NAME and every --tag; with any --keep-last, --keep-hourly,
+//	       --keep-daily, --keep-weekly, --keep-monthly or --keep-yearly N,
+//	       the snapshots that have every one of those tags are then
+//	       thinned out to that policy, and the repository pruned. Its
+//	       result says what the snapshot holds, and how many snapshots
+//	       went; a snapshot saved without files restic could not read is
+//	       said too, with the error. A backup or a retention that finds
+//	       the repository locked runs restic unlock, which removes the
+//	       locks no restic holds any more, and tries once more; a
+//	       retention still locked out waits for the next run.
+//	relay  what restic runs for a dump: it reads the frames from the backup
+//	       tool's --socket SOCKET and writes the dump to its standard
+//	       output, and ends with the dump's exit code.
 //
 // Every op takes restic's options as -o key=value, and --cache DIR for
 // restic's cache; without it restic keeps none.
@@ -45,9 +64,31 @@ const (
 
 // restic's exit codes, since 0.17
 const (
-	resticNoRepository  = 10
+	// resticPartial is a backup that saved its snapshot without some files
+	// it could not read.
+	resticPartial      = 3
+	resticNoRepository = 10
+	// resticLocked is restic that could not lock the repository, as
+	// another restic held a lock that kept it out
+	resticLocked        = 11
 	resticWrongPassword = 12
 )
+
+// retryLock is how long a backup waits for a lock another restic holds, such
+// as a prune of the same repository from another server.
+const retryLock = "30m"
+
+// forgetRetryLock is how long the retention waits for the repository's
+// exclusive lock, which any backup to it from another server keeps out: the
+// retention then waits for the next run, rather than hold the run's slot.
+const forgetRetryLock = "5m"
+
+// resticStopWait is how long a restic that was told to stop has to end
+// before it is killed.
+var resticStopWait = 30 * time.Second
+
+// keepOptions are restic's --keep-* options that a job's retention sets.
+var keepOptions = []string{"keep-last", "keep-hourly", "keep-daily", "keep-weekly", "keep-monthly", "keep-yearly"}
 
 // backupInitResult is what the init op found.
 type backupInitResult struct {
@@ -74,6 +115,21 @@ func BackupToolEnv(environ []string) map[string]string {
 	return env
 }
 
+// list is a repeated flag.
+type list []string
+
+func (l *list) String() string { return strings.Join(*l, ",") }
+
+func (l *list) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// ToolExit ends a tool with an exit code of its own, once it has said why.
+type ToolExit struct{ Code int }
+
+func (e *ToolExit) Error() string { return "exit code " + strconv.Itoa(e.Code) }
+
 // options is a repeated -o key=value flag.
 type options []string
 
@@ -88,10 +144,11 @@ func (o *options) Set(value string) error {
 }
 
 // BackupTool runs one op of the backup tool. env holds restic's variables, on
-// top of the process's own environment.
-func BackupTool(ctx context.Context, args []string, env map[string]string, stdout, stderr io.Writer) error {
+// top of the process's own environment; stdin is the job's standard input,
+// which brings a dump.
+func BackupTool(ctx context.Context, args []string, env map[string]string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("name an op: init")
+		return errors.New("name an op: init, backup or relay")
 	}
 	op := args[0]
 	flags := flag.NewFlagSet("backup-tool "+op, flag.ContinueOnError)
@@ -102,8 +159,29 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 	expect := flags.String("expect", "", "the id of the repository, which must exist")
 	usage := flags.Bool("usage", false, "say how much the repository holds")
 	cache := flags.String("cache", "", "restic's cache directory")
+	host := flags.String("host", "", "the snapshot's host")
+	var tags, paths list
+	flags.Var(&tags, "tag", "a tag of the snapshot")
+	flags.Var(&paths, "path", "a directory to back up")
+	stdinName := flags.String("stdin-name", "", "the file name of the dump that comes in on standard input")
+	relay := flags.String("relay", "", "the socket the dump's relay reads from")
+	socket := flags.String("socket", "", "the backup tool's socket, for the relay")
+	keep := make([]*int, len(keepOptions))
+	for i, name := range keepOptions {
+		keep[i] = flags.Int(name, 0, "restic's --"+name)
+	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
+	}
+	if op == "relay" {
+		// restic runs it, with the job's environment, which it needs none of
+		if *socket == "" {
+			return errors.New("the relay needs the backup tool's --socket")
+		}
+		if code := backup.RelaySocket(*socket, stdout, stderr); code != 0 {
+			return &ToolExit{Code: code}
+		}
+		return nil
 	}
 	if env[envResticRepository] == "" || env[envResticPassword] == "" {
 		return errors.New("the job has no repository or no password: the panel adds them when it delivers the command")
@@ -111,7 +189,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 	secrets := backup.Secrets(env[envResticPassword], withoutRestic(env), "")
 	log := &redactingWriter{w: stderr, secrets: secrets}
 	defer log.Flush()
-	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache}
+	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine}
 
 	switch op {
 	case "init":
@@ -120,8 +198,24 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdou
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(result)
+	case "backup":
+		run, err := backupRunOf(*host, tags, paths, *stdinName, *relay, keep)
+		if err != nil {
+			return err
+		}
+		if stdin == nil {
+			stdin = strings.NewReader("")
+		}
+		result, err := r.backup(ctx, run, stdin)
+		// a snapshot that was saved is said, even one that lacks files
+		if result != nil {
+			if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil && err == nil {
+				err = encodeErr
+			}
+		}
+		return err
 	}
-	return fmt.Errorf("unknown op %q: use init", op)
+	return fmt.Errorf("unknown op %q: use init, backup or relay", op)
 }
 
 // withoutRestic is the storage's credentials: env without restic's own
@@ -136,6 +230,12 @@ func withoutRestic(env map[string]string) map[string]string {
 	return rest
 }
 
+// relayReady is the line the backup tool writes to its error output once
+// restic has run the dump's relay, and only then: the agent starts the dump
+// when it reads it, so that a database is not dumped, holding its locks,
+// while restic waits for the repository, nor for a restic that failed.
+const relayReady = "--- pocketcloud: restic reads the dump ---"
+
 // restic runs restic for one repository.
 type restic struct {
 	env     map[string]string
@@ -144,6 +244,8 @@ type restic struct {
 	secrets []string
 	// cache is restic's cache directory, if it keeps one
 	cache string
+	// mark writes a line of the tool's own, such as relayReady, as it is
+	mark func(line string)
 }
 
 // run runs restic and returns what it printed to stdout and its exit code. An
@@ -159,6 +261,10 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 	}
 	full = append(full, args...)
 	command := exec.CommandContext(ctx, "restic", full...) //nolint:gosec // restic with the job's repository
+	// a restic that is stopped removes its locks, which one killed leaves
+	// for every other to wait on; one that does not end is killed
+	command.Cancel = func() error { return command.Process.Signal(gracefulStop) }
+	command.WaitDelay = resticStopWait
 	command.Env = os.Environ()
 	names := make([]string, 0, len(r.env))
 	for name := range r.env {
@@ -169,17 +275,55 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 		command.Env = append(command.Env, name+"="+r.env[name])
 	}
 	var stdout, stderr bytes.Buffer
+	log := &readableWriter{w: r.log}
 	command.Stdout = &stdout
-	command.Stderr = io.MultiWriter(&stderr, r.log)
+	command.Stderr = io.MultiWriter(&stderr, log)
 	err := command.Run()
+	log.Flush()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
-		return stdout.Bytes(), exit.ExitCode(), r.said(stderr.Bytes()), nil
+		said := r.said(stderr.Bytes())
+		if line := lockLine(stderr.Bytes()); exit.ExitCode() == resticLocked && line != "" {
+			// which restic holds the lock, and where
+			said = backup.Redact(line, r.secrets...)
+		}
+		return stdout.Bytes(), exit.ExitCode(), said, nil
 	}
 	if err != nil {
 		return nil, -1, "", err
 	}
 	return stdout.Bytes(), 0, "", nil
+}
+
+// lockLine is the line of restic's error output that says who holds the lock
+// that kept it out, such as "unable to create lock in backend: repository
+// is already locked by PID 1 on nas by root (UID 0, GID 0)".
+func lockLine(stderr []byte) string {
+	for line := range strings.SplitSeq(string(stderr), "\n") {
+		if line = strings.TrimSpace(readable(line)); strings.Contains(line, "is already locked") {
+			return line
+		}
+	}
+	return ""
+}
+
+// unlock removes the locks that no restic holds any more: those of a
+// process that is gone, and those nobody refreshed for 30 minutes, as a
+// restic that was killed left; a live restic refreshes its own every 5
+// minutes, which stays.
+func (r restic) unlock(ctx context.Context) {
+	fmt.Fprintln(r.log, "The repository is locked: removing the locks no restic holds any more, and trying once more")
+	out, code, said, err := r.run(ctx, "unlock")
+	switch {
+	case err != nil:
+		fmt.Fprintln(r.log, "restic unlock failed:", err)
+	case code != 0:
+		fmt.Fprintln(r.log, "restic unlock failed:", said)
+	default:
+		if text := strings.TrimSpace(backup.Redact(string(out), r.secrets...)); text != "" {
+			fmt.Fprintln(r.log, text)
+		}
+	}
 }
 
 // sshSaid prefixes what restic passes on of the ssh it runs for SFTP.
@@ -194,7 +338,7 @@ func (r restic) said(stderr []byte) string {
 	scanner := bufio.NewScanner(bytes.NewReader(stderr))
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
+		if line := strings.TrimSpace(readable(scanner.Text())); line != "" {
 			lines = append(lines, line)
 		}
 	}
@@ -244,7 +388,7 @@ func (r restic) init(ctx context.Context, local, expect string, usage bool) (bac
 	case 0:
 	case resticNoRepository:
 		if expect != "" {
-			return result, errors.New("the repository is gone, with its snapshots: " + said)
+			return result, repositoryError(resticNoRepository, said)
 		}
 		if local != "" {
 			entries, err := os.ReadDir(local)
@@ -281,10 +425,8 @@ func (r restic) init(ctx context.Context, local, expect string, usage bool) (bac
 				fmt.Fprintln(r.log, "The directory's permissions stay as they are:", err)
 			}
 		}
-	case resticWrongPassword:
-		return result, errors.New("a repository is there, and the password is not its own: " + said)
 	default:
-		return result, errors.New(said)
+		return result, repositoryError(code, said)
 	}
 
 	var config struct {
@@ -351,6 +493,14 @@ func (r *redactingWriter) Write(data []byte) (int, error) {
 		}
 	}
 	return len(data), nil
+}
+
+// WriteLine passes on a line as it is, between the lines it redacts: one of
+// the tool's own, which no secret is in.
+func (r *redactingWriter) WriteLine(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, _ = io.WriteString(r.w, line+"\n")
 }
 
 // Flush passes on what is left of an unfinished line.

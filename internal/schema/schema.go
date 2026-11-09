@@ -34,7 +34,11 @@ const (
 	DNSProviders      = "dns_providers"
 	DNSZones          = "dns_zones"
 	// BackupTargets are where backups go (#28)
-	BackupTargets  = "backup_targets"
+	BackupTargets = "backup_targets"
+	// BackupJobs are what is backed up, when and how long it is kept (#29)
+	BackupJobs = "backup_jobs"
+	// BackupRuns are the runs of a job, one per target (#29)
+	BackupRuns     = "backup_runs"
 	DNSRecords     = "dns_records"
 	ACMEAccounts   = "acme_accounts"
 	Sites          = "sites"
@@ -67,11 +71,60 @@ const (
 	TargetFailed  = "failed"
 )
 
+// What a backup job backs up (#29).
+const (
+	// SourceVolume is a Docker volume of the job's server.
+	SourceVolume = "volume"
+	// SourcePath is a directory of the job's server.
+	SourcePath = "path"
+	// SourceStack is every named volume of a stack.
+	SourceStack = "stack"
+	// SourceDump is a database dump made in a stack's service container.
+	SourceDump = "db_dump"
+)
+
+// Database engines whose dumps a backup job makes (#29).
+const (
+	DumpPostgres = "postgres"
+	DumpMySQL    = "mysql"
+	DumpSQLite   = "sqlite"
+)
+
+// How a backup job came to be.
+const (
+	JobManual = "manual"
+	// JobLabel is a job a stack's pocketcloud.backup label makes (OriginLabel).
+	JobLabel = OriginLabel
+)
+
+// How a backup run started.
+const (
+	RunSchedule = "schedule"
+	RunManual   = "manual"
+)
+
+// States of a backup run (#29).
+const (
+	RunQueued    = "queued"
+	RunRunning   = "running"
+	RunSucceeded = "succeeded"
+	RunFailed    = "failed"
+	// RunSkipped is a run that did not start: its server was offline at its
+	// minute, the run before it was still going, or it waited its whole time,
+	// in the panel's queue or for a free worker of the agent, and never
+	// started.
+	RunSkipped = "skipped"
+	// RunCancelled is a run someone cancelled, or one not delivered because
+	// its job no longer backs up to its target (the target left the job, or
+	// the job's label went), or whose command is gone: no failure of the job.
+	RunCancelled = "cancelled"
+)
+
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"backup_jobs", "backup_runs", "backup_checks",
+	"backup_checks",
 }
 
 // User roles.
@@ -343,7 +396,7 @@ var Audited = []AuditedCollection{
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
 	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes", "usage_at"}},
-	{Name: "backup_jobs", Label: "name", Host: "host"},
+	{Name: BackupJobs, Label: "name", Host: "host", Ignore: []string{"next_run_at", "last_run_at", "last_status", "problem", "label_removed"}},
 }
 
 // IsEncrypted reports whether a field holds a secret.

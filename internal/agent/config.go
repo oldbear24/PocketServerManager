@@ -31,6 +31,10 @@ type Config struct {
 	StateDir string
 	// HostRoot is where the host's root is mounted read-only.
 	HostRoot string
+	// JobImageRoot is where the agent sees the files of the image its
+	// backup jobs run from, which is its own: its own / unless set. Only
+	// tests set it.
+	JobImageRoot string
 	// DockerHost is the Docker Engine to use.
 	DockerHost string
 	// DockerCLI is the Docker command line tool, which brings the Compose plugin.

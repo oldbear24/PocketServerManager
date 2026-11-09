@@ -2858,3 +2858,252 @@ td .row-actions {
   background: var(--accent-bg);
   color: var(--text-2);
 }
+
+/* Backup jobs (#29), as the design's Jobs card */
+.backup-jobs {
+  min-width: 1000px;
+  font-size: 12.5px;
+}
+
+.backup-jobs th,
+.backup-jobs td {
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.backup-jobs td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  color: var(--text-2);
+}
+
+.backup-jobs th:first-child,
+.backup-jobs td:first-child {
+  padding-left: 18px;
+}
+
+.backup-jobs th:last-child,
+.backup-jobs td:last-child {
+  padding-right: 18px;
+}
+
+.backup-jobs .job-cell {
+  min-width: 190px;
+}
+
+.job-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* one line, cut short: a cell's max-width would not hold its column */
+.job-source {
+  max-width: 230px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--warn-text);
+}
+
+.job-removed .job-name,
+.job-removed .job-where,
+.job-removed .job-schedule {
+  opacity: 0.6;
+}
+
+.backup-jobs .job-where {
+  min-width: 170px;
+}
+
+.job-host {
+  color: var(--text);
+}
+
+.backup-jobs .job-schedule {
+  min-width: 130px;
+}
+
+.job-retention {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.backup-jobs .job-last {
+  min-width: 120px;
+}
+
+.run-status.ok {
+  color: var(--ok-text);
+}
+
+.run-status.err {
+  color: var(--err-text);
+}
+
+.run-status.warn {
+  color: var(--warn-text);
+}
+
+.run-status.info {
+  color: var(--accent);
+}
+
+.run-status.off {
+  color: var(--text-3);
+}
+
+.run-detail,
+.run-retention {
+  max-width: 170px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* a backup that kept every snapshot: put off is no error, a failure is */
+.run-retention.failed {
+  color: var(--warn-text);
+}
+
+/* a server's jobs, on its page: what, how the last run went, when next;
+ * three columns, which a phone shows nearly whole */
+.server-jobs {
+  min-width: 420px;
+  font-size: 12.5px;
+}
+
+.server-jobs th,
+.server-jobs td {
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.server-jobs td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  color: var(--text-2);
+}
+
+.server-jobs th:first-child,
+.server-jobs td:first-child {
+  padding-left: 18px;
+}
+
+.server-jobs th:last-child,
+.server-jobs td:last-child {
+  padding-right: 18px;
+}
+
+.server-jobs .job-cell {
+  min-width: 150px;
+}
+
+/* the page is wider than the Backups page's column */
+.server-jobs .job-source {
+  max-width: min(420px, 40vw);
+}
+
+.server-jobs .run-detail,
+.server-jobs .run-retention {
+  max-width: min(260px, 32vw);
+}
+
+.server-jobs .job-next {
+  white-space: nowrap;
+}
+
+/* Run first, where every row has it, then what only some rows have */
+.backup-jobs td.job-actions .row-actions {
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+/* 14 days, oldest first: the worst run of each day */
+.run-strip {
+  display: flex;
+  gap: 3px;
+}
+
+.run-strip span,
+.strip-swatch {
+  flex: none;
+  width: 10px;
+  height: 18px;
+  border-radius: 2px;
+  background: #232935;
+}
+
+.run-strip .ok,
+.strip-swatch.ok {
+  background: #3e9a62;
+}
+
+.run-strip .err,
+.strip-swatch.err {
+  background: var(--err);
+}
+
+.run-strip .warn,
+.strip-swatch.warn {
+  background: var(--warn);
+}
+
+.strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.strip-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.strip-legend .strip-swatch {
+  height: 10px;
+}
+
+/* the job dialog's targets and retention */
+.job-targets,
+.job-retention-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.job-targets legend,
+.job-retention-fields legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.keep-grid {
+  display: grid;
+  gap: 10px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
