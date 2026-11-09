@@ -148,11 +148,11 @@ func Check(kind string, config Config, creds Credentials) (Config, Credentials, 
 			return config, creds, errors.New("give the directory on the server, such as /srv/restic")
 		}
 		config.Path = path.Clean(config.Path)
-		if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(config.HostKey)); err != nil {
-			return config, creds, errors.New("give the server's host key, a line such as ssh-ed25519 AAAA… (ssh-keyscan prints it), so that no other server can pose as it")
+		hostKeys, err := pinnedKeys(config.HostKey)
+		if err != nil {
+			return config, creds, err
 		}
-		fields := strings.Fields(config.HostKey)
-		config.HostKey = fields[0] + " " + fields[1]
+		config.HostKey = hostKeys
 		if _, err := ssh.ParsePrivateKey([]byte(creds.PrivateKey)); err != nil {
 			var missing *ssh.PassphraseMissingError
 			if errors.As(err, &missing) {
@@ -241,7 +241,9 @@ func Locate(kind string, config Config, creds Credentials) (Repository, error) {
 		if port != 22 {
 			known = "[" + host + "]:" + strconv.Itoa(port)
 		}
-		repo.KnownHosts = known + " " + config.HostKey + "\n"
+		for _, key := range strings.Split(config.HostKey, "\n") {
+			repo.KnownHosts += known + " " + key + "\n"
+		}
 		repo.SSHKey = creds.PrivateKey
 	case KindREST:
 		repo.URL = "rest:" + config.URL
@@ -296,8 +298,9 @@ func NewPassword() (string, error) {
 func Secrets(password string, env map[string]string, sshKey string) []string {
 	secrets := []string{password}
 	for name, value := range env {
-		// a region is no secret, and restic's errors name it
-		if !strings.HasSuffix(name, "_REGION") {
+		// a region or a user is no secret, and restic's errors name them, as
+		// in a rest-server's URL
+		if !strings.HasSuffix(name, "_REGION") && !strings.HasSuffix(name, "_USERNAME") {
 			secrets = append(secrets, value)
 		}
 	}
@@ -320,6 +323,39 @@ func Redact(text string, secrets ...string) string {
 		}
 	}
 	return text
+}
+
+// pinnedKeys reads an SFTP server's host keys: lines such as
+// "ssh-ed25519 AAAA…", or as ssh-keyscan prints them, with the server's name
+// first and comments between. Every key given is pinned, one per line, as
+// "type base64".
+func pinnedKeys(text string) (string, error) {
+	var keys []string
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		found := false
+		// the key's type comes first, or after the server's name
+		for i := 0; i < 2 && i+1 < len(fields); i++ {
+			key := fields[i] + " " + fields[i+1]
+			if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key)); err == nil {
+				if !slices.Contains(keys, key) {
+					keys = append(keys, key)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", errors.New("the host key is not one: give the server's key, a line such as ssh-ed25519 AAAA… as ssh-keyscan prints it")
+		}
+	}
+	if len(keys) == 0 {
+		return "", errors.New("give the server's host key, a line such as ssh-ed25519 AAAA… (ssh-keyscan prints it), so that no other server can pose as it")
+	}
+	return strings.Join(keys, "\n"), nil
 }
 
 // endpointURL checks an S3 endpoint: http(s)://host[:port], nothing more.

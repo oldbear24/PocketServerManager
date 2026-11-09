@@ -172,8 +172,13 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 	return stdout.Bytes(), 0, "", nil
 }
 
+// sshSaid prefixes what restic passes on of the ssh it runs for SFTP.
+const sshSaid = "subprocess ssh: "
+
 // said is what restic's error output comes down to, on one line: from its
-// first "Fatal:" on, or its last lines, without the secrets.
+// first "Fatal:" on, or its last lines, without the secrets. ssh's last words
+// come first, as restic's own error after them only says the connection
+// closed: they say why, such as a host key that changed or a key refused.
 func (r restic) said(stderr []byte) string {
 	var lines []string
 	scanner := bufio.NewScanner(bytes.NewReader(stderr))
@@ -183,14 +188,26 @@ func (r restic) said(stderr []byte) string {
 			lines = append(lines, line)
 		}
 	}
+	var ssh []string
 	for i, line := range lines {
 		if strings.HasPrefix(line, "Fatal:") {
+			for _, before := range lines[:i] {
+				if text, ok := strings.CutPrefix(before, sshSaid); ok && !strings.Contains(text, "@@@") {
+					ssh = append(ssh, strings.TrimSpace(text))
+				}
+			}
 			lines = lines[i:]
 			break
 		}
 	}
 	if len(lines) > 4 {
 		lines = lines[len(lines)-4:]
+	}
+	if len(ssh) > 2 {
+		ssh = ssh[len(ssh)-2:]
+	}
+	if len(ssh) > 0 {
+		lines = append([]string{"ssh: " + strings.Join(ssh, " ")}, lines...)
 	}
 	text := backup.Redact(strings.Join(lines, " "), r.secrets...)
 	if len(text) > 1000 {

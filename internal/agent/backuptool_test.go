@@ -138,3 +138,26 @@ func TestBackupToolEnvTakesResticsVariablesOnly(t *testing.T) {
 		t.Errorf("env: %v", env)
 	}
 }
+
+// TestSSHSaysWhyAnSFTPServerWasRefused (#28): restic's own error only says
+// the connection closed; ssh's last words, which it passes on before it, say
+// why. The lines are restic 0.17.3's, from a real refusal.
+func TestSSHSaysWhyAnSFTPServerWasRefused(t *testing.T) {
+	r := restic{}
+	changed := `subprocess ssh: @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+subprocess ssh: @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+subprocess ssh: IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+subprocess ssh: Offending ED25519 key in /run/pocketcloud/known_hosts:1
+subprocess ssh: Host key for [192.0.2.2]:2222 has changed and you have requested strict checking.
+Fatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session, error: error receiving version packet from server: server unexpectedly closed connection: unexpected EOF
+`
+	want := "ssh: Offending ED25519 key in /run/pocketcloud/known_hosts:1 Host key for [192.0.2.2]:2222 has changed and you have requested strict checking. " +
+		"Fatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session, error: error receiving version packet from server: server unexpectedly closed connection: unexpected EOF"
+	if got := r.said([]byte(changed)); got != want {
+		t.Errorf("a changed host key:\n%s\nwant\n%s", got, want)
+	}
+	denied := "subprocess ssh: backup@192.0.2.2: Permission denied (publickey,password,keyboard-interactive).\nFatal: unable to open repository at sftp:backup@192.0.2.2:/restic: unable to start the sftp session\n"
+	if got := r.said([]byte(denied)); !strings.HasPrefix(got, "ssh: backup@192.0.2.2: Permission denied (publickey,password,keyboard-interactive). Fatal:") {
+		t.Errorf("a refused key: %s", got)
+	}
+}

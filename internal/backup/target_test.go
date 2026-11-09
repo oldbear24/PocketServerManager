@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"slices"
 	"strings"
 	"testing"
 
@@ -109,6 +110,22 @@ func TestAnSFTPTargetPinsTheServersKey(t *testing.T) {
 		t.Errorf("%+v %q", config, repo.KnownHosts)
 	}
 
+	// what ssh-keyscan prints: the server's name, a comment, every key of it
+	other, _ := keys(t)
+	bare := func(key string) string { return strings.Join(strings.Fields(key)[:2], " ") }
+	scanned := "# backup-node:2222 SSH-2.0-OpenSSH_9.6\n[backup-node]:2222 " + hostKey + "\n\n[backup-node]:2222 " + other + " comment\n"
+	config, creds, err = Check(KindSFTP, Config{Address: "backup-node:2222", User: "backup", Path: "/srv/restic", HostKey: scanned}, Credentials{PrivateKey: privateKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, _ = Locate(KindSFTP, config, creds)
+	if config.HostKey != bare(hostKey)+"\n"+bare(other) || repo.KnownHosts != "[backup-node]:2222 "+bare(hostKey)+"\n[backup-node]:2222 "+bare(other)+"\n" {
+		t.Errorf("scanned keys: %q %q", config.HostKey, repo.KnownHosts)
+	}
+	if _, _, err := Check(KindSFTP, Config{Address: "backup-node", User: "backup", Path: "/r", HostKey: hostKey + "\nssh-ed25519 notakey"}, Credentials{PrivateKey: privateKey}); err == nil {
+		t.Error("a line that is no key was taken")
+	}
+
 	encrypted, err := ssh.MarshalPrivateKeyWithPassphrase(mustKey(t), "", []byte("secret"))
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +212,13 @@ func TestSecretsAreKeptOutOfWhatResticSaid(t *testing.T) {
 	if got := Redact(said, "key-id-123", "secret-xyz", "", "ab"); strings.Contains(got, "key-id-123") || strings.Contains(got, "secret-xyz") || !strings.Contains(got, "(***, ***)") {
 		t.Errorf("%q", got)
 	}
+	// a user or a region is no secret: restic's URLs and errors name them
+	listed := Secrets("repo-password", map[string]string{"RESTIC_REST_USERNAME": "homelab", "RESTIC_REST_PASSWORD": "rest-password",
+		"AWS_DEFAULT_REGION": "eu-central-003", "AWS_SECRET_ACCESS_KEY": "s3-secret"}, "")
+	if len(listed) != 3 || slices.Contains(listed, "homelab") || slices.Contains(listed, "eu-central-003") || listed[0] != "repo-password" && listed[0] != "rest-password" {
+		t.Errorf("secrets: %q", listed)
+	}
+
 	a, err := NewPassword()
 	b, _ := NewPassword()
 	if err != nil || len(a) != 64 || a == b {
