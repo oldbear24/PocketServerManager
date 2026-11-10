@@ -753,6 +753,42 @@ export function restoreDraft(status: RestoreStatus): boolean {
   return status === "previewing" || status === "previewed" || status === "expired";
 }
 
+/** A preview that failed: a draft too, which nothing started. */
+export function failedDraft(restore: Pick<BackupRestore, "status" | "mode" | "command">): boolean {
+  return restore.status === "failed" && restore.mode !== "download" && restore.command === "";
+}
+
+/** Whether a record is a draft as the panel counts them: a restore nothing
+ * started, whose preview is under way, ready, too old or failed, or a
+ * download whose link was never used. */
+export function draftRecord(restore: Pick<BackupRestore, "status" | "mode" | "command">): boolean {
+  return (
+    restoreDraft(restore.status) ||
+    failedDraft(restore) ||
+    (restore.status === "queued" && restore.mode === "download" && restore.command === "")
+  );
+}
+
+/** The filter of a job's records that are no drafts, as `draftRecord` tells
+ * them: the panel leaves drafts out, so that they never take a page's rows. */
+export function startedRestoresFilter(job: string): string {
+  return pb.filter(
+    "job = {:job} && status != 'previewing' && status != 'previewed' && status != 'expired'" +
+      " && (status != 'failed' || mode = 'download' || command != '')" +
+      " && (status != 'queued' || mode != 'download' || command != '')",
+    { job },
+  );
+}
+
+/** The filter of a job's restores under way, queued or running; a download
+ * writes nothing of the job's. */
+export function openRestoreFilter(job: string): string {
+  return pb.filter(
+    "job = {:job} && mode != 'download' && (status = 'queued' || status = 'running')",
+    { job },
+  );
+}
+
 /** A target a job's snapshots are listed from: one it backs up to, or one
  * it backed up to before, which is no longer used. */
 export type SnapshotTarget = { target: BackupTarget; old: boolean };

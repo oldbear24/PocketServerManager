@@ -25,6 +25,7 @@ import type { BackupJob, BackupRun } from "../lib/backupJobs";
 import {
   browseStart,
   existingEntries,
+  failedDraft,
   formatSnapshotTime,
   joinPath,
   modesFor,
@@ -754,11 +755,6 @@ function newer<R extends { updated: string }>(a: R | null, b: R | null): R | nul
     return a ?? b;
   }
   return b.updated >= a.updated ? b : a;
-}
-
-/** A preview that failed: a draft too, which nothing started. */
-function failedDraft(record: BackupRestore): boolean {
-  return record.status === "failed" && record.mode !== "download" && record.command === "";
 }
 
 /** Where a restore writes, as people read it: the volumes or folders of the

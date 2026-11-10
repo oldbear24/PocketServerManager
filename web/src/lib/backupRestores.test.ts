@@ -4,23 +4,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import cs from "../i18n/cs.json";
 import en from "../i18n/en.json";
 import i18n from "../i18n";
+import { matchesFilter } from "../test-filter";
 import {
   browseStart,
+  draftRecord,
   existingEntries,
   formatSnapshotTime,
   modesFor,
   needsConfirm,
   openDownloadFrame,
+  openRestoreFilter,
   pathCrumbs,
   pathLabel,
   previewParts,
   previewSentence,
   restoreDraft,
   restoreKeys,
+  restoreModes,
   restorePathProblem,
   restoresApi,
+  restoreStatuses,
   snapshotRoots,
   snapshotSources,
+  startedRestoresFilter,
   validRestorePath,
   type RestorePreview,
 } from "./backupRestores";
@@ -315,6 +321,30 @@ describe("the targets of a job's snapshots", () => {
         restoreDraft(s as never),
       ),
     ).toBe(false);
+  });
+
+  it("are drafts as the panel counts them, and the list's filter leaves out the same", () => {
+    const records = restoreStatuses.flatMap((status) =>
+      restoreModes.flatMap((mode) =>
+        ["", "c1"].map((command) => ({ job: "j1", status, mode, command })),
+      ),
+    );
+    const drafts = records.filter((record) => draftRecord(record));
+    // a preview under way, ready, too old or failed, or a download whose link was never used
+    expect(drafts.filter((record) => !restoreDraft(record.status))).toEqual([
+      { job: "j1", status: "queued", mode: "download", command: "" },
+      { job: "j1", status: "failed", mode: "original", command: "" },
+      { job: "j1", status: "failed", mode: "path", command: "" },
+    ]);
+    const listed = records.filter((record) => matchesFilter(record, startedRestoresFilter("j1")));
+    expect(listed).toEqual(records.filter((record) => !draftRecord(record)));
+    expect(records.some((record) => matchesFilter(record, startedRestoresFilter("j2")))).toBe(
+      false,
+    );
+    // the restore under way is one that writes
+    expect(
+      records.filter((record) => matchesFilter(record, openRestoreFilter("j1"))).map((r) => r.mode),
+    ).toEqual(["original", "original", "path", "path", "original", "original", "path", "path"]);
   });
 });
 

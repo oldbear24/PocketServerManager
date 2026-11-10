@@ -20,9 +20,11 @@ import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import { runFields, runsSince, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import {
-  restoreDraft,
+  draftRecord,
+  openRestoreFilter,
   restoreOpen,
   snapshotSources,
+  startedRestoresFilter,
   type BackupRestore,
 } from "../lib/backupRestores";
 import {
@@ -96,15 +98,27 @@ export function BackupsPage() {
   const sources = job ? snapshotSources(job, targets.items, runs.items) : [];
   const source =
     sources.find((item) => item.target.id === params.get("target")) ?? sources[0] ?? null;
-  // operators read the restores; the newest of the job, and whether one is under way
+  // operators read the job's restores: the newest that were started, as a
+  // draft is someone's own, in their drawer, and the one under way, which
+  // newer records never push out
   const restores = useLiveList<BackupRestore>("backup_restores", {
-    filter: job ? pb.filter("job = {:job}", { job: job.id }) : undefined,
+    filter: job ? startedRestoresFilter(job.id) : undefined,
     sort: "-created",
     perPage: 5,
     enabled: canRun && job !== null,
   });
-  const shown = canRun && job ? restores.items.filter((item) => item.job === job.id) : [];
-  const started = shown.filter((item) => !restoreDraft(item.status));
+  const underWay = useLiveList<BackupRestore>("backup_restores", {
+    filter: job ? openRestoreFilter(job.id) : undefined,
+    sort: "-created",
+    perPage: 1,
+    enabled: canRun && job !== null,
+  });
+  const ours = (items: BackupRestore[]) =>
+    canRun && job ? items.filter((item) => item.job === job.id && !draftRecord(item)) : [];
+  const open =
+    ours(underWay.items).find((item) => restoreOpen(item) && item.mode !== "download") ?? null;
+  const newest = ours(restores.items);
+  const started = open && !newest.some((item) => item.id === open.id) ? [...newest, open] : newest;
   const restoring = params.get("restore") ?? "";
 
   const pick = (values: Record<string, string>) =>
@@ -179,7 +193,7 @@ export function BackupsPage() {
               runs={runs.items}
               now={now}
               canRestore={canRun}
-              open={started.find(restoreOpen) ?? null}
+              open={open}
               onTarget={(id) => pick({ target: id })}
               onRestore={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "" })}
               onFiles={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "1" })}

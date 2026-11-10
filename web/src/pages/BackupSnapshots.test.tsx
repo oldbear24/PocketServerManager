@@ -22,17 +22,31 @@ import {
 } from "./BackupRestore.fixtures";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 
+type ListOptions = { enabled?: boolean; filter?: string; sort?: string; perPage?: number };
+
 const live = vi.hoisted(() => ({
   lists: {} as Record<string, unknown[]>,
-  options: {} as Record<string, unknown>,
+  // each list a collection was asked for, with its options
+  options: {} as Record<string, ListOptions[]>,
 }));
-vi.mock("../lib/realtime", () => {
-  const list = (collection: string, options: { enabled?: boolean } = {}) => {
-    live.options[collection] = options;
-    const items = options.enabled === false ? [] : (live.lists[collection] ?? []);
+vi.mock("../lib/realtime", async () => {
+  const { listPage } = await import("../test-filter");
+  const list = (collection: string, options: ListOptions = {}) => {
+    (live.options[collection] ??= []).push(options);
+    let items = options.enabled === false ? [] : (live.lists[collection] ?? []);
+    if (collection === "backup_restores") {
+      // the restores are listed as the panel lists them: a page of what the filter matches
+      items = listPage(items as Record<string, unknown>[], options);
+    }
     return { items, loading: false, error: null, total: items.length, reload: () => {} };
   };
-  return { useLiveList: list, useLiveRecords: list, useNow: () => now };
+  return {
+    useLiveList: list,
+    useLiveRecords: list,
+    // the drawer a restore's Show opens
+    useLiveRecord: () => ({ record: null, loading: false, error: null }),
+    useNow: () => now,
+  };
 });
 
 const zone = process.env.TZ;
@@ -292,19 +306,16 @@ describe("the snapshots card", () => {
     };
     const view = showPage("viewer", "/backups?job=j1", lists);
     await card().findByText("newest");
-    expect(live.options.backup_restores).toMatchObject({ enabled: false });
+    expect(live.options.backup_restores.every((options) => options.enabled === false)).toBe(true);
     expect(screen.queryByText("Recent restores")).not.toBeInTheDocument();
     expect(screen.queryByText(/is under way/)).not.toBeInTheDocument();
     view.unmount();
 
     showPage("operator", "/backups?job=j1", lists);
     await card().findByText("newest");
-    expect(live.options.backup_restores).toMatchObject({
-      enabled: true,
-      sort: "-created",
-      perPage: 5,
-      filter: 'job = "j1"',
-    });
+    expect(live.options.backup_restores).toContainEqual(
+      expect.objectContaining({ enabled: true, sort: "-created", perPage: 5 }),
+    );
     expect(card().getByText("A restore of vaultwarden is under way.")).toBeInTheDocument();
     fireEvent.click(card().getByRole("button", { name: "Show" }));
     expect(location()).toBe("/backups?job=j1&restore=r2");
@@ -317,6 +328,91 @@ describe("the snapshots card", () => {
     expect(
       within(items[1]).getByText(/^Sun 03:00 · nas · operator@example.com$/),
     ).toBeInTheDocument();
+  });
+
+  it("leaves the drafts out of the recent restores, and never loses the restore under way", async () => {
+    vi.spyOn(restoresApi, "snapshots").mockResolvedValue(snapshots(1));
+    const at = (minute: number) => `2026-11-09 11:${String(minute).padStart(2, "0")}:00.000Z`;
+    const running = restore({
+      id: "r2",
+      status: "running",
+      command: "c1",
+      created: at(10),
+      label: "the restore under way",
+    });
+    const recentLabels = () =>
+      within(screen.getByRole("list", { name: "Recent restores" }))
+        .getAllByRole("listitem")
+        .map((item) => item.querySelector(".restore-label")?.textContent);
+
+    // drafts, newer than the restore: five previews, one that failed, and a
+    // download whose link was never used
+    const view = showPage("operator", "/backups?job=j1", {
+      backup_restores: [
+        running,
+        ...[1, 2, 3, 4, 5].map((n) =>
+          restore({ id: `d${n}`, status: "previewed", created: at(20 + n), label: `draft ${n}` }),
+        ),
+        restore({
+          id: "d6",
+          status: "failed",
+          error: "vaultwarden-app-1 of PocketCloud writes vw_data.",
+          created: at(30),
+          label: "a preview that failed",
+        }),
+        restore({
+          id: "d7",
+          mode: "download",
+          status: "queued",
+          created: at(31),
+          label: "a download nobody started",
+        }),
+      ],
+    });
+    await card().findByText("newest");
+    expect(card().getByText("A restore of vaultwarden is under way.")).toBeInTheDocument();
+    fireEvent.click(card().getByRole("button", { name: "Show" }));
+    expect(location()).toBe("/backups?job=j1&restore=r2");
+    expect(recentLabels()).toEqual(["the restore under way"]);
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    view.unmount();
+
+    // five downloads since: the restore under way still shows, and a
+    // download is no restore of the job's data
+    showPage("operator", "/backups?job=j1", {
+      backup_restores: [
+        running,
+        ...[1, 2, 3, 4].map((n) =>
+          restore({
+            id: `g${n}`,
+            mode: "download",
+            status: "succeeded",
+            command: `c${n + 1}`,
+            created: at(20 + n),
+            label: `download ${n}`,
+          }),
+        ),
+        restore({
+          id: "g5",
+          mode: "download",
+          status: "running",
+          command: "c6",
+          created: at(25),
+          label: "download 5",
+        }),
+      ],
+    });
+    await card().findByText("newest");
+    fireEvent.click(card().getByRole("button", { name: "Show" }));
+    expect(location()).toBe("/backups?job=j1&restore=r2");
+    expect(recentLabels()).toEqual([
+      "download 5",
+      "download 4",
+      "download 3",
+      "download 2",
+      "download 1",
+      "the restore under way",
+    ]);
   });
 });
 
