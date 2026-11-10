@@ -754,6 +754,12 @@ func (m *Manager) replay(stream *Stream) {
 			continue
 		}
 
+		// someone asked to stop it while its server was away: the agent is
+		// told now, and has its grace from now
+		stopping := !record.GetDateTime("cancel_requested_at").IsZero()
+		if stopping {
+			startGrace(record)
+		}
 		record.Set("attempts", record.GetInt("attempts")+1)
 		if err := m.app.Save(record); err != nil {
 			m.Log.Error("failed to count a replay", "command", record.Id, "error", err)
@@ -763,6 +769,11 @@ func (m *Manager) replay(stream *Stream) {
 		command.Deadline = timestamppb.New(record.GetDateTime("expires_at").Time())
 
 		stream.send(&agentv1.SubscribeCommandsResponse{Event: &agentv1.SubscribeCommandsResponse_Command{Command: command}})
+		if stopping {
+			stream.send(&agentv1.SubscribeCommandsResponse{Event: &agentv1.SubscribeCommandsResponse_Cancel{
+				Cancel: &agentv1.CommandCancel{CommandId: record.Id, Reason: record.GetString("cancel_reason")},
+			}})
+		}
 
 		if m.OnReplay != nil {
 			m.OnReplay()
@@ -1067,7 +1078,9 @@ func (m *Manager) Cancel(id, reason string) error {
 
 // requestCancel marks a command its agent settles as asked to stop, once,
 // and tells the agent: it has cancelGrace left to report how it ended. Its
-// ordering key stays held until then.
+// ordering key stays held until then. While its server is not connected,
+// the agent cannot be told: the command keeps its deadline, and its grace
+// starts once the agent is told, as it reconnects (see replay).
 func (m *Manager) requestCancel(record *core.Record, reason string) error {
 	err := m.app.RunInTransaction(func(tx core.App) error {
 		fresh, err := tx.FindRecordById(schema.Commands, record.Id)
@@ -1077,14 +1090,18 @@ func (m *Manager) requestCancel(record *core.Record, reason string) error {
 		if isFinal(fresh.GetString("status")) {
 			return ErrNotCancellable
 		}
+		changed := false
 		if fresh.GetDateTime("cancel_requested_at").IsZero() {
 			now := time.Now().UTC()
 			fresh.Set("cancel_requested_at", now)
 			fresh.Set("cancel_reason", cutReason(reason))
 			fresh.Set("progress", map[string]any{"step": "cancelling", "message": cutReason(reason), "percent": -1})
-			if expires := fresh.GetDateTime("expires_at"); expires.IsZero() || expires.Time().After(now.Add(cancelGrace)) {
-				fresh.Set("expires_at", now.Add(cancelGrace))
-			}
+			changed = true
+		}
+		if m.Connected(fresh.GetString("host")) && startGrace(fresh) {
+			changed = true
+		}
+		if changed {
 			if err := tx.Save(fresh); err != nil {
 				return err
 			}
@@ -1097,6 +1114,17 @@ func (m *Manager) requestCancel(record *core.Record, reason string) error {
 	}
 	m.tellAgentToStop(record, record.GetString("cancel_reason"))
 	return ErrCancelRequested
+}
+
+// startGrace moves the deadline of a command whose agent is told to stop to
+// at most cancelGrace away, and tells whether it moved it.
+func startGrace(record *core.Record) bool {
+	limit := time.Now().UTC().Add(cancelGrace)
+	if expires := record.GetDateTime("expires_at"); !expires.IsZero() && !expires.Time().After(limit) {
+		return false
+	}
+	record.Set("expires_at", limit)
+	return true
 }
 
 // cutReason keeps as much of a cancel's reason as its field holds.

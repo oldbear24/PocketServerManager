@@ -301,6 +301,79 @@ func TestCancelRequestedTimesOutAfterGrace(t *testing.T) {
 	}
 }
 
+// TestACancelWhileTheAgentIsAwayWaitsForIt (#30, SAFE): a restore stopped
+// while its agent is away keeps its deadline, so it does not time out five
+// minutes later and let the stack go while the agent may still restore; it
+// keeps saying that it stops. When the agent is back, it is told, its grace
+// starts, and its report settles the restore: a running one's final report,
+// or the finished commands of its start-up repair. Only then does a deploy
+// of the stack go out.
+func TestACancelWhileTheAgentIsAwayWaitsForIt(t *testing.T) {
+	q := newQueue(t)
+	restore := q.running(restoreCommand("notes"))
+	repaired := q.running(restoreCommand("other"))
+	deadline := q.stored(restore.Id).GetDateTime("expires_at")
+	q.manager.Disconnect(q.stream)
+
+	for _, record := range []*core.Record{restore, repaired} {
+		if err := q.manager.Cancel(record.Id, "Cancelled by operator@example.com"); !errors.Is(err, commands.ErrCancelRequested) {
+			t.Fatalf("cancel: %v", err)
+		}
+	}
+	stored := q.stored(restore.Id)
+	progress := map[string]any{}
+	_ = stored.UnmarshalJSONField("progress", &progress)
+	if stored.GetString("status") != schema.CommandRunning || stored.GetDateTime("cancel_requested_at").IsZero() || progress["step"] != "cancelling" {
+		t.Errorf("after the cancel: %v", stored.FieldsData())
+	}
+	if !stored.GetDateTime("expires_at").Equal(deadline) {
+		t.Errorf("its deadline moved from %s to %s while its agent was away", deadline, stored.GetDateTime("expires_at"))
+	}
+	// asking again while it is away moves nothing either
+	if err := q.manager.Cancel(restore.Id, "Cancelled by someone else"); !errors.Is(err, commands.ErrCancelRequested) {
+		t.Fatal(err)
+	}
+	q.manager.Reap()
+	if stored := q.stored(restore.Id); stored.GetString("status") != schema.CommandRunning || !stored.GetDateTime("expires_at").Equal(deadline) {
+		t.Errorf("reaped while its agent was away: %v", stored.FieldsData())
+	}
+	deploy := q.create(&agentv1.Command{Payload: &agentv1.Command_StackDeploy{StackDeploy: &agentv1.StackDeploy{Name: "notes"}}})
+
+	// the agent is back: its start-up repair settled one, the other runs
+	before := time.Now().UTC()
+	q.stream = q.manager.Connect(q.host.Id, []string{"backup.restore", "stack.deploy"}, []*agentv1.FinishedCommand{{
+		CommandId: repaired.Id, State: agentv1.CommandState_COMMAND_STATE_FAILED, Error: "The agent restarted during the restore.",
+	}})
+	if stored := q.stored(repaired.Id); stored.GetString("status") != schema.CommandCancelled || stored.GetString("error") != "Cancelled by operator@example.com" {
+		t.Errorf("settled by the start-up repair: %v", stored.FieldsData())
+	}
+	if got := q.next().GetCommand(); got.GetId() != restore.Id {
+		t.Errorf("replayed %v", got)
+	}
+	if cancel := q.next().GetCancel(); cancel.GetCommandId() != restore.Id || cancel.GetReason() != "Cancelled by operator@example.com" {
+		t.Errorf("the agent was told %v", cancel)
+	}
+	if expires := q.stored(restore.Id).GetDateTime("expires_at").Time(); expires.After(time.Now().Add(5*time.Minute)) || expires.Before(before.Add(4*time.Minute)) {
+		t.Errorf("once told, the agent has until %s to report", expires)
+	}
+	if !q.quiet() {
+		t.Error("a deploy of the stack went out while its restore was stopping")
+	}
+
+	result := map[string]any{"app_started": []any{"notes-db-1"}, "partial": true}
+	q.update(restore.Id, 2, agentv1.CommandState_COMMAND_STATE_CANCELLED, nil, result,
+		"The restore was stopped before it was complete: the destination holds part of the snapshot. The application was started again.")
+	stored = q.stored(restore.Id)
+	kept := map[string]any{}
+	_ = stored.UnmarshalJSONField("result", &kept)
+	if stored.GetString("status") != schema.CommandCancelled || stored.GetString("error") != "Cancelled by operator@example.com" || kept["partial"] != true {
+		t.Errorf("settled by its agent's report: %v", stored.FieldsData())
+	}
+	if got := q.next().GetCommand().GetId(); got != deploy.Id {
+		t.Errorf("after the restore, %s went out, not the deploy", got)
+	}
+}
+
 // TestQueuedAgentSettledCommandCancelsAtOnce (#30): a restore that has not
 // left the queue has nothing to settle: it is cancelled at once and never
 // sent.
