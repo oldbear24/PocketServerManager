@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,8 @@ type Container struct {
 	stdinR    *io.PipeReader
 	stdinW    *io.PipeWriter
 	stdinOnce bool
+	// out takes what a job prints to the clients attached to its output
+	out *output
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -121,8 +124,10 @@ type Job struct {
 	// done its work.
 	Stop <-chan struct{}
 	// Stdout and Stderr reach the container's log line by line as OnJob
-	// writes them, as a running process's output does; JobResult's output
-	// follows what they took.
+	// writes them, as a running process's output does, and the clients
+	// attached to its output as they are, each write once they took it, as
+	// a process blocks on a full pipe; JobResult's output follows what they
+	// took. A job whose log driver is none keeps no log.
 	Stdout, Stderr io.Writer
 }
 
@@ -213,6 +218,7 @@ func (e *Engine) AddContainer(name, image string, labels map[string]string) stri
 			"Env":      []string{"PATH=/usr/bin"},
 		},
 		Host: map[string]any{"NetworkMode": "bridge", "RestartPolicy": map[string]any{"Name": "unless-stopped"}},
+		out:  newOutput(),
 	}
 
 	e.broadcast("container", "start", id, map[string]string{"name": name})
@@ -259,6 +265,7 @@ func (e *Engine) RemoveContainer(id string) {
 	if container := e.containers[id]; container != nil {
 		e.stopping(container)
 		closeStdin(container)
+		container.out.end()
 	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
@@ -493,9 +500,48 @@ func (e *Engine) listContainers(w http.ResponseWriter) {
 			"Status": "Up 1 minute",
 			"Labels": container.Labels,
 			"Ports":  []map[string]any{{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}},
+			"Mounts": listedMounts(container.Host, e.VolumeRoot),
 		})
 	}
 	writeJSON(w, list)
+}
+
+// listedMounts are a container's mounts as the container list reports them:
+// those of its HostConfig's Mounts and Binds, a volume with its name and its
+// directory on the host.
+func listedMounts(host map[string]any, volumeRoot string) []map[string]any {
+	listed := []map[string]any{}
+	add := func(kind, source, destination string, readOnly bool) {
+		mount := map[string]any{"Type": kind, "Source": source, "Destination": destination, "RW": !readOnly}
+		if kind == "volume" {
+			mount["Name"] = source
+			mount["Source"] = volumeDir(volumeRoot, source)
+		}
+		listed = append(listed, mount)
+	}
+	mounts, _ := host["Mounts"].([]any)
+	for _, raw := range mounts {
+		mount, _ := raw.(map[string]any)
+		kind, _ := mount["Type"].(string)
+		source, _ := mount["Source"].(string)
+		target, _ := mount["Target"].(string)
+		readOnly, _ := mount["ReadOnly"].(bool)
+		add(kind, source, target, readOnly)
+	}
+	binds, _ := host["Binds"].([]any)
+	for _, raw := range binds {
+		bind, _ := raw.(string)
+		parts := strings.Split(bind, ":")
+		if len(parts) < 2 {
+			continue
+		}
+		kind := "volume"
+		if strings.HasPrefix(parts[0], "/") {
+			kind = "bind"
+		}
+		add(kind, parts[0], parts[1], len(parts) > 2 && slices.Contains(strings.Split(parts[2], ","), "ro"))
+	}
+	return listed
 }
 
 func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
@@ -545,7 +591,7 @@ func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	container := &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+	container := &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host, out: newOutput()}
 	if open, _ := body["OpenStdin"].(bool); open {
 		container.stdinR, container.stdinW = io.Pipe()
 		container.stdinOnce, _ = body["StdinOnce"].(bool)
@@ -585,6 +631,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		}
 		e.stopping(container)
 		closeStdin(container)
+		container.out.end()
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
@@ -595,6 +642,12 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 
 	case action == "archive" && r.Method == http.MethodPut:
 		e.receiveArchive(w, r, container)
+
+	case action == "attach" && r.Method == http.MethodPost && (r.URL.Query().Get("stdout") == "1" || r.URL.Query().Get("stderr") == "1"):
+		out := container.out
+		e.mu.Unlock()
+		attachOutput(w, r, out)
+		e.mu.Lock()
 
 	case action == "attach" && r.Method == http.MethodPost:
 		stdin, once := container.stdinW, container.stdinOnce
@@ -703,6 +756,9 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 
 	case action == "exec":
 		e.createExec(w, r, container)
+
+	case action == "logs" && logDriver(container.Host) == "none":
+		writeError(w, http.StatusNotImplemented, "configured logging driver does not support reading")
 
 	case action == "logs":
 		e.mu.Unlock()
@@ -937,7 +993,11 @@ func jobOf(c *Container) Job {
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR
 	}
-	job.Stdout, job.Stderr = &liveLog{logs: c.logs, stream: 1}, &liveLog{logs: c.logs, stream: 2}
+	stdout, stderr := &jobOutput{out: c.out, stream: 1}, &jobOutput{out: c.out, stream: 2}
+	if logDriver(c.Host) != "none" {
+		stdout.log, stderr.log = &liveLog{logs: c.logs, stream: 1}, &liveLog{logs: c.logs, stream: 2}
+	}
+	job.Stdout, job.Stderr = stdout, stderr
 	if cmd, ok := c.Config["Cmd"].([]any); ok {
 		for _, arg := range cmd {
 			text, _ := arg.(string)
@@ -989,24 +1049,31 @@ func (l *liveLog) flush() {
 func (e *Engine) runJob(c *Container, job Job) {
 	result := e.OnJob(job)
 	for _, out := range []io.Writer{job.Stdout, job.Stderr} {
-		if live, ok := out.(*liveLog); ok {
-			live.flush()
+		if written, ok := out.(*jobOutput); ok && written.log != nil {
+			written.log.flush()
 		}
 	}
 	if c.stdinR != nil {
 		// what is still written to it has nowhere to go
 		c.stdinR.CloseWithError(errors.New("the container has exited"))
 	}
+	logged := logDriver(job.Host) != "none"
 	for _, out := range []struct {
 		stream byte
 		text   string
 	}{{1, result.Stdout}, {2, result.Stderr}} {
+		c.out.write(out.stream, []byte(out.text))
+		if !logged {
+			continue
+		}
 		for _, line := range strings.Split(strings.TrimSuffix(out.text, "\n"), "\n") {
 			if line != "" {
 				c.logs.add(out.stream, line)
 			}
 		}
 	}
+	// the attached clients see the end of the output with the process's
+	c.out.end()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c.exitCode = result.Code
