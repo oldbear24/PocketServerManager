@@ -67,16 +67,18 @@ func TestOverwritingNeedsExplicitConfirmation(t *testing.T) {
 		t.Errorf("the restore: %v", command)
 	}
 
-	// a folder that is empty needs no confirmation, and the command says so
+	// a folder that is empty needs no confirmation, and the command says so:
+	// it replaces nothing, as nothing is there to delete, and the agent
+	// replaces only what it was told it overwrites
 	empty := previewResult(0)
 	empty["roots"] = []any{map[string]any{"index": 0, "source": "/volumes/app_data", "destination": "/srv/restored", "in_snapshot": true, "exists": false, "entries": 0}}
-	folder := f.previewed(job, empty, map[string]any{"mode": schema.RestorePath, "host": other.Id, "roots": nil, "path": "/srv/restored", "source": "/volumes/app_data"})
+	folder := f.previewed(job, empty, map[string]any{"mode": schema.RestorePath, "host": other.Id, "roots": nil, "path": "/srv/restored", "source": "/volumes/app_data", "replace": true})
 	status, body = f.start(folder, f.admin, false)
-	if status != http.StatusOK || body["overwrite"] != false {
+	if status != http.StatusOK || body["overwrite"] != false || body["replace"] != false {
 		t.Fatalf("an empty folder: %d %v", status, body)
 	}
-	if command := f.received(elsewhere); command.GetBackupRestore().GetOverwrite() || command.GetBackupRestore().GetTargetPath() != "/srv/restored" ||
-		command.GetBackupRestore().GetSource() != "/volumes/app_data" {
+	if command := f.received(elsewhere); command.GetBackupRestore().GetOverwrite() || command.GetBackupRestore().GetReplace() ||
+		command.GetBackupRestore().GetTargetPath() != "/srv/restored" || command.GetBackupRestore().GetSource() != "/volumes/app_data" {
 		t.Errorf("into an empty folder: %v", command)
 	}
 

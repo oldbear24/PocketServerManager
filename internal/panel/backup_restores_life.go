@@ -169,6 +169,12 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 		}
 		fresh.Load(map[string]any{"status": schema.RestoreQueued, "overwrite": needs, "confirmed_by": requestedBy,
 			"confirmed_label": requester, "command": id, "error": ""})
+		if !needs {
+			// an empty destination holds nothing to delete, and the agent
+			// replaces only what someone confirmed it overwrites: it
+			// refuses a destination filled since the preview
+			fresh.Set("replace", false)
+		}
 		if mode == schema.RestoreOriginal {
 			fresh.Set("roots", roots)
 		}
