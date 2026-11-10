@@ -236,6 +236,13 @@ func withoutRestic(env map[string]string) map[string]string {
 // while restic waits for the repository, nor for a restic that failed.
 const relayReady = "--- pocketcloud: restic reads the dump ---"
 
+// restoreReady is the line the backup tool writes to its error output once a
+// restore has checked the repository, the snapshot and the destination, and
+// waits for the agent's go (#30): the agent stops the destination's users
+// only then, so that a wrong password, a missing snapshot or a destination
+// that is not empty never stops an application.
+const restoreReady = "--- pocketcloud: ready to restore ---"
+
 // restic runs restic for one repository.
 type restic struct {
 	env     map[string]string
