@@ -404,6 +404,49 @@ func TestProgressKeepsDoneAndTotal(t *testing.T) {
 	}
 }
 
+// TestACommandMadeInATransactionGoesOutWhenItCommits (#30): a command made
+// with what it is checked against, such as a restore's record that names it,
+// is not delivered before both are saved, and not at all if the transaction
+// fails.
+func TestACommandMadeInATransactionGoesOutWhenItCommits(t *testing.T) {
+	q := newQueue(t)
+	var made *core.Record
+	err := q.app.RunInTransaction(func(tx core.App) error {
+		var err error
+		made, err = q.manager.CreateIn(context.Background(), tx, commands.Options{Host: q.host.Id, Command: pullCommand()})
+		if err != nil {
+			return err
+		}
+		q.manager.Kick(q.host.Id)
+		if !q.quiet() {
+			t.Error("delivered before the transaction committed")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := q.next().GetCommand().GetId(); got != made.Id {
+		t.Errorf("delivered %q, not %s", got, made.Id)
+	}
+
+	var rolledBack string
+	err = q.app.RunInTransaction(func(tx core.App) error {
+		record, err := q.manager.CreateIn(context.Background(), tx, commands.Options{Host: q.host.Id, Command: pullCommand()})
+		if err != nil {
+			return err
+		}
+		rolledBack = record.Id
+		return errors.New("something else failed")
+	})
+	if err == nil || !q.quiet() {
+		t.Errorf("a transaction that failed: %v", err)
+	}
+	if _, err := q.app.FindRecordById(schema.Commands, rolledBack); err == nil {
+		t.Error("the command of a transaction that failed is in the queue")
+	}
+}
+
 // TestTheCancelRouteSaysARestoreIsStopping (#30): stopping a restore through
 // the cancel route answers 202 with stopping, as its agent still has to say
 // how it ended; any other command is cancelled with 204, as before.

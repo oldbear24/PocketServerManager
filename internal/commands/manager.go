@@ -332,6 +332,15 @@ func queueTTL(app core.App) time.Duration {
 
 // Create adds a command to the queue. It is how the panel's components create commands.
 func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error) {
+	return m.CreateIn(ctx, m.app, opts)
+}
+
+// CreateIn adds a command to the queue within a transaction, the app that
+// RunInTransaction gives: the command is delivered once the transaction
+// commits, with what else it saved, such as the record that the command's
+// enricher checks it against (#30). A command is delivered as soon as it is
+// in the queue, so that record cannot be saved after it.
+func (m *Manager) CreateIn(ctx context.Context, app core.App, opts Options) (*core.Record, error) {
 	if opts.Command == nil {
 		return nil, errors.New("the command has no payload")
 	}
@@ -368,7 +377,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error
 		record.Set("expires_at", time.Now().UTC().Add(opts.QueueTimeout))
 	}
 
-	if err := m.app.SaveWithContext(ctx, record); err != nil {
+	if err := app.SaveWithContext(ctx, record); err != nil {
 		return nil, err
 	}
 
