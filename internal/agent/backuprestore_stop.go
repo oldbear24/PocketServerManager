@@ -95,8 +95,14 @@ type restoreUser struct {
 // named or where its symbolic links lead. A container that reads a folder
 // above a destination, such as a node exporter that mounts / read-only,
 // runs on. A PocketCloud container that writes a destination refuses the
-// restore.
-func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []restoreDest) ([]restoreUser, error) {
+// restore, and so does one another restore holds, stopped or started again
+// (#30): each container has one restore that stops it and starts it again.
+// With claim, the restore commandID holds those it returns, which it then
+// stops, at the moment it lists them: no other restore claims or lets go of
+// a container in between.
+func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []restoreDest, claim bool) ([]restoreUser, error) {
+	a.restoring.mu.Lock()
+	defer a.restoring.mu.Unlock()
 	containers, err := a.Docker.Containers(ctx)
 	if err != nil {
 		return nil, err
@@ -131,6 +137,9 @@ func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []r
 			}
 			continue
 		}
+		if owner := a.restoring.held[container.ID].owner; owner != "" && owner != commandID {
+			return nil, sentenceError(name + " is stopped by another restore under way: restore once it ends.")
+		}
 		if container.State != "running" && container.State != "restarting" {
 			continue
 		}
@@ -141,6 +150,9 @@ func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []r
 			}
 		}
 		users = append(users, user)
+	}
+	if claim {
+		a.restoring.claimLocked(commandID, users)
 	}
 	return stopOrder(users), nil
 }
@@ -204,29 +216,40 @@ func stopOrder(users []restoreUser) []restoreUser {
 	return order
 }
 
-// restoringSet are the containers restores hold stopped: none of them is
-// started from the panel until its restore started it again.
+// restoringSet are the containers restores hold stopped, by id, each with
+// the one restore that holds it: none of them is started from the panel, or
+// stopped by another restore, until its restore started it again.
 type restoringSet struct {
-	mu    sync.Mutex
-	names map[string]string
+	mu   sync.Mutex
+	held map[string]heldContainer
 }
 
-func (s *restoringSet) hold(users []restoreUser) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.names == nil {
-		s.names = map[string]string{}
+// heldContainer is a container a restore holds: its name, and the command
+// of the restore.
+type heldContainer struct {
+	name, owner string
+}
+
+// claimLocked holds users for the restore owner; s.mu is held, by affected,
+// which refused a container another restore holds.
+func (s *restoringSet) claimLocked(owner string, users []restoreUser) {
+	if s.held == nil {
+		s.held = map[string]heldContainer{}
 	}
 	for _, user := range users {
-		s.names[user.id] = user.name
+		s.held[user.id] = heldContainer{name: user.name, owner: owner}
 	}
 }
 
-func (s *restoringSet) release(users []restoreUser) {
+// release lets go of those of users the restore owner holds, and of no
+// other restore's.
+func (s *restoringSet) release(owner string, users []restoreUser) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, user := range users {
-		delete(s.names, user.id)
+		if s.held[user.id].owner == owner {
+			delete(s.held, user.id)
+		}
 	}
 }
 
@@ -236,8 +259,8 @@ func (s *restoringSet) holds(ref string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ref = strings.TrimPrefix(ref, "/")
-	for id, name := range s.names {
-		if ref == id || ref == name || len(ref) >= 12 && strings.HasPrefix(id, ref) {
+	for id, held := range s.held {
+		if ref == id || ref == held.name || len(ref) >= 12 && strings.HasPrefix(id, ref) {
 			return true
 		}
 	}
@@ -323,7 +346,7 @@ type restoreStart struct {
 // run a while later. It runs whatever ended the restore, and removes the
 // marker once the Engine answered for every container.
 func (s *restoreSession) startAgain(verify bool) restoreStart {
-	defer s.a.restoring.release(s.users)
+	defer s.a.restoring.release(s.marker.CommandID, s.users)
 	result := restoreStart{started: []string{}, notRunning: []string{}, errors: []string{}}
 	if len(s.stopped) == 0 {
 		s.removeMarker()

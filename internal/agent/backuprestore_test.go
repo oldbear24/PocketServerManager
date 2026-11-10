@@ -929,7 +929,7 @@ func TestAnAgentRestartStartsTheAppAndSettlesTheCommand(t *testing.T) {
 	}
 	// the restore stopped them, and the agent went
 	session := &restoreSession{a: h.Agent, marker: restoreMarker{CommandID: "c1", RestoreID: "r1"}}
-	users, err := h.affected(context.Background(), "c1", "", []restoreDest{{volume: "app_data"}})
+	users, err := h.affected(context.Background(), "c1", "", []restoreDest{{volume: "app_data"}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -979,6 +979,91 @@ func TestAnAgentRestartStartsTheAppAndSettlesTheCommand(t *testing.T) {
 	if ran || !final.GetDuplicate() || final.GetError() != message || final.GetState() != agentv1.CommandState_COMMAND_STATE_FAILED ||
 		!final.GetResult().GetFields()["interrupted"].GetBoolValue() {
 		t.Errorf("the replay: %v, ran %v", final, ran)
+	}
+}
+
+// TestAContainerHasOneRestoreThatStopsIt (#30, SAFE): two restores of
+// different data run at once, but a container that mounts both is held by
+// the one that stopped it: the other is refused before anything changes,
+// its preview too, and the first starts the container again only once its
+// own job ended; then the second goes ahead. A restore lets go of its own
+// containers only.
+func TestAContainerHasOneRestoreThatStopsIt(t *testing.T) {
+	h := newRestoreHarness(t)
+	files := map[string]string{}
+	for i := range 6 {
+		files["f"+itoa(i)] = "x"
+	}
+	h.volume(t, "vol1", files)
+	h.volume(t, "vol2", map[string]string{"b.txt": "v1"})
+	snapshot := h.backup(t, "vol1", "vol2")
+	writeFiles(t, h.engine.VolumeDir("vol2"), map[string]string{"b.txt": "v2"})
+	id := h.container("app", nil, "unless-stopped", 0, volumeMount("vol1", "/a", false), volumeMount("vol2", "/b", false))
+	t.Setenv("FAKE_RESTIC_SLOW_MS", "300")
+	first := h.payload(snapshot, "vol1")
+	first.ConfirmedStops = []string{"app"}
+	second := h.payload(snapshot, "vol2")
+	second.RestoreId, second.ConfirmedStops = "r2", []string{"app"}
+
+	done := make(chan struct{})
+	var result map[string]any
+	var err error
+	go func() {
+		defer close(done)
+		result, err = h.restore(context.Background(), "c1", first)
+	}()
+	for deadline := time.Now().Add(20 * time.Second); h.status("app") != "exited"; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the first restore did not stop app")
+		}
+	}
+	want := "app is stopped by another restore under way: restore once it ends."
+	if _, err := h.restore(context.Background(), "c2", second); err == nil || err.Error() != want {
+		t.Errorf("the second restore: %v", err)
+	}
+	preview := h.payload(snapshot, "vol2")
+	preview.DryRun, preview.Overwrite = true, false
+	if _, err := h.restore(context.Background(), "p2", preview); err == nil || err.Error() != want {
+		t.Errorf("the second restore's preview: %v", err)
+	}
+	if h.restoring.release("c2", []restoreUser{{id: id, name: "app"}}); !h.restoring.holds("app") {
+		t.Error("the second restore let go of the first's container")
+	}
+	<-done
+	if err != nil || len(result["app_stopped"].([]any)) != 1 || len(result["app_started"].([]any)) != 1 {
+		t.Fatalf("the first restore: %v %v", err, result)
+	}
+	if events := h.happened(); !slices.Equal(events, []string{"job:restore", "stop:app", "job:end", "start:app"}) {
+		t.Errorf("events: %q", events)
+	}
+	if content, _ := os.ReadFile(filepath.Join(h.engine.VolumeDir("vol2"), "b.txt")); string(content) != "v2" || h.restoring.holds("app") ||
+		h.status("app") != "running" || h.policy(t, "app").Name != "unless-stopped" {
+		t.Errorf("after the first: %q %v %s %v", content, h.restoring.holds("app"), h.status("app"), h.policy(t, "app"))
+	}
+	// once the first ended, the second goes ahead
+	t.Setenv("FAKE_RESTIC_SLOW_MS", "")
+	if result, err := h.restore(context.Background(), "c3", second); err != nil || len(result["app_stopped"].([]any)) != 1 {
+		t.Errorf("the second restore after the first: %v %v", err, result)
+	}
+	if content, _ := os.ReadFile(filepath.Join(h.engine.VolumeDir("vol2"), "b.txt")); string(content) != "v1" {
+		t.Errorf("vol2: %q", content)
+	}
+
+	// two restores that both saw it running as they checked: the first to
+	// claim it, as its job is ready, holds it, and the other's go is refused
+	users, err := h.affected(context.Background(), "c4", "", []restoreDest{{volume: "vol1"}}, true)
+	if err != nil || len(users) != 1 || !h.restoring.holds(id) {
+		t.Fatalf("the first claim: %v %v", users, err)
+	}
+	if _, err := h.affected(context.Background(), "c5", "", []restoreDest{{volume: "vol2"}}, true); err == nil || err.Error() != want {
+		t.Errorf("the second claim: %v", err)
+	}
+	if again, err := h.affected(context.Background(), "c4", "", []restoreDest{{volume: "vol1"}}, true); err != nil || len(again) != 1 {
+		t.Errorf("the first restore again: %v %v", again, err)
+	}
+	h.restoring.release("c4", users)
+	if h.restoring.holds(id) {
+		t.Error("the first restore did not let go")
 	}
 }
 

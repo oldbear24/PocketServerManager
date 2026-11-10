@@ -296,8 +296,9 @@ type toolProgress struct {
 // room it has.
 func (a *Agent) previewRestore(ctx context.Context, command *agentv1.Command, dests []restoreDest, notes []string, reporter *Reporter) (map[string]any, error) {
 	payload := command.GetBackupRestore()
-	// a PocketCloud container that writes the destination refuses it now
-	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests)
+	// a PocketCloud container that writes the destination refuses it now,
+	// and so does one another restore holds
+	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests, false)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +476,7 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 	progress.report("check", "Checking the repository, the snapshot and the destination", 5, 0, 0, "")
 	// what would stop now, against what the preview showed: refused before
 	// the job starts, and again, live, once it is ready
-	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests)
+	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests, false)
 	if err != nil {
 		return nil, err
 	}
@@ -496,15 +497,15 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 		logConfig: map[string]any{"Type": "json-file", "Config": map[string]any{"max-size": "10m", "max-file": "1"}},
 		feed: func(feedCtx context.Context, stdin io.WriteCloser) {
 			defer stdin.Close()
-			// the users of the destination as they are now
-			users, err := a.affected(feedCtx, command.GetId(), payload.GetStack(), dests)
+			// the users of the destination as they are now, which this
+			// restore holds from now on, until startAgain lets them go
+			users, err := a.affected(feedCtx, command.GetId(), payload.GetStack(), dests, true)
+			session.users = users
 			if err == nil {
 				err = checkConfirmedStops(users, payload.GetConfirmedStops())
 			}
 			if err == nil && len(users) > 0 {
 				progress.report("stop", fmt.Sprintf("Stopping %d containers", len(users)), 10, 0, 0, "")
-				session.users = users
-				a.restoring.hold(users)
 				err = session.stop(feedCtx)
 			}
 			if err != nil {
