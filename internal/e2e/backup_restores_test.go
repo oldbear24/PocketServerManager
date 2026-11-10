@@ -1480,3 +1480,98 @@ func TestAFailedDownloadAbortsTheResponse(t *testing.T) {
 		t.Errorf("the failed download's record: %v", restore.FieldsData())
 	}
 }
+
+// TestSnapshotsReadFromTheJobsHostWhenTheTargetsHostIsOffline (#30): a
+// remote target's snapshots are listed by its own server, or, while that
+// one is offline, by the server of the job, which holds the target's
+// secrets already as it backs up to it; with both offline, by none.
+func TestSnapshotsReadFromTheJobsHostWhenTheTargetsHostIsOffline(t *testing.T) {
+	r := newRestoresHarness(t, func(engine *fakedocker.Engine) {
+		engine.AddVolume("app_data")
+		writeTree(t, engine.VolumeDir("app_data"), map[string]string{"a.txt": "v1"})
+	})
+	nodeB := r.enrolledOn("node-b", nil)
+	body := s3Target("b2", "b2-secret-key")
+	body["host"] = nodeB.host.Id
+	if status, out := r.send(http.MethodPost, "/api/pc/backup-targets", r.admin, body); status != http.StatusCreated {
+		t.Fatalf("the target on node-b: %d %v", status, out)
+	}
+	r.checksDone()
+	b2 := r.targetNamed("b2")
+	id := r.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data", "targets": []string{b2.Id}})["id"].(string)
+	if run := r.runNow(id)[0]; run.GetString("status") != schema.RunSucceeded {
+		t.Fatalf("the backup: %v", run.FieldsData())
+	}
+
+	if status, out := r.snapshots(id, b2.Id, r.viewer, ""); status != http.StatusOK || out["host"] != nodeB.host.Id || out["total"] != float64(1) {
+		t.Errorf("the snapshots from node-b: %d %v", status, out)
+	}
+	if err := nodeB.agent.stop(); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("node-b to be offline", func() bool { return !r.panel.Commands.Connected(nodeB.host.Id) })
+	listed := listings(r.ranJobs(), "snapshots")
+	if status, out := r.snapshots(id, b2.Id, r.viewer, "&refresh=1"); status != http.StatusOK || out["host"] != r.host.Id || out["total"] != float64(1) {
+		t.Errorf("the snapshots from the job's server: %d %v", status, out)
+	}
+	if listings(r.ranJobs(), "snapshots") != listed+1 {
+		t.Error("the job's server listed nothing")
+	}
+	if err := r.agent.stop(); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("backup-node to be offline", func() bool { return !r.panel.Commands.Connected(r.host.Id) })
+	if status, out := r.send(http.MethodGet, "/api/pc/backup-jobs/"+id+"/snapshots?target="+b2.Id+"&refresh=1", r.viewer, nil); status != http.StatusConflict ||
+		out["message"] != "Neither node-b nor backup-node is online: one of their agents lists the snapshots." {
+		t.Errorf("both offline: %d %v", status, out)
+	}
+}
+
+// TestARestoreWritesOnlyIntoFoldersItMay (#30, SAFE): the panel refuses a
+// new folder that is the system's, holds the system's, or is a local
+// target's repository; a folder that passes, but leads through a link the
+// panel cannot see into the system's, is refused by the agent once it
+// followed the link, and nothing is written there.
+func TestARestoreWritesOnlyIntoFoldersItMay(t *testing.T) {
+	r := newRestoresHarness(t, func(engine *fakedocker.Engine) {
+		engine.AddVolume("app_data")
+		writeTree(t, engine.VolumeDir("app_data"), map[string]string{"a.txt": "v1"})
+	})
+	id := r.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data"})["id"].(string)
+	r.runNow(id)
+	snapshot := r.newestSnapshot(id, r.disk.Id)
+	body := func(path string) map[string]any {
+		return map[string]any{"target": r.disk.Id, "snapshot": snapshot, "mode": "path", "host": r.host.Id, "path": path}
+	}
+	for _, path := range []string{"/", "/etc", "/etc/nginx", "/var", "/var/lib", "/var/lib/docker/volumes/x", "/srv/../etc", "srv/x", "/repo/x"} {
+		if status, out := r.send(http.MethodPost, "/api/pc/backup-jobs/"+id+"/restores", r.admin, body(path)); status != http.StatusBadRequest || out["message"] == "" {
+			t.Errorf("a restore into %s: %d %v", path, status, out)
+		}
+	}
+	if status, out := r.send(http.MethodPost, "/api/pc/backup-jobs/"+id+"/restores", r.admin, body(r.diskDir+"/x")); status != http.StatusBadRequest ||
+		out["message"] != r.diskDir+" is the repository of the target disk: restore elsewhere." {
+		t.Errorf("a restore into the local target: %d %v", status, out)
+	}
+	if restores, err := r.app.FindAllRecords(schema.BackupRestores); err != nil || len(restores) != 0 {
+		t.Errorf("refused restores were kept: %v %v", restores, err)
+	}
+
+	// /srv/evil leads to /etc on the server
+	if err := os.MkdirAll(filepath.Join(r.hostRoot, "srv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc", filepath.Join(r.hostRoot, "srv", "evil")); err != nil {
+		t.Fatal(err)
+	}
+	before := readTree(t, filepath.Join(r.hostRoot, "etc"))
+	draft := r.preview(id, r.admin, body("/srv/evil"))
+	if draft.GetString("status") != schema.RestoreFailed || !strings.HasPrefix(draft.GetString("error"), "/srv/evil leads to /etc on this server: ") {
+		t.Errorf("a restore into a link to /etc: %v", draft.FieldsData())
+	}
+	if after := readTree(t, filepath.Join(r.hostRoot, "etc")); !maps.Equal(after, before) {
+		t.Errorf("/etc holds %v", after)
+	}
+	if jobs := r.ranJobs(); slices.ContainsFunc(jobs, isRestore) {
+		t.Error("a restore's job ran")
+	}
+}
