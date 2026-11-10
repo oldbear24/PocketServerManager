@@ -369,7 +369,7 @@ func TestRestoreStopsTheProjectAndTheVolumesUsersAndStartsThemAgain(t *testing.T
 	}
 	stack := map[string]string{composeProjectLabel: "notes"}
 	h.container("notes-db-1", map[string]string{composeProjectLabel: "notes", composeServiceLabel: "db"}, "unless-stopped", 0, volumeMount("notes_pgdata", "/var/lib/postgresql/data", false))
-	h.container("notes-app-1", map[string]string{composeProjectLabel: "notes", composeServiceLabel: "app", composeDependsLabel: "db:service_started:false"},
+	h.container("notes-web-1", map[string]string{composeProjectLabel: "notes", composeServiceLabel: "web", composeDependsLabel: "db:service_started:false"},
 		"on-failure", 5, volumeMount("notes_appdata", "/data", false))
 	h.container("notes-worker-1", stack, "always", 0)
 	h.container("reader", nil, "always", 0, volumeMount("notes_appdata", "/in", true))
@@ -379,7 +379,7 @@ func TestRestoreStopsTheProjectAndTheVolumesUsersAndStartsThemAgain(t *testing.T
 
 	payload := h.payload(snapshot, "notes_pgdata", "notes_appdata")
 	payload.Stack = "notes"
-	payload.ConfirmedStops = []string{"notes-app-1", "notes-db-1", "notes-worker-1", "reader"}
+	payload.ConfirmedStops = []string{"notes-db-1", "notes-web-1", "notes-worker-1", "reader"}
 	result, err := h.restore(context.Background(), "c1", payload)
 	if err != nil {
 		t.Fatalf("%v %v", err, result)
@@ -410,22 +410,22 @@ func TestRestoreStopsTheProjectAndTheVolumesUsersAndStartsThemAgain(t *testing.T
 	if slices.ContainsFunc(events[end:], func(event string) bool { return strings.HasPrefix(event, "stop:") }) {
 		t.Errorf("a stop after the job: %q", events)
 	}
-	if !slices.Equal(stops, []string{"notes-app-1", "notes-db-1", "notes-worker-1", "reader"}) ||
-		!slices.Equal(starts, []string{"reader", "notes-worker-1", "notes-db-1", "notes-app-1"}) {
+	if !slices.Equal(stops, []string{"notes-web-1", "notes-worker-1", "reader", "notes-db-1"}) ||
+		!slices.Equal(starts, []string{"notes-db-1", "reader", "notes-worker-1", "notes-web-1"}) {
 		t.Errorf("stopped %q, then started %q: %q", stops, starts, events)
 	}
-	for _, name := range []string{"notes-db-1", "notes-app-1", "notes-worker-1", "reader", "unrelated"} {
+	for _, name := range []string{"notes-db-1", "notes-web-1", "notes-worker-1", "reader", "unrelated"} {
 		if h.status(name) != "running" {
 			t.Errorf("%s is %s", name, h.status(name))
 		}
 	}
-	if h.status("notes-old-1") != "exited" || h.policy(t, "notes-app-1") != (restartPolicy{Name: "on-failure", MaxRetry: 5}) ||
+	if h.status("notes-old-1") != "exited" || h.policy(t, "notes-web-1") != (restartPolicy{Name: "on-failure", MaxRetry: 5}) ||
 		h.policy(t, "notes-db-1").Name != "unless-stopped" {
-		t.Errorf("after: %s %v", h.status("notes-old-1"), h.policy(t, "notes-app-1"))
+		t.Errorf("after: %s %v", h.status("notes-old-1"), h.policy(t, "notes-web-1"))
 	}
 	appStopped, _ := result["app_stopped"].([]any)
 	appStarted, _ := result["app_started"].([]any)
-	if len(appStopped) != 4 || appStopped[0].(map[string]any)["name"] != "notes-app-1" || len(appStarted) != 4 ||
+	if len(appStopped) != 4 || appStopped[0].(map[string]any)["name"] != "notes-web-1" || len(appStarted) != 4 ||
 		len(result["app_not_running"].([]any)) != 0 || len(result["start_errors"].([]any)) != 0 || result["partial"] != false ||
 		result["files_deleted"] != float64(1) || result["dry_run"] != false || result["refused"] != "" ||
 		!strings.Contains(result["log"].(string), "Started 4 containers again.") {
@@ -891,37 +891,44 @@ func TestARestoreChecksWhatItIsAsked(t *testing.T) {
 	h := newRestoreHarness(t)
 	h.volume(t, "app_data", map[string]string{"a": "1"})
 	good := func() *agentv1.BackupRestore { return h.payload(strings.Repeat("a", 64), "app_data") }
-	for name, change := range map[string]func(*agentv1.BackupRestore){
-		"no record":            func(p *agentv1.BackupRestore) { p.RestoreId = "" },
-		"a short snapshot id":  func(p *agentv1.BackupRestore) { p.SnapshotId = "3f9a1c2e" },
-		"no job tag":           func(p *agentv1.BackupRestore) { p.JobTag = "pocketcloud" },
-		"a target volume":      func(p *agentv1.BackupRestore) { p.TargetVolume = "app_data" },
-		"both":                 func(p *agentv1.BackupRestore) { p.TargetPath = "/srv/x" },
-		"neither":              func(p *agentv1.BackupRestore) { p.Original = nil },
-		"a pick in no root":    func(p *agentv1.BackupRestore) { p.Replace, p.Include = false, []string{"/volumes/other/x"} },
-		"a relative pick":      func(p *agentv1.BackupRestore) { p.Replace, p.Include = false, []string{"volumes/app_data"} },
-		"replace with a pick":  func(p *agentv1.BackupRestore) { p.Include = []string{"/volumes/app_data/x"} },
-		"replace unconfirmed":  func(p *agentv1.BackupRestore) { p.Overwrite = false },
-		"original unconfirmed": func(p *agentv1.BackupRestore) { p.Replace, p.Overwrite = false, false },
-		"too many roots": func(p *agentv1.BackupRestore) {
+	for name, test := range map[string]struct {
+		change func(*agentv1.BackupRestore)
+		want   string
+	}{
+		"no record":           {func(p *agentv1.BackupRestore) { p.RestoreId = "" }, "names the panel's record"},
+		"a short snapshot id": {func(p *agentv1.BackupRestore) { p.SnapshotId = "3f9a1c2e" }, "by its full id"},
+		"no job tag":          {func(p *agentv1.BackupRestore) { p.JobTag = "pocketcloud" }, "names its job's tag"},
+		"a target volume":     {func(p *agentv1.BackupRestore) { p.TargetVolume = "app_data" }, "not target_volume"},
+		"both":                {func(p *agentv1.BackupRestore) { p.TargetPath = "/srv/x" }, "exactly one of them"},
+		"neither":             {func(p *agentv1.BackupRestore) { p.Original = nil }, "exactly one of them"},
+		"a pick in no root":   {func(p *agentv1.BackupRestore) { p.Replace, p.Include = false, []string{"/volumes/other/x"} }, "in none of the folders"},
+		"a relative pick":     {func(p *agentv1.BackupRestore) { p.Replace, p.Include = false, []string{"volumes/app_data"} }, "absolute and clean"},
+		"replace with a pick": {func(p *agentv1.BackupRestore) { p.Include = []string{"/volumes/app_data/x"} }, "whole snapshot only"},
+		"replace unconfirmed": {func(p *agentv1.BackupRestore) { p.Overwrite = false }, "replaces what the destination holds"},
+		"original unconfirmed": {func(p *agentv1.BackupRestore) { p.Replace, p.Overwrite = false, false },
+			"a restore to the original location overwrites it, and that was not confirmed"},
+		"too many roots": {func(p *agentv1.BackupRestore) {
 			for range maxRestoreRoots {
 				p.Original = append(p.Original, &agentv1.BackupRestoreRoot{Source: "/volumes/app_data", Volume: "app_data"})
 			}
-		},
-		"too many picks": func(p *agentv1.BackupRestore) {
+		}, "at most 32 folders"},
+		"too many picks": {func(p *agentv1.BackupRestore) {
 			p.Replace = false
 			for range maxRestoreIncludes + 1 {
 				p.Include = append(p.Include, "/volumes/app_data/x")
 			}
-		},
-		"no repository password": func(p *agentv1.BackupRestore) {
+		}, "at most 100 paths"},
+		"no repository password": {func(p *agentv1.BackupRestore) {
 			p.Repository = &agentv1.BackupRepository{TargetId: "t1", Url: h.repo.GetUrl()}
-		},
+		}, "no password"},
+		"a missing original folder": {func(p *agentv1.BackupRestore) {
+			p.Original = []*agentv1.BackupRestoreRoot{{Path: "/srv/gone"}}
+		}, "the folder /srv/gone does not exist on this server"},
 	} {
 		payload := good()
-		change(payload)
-		if _, err := h.restore(context.Background(), "c1", payload); err == nil {
-			t.Errorf("%s was taken", name)
+		test.change(payload)
+		if _, err := h.restore(context.Background(), "c1", payload); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if len(h.restoreJobs()) != 0 {
