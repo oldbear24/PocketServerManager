@@ -336,7 +336,7 @@ Applications on the same host share a database server instead of each running it
   What a label's job backs up and its server always come from its labels; its schedule, targets and retention only where the labels give them (the job's `label_sets` lists which), so what an admin sets where they say nothing stays, and the API refuses to change what they set; its name and whether it is enabled are the admin's. A label naming a target that is none, or another server's local target, is a problem on the stack page and the job's; a job without a target says so and does not run. A label that cannot be used holds its job as it is, and the editor warns of it while it is typed. A label that is gone, or a removed stack, leaves its job disabled and marked until someone removes it; while its label is there, a label's job is not removed through the API, as the next deploy would bring it back, and one whose label is gone does not run by hand. `pocketcloud.backup: false` is no label.
 - Every database on a database server gets its own dump job (`mariadb-dump --single-transaction` or `pg_dump --format=custom --compress=0`, uncompressed so restic can deduplicate), tagged with the database name, so one application can be restored without touching the others. Restore tests restore the latest dump into a temporary database that is dropped after two hours.
 - PHP sites back up their `shared/` directory; code is reproducible from releases and sources.
-- Weekly `restic check --read-data-subset` (#31).
+- **Integrity checks** (#31) – every target's repository is checked weekly by default, one group of its data packs at a time, first without a lock from a read-only mount, and again under restic's exclusive lock only when errors are found; every backup job names its command as restic's hostname, so a lock says who holds it; failed runs are tried again with a backoff, a locked one after `restic unlock`. See [Integrity checks, locks and retries](#integrity-checks-locks-and-retries-31).
 - The panel backs up its own `pb_data`; the master key is exported separately. Restoring the panel keeps the CA, so agents reconnect without re-enrollment.
 
 ### Restore (#30)
@@ -440,6 +440,155 @@ This section is the contract that the agent, the panel and the web UI of #30 cod
 - **Download.** `POST /api/pc/backup-jobs/{id}/downloads` saves a record in mode `download` (status `queued`, `download_name` `<job>-<short id>-<YYYYMMDD-HHMM>.tar`, or the file's own name, each with its control characters (C1 ones, U+0080 to U+009F, included), its slashes and its backslashes made `-`, as the agent refuses such a name; `download_kind` `dir` or `file`) and gives a ticket: 32 random bytes in hex, used once, good for 60 seconds, bound to the record and the user, kept in memory. The UI opens the URL in a hidden frame and shows what an answer that is no file says: the `message` of the panel's JSON error (its 403s and 404s), or the text of a `text/plain` one. `GET /api/pc/backup-downloads/{id}?ticket=` answers 403 "This download link has been used or has expired: start the download again." to a wrong, used or expired ticket; otherwise it queues the `backup.dump` (2 minutes in the queue) and waits up to 120 seconds for its first bytes, answering 502 `text/plain` with the command's error if none come. Then it sends `Content-Type: application/x-tar` (`application/octet-stream` for a file), `Content-Disposition: attachment; filename="…"; filename*=UTF-8''…`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and `X-Accel-Buffering: no`, without `Content-Length` and without the server's write timeout. The agent streams `restic dump` through `UploadArtifact` with kind `backup_download`, on a gRPC connection of its own, in chunks of at most 1 MiB, and commits only once restic ended well; the panel passes each chunk on as it reads it, so a slow browser slows restic down and nothing is stored on the way. A failure after the first byte aborts the response, so that the browser marks the download failed rather than keep a cut tar; a browser that leaves stops the job, and the record is `cancelled` ("The browser stopped the download."). A ticket of an admin who is one no more gets 403 "Only admins download snapshots.", and is used all the same. A download whose link nobody used fails a minute after its ticket's time ("The download link was not used in time: start the download again."); one whose browser's request a panel restart cut is stopped and fails ("The panel restarted during the download.").
 - **Events and alerts.** A restore that ends logs `backup.restored` (info), `backup.restore_failed` (critical), `backup.restore_stopped` (warning) and, when a container did not stay up or could not be started again, `backup.restore_app_down` (warning); a download that succeeded logs `backup.downloaded` (info). A failure, or an application that did not stay up, raises the alert `backup_restore` of the server's data, keyed `<host>:<stack:name | volume:name | path:folder>` like the restore's ordering key (hashed past 255 characters): "The restore of vaultwarden into vw_data failed: …. The application was started again." The next restore of that data that goes well resolves it, and so does removing the last restore of it that went wrong, as when its job or target is removed with their restores.
 - **Healing and history.** At its start and every minute the panel settles a restore whose command ended without its finisher, as when the panel stopped in between; one whose command is gone fails ("The restore ended without the panel recording how: check the application on X.", or for a preview "The preview ended without the panel recording it: preview again."); one someone stopped tells its agent again; a preview older than 30 minutes expires. Daily, drafts nobody started go after a day, and restores and downloads older than 90 days go, but each job's newest restore that was started, to the original location or to a new folder, however it ended: a newer draft or download does not count, so a job keeps its last restore.
+
+### Integrity checks, locks and retries (#31)
+
+This section is the contract that the agent, the panel and the web UI of #31 code against: the commands and their payloads, the jobs, what restic prints and how it is read, the answers, the REST API and the records. The Go types of the answers and of the lock are in internal/backup (check.go, lock.go); what restic 0.17.3 printed for each case is in internal/agent/testdata/restic-0.17.3, which internal/testutil/resticcapture reads. Field names are the proto's (`UseProtoNames`), as the stored payloads have them.
+
+- **What it does.** Every target's repository is checked on one schedule for the whole panel, `0 5 * * 0` (Sundays at 05:00 UTC) unless an admin changes it, by a `backup.check` on the target's own server. A check has two passes. Pass 1 (`free`) runs `restic --no-lock check --read-data-subset=n/t` in a job whose local `/repo` is bound read-only: it takes no lock, writes nothing and keeps no backup waiting, and it reads one group of the data packs, the next one each time. Only when pass 1 says "repository contains errors" does pass 2 (`confirm`) read the same group again under restic's exclusive lock, which a prune running meanwhile on another server cannot fool: a prune that deletes packs while pass 1 reads gives errors that pass 2 does not see (check-nolock-concurrent-prune.txt). A critical alert needs errors that pass 2 confirmed. Every backup job container is named after its command as restic sees it, hostname `pc-<command id>`, so a lock says which PocketCloud command holds it. A run that failed is tried again by the panel after 5 minutes, 30 minutes and 2 hours (4 attempts in all) when the failure may pass by itself; a run that a lock kept out is tried again by a run whose job runs `restic unlock` first, never `--remove-all`.
+- **Commands.** The panel creates them; none can be requested through the API (`backup.check` and `backup.run` carry a target's secrets).
+
+  | Type | Timeout | Queue | Ordering key | Settled by the agent | Agent worker slots |
+  |---|---|---|---|---|---|
+  | `backup.check` | 12 h | 6 h | `backup-integrity:<target>` (only another check of the target waits for it; the target's runs, its measure and a change of it never wait behind it) | no | `backup.check`, 1 |
+  | `backup.run`, a retry | 12 h | 12 h | `backup:<target>`, as every run | no | `backup.run`, 2 |
+
+  ```jsonc
+  // backup.check: the target's own server
+  {"repository": {"target_id": "<target>", "url": "<the located URL, as a measure has it>"},
+   "read_data_subset": "3/20"}            // group n of t; "" checks the structure only and reads no data
+  // backup.run, the retry of a run that found the repository locked: as the job's run, and
+  {…, "unlock": true}                     // restic unlock before the backup; removes only stale locks
+  ```
+
+  `read_data_subset` is `n/t` with 1 ≤ n ≤ t ≤ 256 and no leading zero, or empty (`backup.ParseSubset`; `backup.Subset(n, t)` makes it, taking a group out of range as 1): a pack is in group n when its first byte modulo t is n−1, so a group is the same packs every time and t checks read every pack. restic's `x%` and size forms pick packs at random and are refused by the agent, as pass 2 would read other packs than pass 1. The panel's enricher gives a check its target's secrets only on the target's server, as for any target command but a run, a restore or a listing. `backup.unlock` (226) stays unused.
+- **Jobs.** Every backup job container (init, run, snapshots, browse, restore, dump, check) has the hostname `pc-<command id>` (`backup.JobHost`; `backup.CommandOfHost` reads it back, `^pc-([a-z0-9]{15})$`) and the label `pocketcloud.command`. A command's jobs run one after another, and pass 1 takes no lock, so no two holders of a lock share a hostname: restic's rule that a lock of its own host with a dead PID is stale then never meets another container's PID. Snapshots keep naming the server, as backup passes `--host`. A check's jobs mount no restic cache volume: the backup tool gives restic `--cache-dir /tmp/pocketcloud-check-cache --cleanup-cache`, in which check makes its own `restic-check-cache-N` and removes it as it ends ("using temporary cache in …"), and a killed job leaves it in the container. Pass 1 binds a local target's directory at `/repo` with `"ReadOnly": true`, and its capabilities are `DAC_OVERRIDE` only (none for a remote target, on the bridge network); pass 2 binds it writable with `DAC_OVERRIDE` and `FOWNER`, as today, since restic writes, refreshes every 5 minutes and removes its lock file. Pass 2 must never get the read-only bind: restic retries writing its lock for 15 minutes, then fails "unable to create lock in backend: open /repo/locks/…-tmp-N: read-only file system", exit code 1 (check-readonly.txt). A check's jobs keep a json-file log of at most 10 MB, and are stopped with 30 seconds' grace: a pass 2 that is killed leaves its exclusive lock for 30 minutes. When the agent's clock is more than 5 minutes off the panel's (`|lastSkew|`), every backup tool call gets `--no-unlock`, and the tool's unlocks log "The server's clock is off by N min from the panel's: restic judges a lock's age by it, so no lock is removed" and remove nothing.
+- **restic, as the backup tool runs it.**
+
+  | What | restic's arguments (after the tool's globals and `-o` options) |
+  |---|---|
+  | pass 1 | `--cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check [--read-data-subset=n/t]` |
+  | pass 2 | `--cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --retry-lock 30m check [--read-data-subset=n/t]`; on exit code 11, `restic unlock` and pass 2 once more |
+  | a retry with `unlock` | `unlock`, then `backup` as every run (with its own unlock and second try on exit code 11, as #29 has it) |
+
+  Never `--quiet` or `--json` for check: restic 0.17.3's check has no JSON, so its text is read, and the tool refuses a restic that is not 0.17 ("PocketCloud reads restic 0.17's check output; this image has restic X"). Check prints with `RESTIC_PROGRESS_FPS=0.2`.
+
+  The standard output, line by line (each becomes a progress mark of the tool, never a line of the log, except as said):
+
+  | Line | Meaning |
+  |---|---|
+  | `using temporary cache in DIR`, `no errors were found` | the log |
+  | `create exclusive lock for repository`, `repo already locked, waiting up to 30m0s for the lock` | step `lock` (pass 2) |
+  | `load indexes` | step `index`, 0–5 % |
+  | `check all packs` | step `packs`, 5–15 % |
+  | `check snapshots, trees and blobs` | step `snapshots`, 15–45 % (15–100 % for the structure only) |
+  | `read group #n of X data packs (out of total T packs in G groups)` | step `read`, 45–100 %; `packs_read` X, `packs_total` T |
+  | `[0:01] 97.14%  34 / 35 packs`, `… snapshots` | the step's percent, `done` and `total`; the last one comes even without RESTIC_PROGRESS_FPS |
+  | `[0:00]          0 snapshots` | a counter with no total, as in an empty repository: `done` only |
+  | `N additional files were found in the repo, which likely contain duplicate data.` and its next line "This is non-critical, you can run \`restic prune\` to correct this."; `Duplicate packs are non-critical…`; `Mixed packs with tree and data blobs are non-critical…` | `notes` (one note per hint, its lines joined) |
+
+  The error output, line by line, redacted, at most `backup.MaxCheckErrors` (20) entries of at most `backup.MaxCheckErrorText` (500) characters, the rest counted in `errors_more`; a pass keeps entries only for the outcome `errors` (`said` would reduce it to "Fatal: repository contains errors"):
+
+  | Line | Entry |
+  |---|---|
+  | `pack <64 hex>: does not exist`, `pack <64 hex> contains N errors: [...]` (one line) | `{"kind":"pack","id":"<64 hex>"}` |
+  | `error for tree <8 hex>:` and the lines below it indented by two spaces | `{"kind":"tree","id":"<8 hex>"}`, its lines joined |
+  | `error: …`, `download error: …`, and any other line but those below | `{"kind":"other"}` |
+  | `Load(<data/…>, N, 0) failed: …`, `Save(<lock/…>) returned error, retrying after …` | none: the backend's retries, kept in the log only |
+  | "… You must run \`restic repair index' to correct this." | `repair.index` |
+  | `restic repair packs ID…` | `repair.packs` (the full ids) |
+  | `restic repair snapshots --forget` | `repair.snapshots` |
+  | `The repository is damaged and must be repaired…` | `repair.other` |
+  | `The repository contains damaged pack files…`, `Damaged pack files can be caused…`, `Fatal: repository contains errors`, empty lines | none |
+
+  A pass's outcome comes from restic's exit code; exit code 1 is ambiguous, and only the text tells corruption from another failure:
+
+  | Exit code | Outcome (`backup.Outcome*`) |
+  |---|---|
+  | 0 | `ok` |
+  | 1, with "repository contains errors" | `errors` |
+  | 1, with "invalid lock file" | `lock_invalid` |
+  | 11 | `locked`, with the lock |
+  | 10, 12 | `error`, as `repositoryError` words them |
+  | anything else | `error`, with restic's last words |
+- **The tool's pass line** (`backup.CheckPass`). The check op always prints, as its last line on the standard output, then exits with an error unless the outcome is `ok`:
+
+  ```json
+  {"pass":"free","outcome":"errors","restic_code":1,"subset":"3/20","packs_read":118,"packs_total":2361,
+   "errors":[{"kind":"pack","id":"b659…","text":"pack b659… contains 2 errors: […]"}],"errors_more":0,
+   "repair":{"index":false,"packs":["b659…"],"snapshots":true,"other":false},
+   "notes":[],"lock":null,"error":""}
+  ```
+- **The check's answer** (`backup.CheckResult`), whatever the outcome; the command fails unless `status` is `ok`, and keeps the answer as its result:
+
+  ```json
+  {"status":"failed","subset":"3/20","packs_read":118,"packs_total":2361,
+   "errors":[…],"errors_more":0,"repair":{…},"notes":[…],
+   "unconfirmed":false,"confirmed":true,"lock":null,"restic_code":1,"error":"","log":"…"}
+  ```
+
+  | Pass 1 | Pass 2 | `status` | Besides | The command |
+  |---|---|---|---|---|
+  | ok | — | `ok` | | succeeds |
+  | errors | ok | `ok` | `unconfirmed` true; `errors` are pass 1's | succeeds |
+  | errors | errors | `failed` | `confirmed` true; pass 2's errors | fails: "restic found N errors in group 3/20" |
+  | errors | locked, lock_invalid or error | `suspect` | the lock or the error | fails with it |
+  | locked, lock_invalid or error | — | `error` | | fails with it |
+
+  Before pass 2 the log says "restic found errors without a lock, as a prune running meanwhile can cause: checking group N/T again with the repository locked". Every key is there; a list may be `null` when empty. The agent turns the answer into a `map[string]any` through JSON, as `structpb.NewStruct` refuses a struct or a typed slice, and the panel reads the command's result back into `backup.CheckResult` (the test sends one through `structpb`). Pass 1 and 2's progress is `{"step", "percent", "done", "total", "unit"}` with the steps above, `unit` `snapshots` or `packs`; pass 2's step is `confirm` whatever restic does. A check is not ephemeral: its result is kept in the agent's `commands.json` as a run's.
+- **A failed run's answer** (`backup.RunFailure`). When restic saved no snapshot, the backup op prints `{"failure", "restic_code", "lock"}` as its last line (each left out when empty), and `backup.run`'s answer carries them beside `log` and `refused`. Its error text is unchanged, so #29's texts stay. The classes (`backup.Failure*`; `backup_runs.failure`):
+
+  | `failure` | Who says it | When | Retried |
+  |---|---|---|---|
+  | `locked` | agent | exit code 11 after the wait, the unlock and the second try | yes |
+  | `lock_invalid` | agent | exit code 1 with "invalid lock file" | no: unlock leaves an unreadable lock file |
+  | `repository` | agent | exit code 10, or a bucket that is gone | no |
+  | `password` | agent | exit code 12 | no |
+  | `source` | agent | the dump failed, or the directory does not exist on the server | no |
+  | `restic` | agent | any other failure of restic | yes |
+  | `partial` | panel | it started, failed, and has a `snapshot_id` (exit code 3) | no |
+  | `interrupted` | panel | "The agent restarted while running…" | yes |
+  | `timeout` | panel | it started, then timed out | no |
+
+  An older agent's failure is classed by its text: "is already locked" is `locked` (with `backup.ParseLockLine`, no time), "invalid lock file" `lock_invalid`, "the repository is gone" `repository`, "the password is not its own" `password`, "does not exist on this server" `source`, anything else `restic`.
+- **The lock** (`backup.Lock`), as a run's `lock`, a check's `lock` and the answers carry it:
+
+  ```json
+  {"pid":22562,"host":"pc-k3j9x2m4q8w1z7v","user":"root","exclusive":true,
+   "created":"2026-11-10T13:18:55.321Z","age_s":750,"storage_id":"957548b2",
+   "command":"k3j9x2m4q8w1z7v","command_type":"backup.check","command_label":"Check the integrity of b2",
+   "command_host":"<host id>","command_host_name":"nas"}
+  ```
+
+  `backup.ParseLocked(stderr, now)` reads restic's four lines ("…is already locked [exclusively ]by PID N on HOST by USER (UID u, GID g)", "lock was created at WALL (D ago)", "storage ID 8hex", the unlock hint; backup-locked.txt, check-locked.txt): `created` is `now` − D in UTC, never the wall time, which has no zone; with several messages the last counts. restic writes a new lock file each time its holder refreshes the lock, every 5 minutes, so `created` is the last refresh and `storage_id` changes with it. `created`, `age_s` and `storage_id` are left out when unknown, as from an older agent's error line. The panel adds `command…` when `host` is `pc-<id>` of a command that exists. `StaleAt()` is `created` + 32 minutes (restic's 30, and 2 for two servers' clocks), zero when `created` is unknown: from then on a retry's `restic unlock` removes the lock if its holder is gone. restic counts a lock as stale after 30 minutes without a refresh on any host, or at once when it was made on the same host by a PID that is gone (a job's hostname is never another's); a live restic refreshes every 5 minutes and stops its own work when it cannot within 22.5 minutes. Plain unlock never removes a live lock, and leaves a lock file it cannot read; `--remove-all` is never used.
+- **Holder.** The panel calls a lock's holder **alive** when `command` is queued, dispatched or running, or timed out while its server is not connected (the agent may still run it); **gone** when the command is final otherwise; **unknown** when there is no command (another hostname). Unlock and retry is refused while the holder is alive; for a lock younger than `StaleAt` it is scheduled for `StaleAt`.
+- **Retries.** A run that started and failed as `locked`, `restic` or `interrupted` with `attempt` < 4 gets `retry_at` = its end + 5 min, 30 min or 2 h (attempt 1, 2, 3); for `locked`, no sooner than `StaleAt`, and 5 minutes after the end while the holder is alive, re-armed every 30 minutes for up to 12 hours without counting an attempt. A retry is dropped, with `retry_note` "The next scheduled run at HH:MM UTC takes its place.", when the job's next run comes no later than 10 minutes after it. The panel claims a due retry in one transaction: it reads the run again (failed, no run with its id as `retry_of`, no newer run of the job to the target), saves the new run (`trigger` `retry`, `attempt` + 1, `retry_of`, the job's server) and its command (`unlock` for `locked`) with `CreateIn`, and clears the run's `retry_at`; the unique index on `retry_of` refuses a second retry. A check that ended `error`, `suspect`, or `skipped` because its server was offline, with `attempt` < 6 and a trigger other than `manual`, gets `retry_at` = its end + 1, 3, 6, 12 or 24 h, unless the next scheduled check comes sooner. Only the first attempt of a scheduled check carries `scheduled_at`, so the unique `(target, scheduled_at)` index allows one check per slot and its retries besides.
+- **REST API** (signed in). Errors are sentences.
+
+  | Route | Role | Body | Responses, in the order checked |
+  |---|---|---|---|
+  | `POST /api/pc/backup-runs/{id}/retry` | operators | none | 404 "The run does not exist."; 409 "Only a failed run is tried again." / "A newer run of this job to this target exists." / "It is being tried again already." / the label gone message / "The target is no longer one of the job's targets." / "The server X is offline: its agent runs the backup." / "A restore into its data is under way: back it up once it ends." / "Its previous run is still going." / for `locked`, when the job's server's `clock_skew_ms` is beyond ±300000: "The clock of X is off by N minutes: restic would take a live lock for a stale one. Set its clock first." / while the holder is alive: "The repository is locked by <label> on <server>, which is still running: PocketCloud retries once it ends."; `202 {"retry_at":"<RFC 3339>"}` for `locked` before `StaleAt` (the run's `retry_note` "Waits until restic counts the lock as stale."); `200 {"run":"<new run id>"}` otherwise. A manual retry ignores the attempt cap. |
+  | `POST /api/pc/backup-targets/{id}/check` | admins | none | 404 "The target does not exist."; 409 "The target X is not checked yet: it has no repository." / "The server X is offline: its agent checks the target." / "The agent of X cannot check repositories yet: update it." / "An integrity check of X is under way."; `202 {"check":"<backup_checks id>","command":"<command id>"}`, with the event `backup.check_started` |
+  | `PUT /api/pc/settings/backup-checks` | admins | `{"schedule"?: string, "groups"?: int}` | 400 "The schedule is cron in UTC, such as 0 5 * * 0." / "A check runs at most once a day." (the next two slots less than 23 hours apart) / "Groups is a whole number from 0 to 256."; `200 {"schedule","groups","next_check_at"}`. Audited as the admin. `""` turns the checks off, which resolves every `backup_check_unverified`. |
+  | `POST /api/pc/commands/{id}/cancel` | operators | — | stops a check: its job gets 30 seconds. |
+
+  Settings are writable by admins through the record API too (`settings` update rule): the panel's request hook holds `backup_check_schedule` and `backup_check_groups` there to the same rules. Removing a target while a check of it is open answers 409 "An integrity check of it is under way: stop it first, or wait.".
+- **Records.** See docs/data-model.md.
+  - `backup_checks`, read by viewers, written only by the panel: `target` (cascade), `host` (the target's server; cascade), `kind` (`integrity`; `restore_test` is #53's), `trigger` (`schedule` / `manual` / `retry`), `status` (below), `scheduled_at` (the slot, first attempt only), `started_at`, `finished_at`, `duration_ms`, `subset`, `packs_read`, `packs_total`, `confirmed`, `unconfirmed`, `errors` (json, 16 KiB; the panel drops trailing entries into `errors_more` to fit, as JSON escapes `<` and `>` six bytes each), `errors_more`, `repair` (json), `notes` (json), `lock` (json), `error`, `log` (32 KiB), `command` (outlives it), `attempt` (0 reads as 1), `retry_of` (text: the prune is raw SQL), `retry_at`. Indexes: `(target, created)`, `command`, unique `(target, scheduled_at)` where `scheduled_at != ''`, unique `retry_of` where `retry_of != ''`, `(status, retry_at)`.
+  - A check's `status` (`schema.Check*`): `queued` → `running` → `ok` (pass 1 clean, or pass 2 did not confirm: `unconfirmed`) / `failed` (confirmed) / `suspect` (pass 2 could not confirm) / `error` (did not complete: "The check did not finish in 12 hours.", the command's error) / `skipped` (did not start: "The server X was offline at 05:00 UTC.", "The agent of X cannot check repositories yet: update it.", "The check before it was still going.", or it waited its 6 hours and never started) / `cancelled` (stopped after it started).
+  - `backup_targets` gains `integrity_status` (`ok` / `failed`: the newest check that completed), `integrity_at`, `integrity_error` (its first errors), `last_check` (the newest row's id, text), `last_check_status` (the eight states), `last_check_error`, `next_check_at`, `integrity_group` (the group the next check reads, from 1; 0 reads as 1; it moves on only after `ok`, so a failing group is read again). The audit ignores them all.
+  - `backup_runs` gains `trigger` `retry`, `attempt` (0 reads as 1), `retry_of` (text, `^[a-z0-9]*$`; unique where set), `retry_at` (set while a retry is planned), `retry_note`, `failure` (the classes above), `lock` (json). Index `(status, retry_at)` finds the due retries.
+  - `settings` gains `backup_check_schedule` (cron in UTC, `""` off; the migration sets `0 5 * * 0`) and `backup_check_groups` (0 to 256, 0 the structure only; the migration sets 20). A settings record made without them would mean checks off and the structure only: the init migration makes the record, and this one fills it.
+  - Reverting the migration turns the `retry` runs into `manual` ones and removes the fields and the collection.
+- **Alerts and events.** `alerts.rule` is free text.
+
+  | Rule | Key | Severity | Raised | Resolved |
+  |---|---|---|---|---|
+  | `backup_failed` | `<job>:<target>` | warning while a retry is planned (" PocketCloud tries again at 15:04 UTC (attempt n of 4)."), then critical; an open critical alert stays critical | a run failed | a run of the job to the target succeeds; as today |
+  | `backup_check_failed` | `<target>` | critical | errors confirmed: "The integrity check of X found errors in group n/t: <first error>" | an `ok` check; the target removed |
+  | `backup_check_unverified` | `<target>` | warning | `suspect`, `error`, `skipped` for an old agent, and the hourly watchdog: "No integrity check of X has completed since <date> UTC." (older than twice the gap between two slots plus a day) | an `ok` or `failed` check; the target removed; checks turned off |
+
+  Events: `backup.check_started` (info), `backup.check_ok` (info), `backup.check_failed` (critical), `backup.check_unverified` (warning), `backup.check_skipped` (info), and a warning `backup.failed` while a run's retry is planned. Each check rule is raised in a transaction that reads the target again, with `host` the target's server.
 
 ## Diagnostics
 
