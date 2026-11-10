@@ -43,6 +43,10 @@ const (
 	// plan, its preview, what lets the panel give the target's secrets to
 	// the restore's server, and the history (#30)
 	BackupRestores = "backup_restores"
+	// BackupChecks are the integrity checks of a target's repository: when,
+	// what restic found, and the retries (#31). Restore tests (#53) are a
+	// kind of check.
+	BackupChecks   = "backup_checks"
 	DNSRecords     = "dns_records"
 	ACMEAccounts   = "acme_accounts"
 	Sites          = "sites"
@@ -101,10 +105,13 @@ const (
 	JobLabel = OriginLabel
 )
 
-// How a backup run started.
+// How a backup run, or a check of a target, started.
 const (
 	RunSchedule = "schedule"
 	RunManual   = "manual"
+	// RunRetry is a run or a check the panel started again after one that
+	// failed (#31): its retry_of names the one before it.
+	RunRetry = "retry"
 )
 
 // States of a backup run (#29).
@@ -122,6 +129,56 @@ const (
 	// its job no longer backs up to its target (the target left the job, or
 	// the job's label went), or whose command is gone: no failure of the job.
 	RunCancelled = "cancelled"
+)
+
+// Kinds of check of a target's repository (#31).
+const (
+	// CheckIntegrity is restic check: the structure, and one group of the
+	// data packs.
+	CheckIntegrity = "integrity"
+	// CheckRestoreTest is reserved for #53's restore tests.
+	CheckRestoreTest = "restore_test"
+)
+
+// States of a check of a target's repository (#31). A target's
+// last_check_status takes them too; its integrity_status only ok and failed,
+// from the newest check that completed.
+const (
+	// CheckQueued is a check that waits for its server's agent.
+	CheckQueued = "queued"
+	// CheckRunning is a check the agent runs.
+	CheckRunning = "running"
+	// CheckOK is a check that found no error, or whose errors the second
+	// pass, under the exclusive lock, did not confirm.
+	CheckOK = "ok"
+	// CheckFailed is a check whose errors the second pass confirmed.
+	CheckFailed = "failed"
+	// CheckSuspect is a check whose first pass found errors that the
+	// second could not confirm or refute: it could not lock the repository,
+	// or it failed.
+	CheckSuspect = "suspect"
+	// CheckError is a check that did not complete: no repository, a wrong
+	// password, an agent that restarted, a check that ran out of time.
+	CheckError = "error"
+	// CheckSkipped is a check that did not start: its server was offline,
+	// its agent cannot check repositories, or the check before it was still
+	// going.
+	CheckSkipped = "skipped"
+	// CheckCancelled is a check someone stopped.
+	CheckCancelled = "cancelled"
+)
+
+// CheckStates lists the states of a check.
+var CheckStates = []string{
+	CheckQueued, CheckRunning, CheckOK, CheckFailed, CheckSuspect, CheckError, CheckSkipped, CheckCancelled,
+}
+
+// The default schedule and groups of the integrity checks (#31), which admins
+// change in the settings: every Sunday at 05:00 UTC, one of 20 groups of the
+// data packs each time.
+const (
+	DefaultCheckSchedule = "0 5 * * 0"
+	DefaultCheckGroups   = 20
 )
 
 // States of a restore or a download of a snapshot (#30). A restore is a
@@ -180,7 +237,6 @@ const (
 // here so that nothing else takes them; see docs/data-model.md for their fields.
 var Reserved = []string{
 	"api_tokens", "alert_rules", "notification_channels",
-	"backup_checks",
 }
 
 // User roles.
@@ -451,7 +507,12 @@ var Audited = []AuditedCollection{
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
-	{Name: BackupTargets, Label: "name", Ignore: []string{"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes", "usage_at"}},
+	{Name: BackupTargets, Label: "name", Ignore: []string{
+		"status", "last_error", "checked_at", "repo_id", "capacity_bytes", "used_bytes", "usage_at",
+		// how its integrity checks go (#31)
+		"integrity_status", "integrity_at", "integrity_error", "last_check", "last_check_status",
+		"last_check_error", "next_check_at", "integrity_group",
+	}},
 	{Name: BackupJobs, Label: "name", Host: "host", Ignore: []string{"next_run_at", "last_run_at", "last_status", "problem", "label_removed"}},
 }
 

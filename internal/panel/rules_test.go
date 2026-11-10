@@ -91,6 +91,13 @@ func TestAPIRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	check := map[string]any{"target": records[schema.BackupTargets].Id, "host": host.Id, "kind": schema.CheckIntegrity,
+		"trigger": schema.RunManual, "status": schema.CheckOK, "subset": "1/20"}
+	records[schema.BackupChecks] = saveRecord(t, app, schema.BackupChecks, check)
+	checkBody, err := json.Marshal(check)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// bodies that would be valid, so a create can only fail because of the rule
 	bodies := map[string]string{
@@ -104,6 +111,9 @@ func TestAPIRules(t *testing.T) {
 		// restores, through the panel's routes, which preview them first and
 		// give the target's secrets only to what someone confirmed (#30)
 		schema.BackupRestores: string(restoreBody),
+		// checks, through the panel's schedule and its route, which give the
+		// target's secrets to the target's own server (#31)
+		schema.BackupChecks: string(checkBody),
 	}
 
 	matrix := []struct {
@@ -129,6 +139,8 @@ func TestAPIRules(t *testing.T) {
 		{schema.BackupTargets, everyone, nobody, nobody, nobody},
 		// they name folders of the servers: viewers see no restore
 		{schema.BackupRestores, operators, nobody, nobody, nobody},
+		// viewers see what the checks found, as they see the runs
+		{schema.BackupChecks, everyone, nobody, nobody, nobody},
 	}
 
 	for _, row := range matrix {

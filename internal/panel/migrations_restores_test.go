@@ -38,6 +38,24 @@ func bootMigrationPanel(t *testing.T) *core.BaseApp {
 	return app
 }
 
+// migrationsFrom lists the files of the panel's migrations from file on,
+// newest first: those that reverting down to file reverts, in their order.
+func migrationsFrom(t *testing.T, file string) []string {
+	t.Helper()
+	var files []string
+	for _, migration := range core.AppMigrations.Items() {
+		if migration.File >= file {
+			files = append(files, migration.File)
+		}
+	}
+	slices.Sort(files)
+	slices.Reverse(files)
+	if len(files) == 0 || files[len(files)-1] != file {
+		t.Fatalf("no migration %s", file)
+	}
+	return files
+}
+
 // migrationsBefore lists PocketBase's migrations and the panel's, without
 // the panel's from file on: those of a panel of before.
 func migrationsBefore(t *testing.T, file string) core.MigrationsList {
@@ -267,8 +285,10 @@ func TestTheRestoresMigrationAppliesOverBackupJobs(t *testing.T) {
 		t.Errorf("the restore of a removed command: %v, %v", restores, err)
 	}
 
-	reverted, err := core.NewMigrationsRunner(app, core.AppMigrations).Down(1)
-	if err != nil || !slices.Equal(reverted, []string{restoresMigration}) {
+	// the migrations after it go first
+	later := migrationsFrom(t, restoresMigration)
+	reverted, err := core.NewMigrationsRunner(app, core.AppMigrations).Down(len(later))
+	if err != nil || !slices.Equal(reverted, later) {
 		t.Fatalf("reverting: %v, %v", reverted, err)
 	}
 	if _, err := app.FindCollectionByNameOrId(schema.BackupRestores); err == nil {
