@@ -38,7 +38,11 @@ const (
 	// BackupJobs are what is backed up, when and how long it is kept (#29)
 	BackupJobs = "backup_jobs"
 	// BackupRuns are the runs of a job, one per target (#29)
-	BackupRuns     = "backup_runs"
+	BackupRuns = "backup_runs"
+	// BackupRestores are restores and downloads of a job's snapshots: the
+	// plan, its preview, what lets the panel give the target's secrets to
+	// the restore's server, and the history (#30)
+	BackupRestores = "backup_restores"
 	DNSRecords     = "dns_records"
 	ACMEAccounts   = "acme_accounts"
 	Sites          = "sites"
@@ -118,6 +122,58 @@ const (
 	// its job no longer backs up to its target (the target left the job, or
 	// the job's label went), or whose command is gone: no failure of the job.
 	RunCancelled = "cancelled"
+)
+
+// States of a restore or a download of a snapshot (#30). A restore is a
+// draft while it is previewed, until someone starts it; a download starts
+// queued.
+const (
+	// RestorePreviewing is a draft whose preview the agent is making.
+	RestorePreviewing = "previewing"
+	// RestorePreviewed is a draft whose preview is ready, for 30 minutes.
+	RestorePreviewed = "previewed"
+	// RestoreQueued is a restore someone started, or a download, that waits
+	// for its server.
+	RestoreQueued = "queued"
+	// RestoreRunning is a restore or a download the agent runs.
+	RestoreRunning = "running"
+	// RestoreSucceeded is a restore or a download that ended well.
+	RestoreSucceeded = "succeeded"
+	// RestoreFailed is a restore, a download or a preview that failed, or
+	// one that never started.
+	RestoreFailed = "failed"
+	// RestoreCancelled is a restore or a download someone stopped, or one
+	// stopped before it started.
+	RestoreCancelled = "cancelled"
+	// RestoreExpired is a draft whose preview is older than 30 minutes.
+	RestoreExpired = "expired"
+)
+
+// RestoreStates lists the states of a restore, in the order of its life.
+var RestoreStates = []string{
+	RestorePreviewing, RestorePreviewed, RestoreQueued, RestoreRunning,
+	RestoreSucceeded, RestoreFailed, RestoreCancelled, RestoreExpired,
+}
+
+// Where a restore of a snapshot goes (#30).
+const (
+	// RestoreOriginal puts the job's data back where it was backed up from,
+	// on the job's server: the containers that use it stop for a while.
+	RestoreOriginal = "original"
+	// RestorePath writes a folder of the snapshot into a new folder of any
+	// server.
+	RestorePath = "path"
+	// RestoreDownload streams a folder of the snapshot as a tar, or one file
+	// as it is, to a browser.
+	RestoreDownload = "download"
+)
+
+// What a download of a snapshot sends (#30).
+const (
+	// DownloadDir is a folder of the snapshot, as a tar.
+	DownloadDir = "dir"
+	// DownloadFile is one file of the snapshot, as it is.
+	DownloadFile = "file"
 )
 
 // Reserved names of collections that land with later features. They are listed

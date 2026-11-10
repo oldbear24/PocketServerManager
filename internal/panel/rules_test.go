@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,6 +82,15 @@ func TestAPIRules(t *testing.T) {
 		schema.BackupTargets: saveRecord(t, app, schema.BackupTargets, map[string]any{"name": "rules", "kind": "local", "host": host.Id,
 			"config": map[string]any{"path": "/srv/backups"}, "credentials": "sealed", "repo_password": "sealed"}),
 	}
+	job := saveRecord(t, app, schema.BackupJobs, map[string]any{"name": "rules", "host": host.Id, "source_kind": schema.SourceVolume,
+		"source": "rules_data", "targets": []string{records[schema.BackupTargets].Id}, "schedule": "@daily", "origin": schema.JobManual})
+	restore := map[string]any{"job": job.Id, "target": records[schema.BackupTargets].Id, "host": host.Id,
+		"snapshot_id": strings.Repeat("a", 64), "mode": schema.RestorePath, "path": "/srv/restored", "status": schema.RestorePreviewed}
+	records[schema.BackupRestores] = saveRecord(t, app, schema.BackupRestores, restore)
+	restoreBody, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// bodies that would be valid, so a create can only fail because of the rule
 	bodies := map[string]string{
@@ -91,6 +101,9 @@ func TestAPIRules(t *testing.T) {
 		schema.Certificates: `{"names":["x.example.com"]}`,
 		// targets, through the panel's route, which checks them with restic
 		schema.BackupTargets: fmt.Sprintf(`{"name":"created-%%s","kind":"local","host":%q}`, host.Id),
+		// restores, through the panel's routes, which preview them first and
+		// give the target's secrets only to what someone confirmed (#30)
+		schema.BackupRestores: string(restoreBody),
 	}
 
 	matrix := []struct {
@@ -114,6 +127,8 @@ func TestAPIRules(t *testing.T) {
 		{schema.Domains, everyone, operators, operators, operators},
 		{schema.Certificates, everyone, nobody, nobody, nobody},
 		{schema.BackupTargets, everyone, nobody, nobody, nobody},
+		// they name folders of the servers: viewers see no restore
+		{schema.BackupRestores, operators, nobody, nobody, nobody},
 	}
 
 	for _, row := range matrix {
