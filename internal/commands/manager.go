@@ -166,7 +166,7 @@ func (m *Manager) Register() {
 		for _, field := range []string{
 			"status", "attempts", "last_sequence", "dispatched_at", "started_at", "finished_at",
 			"expires_at", "timeout_s", "progress", "result", "error", "requested_label", "host_name",
-			"resource", "correlation_id", "parent",
+			"resource", "correlation_id", "parent", "cancel_requested_at", "cancel_reason",
 		} {
 			e.Record.Set(field, nil)
 		}

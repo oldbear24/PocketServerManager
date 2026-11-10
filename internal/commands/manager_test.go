@@ -2,6 +2,7 @@ package commands_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -86,6 +87,43 @@ func TestACommandMayWaitLongerThanTheQueue(t *testing.T) {
 		}
 		if left := time.Until(record.GetDateTime("expires_at").Time()); left < test.want-time.Minute || left > test.want {
 			t.Errorf("waiting %s: expires in %s", test.wait, left)
+		}
+	}
+}
+
+// TestRESTCannotSetCancelRequested (#30): only the queue marks a command as
+// asked to stop. A request that set the mark on a new command would have a
+// restore's cancel answered before anyone stopped it, and the reason stand
+// for someone who never asked.
+func TestRESTCannotSetCancelRequested(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	manager := commands.NewManager(app)
+	manager.Register()
+	host := testutil.NewHost(t, app, "runner")
+	_, operator := testutil.NewUser(t, app, "operator@example.com", schema.RoleOperator)
+	_, superuser := testutil.NewSuperuser(t, app)
+	handler := testutil.Handler(t, app)
+
+	for name, token := range map[string]string{"an operator": operator, "a superuser": superuser} {
+		body := `{"type":"container.start","host":"` + host.Id + `","payload":{"docker_id":"x"},` +
+			`"cancel_requested_at":"2026-01-01 00:00:00.000Z","cancel_reason":"someone else"}`
+		status, response := testutil.Do(t, handler, testutil.Request{Method: "POST", URL: "/api/collections/commands/records", Token: token, Body: body})
+		if status != 200 {
+			t.Fatalf("%s: %d %s", name, status, response)
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(response), &created); err != nil {
+			t.Fatal(err)
+		}
+		record, err := app.FindRecordById(schema.Commands, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !record.GetDateTime("cancel_requested_at").IsZero() || record.GetString("cancel_reason") != "" {
+			t.Errorf("%s set the cancel mark: %v, %q", name, record.GetDateTime("cancel_requested_at"), record.GetString("cancel_reason"))
 		}
 	}
 }
