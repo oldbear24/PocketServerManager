@@ -2178,6 +2178,54 @@
       "retentionHint": "After each backup restic forgets the job's other snapshots: it keeps the last ones, and the newest of each of the last hours, days, weeks, months and years. Now: {{keeps}}.",
       "retentionInvalid": "Whole numbers from 0 to 10000; empty keeps none of that kind.",
       "enabled": "Enabled: it runs on its schedule"
+    },
+    "snapshot": {
+      "today": "today {{time}}",
+      "yesterday": "yesterday {{time}}"
+    },
+    "files": {
+      "volume": "Volume {{name}}"
+    },
+    "restore": {
+      "mode": {
+        "original": {
+          "label": "To the original location",
+          "note": "{{what}} on {{host}}. The containers that use it stop for a while and start again."
+        },
+        "path": {
+          "label": "To a new folder on any server",
+          "note": "Nothing else changes, unless a container uses the folder."
+        },
+        "download": {
+          "label": "Download as a tar",
+          "note": "Straight from the repository to your browser, through the panel: keep this page open until it finishes."
+        }
+      },
+      "previewNew_one": "{{count}} new file ({{size}})",
+      "previewNew_other": "{{count}} new files ({{size}})",
+      "previewUpdated_one": "{{count}} changed file overwritten ({{size}})",
+      "previewUpdated_other": "{{count}} changed files overwritten ({{size}})",
+      "previewDeleted_one": "{{count}} extra file deleted",
+      "previewDeleted_other": "{{count}} extra files deleted",
+      "previewUnchanged_one": "{{count}} file already matches",
+      "previewUnchanged_other": "{{count}} files already match",
+      "step": {
+        "check": "Check the snapshot",
+        "stop": "Stop the containers",
+        "restore": "Restore the files",
+        "start": "Start the containers",
+        "verify": "Check the containers"
+      },
+      "status": {
+        "previewing": "Previewing",
+        "previewed": "Preview ready",
+        "queued": "Queued",
+        "running": "Running",
+        "succeeded": "Done",
+        "failed": "Failed",
+        "cancelled": "Stopped",
+        "expired": "Expired"
+      }
     }
   }
 }

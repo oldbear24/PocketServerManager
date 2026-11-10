@@ -2280,6 +2280,62 @@
       "retentionHint": "Po každé záloze restic zapomene ostatní snapshoty úlohy: ponechá ty poslední a nejnovější z každé z posledních hodin, dní, týdnů, měsíců a let. Teď: {{keeps}}.",
       "retentionInvalid": "Celá čísla od 0 do 10000; prázdné pole nedrží nic toho druhu.",
       "enabled": "Zapnuto: běží podle plánu"
+    },
+    "snapshot": {
+      "today": "dnes {{time}}",
+      "yesterday": "včera {{time}}"
+    },
+    "files": {
+      "volume": "Svazek {{name}}"
+    },
+    "restore": {
+      "mode": {
+        "original": {
+          "label": "Na původní místo",
+          "note": "{{what}} na serveru {{host}}. Kontejnery, které ho používají, se na chvíli zastaví a pak znovu spustí."
+        },
+        "path": {
+          "label": "Do nové složky na libovolném serveru",
+          "note": "Nic jiného se nezmění, pokud složku nepoužívá nějaký kontejner."
+        },
+        "download": {
+          "label": "Stáhnout jako tar",
+          "note": "Přímo z repozitáře do prohlížeče, přes panel: nech tuto stránku otevřenou, dokud stahování neskončí."
+        }
+      },
+      "previewNew_one": "{{count}} nový soubor ({{size}})",
+      "previewNew_few": "{{count}} nové soubory ({{size}})",
+      "previewNew_many": "{{count}} nového souboru ({{size}})",
+      "previewNew_other": "{{count}} nových souborů ({{size}})",
+      "previewUpdated_one": "přepíše se {{count}} změněný soubor ({{size}})",
+      "previewUpdated_few": "přepíšou se {{count}} změněné soubory ({{size}})",
+      "previewUpdated_many": "přepíše se {{count}} změněného souboru ({{size}})",
+      "previewUpdated_other": "přepíše se {{count}} změněných souborů ({{size}})",
+      "previewDeleted_one": "smaže se {{count}} soubor navíc",
+      "previewDeleted_few": "smažou se {{count}} soubory navíc",
+      "previewDeleted_many": "smaže se {{count}} souboru navíc",
+      "previewDeleted_other": "smaže se {{count}} souborů navíc",
+      "previewUnchanged_one": "{{count}} soubor už odpovídá",
+      "previewUnchanged_few": "{{count}} soubory už odpovídají",
+      "previewUnchanged_many": "{{count}} souboru už odpovídá",
+      "previewUnchanged_other": "{{count}} souborů už odpovídá",
+      "step": {
+        "check": "Kontrola snapshotu",
+        "stop": "Zastavení kontejnerů",
+        "restore": "Obnova souborů",
+        "start": "Spuštění kontejnerů",
+        "verify": "Kontrola kontejnerů"
+      },
+      "status": {
+        "previewing": "Připravuje se náhled",
+        "previewed": "Náhled je hotový",
+        "queued": "Ve frontě",
+        "running": "Běží",
+        "succeeded": "Hotovo",
+        "failed": "Selhalo",
+        "cancelled": "Zastaveno",
+        "expired": "Vypršelo"
+      }
     }
   }
 }
