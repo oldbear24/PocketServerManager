@@ -14,16 +14,18 @@ import (
 
 // The agent stops the containers that use a restore's destination and
 // starts them again (#30); while a restore to the original location of a
-// stack is queued or running, the panel holds the stack, as it holds one
-// whose databases move: what would deploy it, change it or start its
-// containers waits. A scheduled backup of data being restored is skipped,
+// stack, or one that stops a stack's containers, is queued or running, the
+// panel holds the stack, as it holds one whose databases move: what would
+// deploy it, change it or start its containers waits. A scheduled backup of data being restored is skipped,
 // as it would feed half a restore to the retention, and one by hand is
 // refused; a job, a target or a server is not removed while a restore of
 // theirs is open.
 
-// restoreHolding is the restore that holds a stack, if any: one to the
-// original location of the stack's Compose project on its server, queued or
-// running.
+// restoreHolding is the restore that holds a stack, if any: a started
+// restore of the stack's server, queued or running, to the original location
+// of the stack's Compose project, or whose preview stops a container of the
+// project, whatever its mode and its stack: a restore of a folder or of a
+// volume that the stack mounts stops the stack's containers as well.
 func (p *Panel) restoreHolding(stack *core.Record) *core.Record {
 	return p.restoreHoldingProject(stack.GetString("host"), stack.GetString("name"))
 }
@@ -32,13 +34,28 @@ func (p *Panel) restoreHoldingProject(hostID, project string) *core.Record {
 	if project == "" {
 		return nil
 	}
-	records, err := p.App.FindRecordsByFilter(schema.BackupRestores,
-		"host={:host} && stack_name={:name} && mode={:original} && (status={:queued} || status={:running})", "created", 1, 0,
-		dbx.Params{"host": hostID, "name": project, "original": schema.RestoreOriginal, "queued": schema.RestoreQueued, "running": schema.RestoreRunning})
-	if err != nil || len(records) == 0 {
-		return nil
+	for _, restore := range p.openRestores(hostID) {
+		if restore.GetString("mode") == schema.RestoreOriginal && restore.GetString("stack_name") == project {
+			return restore
+		}
+		if slices.Contains(stoppedProjects(restore), project) {
+			return restore
+		}
 	}
-	return records[0]
+	return nil
+}
+
+// stoppedProjects are the Compose projects of the containers a record's
+// preview said would stop.
+func stoppedProjects(restore *core.Record) []string {
+	preview, _ := previewOf(restore)
+	projects := []string{}
+	for _, container := range preview.WouldStop {
+		if container.Project != "" && !slices.Contains(projects, container.Project) {
+			projects = append(projects, container.Project)
+		}
+	}
+	return projects
 }
 
 // restoreHoldMessage says that a stack waits for its restore.
