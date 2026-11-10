@@ -1023,19 +1023,21 @@ function SnapshotBrowser({
               const itemPath = joinPath(path, entry.name);
               const picked = picks.some((pick) => pick.path === itemPath);
               const Icon = entry.type === "dir" ? Folder : File;
+              // restic shows a name that is not UTF-8 with U+FFFD: no path names it
+              const bad = entry.bad_name || entry.name.includes("\uFFFD");
               return (
                 <tr key={entry.name}>
                   <td>
                     <div className="file-name">
                       <label
                         className="check-line file-pick"
-                        title={entry.bad_name ? t("backups.files.badName") : undefined}
+                        title={bad ? t("backups.files.badName") : undefined}
                       >
                         <input
                           type="checkbox"
                           aria-label={t("backups.files.pick", { name: entry.name })}
                           checked={picked}
-                          disabled={entry.bad_name || (full && !picked)}
+                          disabled={bad || (full && !picked)}
                           onChange={(event) => toggle(entry, event.target.checked)}
                         />
                         <Icon size={14} aria-hidden="true" />
@@ -1062,7 +1064,7 @@ function SnapshotBrowser({
                       <IconButton
                         bare
                         aria-label={t("backups.files.download", { name: entry.name })}
-                        disabled={entry.bad_name}
+                        disabled={bad}
                         onClick={() => onDownload(itemPath, entry.type === "dir" ? "dir" : "file")}
                       >
                         <Download size={14} aria-hidden="true" />

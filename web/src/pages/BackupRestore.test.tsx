@@ -502,6 +502,8 @@ describe("the restore drawer", () => {
           return folder(request.path, {
             entries: [
               { ...folder("/").entries[2], name: "bad�name", bad_name: true },
+              // restic shows what is not UTF-8 as U+FFFD, though the agent did not say so
+              { ...folder("/").entries[2], name: "odd�.txt", bad_name: false },
               folder("/").entries[2],
             ],
           });
@@ -549,6 +551,7 @@ describe("the restore drawer", () => {
     fireEvent.click(await drawer().findByRole("button", { name: "attachments" }));
     expect(await within(nav).findByText("attachments")).toHaveAttribute("aria-current", "location");
     expect(await drawer().findByRole("checkbox", { name: "Pick bad�name" })).toBeDisabled();
+    expect(drawer().getByRole("checkbox", { name: "Pick odd�.txt" })).toBeDisabled();
     fireEvent.click(drawer().getByRole("checkbox", { name: "Pick config.json" }));
     expect(drawer().getByText("1 item picked")).toBeInTheDocument();
     // an operator downloads nothing
