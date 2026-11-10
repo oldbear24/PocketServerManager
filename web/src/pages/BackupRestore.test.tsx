@@ -3,6 +3,7 @@ import { ClientResponseError } from "pocketbase";
 import { useState, type ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import i18n from "../i18n";
 import { restoresApi, type BackupRestore, type SnapshotFolder } from "../lib/backupRestores";
 import { pb, type User } from "../lib/pb";
 import { BackupsPage } from "./Backups";
@@ -159,7 +160,7 @@ describe("the restore drawer", () => {
     const original = drawer().getByRole("radio", { name: /To the original location/ });
     expect(original).toHaveAttribute("aria-checked", "true");
     expect(original).toHaveTextContent(
-      "volume vw_data on nas. The containers that use it stop for a while and start again.",
+      "On nas: volume vw_data. The containers that use this data stop for a while and start again.",
     );
     // an operator restores to the original location only
     expect(drawer().getByRole("radio", { name: /To a new folder/ })).toBeDisabled();
@@ -418,6 +419,43 @@ describe("the restore drawer", () => {
       "aria-checked",
       "true",
     );
+  });
+
+  it("tells where a stack's volumes go back, in both languages", async () => {
+    signInAs("operator");
+    vi.spyOn(restoresApi, "snapshots").mockResolvedValue(snapshots(1));
+    const shop = job({ id: "j9", name: "shop", source_kind: "stack", source: "", stack: "s2" });
+    const view = () =>
+      wrap(
+        <RestoreDrawer
+          jobs={[shop]}
+          targets={targets}
+          hosts={hosts}
+          runs={[]}
+          stacks={[{ id: "s2", name: "shop", host: "h2" }]}
+          start={{ job: "j9", target: "t1", snapshot: first }}
+          onRecord={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+    const shown = view();
+    // a stack's volumes are many: the note does not hang on how many
+    expect(
+      await drawer().findByRole("radio", { name: /To the original location/ }),
+    ).toHaveTextContent(
+      "On nas: volumes of stack shop. The containers that use this data stop for a while and start again.",
+    );
+    shown.unmount();
+
+    await act(() => i18n.changeLanguage("cs"));
+    try {
+      view();
+      expect(await drawer().findByRole("radio", { name: /Na původní místo/ })).toHaveTextContent(
+        "Na serveru nas: svazky stacku shop. Kontejnery, které tato data používají, se na chvíli zastaví a pak znovu spustí.",
+      );
+    } finally {
+      await act(() => i18n.changeLanguage("en"));
+    }
   });
 
   it("offers no original location for a dump", async () => {

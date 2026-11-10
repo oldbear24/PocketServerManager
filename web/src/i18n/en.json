@@ -2247,7 +2247,7 @@
       "mode": {
         "original": {
           "label": "To the original location",
-          "note": "{{what}} on {{host}}. The containers that use it stop for a while and start again."
+          "note": "On {{host}}: {{what}}. The containers that use this data stop for a while and start again."
         },
         "path": {
           "label": "To a new folder on any server",

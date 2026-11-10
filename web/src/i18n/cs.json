@@ -2357,7 +2357,7 @@
       "mode": {
         "original": {
           "label": "Na původní místo",
-          "note": "{{what}} na serveru {{host}}. Kontejnery, které ho používají, se na chvíli zastaví a pak znovu spustí."
+          "note": "Na serveru {{host}}: {{what}}. Kontejnery, které tato data používají, se na chvíli zastaví a pak znovu spustí."
         },
         "path": {
           "label": "Do nové složky na libovolném serveru",
