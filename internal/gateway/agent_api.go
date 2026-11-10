@@ -552,6 +552,15 @@ func (s *Server) UploadArtifact(stream agentv1.AgentService_UploadArtifactServer
 		return status.Error(codes.PermissionDenied, "the artifact does not belong to a command of this host")
 	}
 
+	// passed on as it arrives: no spool, and no limit to its size
+	if live, ok := s.LiveArtifacts[header.GetKind()]; ok {
+		size, err := live(stream.Context(), command, header, &chunkReader{stream: stream})
+		if err != nil {
+			return status.Errorf(codes.Aborted, "the upload was not taken: %v", err)
+		}
+		return stream.SendAndClose(&agentv1.UploadArtifactResponse{SizeBytes: size})
+	}
+
 	handler, known := s.Artifacts[header.GetKind()]
 	if !known && header.GetKind() != "diagnostics" {
 		return status.Errorf(codes.InvalidArgument, "unknown artifact kind %q", header.GetKind())
@@ -639,6 +648,37 @@ func (s *Server) UploadArtifact(stream agentv1.AgentService_UploadArtifactServer
 	}
 
 	return stream.SendAndClose(&agentv1.UploadArtifactResponse{ArtifactId: bundle.Id, SizeBytes: size})
+}
+
+// chunkReader reads an upload's chunks as they come: it receives the next
+// one only when what it holds has been read, so the gRPC stream's window, and
+// with it the agent, waits for whoever reads (#30). io.EOF is the agent's
+// end of the upload; any other error, as the agent aborting, ends it too.
+type chunkReader struct {
+	stream agentv1.AgentService_UploadArtifactServer
+	rest   []byte
+	err    error
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	for len(r.rest) == 0 {
+		if r.err != nil {
+			return 0, r.err
+		}
+		part, err := r.stream.Recv()
+		if err != nil {
+			r.err = err
+			return 0, err
+		}
+		if part.GetHeader() != nil {
+			r.err = status.Error(codes.InvalidArgument, "the header came twice")
+			return 0, r.err
+		}
+		r.rest = part.GetChunk()
+	}
+	n := copy(p, r.rest)
+	r.rest = r.rest[n:]
+	return n, nil
 }
 
 // StreamLogs relays log chunks to the browsers watching a session.
