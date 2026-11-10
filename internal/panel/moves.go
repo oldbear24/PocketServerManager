@@ -47,6 +47,8 @@ func (p *Panel) registerMoves() {
 	p.Commands.OnFinish("db.server.move", p.moveFinished)
 	p.App.Cron().MustAdd("pocketcloud_db_moves_cleanup", "50 3 * * *", p.removeOldServers)
 	p.App.OnRecordCreateRequest(schema.Commands).BindFunc(p.guardMovedContainers)
+	// the stacks and containers a restore holds (#30)
+	p.App.OnRecordCreateRequest(schema.Commands).BindFunc(p.guardRestoringStack)
 }
 
 // retiredServices are the services of a stack whose database data moved to a
@@ -187,6 +189,9 @@ func (p *Panel) claimedByMove(server *core.Record, name, stackID string) string 
 		if stack, err := p.App.FindRecordById(schema.Stacks, stackID); err == nil {
 			if move := p.moveHolding(stack); move != nil {
 				return fmt.Sprintf("the databases of %s are moving: add one once that is done", stack.GetString("name"))
+			}
+			if p.restoreHolding(stack) != nil {
+				return strings.TrimSuffix(lowerFirst(restoreHoldMessage(stack.GetString("name"))), ".")
 			}
 		}
 		return p.aliasClash(stackID, server)

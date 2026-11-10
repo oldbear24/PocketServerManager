@@ -53,6 +53,9 @@ type Server struct {
 	Streams StreamBroker
 	// Artifacts takes uploads by their kind; diagnostics bundles are built in.
 	Artifacts map[string]ArtifactHandler
+	// LiveArtifacts takes uploads of the kinds that are passed on as they
+	// arrive, never stored, such as a restore's download (#30).
+	LiveArtifacts map[string]LiveArtifactHandler
 	// Fetch opens a file an agent downloads with FetchArtifact. Nil refuses
 	// every download.
 	Fetch FetchHandler
@@ -102,6 +105,13 @@ type Server struct {
 // ArtifactHandler stores a file an agent uploaded for a command. It receives the
 // path of the file, which is removed afterwards, and returns the id of what it made.
 type ArtifactHandler func(command *core.Record, fileName, path string, size uint64) (string, error)
+
+// LiveArtifactHandler takes an upload as it arrives, for a command of the
+// agent's own host. body reads the agent's chunks one at a time, as it is
+// read: nothing is stored on the way, and a reader that is slow holds the
+// agent back. It returns once body ended, how many bytes it passed on; an
+// error aborts the upload, and the agent stops sending.
+type LiveArtifactHandler func(ctx context.Context, command *core.Record, header *agentv1.UploadArtifactHeader, body io.Reader) (uint64, error)
 
 // FetchHandler opens an artifact for the agent of hostID, which must have a
 // command that needs it; ErrNoArtifact when it has none.

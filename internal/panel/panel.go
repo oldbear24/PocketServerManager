@@ -69,10 +69,26 @@ type Panel struct {
 	// BackupCheckWait is how long adding or checking a backup target waits
 	// for the agent; zero is two minutes.
 	BackupCheckWait time.Duration
+	// ListingWait is how long a request for snapshots or a snapshot's folder
+	// waits for the agent before it answers that the listing is pending;
+	// zero is 25 seconds.
+	ListingWait time.Duration
+	// DownloadFirstByte is how long a download of a snapshot waits for the
+	// agent's first bytes; zero is 120 seconds.
+	DownloadFirstByte time.Duration
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions
 	later           laterWork
+
+	// snapshotCache and browseCache keep what listings of snapshots, and of
+	// a snapshot's folders, gave (#30)
+	snapshotCache listingCache
+	browseCache   listingCache
+	// downloadTickets and downloads are the downloads of snapshots: their
+	// links, and those under way (#30)
+	downloadTickets downloadTickets
+	downloads       downloadSessions
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
@@ -182,6 +198,7 @@ func (p *Panel) Register() {
 	p.registerProvision()
 	p.registerBackups()
 	p.registerBackupJobs()
+	p.registerBackupRestores()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -232,8 +249,12 @@ func (p *Panel) Register() {
 		p.bindLANRoutes(group)
 		p.bindBackupRoutes(group)
 		p.bindBackupJobRoutes(group)
+		p.bindBackupRestoreRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
+		// restores whose end the panel missed while it was down are settled,
+		// before any request: no download's browser is left after a restart
+		p.settleRestores()
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
@@ -301,6 +322,8 @@ func (p *Panel) startGateway() error {
 	p.Gateway.OnRequests = p.onRequests
 	p.Gateway.OnLatency = p.onLatency
 	p.Gateway.Fetch = p.fetchArtifact
+	// a download of a snapshot goes on to the browser as it arrives (#30)
+	p.Gateway.LiveArtifacts = map[string]gateway.LiveArtifactHandler{artifactBackupDownload: p.serveDownload}
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)

@@ -326,6 +326,10 @@ func (p *Panel) handleRemoveJob(e *core.RequestEvent) error {
 	if job.GetString("origin") == schema.JobLabel && !labelGone(job) {
 		return e.Error(http.StatusConflict, fmt.Sprintf("It comes back at the stack's next deploy: remove its %s label instead.", stacks.LabelBackup), nil)
 	}
+	// its restores go with it, and one under way would end unrecorded
+	if p.restoreOpenFor("job={:job}", dbx.Params{"job": job.Id}) {
+		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
+	}
 	// runs that have not left the queue do not start for a job that is gone
 	runs, err := e.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && status={:queued} && command!=''", "", 0, 0,
 		dbx.Params{"job": job.Id, "queued": schema.RunQueued})
@@ -362,6 +366,9 @@ func (p *Panel) handleRunJob(e *core.RequestEvent) error {
 	}
 	if !p.Commands.Connected(host.Id) {
 		return e.Error(http.StatusConflict, fmt.Sprintf("The server %s is offline: its agent runs the backup.", host.GetString("name")), nil)
+	}
+	if p.restoreWriting(job) != nil {
+		return e.Error(http.StatusConflict, "A restore into its data is under way: back it up once it ends.", nil)
 	}
 	requestedBy, requester := requester(e)
 	runs := []string{}
@@ -681,10 +688,14 @@ func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
 		return
 	}
 	offline := p.offline(host)
+	// a backup of half a restore would feed the retention (#30)
+	restoring := p.restoreWriting(job) != nil
 	for _, target := range p.jobTargets(job) {
 		switch {
 		case offline:
 			p.skipRun(job, target, host, minute, fmt.Sprintf("The server %s was offline at %s UTC.", host.GetString("name"), minute.Format("15:04")), true)
+		case restoring:
+			p.skipRun(job, target, host, minute, fmt.Sprintf("A restore into its data is under way on %s.", host.GetString("name")), false)
 		case p.runGoing(job, target):
 			p.skipRun(job, target, host, minute, "The run before it was still going.", false)
 		default:

@@ -75,6 +75,9 @@ func (p *Panel) registerDatabases() {
 		if move := p.moveHolding(e.Record); move != nil {
 			return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: remove the stack once that is done.", e.Record.GetString("name"), move.GetString("target_name")), nil)
 		}
+		if p.restoreHolding(e.Record) != nil {
+			return e.Error(http.StatusConflict, restoreHoldMessage(e.Record.GetString("name")), nil)
+		}
 		return e.Next()
 	})
 
