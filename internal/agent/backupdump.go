@@ -98,11 +98,9 @@ func (a *Agent) handleBackupDump(ctx context.Context, command *agentv1.Command, 
 		return nil, errDownloadGone
 	}
 
-	// a browser that goes stops the job, with its grace: restic removes its
-	// lock
-	jobCtx, stopJob := context.WithCancel(ctx)
-	defer stopJob()
-	writer := &artifactWriter{stream: stream, failed: stopJob}
+	// a browser that goes fails a write, which stops the job with its grace
+	// (see runWith): restic removes its lock
+	writer := &artifactWriter{stream: stream}
 	ticking := make(chan struct{})
 	var ticker sync.WaitGroup
 	ticker.Go(func() {
@@ -124,7 +122,7 @@ func (a *Agent) handleBackupDump(ctx context.Context, command *agentv1.Command, 
 		args:         []string{"dump", "--snapshot", payload.GetSnapshotId(), "--path", payload.GetPath(), "--expect-tag", payload.GetJobTag()},
 		attachOutput: writer, stopGrace: backupStopGrace, labels: commandLabels(command),
 	}
-	_, err = a.backupJob(jobCtx, repo, job, io.MultiWriter(reporter, log))
+	_, err = a.backupJob(ctx, repo, job, io.MultiWriter(reporter, log))
 	close(ticking)
 	ticker.Wait()
 	result := map[string]any{"bytes": writer.sent.Load(), "file_name": payload.GetFileName()}
@@ -145,12 +143,11 @@ func (a *Agent) handleBackupDump(ctx context.Context, command *agentv1.Command, 
 
 // artifactWriter sends what it is given to an upload, in chunks of at most
 // uploadChunkSize, each once the upload took it; the first that fails
-// calls failed and fails every write after it.
+// fails every write after it.
 type artifactWriter struct {
 	stream interface {
 		Send(*agentv1.UploadArtifactRequest) error
 	}
-	failed  func()
 	sent    atomic.Int64
 	mu      sync.Mutex
 	sendErr error
@@ -167,9 +164,6 @@ func (w *artifactWriter) Write(data []byte) (int, error) {
 		chunk := data[written:min(len(data), written+uploadChunkSize)]
 		if err := w.stream.Send(&agentv1.UploadArtifactRequest{Part: &agentv1.UploadArtifactRequest_Chunk{Chunk: chunk}}); err != nil {
 			w.sendErr = err
-			if w.failed != nil {
-				w.failed()
-			}
 			return written, err
 		}
 		written += len(chunk)
