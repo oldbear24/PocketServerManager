@@ -238,6 +238,78 @@ func TestARestoreIsCheckedAsItIsMade(t *testing.T) {
 	expect("a folder that only starts the same", http.StatusAccepted, "", s, m)
 }
 
+// TestARestoreIsCheckedInTheDocumentedOrder (#30): a restore that fails two
+// checks gets the answer of the one docs/architecture.md lists first: the
+// mode and the role, the snapshot, the target, the job's use of it, a
+// pending target, the includes, replace, then what the mode needs.
+func TestARestoreIsCheckedInTheDocumentedOrder(t *testing.T) {
+	f := newJobFixture(t)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+	stack := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "shop"})
+	dump := f.job("dump", map[string]any{"source_kind": schema.SourceDump, "stack": stack.Id, "service": "db", "engine": schema.DumpPostgres})
+	unused := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.agent(f.host)
+	many := make([]string, 101)
+	for i := range many {
+		many[i] = fmt.Sprintf("/volumes/app_data/%d", i)
+	}
+	setStatus := func(status string, targets ...*core.Record) {
+		t.Helper()
+		for _, target := range targets {
+			target.Set("status", status)
+			if err := f.app.Save(target); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	type check struct {
+		name    string
+		job     *core.Record
+		body    map[string]any
+		status  int
+		message string
+	}
+	expect := func(checks ...check) {
+		t.Helper()
+		for _, c := range checks {
+			all := map[string]any{"target": f.target.Id, "snapshot": snapshotID, "mode": "original"}
+			for key, value := range c.body {
+				all[key] = value
+			}
+			status, answer := f.send(http.MethodPost, "/api/pc/backup-jobs/"+c.job.Id+"/restores", operator, all)
+			if message, _ := answer["message"].(string); status != c.status || message != c.message {
+				t.Errorf("%s: %d %q, not %d %q", c.name, status, message, c.status, c.message)
+			}
+		}
+	}
+
+	setStatus(schema.TargetPending, unused, f.target)
+	expect(
+		check{"an operator's folder of a short id", job, map[string]any{"mode": "path", "snapshot": "3f9a1c2e", "target": "nosuchtarget000"},
+			http.StatusForbidden, "Only admins restore to a new folder."},
+		check{"a mode of a short id", job, map[string]any{"mode": "volume", "snapshot": "3f9a1c2e", "target": "nosuchtarget000"},
+			http.StatusBadRequest, "Choose where the snapshot goes: its original location or a new folder."},
+		check{"a short id from no target", job, map[string]any{"snapshot": "3f9a1c2e", "target": "nosuchtarget000"},
+			http.StatusBadRequest, "Choose a snapshot."},
+		check{"no target, and too many items", job, map[string]any{"target": "nosuchtarget000", "include": many},
+			http.StatusNotFound, "The target does not exist."},
+		check{"a pending target the job never used", job, map[string]any{"target": unused.Id},
+			http.StatusBadRequest, "The job never backed up to that target."},
+		check{"a pending target, and too many items", job, map[string]any{"include": many},
+			http.StatusConflict, "The target is still being added: restore from it once its check ends."},
+	)
+	setStatus(schema.TargetOK, f.target)
+	expect(
+		check{"too many items to replace", job, map[string]any{"include": many, "replace": true},
+			http.StatusBadRequest, "Pick at most 100 items, or a whole folder."},
+		check{"a dump's items to replace", dump, map[string]any{"include": []string{"/dump/db.sql"}, "replace": true},
+			http.StatusBadRequest, "Replace works for the whole snapshot only."},
+		check{"another server, and items of other data", job, map[string]any{"host": "nosuchhost00000", "include": []string{"/volumes/other/x"}},
+			http.StatusBadRequest, "A restore to the original location goes to the job's server."},
+	)
+}
+
 // TestADraftIsDiscarded (#30): a draft goes when someone discards it, its
 // preview stopped if it runs; one that was started does not, and only an
 // admin discards a draft to a folder.
