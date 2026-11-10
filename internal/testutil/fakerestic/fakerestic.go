@@ -68,7 +68,8 @@ const Wrong = "wrong"
 // holds, not deeper; a DIR that is not there prints the snapshot alone.
 // restore ID[:SUB] --target T copies what the snapshot holds under SUB into
 // T, as --overwrite always or never, deleting what the snapshot lacks with
-// --delete, only what --include picks (relative to SUB), with each item's
+// --delete, only what --include picks (relative to SUB, matched as restic
+// matches its globs: see includePicks), with each item's
 // verbose_status for -vv, a status line per file and a summary; --dry-run
 // changes nothing. A file in the way of a directory is an error, as are the
 // files after the first FAKE_RESTIC_RESTORE_FAIL_AFTER=N, each a JSON error
@@ -220,20 +221,6 @@ readonly_target() {
 	printf '%s\n' "$FAKE_RESTIC_READONLY" | {
 		while IFS= read -r dir; do
 			case "$1" in "$dir"|"$dir"/*) exit 0;; esac
-		done
-		exit 1
-	}
-}
-
-# included: the item $1 of a restore is one of those --include picks, a
-# folder that holds one, or in one
-included() {
-	[ -n "$includes" ] || return 0
-	printf '%s\n' "$includes" | {
-		while IFS= read -r pick; do
-			[ -n "$pick" ] || continue
-			case "$1" in "$pick"|"$pick"/*) exit 0;; esac
-			case "$pick" in "$1"/*) exit 0;; esac
 		done
 		exit 1
 	}
@@ -535,6 +522,12 @@ $2"; shift 2;;
 		echo "path ${sub#/}: not a directory" >&2
 		exit 1
 	fi
+	items=$(cd "$src" && find . -mindepth 1 | sed 's|^\.||' | sort)
+	if [ -n "$includes" ]; then
+		# what the patterns pick, as restic matches its globs, which the test
+		# binary works out (see init); a pattern restic refuses ends here
+		chosen=$(printf '%s\n' "$items" | FAKE_RESTIC_INCLUDES="$includes" "${FAKE_RESTIC_SELF:?}" fakerestic-include) || exit 1
+	fi
 	if [ -z "$dry" ]; then
 		if readonly_target "$target"; then
 			echo "Fatal: mkdir $target: read-only file system" >&2
@@ -542,11 +535,13 @@ $2"; shift 2;;
 		fi
 		mkdir -p "$target"
 	fi
-	items=$(cd "$src" && find . -mindepth 1 | sed 's|^\.||' | sort)
 	picked=
 	total_files=0; total_bytes=0
 	while IFS= read -r item; do
-		[ -n "$item" ] && included "$item" || continue
+		[ -n "$item" ] || continue
+		if [ -n "$includes" ]; then
+			printf '%s\n' "$chosen" | grep -qxF -- "$item" || continue
+		fi
 		picked="$picked$item
 "
 		total_files=$((total_files + 1))
@@ -682,8 +677,12 @@ esac
 
 // init runs the dump's relay when the fake restic runs this test binary for
 // restic's --stdin-from-command, as the backup tool asks it to, in place of
-// the agent's binary in a job container.
+// the agent's binary in a job container; and says which items of a restore
+// its --include patterns pick, when the fake restic asks it (#30).
 func init() {
+	if len(os.Args) == 2 && os.Args[1] == "fakerestic-include" {
+		os.Exit(answerIncludes(os.Stdin, os.Stdout, os.Stderr, os.Getenv("FAKE_RESTIC_INCLUDES")))
+	}
 	if len(os.Args) < 3 || os.Args[1] != "backup-tool" || os.Args[2] != "relay" {
 		return
 	}
@@ -714,6 +713,12 @@ func Install(t testing.TB) string {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_RESTIC_ROOT", root)
+	// the test binary, which works out what --include picks (see init)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_RESTIC_SELF", self)
 	return root
 }
 

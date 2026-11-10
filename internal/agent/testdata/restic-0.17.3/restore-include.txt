@@ -9,3 +9,22 @@ sub/b.txt	sub sub/b.txt
 # restore ID --target T, all of the snapshot: a pattern is the snapshot's path.
 /volumes/vx/sub	volumes volumes/vx volumes/vx/sub volumes/vx/sub/b.txt volumes/vx/sub/deep volumes/vx/sub/deep/c.txt
 /sub	nothing
+# globs: restore ID:/volumes/vx --target T --include PATTERN, where the snapshot
+# holds, in /volumes/vx, file[1].txt, file1.txt, data*, datax, a[b, q?, qa, x\y,
+# xy, d[1]/in/c.txt, d1/e.txt, b] and b. Each name of a pattern is a glob, and a
+# backslash makes the character after it stand for itself; a pattern that is no
+# glob fails the restore, exit code 1.
+/file[1].txt	file1.txt
+/file\[1].txt	file[1].txt
+/data*	data* datax
+/data\*	data*
+/a[b	error: Fatal: --include: invalid pattern(s) provided:
+/a\[b	a[b
+/q?	q? qa
+/q\?	q?
+/x\y	xy
+/x\\y	x\y
+/d[1]	d1 d1/e.txt
+/d\[1]	d[1] d[1]/in d[1]/in/c.txt
+/d\[1]/in/c.txt	d[1] d[1]/in d[1]/in/c.txt
+/b]	b]

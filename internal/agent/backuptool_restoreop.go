@@ -229,13 +229,21 @@ type restorePlan struct {
 // includePattern is an absolute path of the snapshot as restic's --include
 // takes it in a restore of source, ID:source: relative to source, which
 // restic 0.17.3 matches from the root of what it restores; all of a
-// snapshot's paths as they are (see testdata/restic-0.17.3).
+// snapshot's paths as they are (see testdata/restic-0.17.3). restic takes a
+// pattern as globs, so each character a glob gives a meaning stands for
+// itself behind a backslash: a picked file[1].txt is that file, not
+// file1.txt.
 func includePattern(source, include string) string {
-	if source == "/" {
-		return include
+	if source != "/" {
+		include = "/" + strings.TrimPrefix(include, source+"/")
 	}
-	return "/" + strings.TrimPrefix(include, source+"/")
+	return globEscaper.Replace(include)
 }
+
+// globEscaper puts a backslash before each character of a path that
+// restic's globs, those of filepath.Match, give a meaning; ] means nothing
+// without the [ before it.
+var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 
 // restore restores the snapshot's roots, or says what it would do. Its
 // result, when there is one, is said also with its error: what a restore

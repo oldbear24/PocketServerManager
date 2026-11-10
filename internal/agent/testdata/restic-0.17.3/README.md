@@ -22,7 +22,8 @@ same shape.
   the snapshot has a file: a JSON error line per item, then "Fatal: There were
   1 errors", exit code 1. The summary on the standard output still counts the
   item as restored.
-- restore-include.txt: which --include patterns pick what.
+- restore-include.txt: which --include patterns pick what, globs and their
+  backslash escapes too; the fake restic is held to its globs.
 - dump-names.txt: `tar -tv` of `dump --archive tar ID /volumes/vx`: the
   folder's own entry is left out, and every name is its snapshot path without
   the leading slash. `dump --archive tar ID FILE` writes the file as it is.

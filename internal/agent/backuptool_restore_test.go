@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -616,6 +618,106 @@ func TestRestorePicksPathsUnderTheirRoots(t *testing.T) {
 	if _, _, err := runTool(t, env, nil, "restore", "--snapshot", id, "--root", "/volumes/app="+t.TempDir(), "--include", "/srv/x"); err == nil ||
 		!strings.Contains(err.Error(), "/srv/x is in none of the folders") {
 		t.Errorf("a pick in no root: %v", err)
+	}
+}
+
+// globNames are files whose names restic's globs give a meaning, and those
+// the globs would match instead (see testdata/restic-0.17.3).
+var globNames = map[string]string{"file[1].txt": "1", "file1.txt": "2", "data*": "3", "datax": "4", "a[b": "5", "q?": "6", "qa": "7",
+	"d[1]/in/c.txt": "8", "d1/e.txt": "9", "b]": "10", "b": "11"}
+
+// TestAPickWithGlobCharactersRestoresOnlyItself (#30, AC2): restic takes a
+// pick as globs; the tool hands it over with each character that means
+// something to a glob standing for itself, so a picked file[1].txt
+// restores that file and not file1.txt, data* not datax, and a[b, which is
+// no glob, restores rather than fails.
+func TestAPickWithGlobCharactersRestoresOnlyItself(t *testing.T) {
+	env, _ := backupRepository(t)
+	source := t.TempDir()
+	writeFiles(t, source, globNames)
+	id := snapshotOf(t, env, "/volumes/app", source)
+	for pick, want := range map[string]map[string]string{
+		"file[1].txt": {"file[1].txt": "1"},
+		"data*":       {"data*": "3"},
+		"a[b":         {"a[b": "5"},
+		"q?":          {"q?": "6"},
+		"d[1]":        {"d[1]/in/c.txt": "8"},
+		"b]":          {"b]": "10"},
+	} {
+		dest := t.TempDir()
+		if _, log, err := runTool(t, env, nil, restoreArgsOf(id, "/volumes/app", dest, "--include", "/volumes/app/"+pick)...); err != nil {
+			t.Errorf("%s: %v\n%s", pick, err, log)
+			continue
+		}
+		if files := readTree(t, dest); !maps.Equal(files, want) {
+			t.Errorf("%s restored %v", pick, files)
+		}
+	}
+	// a backslash too, and all of the snapshot's paths
+	if pattern := includePattern("/volumes/app", `/volumes/app/x\y*`); pattern != `/x\\y\*` {
+		t.Errorf("a backslash: %s", pattern)
+	}
+	if pattern := includePattern("/", "/volumes/app/d[1]/q?"); pattern != `/volumes/app/d\[1]/q\?` {
+		t.Errorf("all of the snapshot: %s", pattern)
+	}
+}
+
+// TestTheFakeResticPicksAsRestic0173Did: the fake restic's --include picks
+// what restic 0.17.3 picked for the same patterns, globs and their escapes,
+// as testdata/restic-0.17.3/restore-include.txt holds it, so that a test of
+// a pick on the fake says what the real one does.
+func TestTheFakeResticPicksAsRestic0173Did(t *testing.T) {
+	env, _ := backupRepository(t)
+	source := t.TempDir()
+	files := maps.Clone(globNames)
+	files[`x\y`], files["xy"] = "12", "13"
+	writeFiles(t, source, files)
+	id := snapshotOf(t, env, "/volumes/vx", source)
+	captured, err := os.ReadFile(filepath.Join("testdata", "restic-0.17.3", "restore-include.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, globs, _ := strings.Cut(string(captured), "# globs:")
+	checked := 0
+	for line := range strings.SplitSeq(globs, "\n") {
+		pattern, want, ok := strings.Cut(line, "\t")
+		if !ok || strings.HasPrefix(line, "#") {
+			continue
+		}
+		checked++
+		target := filepath.Join(t.TempDir(), "t")
+		command := exec.Command("restic", "restore", id+":/volumes/vx", "--target", target, "--include", pattern)
+		command.Env = os.Environ()
+		for name, value := range env {
+			command.Env = append(command.Env, name+"="+value)
+		}
+		out, err := command.CombinedOutput()
+		got := "nothing"
+		switch {
+		case err != nil:
+			_, fatal, _ := strings.Cut(string(out), "Fatal: ")
+			fatal, _, _ = strings.Cut(fatal, "\n")
+			got = "error: Fatal: " + fatal
+		default:
+			var picked []string
+			_ = filepath.WalkDir(target, func(file string, _ os.DirEntry, err error) error {
+				if err == nil && file != target {
+					rel, _ := filepath.Rel(target, file)
+					picked = append(picked, filepath.ToSlash(rel))
+				}
+				return nil
+			})
+			slices.Sort(picked)
+			if len(picked) > 0 {
+				got = strings.Join(picked, " ")
+			}
+		}
+		if got != want {
+			t.Errorf("%s: the fake picked %q, restic %q", pattern, got, want)
+		}
+	}
+	if checked != 14 {
+		t.Errorf("%d patterns were checked", checked)
 	}
 }
 
