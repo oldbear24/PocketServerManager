@@ -136,6 +136,76 @@ func TestResources(t *testing.T) {
 	}
 }
 
+// TestRestoreResourceIsTheStackAndDryRunHasNone: a restore holds what it
+// writes, the project of its destination's containers above all, so that a
+// deploy cannot start them while their data is half restored; a preview
+// writes nothing and holds nothing. No restore holds its target, or it would
+// wait behind backups of twelve hours (#30).
+func TestRestoreResourceIsTheStackAndDryRunHasNone(t *testing.T) {
+	repository := &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}
+	restore := func(r *agentv1.BackupRestore) *agentv1.Command {
+		r.Repository = repository
+		return &agentv1.Command{Payload: &agentv1.Command_BackupRestore{BackupRestore: r}}
+	}
+	volume := []*agentv1.BackupRestoreRoot{{Source: "/volumes/app_data", Volume: "app_data"}}
+	path := []*agentv1.BackupRestoreRoot{{Source: "/srv/app", Path: "/srv/app"}}
+
+	for _, tc := range []struct {
+		name    string
+		command *agentv1.Command
+		want    string
+	}{
+		{"a preview", restore(&agentv1.BackupRestore{DryRun: true, Stack: "notes", Original: volume}), ""},
+		{"a preview into a folder", restore(&agentv1.BackupRestore{DryRun: true, TargetPath: "/srv/restored"}), ""},
+		{"a stack's volumes", restore(&agentv1.BackupRestore{Stack: "notes", Original: []*agentv1.BackupRestoreRoot{
+			{Source: "/volumes/notes_pgdata", Volume: "notes_pgdata"}, {Source: "/volumes/notes_appdata", Volume: "notes_appdata"},
+		}}), "stack:notes"},
+		{"a project's volume", restore(&agentv1.BackupRestore{Stack: "notes", Original: volume}), "stack:notes"},
+		{"a volume of no project", restore(&agentv1.BackupRestore{Original: volume}), "volume:app_data"},
+		{"a directory", restore(&agentv1.BackupRestore{Original: path}), "path:/srv/app"},
+		{"a new folder", restore(&agentv1.BackupRestore{TargetPath: "/srv/restored", Source: "/"}), "path:/srv/restored"},
+		{"a new folder used by a project", restore(&agentv1.BackupRestore{TargetPath: "/srv/restored", Stack: "notes"}), "stack:notes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := Specs[TypeOf(tc.command)]
+			if spec.Resource == nil {
+				t.Fatal("a restore has no ordering")
+			}
+			if got := spec.Resource(tc.command); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// what the restore's commands do not write, they do not hold
+	for _, commandType := range []string{"backup.snapshots", "backup.browse", "backup.dump"} {
+		if Specs[commandType].Resource != nil {
+			t.Errorf("%s has an ordering key", commandType)
+		}
+	}
+}
+
+// TestOnlyRestoresAndDownloadsAreSettledByTheAgent: a cancelled restore waits
+// for the agent to say which containers it started again, and a download for
+// the agent to stop sending (#30). Every other type is finished by a cancel at
+// once, as before.
+func TestOnlyRestoresAndDownloadsAreSettledByTheAgent(t *testing.T) {
+	for commandType, spec := range Specs {
+		want := commandType == "backup.restore" || commandType == "backup.dump"
+		if spec.SettledByAgent != want {
+			t.Errorf("%s: SettledByAgent is %v", commandType, spec.SettledByAgent)
+		}
+		if spec.SettledByAgent && spec.Uninterruptible {
+			t.Errorf("%s cannot be stopped, and waits for the agent after a stop", commandType)
+		}
+	}
+	for commandType, spec := range PanelSpecs {
+		if spec.SettledByAgent {
+			t.Errorf("the panel runs %s itself: no agent settles it", commandType)
+		}
+	}
+}
+
 // TestSecretCarryingTypesAreNotOpenToTheAPI: a type whose payload can hold a secret
 // may only be created by the panel, which reads the secret right before delivery.
 func TestSecretCarryingTypesAreNotOpenToTheAPI(t *testing.T) {

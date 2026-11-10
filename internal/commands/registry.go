@@ -32,6 +32,12 @@ type Spec struct {
 	// the agent knows whether a cancel would land where it can still undo its
 	// work, so it decides by itself, within the command's timeout.
 	Uninterruptible bool
+	// SettledByAgent commands stay open when they are cancelled after they
+	// left the queue, until the agent reports how they ended: the agent still
+	// has work to do after a cancel, such as starting again the containers a
+	// restore stopped, and its report says what it did (#30). Its ordering
+	// key is held until then. A queued one is cancelled at once, as any other.
+	SettledByAgent bool
 }
 
 func stack(c *agentv1.Command) string {
@@ -108,8 +114,6 @@ func backup(c *agentv1.Command) string {
 		repository = p.BackupInit.GetRepository()
 	case *agentv1.Command_BackupRun:
 		repository = p.BackupRun.GetRepository()
-	case *agentv1.Command_BackupRestore:
-		repository = p.BackupRestore.GetRepository()
 	case *agentv1.Command_BackupCheck:
 		repository = p.BackupCheck.GetRepository()
 	case *agentv1.Command_BackupUnlock:
@@ -132,6 +136,34 @@ func backup(c *agentv1.Command) string {
 		return "backup:" + id
 	}
 	return "backup:" + repository.GetUrl()
+}
+
+// restoreResource orders a restore with what else writes its destination
+// (#30). A restore to the original location of a Compose project holds the
+// project, as a deploy does: deploys, stack commands and moves of its
+// databases wait for it. Any other restore holds the volume or the folder it
+// writes. A preview writes nothing, and waits for nothing. It is never the
+// target's key: a restore would wait behind backups of twelve hours, and a
+// backup would wait behind it.
+func restoreResource(c *agentv1.Command) string {
+	restore := c.GetBackupRestore()
+	switch {
+	case restore == nil || restore.GetDryRun():
+		return ""
+	case restore.GetStack() != "":
+		return "stack:" + restore.GetStack()
+	case len(restore.GetOriginal()) > 0:
+		root := restore.GetOriginal()[0]
+		if root.GetVolume() != "" {
+			return "volume:" + root.GetVolume()
+		}
+		if root.GetPath() != "" {
+			return "path:" + root.GetPath()
+		}
+	case restore.GetTargetPath() != "":
+		return "path:" + restore.GetTargetPath()
+	}
+	return ""
 }
 
 func self(*agentv1.Command) string {
@@ -203,16 +235,18 @@ var Specs = map[string]Spec{
 	"acme.challenge.present": {Timeout: time.Minute},
 	"acme.challenge.cleanup": {Timeout: time.Minute},
 
-	"backup.init":      {Timeout: time.Hour, Resource: backup},
-	"backup.run":       {Timeout: 12 * time.Hour, Resource: backup},
-	"backup.restore":   {Timeout: 12 * time.Hour, Resource: backup},
+	"backup.init": {Timeout: time.Hour, Resource: backup},
+	"backup.run":  {Timeout: 12 * time.Hour, Resource: backup},
+	// a preview, or a restore that stops and starts the destination's users
+	// itself (#30)
+	"backup.restore":   {Timeout: 12 * time.Hour, Resource: restoreResource, SettledByAgent: true},
 	"backup.snapshots": {Timeout: 5 * time.Minute},
 	"backup.browse":    {Timeout: 5 * time.Minute},
 	"backup.check":     {Timeout: 12 * time.Hour, Resource: backup},
 	"backup.unlock":    {Timeout: 5 * time.Minute, Resource: backup},
 	"backup.forget":    {Timeout: 2 * time.Hour, Resource: backup},
 	// a download streamed from the repository to a browser (#30)
-	"backup.dump": {Timeout: 12 * time.Hour},
+	"backup.dump": {Timeout: 12 * time.Hour, SettledByAgent: true},
 
 	"agent.update":             {Timeout: 15 * time.Minute, Resource: self},
 	"agent.restart":            {Timeout: 2 * time.Minute, Role: schema.RoleAdmin, Resource: self},
