@@ -47,6 +47,15 @@ type jobsHarness struct {
 // the options change the gateway before it starts.
 func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), options ...func(*gateway.Server)) *jobsHarness {
 	t.Helper()
+	return startJobsHarness(t, prepare, false, options...)
+}
+
+// startJobsHarness is newJobsHarness. With serverFolders, the fake job
+// containers read and write a server's folders under the agent's HostRoot,
+// where the agent sees them, rather than where they are on the test's
+// machine: a restore (#30) writes into them.
+func startJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), serverFolders bool, options ...func(*gateway.Server)) *jobsHarness {
+	t.Helper()
 	b := &backupHarness{harness: newHarness(t, options...)}
 	j := &jobsHarness{backupHarness: b}
 	b.restic = fakerestic.Install(t)
@@ -56,7 +65,12 @@ func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), optio
 	if prepare != nil {
 		prepare(b.docker)
 	}
-	fakerestic.RunJobs(b.docker, agent.BackupTool)
+	j.hostRoot = fakeHostRoot(t)
+	jobOptions := fakerestic.Options{}
+	if serverFolders {
+		jobOptions.ServerRoot = j.hostRoot
+	}
+	fakerestic.RunJobsWith(b.docker, agent.BackupTool, jobOptions)
 	run := b.docker.OnJob
 	b.docker.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
 		b.mu.Lock()
@@ -75,9 +89,8 @@ func newJobsHarness(t *testing.T, prepare func(engine *fakedocker.Engine), optio
 	t.Setenv("FAKE_COMPOSE_LOG", filepath.Join(t.TempDir(), "compose.log"))
 	config := b.agentConfig("backup-node", b.token("backup-node", schema.HostRoleDocker))
 	config.DockerCLI = fakeCLI(t)
-	config.HostRoot = fakeHostRoot(t)
-	j.hostRoot = config.HostRoot
-	b.agent = b.start(config)
+	config.HostRoot = j.hostRoot
+	b.agent = b.start(config, quickRestores)
 	b.waitFor("the agent to connect", func() bool {
 		found, err := b.app.FindFirstRecordByData(schema.Hosts, "name", "backup-node")
 		if err != nil || !found.GetBool("stream_open") {
