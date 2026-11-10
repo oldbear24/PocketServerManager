@@ -267,11 +267,14 @@ func (r restic) restore(ctx context.Context, request restoreRequest, stdin io.Re
 		if plan.entries > 0 && !request.overwrite {
 			result.Refused = "not_empty"
 			result.Roots[i].Entries = plan.entries
-			count := strconv.Itoa(plan.entries)
-			if plan.capped {
+			count, them := items(plan.entries), "them"
+			switch {
+			case plan.capped:
 				count = "more than " + count
+			case plan.entries == 1:
+				them = "it"
 			}
-			return result, fmt.Errorf("%s holds %s items and the restore was not confirmed to overwrite them: preview again", plan.label, count)
+			return result, fmt.Errorf("%s holds %s and the restore was not confirmed to overwrite %s: preview again", plan.label, count, them)
 		}
 	}
 	if request.wait {
@@ -290,13 +293,21 @@ func (r restic) restore(ctx context.Context, request restoreRequest, stdin io.Re
 	return result, err
 }
 
+// items counts items as a sentence says them: "1 item", "3 items".
+func items[N int | int64](n N) string {
+	if n == 1 {
+		return "1 item"
+	}
+	return strconv.FormatInt(int64(n), 10) + " items"
+}
+
 // couldNotRestore says what a restore whose restic restored what it could
 // could not restore.
 func couldNotRestore(result *restoreResult) error {
 	if len(result.ErrorSample) == 0 {
-		return fmt.Errorf("restic could not restore %d items, so the destination holds part of the snapshot", result.Errors)
+		return fmt.Errorf("restic could not restore %s, so the destination holds part of the snapshot", items(result.Errors))
 	}
-	return fmt.Errorf("restic could not restore %d items, so the destination holds part of the snapshot; the first: %s", result.Errors, result.ErrorSample[0])
+	return fmt.Errorf("restic could not restore %s, so the destination holds part of the snapshot; the first: %s", items(result.Errors), result.ErrorSample[0])
 }
 
 // restored are the plans of the roots that are restored.
@@ -673,7 +684,7 @@ func (r restic) restoreRoots(ctx context.Context, request restoreRequest, plans 
 		case run.code == 0:
 		case run.code == 1 && run.errors > 0:
 			// restic restored what it could, and said what it could not
-			fmt.Fprintf(r.log, "restic could not restore %d items into %s\n", run.errors, plan.label)
+			fmt.Fprintf(r.log, "restic could not restore %s into %s\n", items(run.errors), plan.label)
 		default:
 			return repositoryError(run.code, run.said)
 		}

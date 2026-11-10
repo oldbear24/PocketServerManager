@@ -337,6 +337,28 @@ func TestRestoreRefusesAFilledDestinationUnconfirmed(t *testing.T) {
 	}
 }
 
+// TestARefusalCountsOneItemInTheSingular (#30): a destination that holds one
+// item says so as a sentence does, "1 item", and "it"; and restic's errors
+// are counted the same way.
+func TestARefusalCountsOneItemInTheSingular(t *testing.T) {
+	env, _ := backupRepository(t)
+	source := t.TempDir()
+	writeFiles(t, source, map[string]string{"a.txt": "v1"})
+	id := snapshotOf(t, env, "/volumes/app", source)
+	dest := t.TempDir()
+	writeFiles(t, dest, map[string]string{"mine.txt": "keep"})
+	_, _, err := runTool(t, env, strings.NewReader("go\n"), restoreArgsOf(id, "/volumes/app", dest, "--wait")...)
+	if err == nil || err.Error() != "app_data holds 1 item and the restore was not confirmed to overwrite it: preview again" {
+		t.Errorf("the restore: %v", err)
+	}
+	if got := couldNotRestore(&restoreResult{Errors: 1}).Error(); got != "restic could not restore 1 item, so the destination holds part of the snapshot" {
+		t.Errorf("one error: %s", got)
+	}
+	if got := couldNotRestore(&restoreResult{Errors: 2, ErrorSample: []string{"x: denied"}}).Error(); got != "restic could not restore 2 items, so the destination holds part of the snapshot; the first: x: denied" {
+		t.Errorf("two errors: %s", got)
+	}
+}
+
 // TestRestoreRefusesASnapshotWithoutTheJobTag (#30, SAFE): a snapshot of
 // another job is never restored, nor dumped, under this job's name.
 func TestRestoreRefusesASnapshotWithoutTheJobTag(t *testing.T) {

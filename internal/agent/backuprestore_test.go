@@ -502,7 +502,7 @@ func TestContainersStartAgainWhenResticFails(t *testing.T) {
 	t.Setenv("FAKE_RESTIC_RESTORE_FAIL_AFTER", "1")
 	writeFiles(t, h.engine.VolumeDir("app_data"), map[string]string{"a.txt": "v2", "b.txt": "b2"})
 	result, err = h.restore(context.Background(), "c2", payload)
-	if err == nil || !strings.HasPrefix(err.Error(), "restic could not restore 1 items, so the destination holds part of the snapshot; the first: ") ||
+	if err == nil || !strings.HasPrefix(err.Error(), "restic could not restore 1 item, so the destination holds part of the snapshot; the first: ") ||
 		!strings.Contains(err.Error(), "app_data/b.txt: permission denied") {
 		t.Fatalf("a partial restore: %v", err)
 	}

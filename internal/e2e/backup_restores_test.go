@@ -979,7 +979,7 @@ func TestOverwritingNeedsExplicitConfirmation(t *testing.T) {
 	}
 	restore := r.ended(draft.Id)
 	if restore.GetString("status") != schema.RestoreFailed ||
-		!strings.Contains(restore.GetString("error"), "holds 1 items and the restore was not confirmed to overwrite them: preview again") {
+		!strings.Contains(restore.GetString("error"), "holds 1 item and the restore was not confirmed to overwrite it: preview again") {
 		t.Fatalf("the restore into a folder filled after its preview: %v", restore.FieldsData())
 	}
 	if got := readTree(t, folder); !maps.Equal(got, map[string]string{"mine.txt": "keep me"}) {
