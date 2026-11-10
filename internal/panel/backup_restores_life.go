@@ -510,32 +510,44 @@ func (p *Panel) noteRestore(before *core.Record, result restoreResult) {
 	data := map[string]any{"restore": restore.Id, "job": restore.GetString("job"), "target": restore.GetString("target"), "command": restore.GetString("command")}
 	key := restoreAlertKey(restore)
 	message := restore.GetString("error")
-	switch restore.GetString("status") {
+	status := restore.GetString("status")
+	problem := restore.GetString("app_problem")
+	var failed, down string
+	if status == schema.RestoreFailed {
+		failed = fmt.Sprintf("The restore of %s into %s failed: %s", jobName, p.restoreWhere(restore), sentenceText(message))
+		if len(result.AppStarted) > 0 {
+			failed += " The application was started again."
+		}
+		failed = cutText(failed, 2048)
+	}
+	if problem != "" {
+		down = cutText(fmt.Sprintf("After the restore of %s into %s: %s", jobName, p.restoreWhere(restore), problem), 2048)
+	}
+
+	// the alert first, then the events: whoever sees a restore's event sees
+	// its alert as it is now
+	switch {
+	case status == schema.RestoreFailed:
+		p.raiseRestoreAlert(host, key, schema.SeverityCritical, failed)
+	case problem != "":
+		p.raiseRestoreAlert(host, key, schema.SeverityWarning, down)
+	case status == schema.RestoreSucceeded:
+		if err := events.ResolveAlert(p.App, alertBackupRestore, key); err != nil {
+			p.Log.Error("failed to resolve an alert", "rule", alertBackupRestore, "error", err)
+		}
+	}
+
+	switch status {
 	case schema.RestoreSucceeded:
 		text := cutText(fmt.Sprintf("%s restored %d files, %d bytes.", label, result.FilesRestored, result.BytesRestored), 2048)
 		events.Log(p.App, host, "backup.restored", schema.SeverityInfo, text, data)
-		if restore.GetString("app_problem") == "" {
-			if err := events.ResolveAlert(p.App, alertBackupRestore, key); err != nil {
-				p.Log.Error("failed to resolve an alert", "rule", alertBackupRestore, "error", err)
-			}
-		}
 	case schema.RestoreFailed:
-		text := fmt.Sprintf("The restore of %s into %s failed: %s", jobName, p.restoreWhere(restore), sentenceText(message))
-		if len(result.AppStarted) > 0 {
-			text += " The application was started again."
-		}
-		text = cutText(text, 2048)
-		events.Log(p.App, host, "backup.restore_failed", schema.SeverityCritical, text, data)
-		p.raiseRestoreAlert(host, key, schema.SeverityCritical, text)
+		events.Log(p.App, host, "backup.restore_failed", schema.SeverityCritical, failed, data)
 	case schema.RestoreCancelled:
 		events.Log(p.App, host, "backup.restore_stopped", schema.SeverityWarning, cutText(label+": "+message, 2048), data)
 	}
-	if problem := restore.GetString("app_problem"); problem != "" {
-		text := cutText(fmt.Sprintf("After the restore of %s into %s: %s", jobName, p.restoreWhere(restore), problem), 2048)
-		events.Log(p.App, host, "backup.restore_app_down", schema.SeverityWarning, text, data)
-		if restore.GetString("status") != schema.RestoreFailed {
-			p.raiseRestoreAlert(host, key, schema.SeverityWarning, text)
-		}
+	if problem != "" {
+		events.Log(p.App, host, "backup.restore_app_down", schema.SeverityWarning, down, data)
 	}
 }
 
