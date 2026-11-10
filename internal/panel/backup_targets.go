@@ -405,6 +405,10 @@ func (p *Panel) handleRemoveTarget(e *core.RequestEvent) error {
 	if err != nil {
 		return e.NotFoundError("The target does not exist.", err)
 	}
+	// a restore from it reads it with its secrets, and goes with it
+	if p.restoreOpenFor("target={:target}", dbx.Params{"target": target.Id}) {
+		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
+	}
 	// a target that jobs back up to stays: they would fail at every run
 	jobs, err := e.App.FindRecordsByFilter(schema.BackupJobs, "targets ~ {:target}", "name", 0, 0, dbx.Params{"target": target.Id})
 	if err != nil {
@@ -431,6 +435,10 @@ func (p *Panel) handleRemoveTarget(e *core.RequestEvent) error {
 // targets: they would lose the only way to their repositories. They move to
 // another server first, or are removed.
 func (p *Panel) keepTargetsServer(e *core.RecordRequestEvent) error {
+	// a restore on it, or from a target it reaches, goes with it (#30)
+	if p.restoreOpenFor("host={:host} || target.host={:host}", dbx.Params{"host": e.Record.Id}) {
+		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
+	}
 	targets, err := e.App.FindRecordsByFilter(schema.BackupTargets, "host={:host}", "name", 0, 0, dbx.Params{"host": e.Record.Id})
 	if err != nil || len(targets) == 0 {
 		return e.Next()

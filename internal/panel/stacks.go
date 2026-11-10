@@ -101,6 +101,9 @@ func (p *Panel) guardStackUpdate(e *core.RecordRequestEvent) error {
 	if move := p.moveHolding(stored); move != nil {
 		return e.Error(http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: change the stack once that is done.", stored.GetString("name"), move.GetString("target_name")), nil)
 	}
+	if p.restoreHolding(stored) != nil {
+		return e.Error(http.StatusConflict, restoreHoldMessage(stored.GetString("name")), nil)
+	}
 
 	for _, field := range []string{"secrets", "secret_keys", "current_revision", "deployed_revision", "deployed_at", "source", "status", "label_problems", "labels_at"} {
 		e.Record.Set(field, stored.Get(field))
@@ -451,6 +454,10 @@ func (p *Panel) saveStackEdit(ctx context.Context, e *core.RequestEvent, stack *
 	if move := p.moveHolding(stack); move != nil {
 		return fmt.Errorf("databases of %s are moving to %s: change the stack once that is done", stack.GetString("name"), move.GetString("target_name"))
 	}
+	// a restore stops what a change would deploy
+	if p.restoreHolding(stack) != nil {
+		return errors.New(strings.TrimSuffix(lowerFirst(restoreHoldMessage(stack.GetString("name"))), "."))
+	}
 
 	// the edit applies to the stack as it is stored at this moment, not as it was
 	// read when the request came in
@@ -513,6 +520,10 @@ func (p *Panel) deployRevision(ctx context.Context, stack, revision *core.Record
 	// server it works on
 	if move := p.moveHolding(stack); move != nil {
 		return nil, &deployRejection{Message: fmt.Sprintf("Databases of %s are moving to %s: deploy once that is done.", stack.GetString("name"), move.GetString("target_name"))}
+	}
+	// a deploy during a restore would start what the restore stopped
+	if p.restoreHolding(stack) != nil {
+		return nil, &deployRejection{Message: restoreHoldMessage(stack.GetString("name"))}
 	}
 
 	result := stacks.Validate(ctx, stack.GetString("name"), compose, env, secretKeysOf(stack))

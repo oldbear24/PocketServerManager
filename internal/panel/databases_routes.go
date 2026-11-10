@@ -672,6 +672,9 @@ func (p *Panel) ownDatabaseFor(e *core.RequestEvent) (database, server *core.Rec
 			if move := p.moveHolding(stack); move != nil {
 				return nil, nil, e.Error(http.StatusConflict, "The databases of "+stack.GetString("name")+" are moving: change this one once that is done.", nil)
 			}
+			if p.restoreHolding(stack) != nil {
+				return nil, nil, e.Error(http.StatusConflict, restoreHoldMessage(stack.GetString("name")), nil)
+			}
 		}
 	}
 	return database, server, err
@@ -699,6 +702,9 @@ func (p *Panel) handleConnectDatabase(e *core.RequestEvent) error {
 	}
 	if move := p.moveHolding(stack); move != nil {
 		return e.Error(http.StatusConflict, "The databases of "+stack.GetString("name")+" are moving: connect this one once that is done.", nil)
+	}
+	if p.restoreHolding(stack) != nil {
+		return e.Error(http.StatusConflict, restoreHoldMessage(stack.GetString("name")), nil)
 	}
 	if reason := p.aliasClash(stack.Id, server); reason != "" {
 		return e.BadRequestError(strings.ToUpper(reason[:1])+reason[1:]+".", nil)
