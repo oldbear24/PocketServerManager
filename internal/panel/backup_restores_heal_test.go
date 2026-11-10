@@ -9,7 +9,9 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
+	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
 
 // ended moves a command to a final state the way a panel that stopped in
@@ -89,6 +91,29 @@ func TestARestoreThePanelMissedIsSettled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("the stop was not sent again")
+	}
+}
+
+// TestRestoresThePanelMissedAreSettledAtItsStart (#30, SAFE): the restores
+// a panel that was down missed are settled as it starts, before any
+// request.
+func TestRestoresThePanelMissedAreSettledAtItsStart(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
+	p.Register()
+	if err := p.loadMasterKey(); err != nil {
+		t.Fatal(err)
+	}
+	f := &jobFixture{t: t, p: p, app: app, host: testutil.NewHost(t, app, "node-1")}
+	f.target = f.addTarget("b2", backup.KindS3, f.host, backup.Config{Endpoint: "https://s3.example.com", Bucket: "backups"},
+		backup.Credentials{AccessKeyID: "key-id", SecretAccessKey: "the-secret-key"})
+	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+	lost := f.restore(job, map[string]any{"status": schema.RestoreRunning})
+
+	testutil.Handler(t, app)
+	if stored := f.stored(schema.BackupRestores, lost.Id); stored.GetString("status") != schema.RestoreFailed {
+		t.Errorf("after the start: %v", stored.FieldsData())
 	}
 }
 

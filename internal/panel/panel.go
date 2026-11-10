@@ -252,8 +252,9 @@ func (p *Panel) Register() {
 		p.bindBackupRestoreRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
-		// restores whose end the panel missed while it was down are settled
-		p.later.after(edgeSettle, p.settleRestores)
+		// restores whose end the panel missed while it was down are settled,
+		// before any request: no download's browser is left after a restart
+		p.settleRestores()
 		p.Commands.BindRoutes(group)
 		p.bindPublicRoutes(e)
 
