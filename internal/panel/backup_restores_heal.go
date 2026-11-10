@@ -15,7 +15,7 @@ const (
 	// keepRestoreDrafts is how long a draft stays once it is of no use.
 	keepRestoreDrafts = 24 * time.Hour
 	// keepRestores is how long restores stay as a job's history; a job's
-	// newest stays whatever its age.
+	// newest restore that was started stays whatever its age.
 	keepRestores = 90 * 24 * time.Hour
 )
 
@@ -103,7 +103,8 @@ func (p *Panel) hostName(id string) string {
 }
 
 // pruneRestores removes the drafts nobody started after a day, and the
-// restores older than their history keeps, but each job's newest.
+// restores and downloads older than their history keeps, but each job's
+// newest restore that was started.
 func (p *Panel) pruneRestores() {
 	day := types.NowDateTime().Add(-keepRestoreDrafts)
 	drafts, err := p.App.FindRecordsByFilter(schema.BackupRestores,
@@ -128,12 +129,28 @@ func (p *Panel) pruneRestores() {
 		p.Log.Error("failed to read the old restores", "error", err)
 	}
 	for _, restore := range old {
-		newer, err := p.App.CountRecords(schema.BackupRestores, dbx.NewExp("job={:job} AND (created>{:created} OR (created={:created} AND id>{:id}))",
-			dbx.Params{"job": restore.GetString("job"), "created": restore.GetDateTime("created").String(), "id": restore.Id}))
-		if err == nil && newer > 0 {
-			p.removeRestore(restore)
+		// a job keeps its newest restore that was started, whatever its
+		// age and however it ended: a draft or a download does not count
+		if startedRestore(restore) {
+			newer, err := p.App.CountRecords(schema.BackupRestores, dbx.NewExp(
+				"job={:job} AND mode!={:download} AND command!='' AND status IN ({:succeeded}, {:failed}, {:cancelled}) AND "+
+					"(created>{:created} OR (created={:created} AND id>{:id}))",
+				dbx.Params{"job": restore.GetString("job"), "download": schema.RestoreDownload, "succeeded": schema.RestoreSucceeded,
+					"failed": schema.RestoreFailed, "cancelled": schema.RestoreCancelled,
+					"created": restore.GetDateTime("created").String(), "id": restore.Id}))
+			if err != nil || newer == 0 {
+				continue
+			}
 		}
+		p.removeRestore(restore)
 	}
+}
+
+// startedRestore tells whether a record is a restore someone started, to
+// the original location or to a new folder, rather than a draft or a
+// download.
+func startedRestore(restore *core.Record) bool {
+	return restore.GetString("mode") != schema.RestoreDownload && restore.GetString("command") != ""
 }
 
 // removeRestore removes a restore record, with its hooks: the alert of its

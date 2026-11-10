@@ -124,7 +124,9 @@ func (f *jobFixture) pull() *core.Record {
 }
 
 // TestOldRestoresGo (#30): drafts nobody started go after a day, and
-// restores older than 90 days go, but each job's newest.
+// restores and downloads older than 90 days go, but each job's newest
+// restore that was started, however it ended: a newer draft or download
+// does not count, so a job keeps its restore history.
 func TestOldRestoresGo(t *testing.T) {
 	f := newJobFixture(t)
 	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
@@ -145,16 +147,29 @@ func TestOldRestoresGo(t *testing.T) {
 	age(newDraft, time.Hour)
 	ancient := f.restore(job, map[string]any{"status": schema.RestoreSucceeded, "command": f.pull().Id})
 	age(ancient, 100*24*time.Hour)
-	newer := f.restore(job, map[string]any{"status": schema.RestoreCancelled})
+	// the job's newest restore, cancelled in the queue, stays though a
+	// draft is newer
+	newer := f.restore(job, map[string]any{"status": schema.RestoreCancelled, "command": f.pull().Id})
 	age(newer, 95*24*time.Hour)
 	onlyOne := f.restore(other, map[string]any{"status": schema.RestoreFailed, "command": f.pull().Id})
 	age(onlyOne, 200*24*time.Hour)
 	running := f.restore(job, map[string]any{"status": schema.RestoreRunning})
 	age(running, 200*24*time.Hour)
+	// a job whose restore to a new folder is followed by downloads and a
+	// failed preview: the restore stays, the old download goes
+	third := f.job("third", map[string]any{"source_kind": schema.SourceVolume, "source": "third"})
+	folder := f.restore(third, map[string]any{"status": schema.RestoreSucceeded, "mode": schema.RestorePath, "roots": nil, "path": "/srv/x", "command": f.pull().Id})
+	age(folder, 120*24*time.Hour)
+	oldDownload := f.restore(third, map[string]any{"status": schema.RestoreSucceeded, "mode": schema.RestoreDownload, "roots": nil, "path": "/", "command": f.pull().Id})
+	age(oldDownload, 100*24*time.Hour)
+	newDownload := f.restore(third, map[string]any{"status": schema.RestoreSucceeded, "mode": schema.RestoreDownload, "roots": nil, "path": "/", "command": f.pull().Id})
+	age(newDownload, time.Hour)
+	failedPreview := f.restore(third, map[string]any{"status": schema.RestoreFailed})
+	age(failedPreview, 2*time.Hour)
 
 	f.p.pruneRestores()
 	for record, kept := range map[*core.Record]bool{oldDraft: false, oldFailedPreview: false, newDraft: true, ancient: false,
-		newer: false, onlyOne: true, running: true} {
+		newer: true, onlyOne: true, running: true, folder: true, oldDownload: false, newDownload: true, failedPreview: true} {
 		if _, err := f.app.FindRecordById(schema.BackupRestores, record.Id); (err == nil) != kept {
 			t.Errorf("%s (%s): kept %v", record.Id, record.GetString("status"), err == nil)
 		}
