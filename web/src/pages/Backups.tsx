@@ -1,6 +1,6 @@
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { RecordModel } from "pocketbase";
-import { useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 
@@ -56,9 +56,16 @@ import type { Host } from "../lib/types";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 
+// the restore drawer, with its file browser, loads when it opens
+const RestoreDrawer = lazy(() =>
+  import("./BackupRestore").then((module) => ({ default: module.RestoreDrawer })),
+);
+
 /** Backups: the summary of the last 14 days, the jobs (#29), the snapshots
  * of the job picked and their restores (#30), and the targets they go to
- * (#28). Which job and target are picked is kept in the address. */
+ * (#28). Which job and target are picked, and the restore shown, are kept
+ * in the address: ?job=&target=&restore= (new, or a restore's id), with the
+ * snapshot to restore and whether to browse it first. */
 export function BackupsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -98,6 +105,7 @@ export function BackupsPage() {
   });
   const shown = canRun && job ? restores.items.filter((item) => item.job === job.id) : [];
   const started = shown.filter((item) => !restoreDraft(item.status));
+  const restoring = params.get("restore") ?? "";
 
   const pick = (values: Record<string, string>) =>
     setParams(
@@ -121,10 +129,19 @@ export function BackupsPage() {
         title={t("nav.backups")}
         description={t("backups.lead")}
         actions={
-          isAdmin && (
-            <Button variant="primary" onClick={() => setDialog("new")}>
-              <Plus size={16} aria-hidden="true" /> {t("backups.job.new")}
-            </Button>
+          (canRun || isAdmin) && (
+            <>
+              {canRun && (
+                <Button onClick={() => pick({ restore: "new", snapshot: "", browse: "" })}>
+                  {t("backups.restoreFromBackup")}
+                </Button>
+              )}
+              {isAdmin && (
+                <Button variant="primary" onClick={() => setDialog("new")}>
+                  <Plus size={16} aria-hidden="true" /> {t("backups.job.new")}
+                </Button>
+              )}
+            </>
           )
         }
       />
@@ -164,6 +181,8 @@ export function BackupsPage() {
               canRestore={canRun}
               open={started.find(restoreOpen) ?? null}
               onTarget={(id) => pick({ target: id })}
+              onRestore={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "" })}
+              onFiles={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "1" })}
               onShowRestore={(id) => pick({ restore: id })}
             />
             <RecentRestores
@@ -187,6 +206,26 @@ export function BackupsPage() {
           )}
         </div>
       </div>
+      {canRun && restoring && (
+        <Suspense fallback={null}>
+          <RestoreDrawer
+            jobs={jobs.items}
+            targets={targets.items}
+            hosts={hosts.items}
+            runs={runs.items}
+            stacks={stacks.items}
+            start={{
+              job: job?.id,
+              target: source?.target.id,
+              snapshot: params.get("snapshot") ?? undefined,
+              restore: restoring,
+              browse: params.get("browse") === "1",
+            }}
+            onRecord={(id) => pick({ restore: id ?? "new", browse: "" })}
+            onClose={() => pick({ restore: "", snapshot: "", browse: "" })}
+          />
+        </Suspense>
+      )}
       {(dialog === "new" || edited) && (
         <JobDialog
           key={edited?.id ?? "new"}

@@ -3216,3 +3216,142 @@ a.job-name {
 .restore-label {
   overflow-wrap: anywhere;
 }
+
+/* the restore drawer: what to restore, where, its preview and progress */
+.restore-pick {
+  display: grid;
+  gap: 10px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.restore-picks .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.restore-picks + .button {
+  margin-top: 8px;
+}
+
+.restore-stops .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.restore-preview,
+.restore-progress,
+.restore-download {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.restore-progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.restore-progress-head .drawer-heading {
+  margin-bottom: 0;
+}
+
+.preview-sentence {
+  font-size: 14px;
+}
+
+/* at most 280px of samples, scrolled with the keyboard too */
+.restore-diff {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.diff-line.upd {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.diff-line.more {
+  color: var(--text-3);
+}
+
+.confirm-check {
+  margin: 12px 0 4px;
+}
+
+.restore-why {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-2);
+}
+
+/* a snapshot's folder, to pick from */
+.snapshot-browser {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.browser-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.browser-crumbs ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.browser-crumbs li + li::before {
+  content: "/";
+  margin-right: 6px;
+  color: var(--text-3);
+}
+
+.browser-crumbs [aria-current] {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.browser-tools,
+.browser-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.browser-tools .input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.file-pick {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.file-pick input {
+  margin-top: 0;
+}
+
+.snapshot-browser td {
+  overflow-wrap: anywhere;
+}

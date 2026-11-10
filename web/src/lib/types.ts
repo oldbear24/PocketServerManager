@@ -82,10 +82,22 @@ export type Command = RecordModel & {
   dispatched_at: string;
   started_at: string;
   finished_at: string;
-  progress: { step?: string; message?: string; percent?: number } | null;
+  /** done and total count what the step measures, in bytes or files; 0 and
+   * empty when it measures nothing */
+  progress: {
+    step?: string;
+    message?: string;
+    percent?: number;
+    done?: number;
+    total?: number;
+    unit?: "bytes" | "files" | "";
+  } | null;
   result: Record<string, unknown> | null;
   error: string;
   output: string;
+  /** a command its agent settles was asked to stop, and waits for the agent */
+  cancel_requested_at?: string;
+  cancel_reason?: string;
 };
 
 export type Alert = RecordModel & {

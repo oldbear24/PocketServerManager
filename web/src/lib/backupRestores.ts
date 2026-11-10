@@ -295,19 +295,23 @@ export function isPending(answer: unknown): answer is Pending {
   return Boolean(answer && typeof answer === "object" && (answer as Pending).pending === true);
 }
 
+/** A listing as a component shows it: what it gave, or that it is pending
+ * or failed; reload asks again, and with `refresh` past the panel's cache. */
+export type Listing<T> = {
+  data: T | null;
+  pending: boolean;
+  loading: boolean;
+  error: unknown;
+  reload: (refresh?: boolean) => void;
+};
+
 /** A listing that the panel may answer as pending: asked again every 2
  * seconds until it is there. A new key starts afresh, and what an older one
  * answers is dropped. */
 export function useListing<T>(
   key: string | null,
   load: (refresh: boolean) => Promise<T | Pending>,
-): {
-  data: T | null;
-  pending: boolean;
-  loading: boolean;
-  error: unknown;
-  reload: (refresh?: boolean) => void;
-} {
+): Listing<T> {
   const [state, setState] = useState<{
     key: string | null;
     data: T | null;
