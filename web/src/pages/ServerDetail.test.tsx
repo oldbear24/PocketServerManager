@@ -272,7 +272,9 @@ describe("the server's backups tab", () => {
     expect(rows).toHaveLength(2);
 
     const vw = within(rows[0]);
-    expect(vw.getByText("vaultwarden")).toBeInTheDocument();
+    // each job opens its snapshots on the Backups page
+    const link = vw.getByRole("link", { name: "vaultwarden" });
+    expect(link).toHaveAttribute("href", "/backups?job=j1");
     expect(vw.getByText("volume vw-data")).toBeInTheDocument();
     expect(vw.getByText("Error · 12:00")).toHaveClass("run-status", "err");
     expect(vw.getByText("Fatal: no space left on device")).toBeInTheDocument();

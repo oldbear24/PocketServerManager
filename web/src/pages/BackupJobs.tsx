@@ -310,6 +310,8 @@ export function JobsCard({
   now,
   canRun,
   isAdmin,
+  selected,
+  onSelect,
   onAdd,
   onEdit,
 }: {
@@ -323,6 +325,10 @@ export function JobsCard({
   now: number;
   canRun: boolean;
   isAdmin: boolean;
+  /** the job whose snapshots are shown */
+  selected?: string;
+  /** shows a job's snapshots; its name is then a button */
+  onSelect?: (job: BackupJob) => void;
   onAdd: () => void;
   onEdit: (job: BackupJob) => void;
 }) {
@@ -429,10 +435,26 @@ export function JobsCard({
               const source = describeSource(job, stacks, t);
               const runnable = !job.label_removed && names.length > 0;
               const removable = job.origin !== "label" || job.label_removed;
+              const picked = onSelect !== undefined && selected === job.id;
+              const classes = [job.label_removed && "job-removed", picked && "job-selected"]
+                .filter(Boolean)
+                .join(" ");
               return (
-                <tr key={job.id} className={job.label_removed ? "job-removed" : undefined}>
+                <tr key={job.id} className={classes || undefined}>
                   <td className="job-cell">
-                    <div className="job-name">{job.name}</div>
+                    {onSelect ? (
+                      <button
+                        type="button"
+                        className="job-name"
+                        aria-pressed={picked}
+                        aria-label={t("backups.job.showSnapshots", { name: job.name })}
+                        onClick={() => onSelect(job)}
+                      >
+                        {job.name}
+                      </button>
+                    ) : (
+                      <div className="job-name">{job.name}</div>
+                    )}
                     <div className="job-source" title={source}>
                       {source}
                     </div>
@@ -531,7 +553,12 @@ export function JobsCard({
 
   return (
     <>
-      <Card title={t("backups.job.title")} side={<StripLegend />} flush>
+      <Card
+        title={t("backups.job.title")}
+        note={onSelect && jobs.length > 0 ? t("backups.job.pickHint") : undefined}
+        side={<StripLegend />}
+        flush
+      >
         {body}
       </Card>
       <ConfirmDialog
@@ -616,7 +643,9 @@ export function ServerJobsCard({ host }: { host: Host }) {
               return (
                 <tr key={job.id} className={job.label_removed ? "job-removed" : undefined}>
                   <td className="job-cell">
-                    <div className="job-name">{job.name}</div>
+                    <Link className="job-name" to={`/backups?job=${job.id}`}>
+                      {job.name}
+                    </Link>
                     <div className="job-source" title={source}>
                       {source}
                     </div>

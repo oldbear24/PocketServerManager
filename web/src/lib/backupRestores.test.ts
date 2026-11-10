@@ -15,10 +15,12 @@ import {
   pathLabel,
   previewParts,
   previewSentence,
+  restoreDraft,
   restoreKeys,
   restorePathProblem,
   restoresApi,
   snapshotRoots,
+  snapshotSources,
   validRestorePath,
   type RestorePreview,
 } from "./backupRestores";
@@ -275,6 +277,44 @@ describe("a snapshot's paths", () => {
     expect(pathCrumbs("/")).toEqual([{ path: "/", name: "", volume: false }]);
     expect(pathLabel("/volumes/vw_data", t)).toBe("Volume vw_data");
     expect(pathLabel("/srv/app", t)).toBe("/srv/app");
+  });
+});
+
+describe("the targets of a job's snapshots", () => {
+  const targets = [
+    { id: "t1", name: "B2" },
+    { id: "t2", name: "Disk" },
+    { id: "t3", name: "backup-node" },
+    { id: "t4", name: "Archive" },
+  ];
+
+  it("are the job's in its order, then by name those its runs went to before", () => {
+    const runs = [
+      { job: "j1", target: "t3" },
+      { job: "j1", target: "t4" },
+      { job: "j1", target: "t2" },
+      { job: "j2", target: "t1" },
+      // a target that was removed has no snapshots to list
+      { job: "j1", target: "gone" },
+    ];
+    expect(snapshotSources({ id: "j1", targets: ["t2", "t1"] }, targets, runs)).toEqual([
+      { target: targets[1], old: false },
+      { target: targets[0], old: false },
+      { target: targets[3], old: true },
+      { target: targets[2], old: true },
+    ]);
+    expect(snapshotSources({ id: "j1", targets: null }, targets, [])).toEqual([]);
+  });
+
+  it("are no drafts once started", () => {
+    expect(["previewing", "previewed", "expired"].every((s) => restoreDraft(s as never))).toBe(
+      true,
+    );
+    expect(
+      ["queued", "running", "succeeded", "failed", "cancelled"].some((s) =>
+        restoreDraft(s as never),
+      ),
+    ).toBe(false);
   });
 });
 

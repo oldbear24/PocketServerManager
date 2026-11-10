@@ -743,6 +743,42 @@ export function restoreEnded(status: RestoreStatus): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
+/** Whether a restore is a draft, which nothing started: its preview is under
+ * way, ready or too old. */
+export function restoreDraft(status: RestoreStatus): boolean {
+  return status === "previewing" || status === "previewed" || status === "expired";
+}
+
+/** A target a job's snapshots are listed from: one it backs up to, or one
+ * it backed up to before, which is no longer used. */
+export type SnapshotTarget = { target: BackupTarget; old: boolean };
+
+/** The targets a job's snapshots are in: those it backs up to, in its
+ * order, then by name those its runs went to that it no longer uses. */
+export function snapshotSources<T extends Pick<BackupTarget, "id" | "name">>(
+  job: Pick<BackupJob, "id" | "targets">,
+  targets: T[],
+  runs: { job: string; target: string }[],
+): { target: T; old: boolean }[] {
+  const current = job.targets ?? [];
+  const byId = new Map(targets.map((target) => [target.id, target]));
+  const sources = current.flatMap((id) => {
+    const target = byId.get(id);
+    return target ? [{ target, old: false }] : [];
+  });
+  const old = new Set<string>();
+  for (const run of runs) {
+    if (run.job === job.id && !current.includes(run.target) && byId.has(run.target)) {
+      old.add(run.target);
+    }
+  }
+  const before = [...old]
+    .map((id) => byId.get(id)!)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((target) => ({ target, old: true }));
+  return [...sources, ...before];
+}
+
 /** Whether a restore was started and has not ended: queued or running. */
 export function restoreOpen(restore: Pick<BackupRestore, "status" | "mode">): boolean {
   return restore.status === "queued" || restore.status === "running";

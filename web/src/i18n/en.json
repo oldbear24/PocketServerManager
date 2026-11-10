@@ -2177,11 +2177,41 @@
       "retention": "Snapshots to keep",
       "retentionHint": "After each backup restic forgets the job's other snapshots: it keeps the last ones, and the newest of each of the last hours, days, weeks, months and years. Now: {{keeps}}.",
       "retentionInvalid": "Whole numbers from 0 to 10000; empty keeps none of that kind.",
-      "enabled": "Enabled: it runs on its schedule"
+      "enabled": "Enabled: it runs on its schedule",
+      "pickHint": "click a name for its snapshots",
+      "showSnapshots": "Show the snapshots of {{name}}"
     },
     "snapshot": {
       "today": "today {{time}}",
-      "yesterday": "yesterday {{time}}"
+      "yesterday": "yesterday {{time}}",
+      "title": "Snapshots",
+      "route": "{{host}} → {{target}}",
+      "pickJob": "Pick a job above to see its snapshots.",
+      "noTarget": "This job backs up to no target yet.",
+      "target": "Target",
+      "oldTarget": "{{target}} (no longer used)",
+      "fetched": "As of {{time}}",
+      "refresh": "Refresh the snapshots",
+      "newest": "newest",
+      "added": "+{{size}}",
+      "sizeTitle": "Size of what was backed up",
+      "addedTitle": "Added to the repository",
+      "restore": "Restore…",
+      "restoreName": "Restore snapshot {{id}}",
+      "files": "Files",
+      "filesName": "Browse the files of snapshot {{id}}",
+      "footer": "Restore: to the original location (the containers stop for a while), to a new folder on any server, or download as a tar.",
+      "loading": "restic lists the snapshots on {{host}}…",
+      "empty": "No snapshots of this job in {{target}} yet.",
+      "failed": "The snapshots could not be listed: {{error}}",
+      "retry": "Try again",
+      "showOlder_one": "Show {{count}} older",
+      "showOlder_other": "Show {{count}} older",
+      "truncated_one": "Only the newest {{count}} snapshot is listed.",
+      "truncated_other": "Only the newest {{count}} snapshots are listed.",
+      "restoring": "A restore of {{job}} is under way.",
+      "show": "Show",
+      "recent": "Recent restores"
     },
     "files": {
       "volume": "Volume {{name}}"

@@ -3107,3 +3107,112 @@ td .row-actions {
   gap: 10px 12px;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
 }
+
+/* Snapshots and restores (#30) */
+
+/* a job's name opens its snapshots; the job shown is marked, as the design does */
+button.job-name {
+  display: block;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+button.job-name:hover {
+  color: var(--accent-hover);
+}
+
+button.job-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.job-selected td {
+  background: var(--surface-2);
+}
+
+.job-selected button.job-name {
+  color: var(--accent);
+}
+
+a.job-name {
+  display: inline-block;
+  color: var(--text);
+}
+
+/* beside the snapshots, the targets take the column's width */
+.columns .backup-targets {
+  max-width: none;
+}
+
+.snapshot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.list > li.snapshot-row {
+  padding: 10px 18px;
+}
+
+.snapshot-id {
+  width: 84px;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.snapshot-time {
+  flex: 1 1 140px;
+  font-size: 13px;
+}
+
+.snapshot-size {
+  width: 110px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.snapshot-delta {
+  width: 90px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.snapshot-actions {
+  margin-left: auto;
+}
+
+.snapshot-footer {
+  padding: 12px 18px;
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.skeleton-row {
+  height: 45px;
+}
+
+.skeleton {
+  display: block;
+  width: 60%;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.restore-row .row-actions {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.restore-label {
+  overflow-wrap: anywhere;
+}
