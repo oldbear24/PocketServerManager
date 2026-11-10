@@ -460,3 +460,66 @@ export function Drawer({
     </dialog>
   );
 }
+
+export type Choice = { value: string; title: string; note: string; disabled?: boolean };
+
+/** A row of cards to pick one from, as radio buttons: the chosen one takes
+ * the focus, and the arrow keys move the choice. */
+export function ChoiceGroup({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Choice[];
+  onChange: (value: string) => void;
+}) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const enabled = options.flatMap((option, index) => (option.disabled ? [] : [index]));
+  const move = (from: number, step: number) => {
+    const position = enabled.indexOf(from);
+    const next = enabled[(position + step + enabled.length) % enabled.length];
+    onChange(options[next].value);
+    refs.current[next]?.focus();
+  };
+  return (
+    <div
+      className={`choice-grid${options.length > 2 ? " three" : ""}`}
+      role="radiogroup"
+      aria-label={label}
+    >
+      {options.map((option, index) => {
+        const checked = option.value === value;
+        return (
+          <button
+            key={option.value}
+            ref={(element) => {
+              refs.current[index] = element;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            tabIndex={checked ? 0 : -1}
+            disabled={option.disabled}
+            className={`choice${checked ? " active" : ""}`}
+            onClick={() => onChange(option.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                event.preventDefault();
+                move(index, 1);
+              } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                event.preventDefault();
+                move(index, -1);
+              }
+            }}
+          >
+            <span className="choice-title">{option.title}</span>
+            <span className="choice-note">{option.note}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

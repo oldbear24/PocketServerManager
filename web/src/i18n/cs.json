@@ -97,7 +97,9 @@
       "failed": "chyba",
       "timed_out": "vypršelo",
       "cancelled": "zrušeno"
-    }
+    },
+    "output": "Výstup",
+    "outputWaiting": "Čekám na výstup…"
   },
   "container": {
     "unhealthy": "Nezdravý",
@@ -770,7 +772,6 @@
     "discard": "Zahodit změny",
     "saved": "Změny se uložily jako nová revize.",
     "output": "Výstup",
-    "outputWaiting": "Čekám na výstup…",
     "uptime": "běží {{value}}",
     "ports": "Port",
     "revisions": "Revize",

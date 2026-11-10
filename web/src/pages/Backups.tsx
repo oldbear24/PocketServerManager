@@ -348,23 +348,30 @@ function TargetItem({
   );
 }
 
-/** The server whose agent runs restic for a target. */
-function ServerField({
+/** The server whose agent runs restic for a target, or that a restore
+ * writes on. A server that `unavailable` names cannot be chosen. */
+export function ServerField({
+  id = "target-host",
+  label,
   hosts,
   value,
   onChange,
   hint,
+  unavailable,
 }: {
+  id?: string;
+  label?: string;
   hosts: Host[];
   value: string;
   onChange: (value: string) => void;
-  hint: string;
+  hint: ReactNode;
+  unavailable?: (host: Host) => boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <Field label={t("backups.server")} htmlFor="target-host">
+    <Field label={label ?? t("backups.server")} htmlFor={id}>
       <select
-        id="target-host"
+        id={id}
         className="input"
         required
         value={value}
@@ -372,7 +379,7 @@ function ServerField({
       >
         {value === "" && <option value="">{t("backups.chooseServer")}</option>}
         {hosts.map((item) => (
-          <option key={item.id} value={item.id}>
+          <option key={item.id} value={item.id} disabled={unavailable?.(item)}>
             {serverOption(item, t("backups.serverOffline"))}
           </option>
         ))}

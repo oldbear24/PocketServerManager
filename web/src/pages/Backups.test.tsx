@@ -8,7 +8,7 @@ import { AuthProvider } from "../lib/auth";
 import { backupsApi, type BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Host } from "../lib/types";
-import { AddTargetDialog, BackupsPage, EditTargetDialog } from "./Backups";
+import { AddTargetDialog, BackupsPage, EditTargetDialog, ServerField } from "./Backups";
 
 const now = Date.parse("2026-11-09T12:00:00Z");
 
@@ -748,5 +748,27 @@ describe("editing a target", () => {
 
     expect(await screen.findByText("The name is taken.")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("the server field", () => {
+  it("takes its own id and label, and keeps out the servers a choice may not use", () => {
+    const onChange = vi.fn();
+    wrap(
+      <ServerField
+        id="restore-host"
+        label="Restore on"
+        hosts={hosts}
+        value="h1"
+        onChange={onChange}
+        hint="Where the files go."
+        unavailable={(host) => host.id === "h2"}
+      />,
+    );
+    const select = screen.getByLabelText("Restore on");
+    expect(select).toHaveAttribute("id", "restore-host");
+    expect(within(select).getByRole("option", { name: "pve-01" })).toBeEnabled();
+    expect(within(select).getByRole("option", { name: "nas (offline)" })).toBeDisabled();
+    expect(screen.getByText("Where the files go.")).toBeInTheDocument();
   });
 });

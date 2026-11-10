@@ -70,8 +70,8 @@ export function CommandOutput({
       }
       flush
     >
-      <pre className="command-output" ref={body} tabIndex={0} aria-label={t("stack.output")}>
-        {text || t("stack.outputWaiting")}
+      <pre className="command-output" ref={body} tabIndex={0} aria-label={t("command.output")}>
+        {text || t("command.outputWaiting")}
       </pre>
       {failure && <p className="log-note err-text">{failure}</p>}
     </Card>

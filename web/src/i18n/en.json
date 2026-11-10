@@ -93,7 +93,9 @@
       "failed": "failed",
       "timed_out": "timed out",
       "cancelled": "cancelled"
-    }
+    },
+    "output": "Output",
+    "outputWaiting": "Waiting for output…"
   },
   "container": {
     "unhealthy": "Unhealthy",
@@ -728,7 +730,6 @@
     "discard": "Discard changes",
     "saved": "The changes were saved as a new revision.",
     "output": "Output",
-    "outputWaiting": "Waiting for output…",
     "uptime": "up {{value}}",
     "ports": "Port",
     "revisions": "Revisions",
