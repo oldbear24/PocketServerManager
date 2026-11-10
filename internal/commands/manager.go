@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -36,6 +38,15 @@ var ErrNotCancellable = errors.New("the command has already finished")
 
 // ErrUninterruptible is returned when a running command that must finish by itself is cancelled.
 var ErrUninterruptible = errors.New("the command is under way and cannot be interrupted")
+
+// ErrCancelRequested is returned when a command that its agent settles (see
+// Spec.SettledByAgent) is cancelled after it left the queue: the agent was
+// told to stop, and the command stays open until it reports how it ended.
+var ErrCancelRequested = errors.New("the agent was told to stop the command, and says how it ended")
+
+// cancelGrace is how long an agent has to report a command that it settles
+// once it was told to stop it.
+const cancelGrace = 5 * time.Minute
 
 // Options describes a new command.
 type Options struct {
@@ -793,7 +804,8 @@ func (m *Manager) settle(hostID string, finished *agentv1.FinishedCommand) {
 	if finished.GetResult() != nil {
 		result = finished.GetResult().AsMap()
 	}
-	m.finish(record, status, finished.GetError(), result)
+	status, message := settledByAgent(record, status, finished.GetError())
+	m.finish(record, status, message, result)
 }
 
 func statusOf(state agentv1.CommandState) string {
@@ -832,10 +844,13 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 	if isFinal(status) {
 		return status != schema.CommandSucceeded && status != schema.CommandFailed, nil
 	}
+	// someone asked to stop a command its agent settles: every answer says
+	// so again, in case the agent missed the cancel
+	cancelRequested := !record.GetDateTime("cancel_requested_at").IsZero()
 
 	// idempotent by id + sequence; a replay's final answer always counts
 	if update.GetSequence() <= uint64(record.GetInt("last_sequence")) && !update.GetDuplicate() { //nolint:gosec // never negative
-		return false, nil
+		return cancelRequested, nil
 	}
 
 	if len(update.GetOutput()) > 0 {
@@ -854,10 +869,11 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		if update.GetResult() != nil {
 			result = update.GetResult().AsMap()
 		}
-		if update.GetProgress() != nil {
+		if update.GetProgress() != nil && !cancelRequested {
 			record.Set("progress", progressOf(update.GetProgress()))
 		}
-		m.finish(record, newStatus, update.GetError(), result)
+		newStatus, message := settledByAgent(record, newStatus, update.GetError())
+		m.finish(record, newStatus, message, result)
 		return false, nil
 	}
 
@@ -870,7 +886,8 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		record.Set("progress", progressOf(update.GetProgress()))
 	}
 
-	if err := m.app.Save(record); err != nil {
+	cancelRequested, err = m.saveUpdate(record)
+	if err != nil {
 		return false, err
 	}
 	if started {
@@ -878,15 +895,59 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 			callback(record)
 		}
 	}
-	return false, nil
+	return cancelRequested, nil
 }
 
+// saveUpdate saves an agent's update onto the command as it is stored now,
+// in one transaction: a cancel asked for, even since the update read the
+// command, stays, with its deadline and its progress, which says the command
+// stops whatever step the agent is at. It tells whether a cancel was asked
+// for.
+func (m *Manager) saveUpdate(record *core.Record) (cancelRequested bool, err error) {
+	err = m.app.RunInTransaction(func(tx core.App) error {
+		stored, err := tx.FindRecordById(schema.Commands, record.Id)
+		if err != nil {
+			return err
+		}
+		if at := stored.GetDateTime("cancel_requested_at"); !at.IsZero() {
+			cancelRequested = true
+			for _, field := range []string{"cancel_requested_at", "cancel_reason", "progress", "expires_at"} {
+				record.Set(field, stored.Get(field))
+			}
+		}
+		return tx.Save(record)
+	})
+	return cancelRequested, err
+}
+
+// settledByAgent is the final state of a command as its agent reported it:
+// the agent's, but for a command someone asked to stop, which ends cancelled
+// with their reason, unless it had succeeded by then. The agent's result is
+// kept either way: it says what the agent did after the cancel.
+func settledByAgent(record *core.Record, status, message string) (string, string) {
+	if record.GetDateTime("cancel_requested_at").IsZero() || status == schema.CommandSucceeded {
+		return status, message
+	}
+	return schema.CommandCancelled, record.GetString("cancel_reason")
+}
+
+// progressOf is a command's progress as it is stored. How much of a step is
+// done is kept only when the agent counts it (#30): the progress of commands
+// that count nothing stays as it was.
 func progressOf(progress *agentv1.CommandProgress) map[string]any {
-	return map[string]any{
+	stored := map[string]any{
 		"step":    progress.GetStep(),
 		"message": progress.GetMessage(),
 		"percent": progress.GetPercent(),
 	}
+	if progress.GetDone() != 0 || progress.GetTotal() != 0 {
+		stored["done"] = progress.GetDone()
+		stored["total"] = progress.GetTotal()
+	}
+	if progress.GetUnit() != "" {
+		stored["unit"] = progress.GetUnit()
+	}
+	return stored
 }
 
 // finish moves a command to a final state and stores its output.
@@ -964,7 +1025,10 @@ func (m *Manager) finishParent(record *core.Record) {
 	m.finish(parent, status, message, nil)
 }
 
-// Cancel stops a command. A queued one never runs; a running one is told to stop.
+// Cancel stops a command. A queued one never runs; a running one is told to
+// stop. One that its agent settles (see Spec.SettledByAgent) stays open once
+// it left the queue, until the agent reports how it ended, and Cancel
+// returns ErrCancelRequested; asking again tells the agent again.
 func (m *Manager) Cancel(id, reason string) error {
 	record, err := m.app.FindRecordById(schema.Commands, id)
 	if err != nil {
@@ -975,8 +1039,12 @@ func (m *Manager) Cancel(id, reason string) error {
 	if isFinal(status) {
 		return ErrNotCancellable
 	}
-	if spec, ok := Specs[record.GetString("type")]; ok && spec.Uninterruptible && status != schema.CommandQueued {
+	spec, known := Specs[record.GetString("type")]
+	if known && spec.Uninterruptible && status != schema.CommandQueued {
 		return ErrUninterruptible
+	}
+	if known && spec.SettledByAgent && status != schema.CommandQueued {
+		return m.requestCancel(record, reason)
 	}
 
 	m.finish(record, schema.CommandCancelled, reason, nil)
@@ -986,6 +1054,52 @@ func (m *Manager) Cancel(id, reason string) error {
 	}
 
 	return nil
+}
+
+// requestCancel marks a command its agent settles as asked to stop, once,
+// and tells the agent: it has cancelGrace left to report how it ended. Its
+// ordering key stays held until then.
+func (m *Manager) requestCancel(record *core.Record, reason string) error {
+	err := m.app.RunInTransaction(func(tx core.App) error {
+		fresh, err := tx.FindRecordById(schema.Commands, record.Id)
+		if err != nil {
+			return err
+		}
+		if isFinal(fresh.GetString("status")) {
+			return ErrNotCancellable
+		}
+		if fresh.GetDateTime("cancel_requested_at").IsZero() {
+			now := time.Now().UTC()
+			fresh.Set("cancel_requested_at", now)
+			fresh.Set("cancel_reason", cutReason(reason))
+			fresh.Set("progress", map[string]any{"step": "cancelling", "message": cutReason(reason), "percent": -1})
+			if expires := fresh.GetDateTime("expires_at"); expires.IsZero() || expires.Time().After(now.Add(cancelGrace)) {
+				fresh.Set("expires_at", now.Add(cancelGrace))
+			}
+			if err := tx.Save(fresh); err != nil {
+				return err
+			}
+		}
+		record.Load(fresh.FieldsData())
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	m.tellAgentToStop(record, record.GetString("cancel_reason"))
+	return ErrCancelRequested
+}
+
+// cutReason keeps as much of a cancel's reason as its field holds.
+func cutReason(reason string) string {
+	if len(reason) <= 255 {
+		return reason
+	}
+	cut := 255
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
 }
 
 func (m *Manager) tellAgentToStop(record *core.Record, reason string) {
@@ -1038,6 +1152,9 @@ func (m *Manager) Reap() {
 			message = "It did not finish in time."
 		case status == schema.CommandQueued:
 			message = "The server stayed offline, so the command was never delivered."
+		case !record.GetDateTime("cancel_requested_at").IsZero():
+			// it was told to stop, and never said how it ended
+			message = "The agent did not stop the command in time."
 		}
 
 		m.finish(record, schema.CommandTimedOut, message, nil)
@@ -1150,6 +1267,10 @@ func (m *Manager) BindRoutes(r *router.RouterGroup[*core.RequestEvent]) {
 		err := m.Cancel(e.Request.PathValue("id"), reason)
 		if errors.Is(err, ErrNotCancellable) || errors.Is(err, ErrUninterruptible) {
 			return e.BadRequestError(err.Error(), nil)
+		}
+		if errors.Is(err, ErrCancelRequested) {
+			// its agent says how it ended, which the command then shows
+			return e.JSON(http.StatusAccepted, map[string]any{"stopping": true})
 		}
 		if err != nil {
 			return e.NotFoundError("The command does not exist.", err)
