@@ -39,6 +39,9 @@ var perTypeLimits = map[string]int{
 	// may read for an hour: it never takes the check's slots (#28)
 	"backup-check": 2,
 	"backup-usage": 1,
+	// an integrity check reads a group of a repository's packs for hours
+	// (#31): one at a time, and never in the slots of the backups
+	"backup.check": 1,
 	// a snapshot list, a folder of a snapshot and a restore's preview are
 	// short, and someone waits for each: they never wait behind the backups
 	// and restores that hold the slots of "backup." for hours (#30)

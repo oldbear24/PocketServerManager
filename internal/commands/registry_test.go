@@ -121,6 +121,12 @@ func TestResources(t *testing.T) {
 		{"backup target", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
 		{"backup usage", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Usage: true, RepoId: "r1", Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup-usage:t1"},
 		{"backup usage of a new target", &agentv1.Command{Payload: &agentv1.Command_BackupInit{BackupInit: &agentv1.BackupInit{Usage: true, Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
+		// a check waits for another check of its target, and nothing else
+		// waits for it (#31)
+		{"backup check", &agentv1.Command{Payload: &agentv1.Command_BackupCheck{BackupCheck: &agentv1.BackupCheck{Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}, ReadDataSubset: "3/20"}}}, "backup-integrity:t1"},
+		{"backup check of a URL", &agentv1.Command{Payload: &agentv1.Command_BackupCheck{BackupCheck: &agentv1.BackupCheck{Repository: &agentv1.BackupRepository{Url: "s3:b"}}}}, "backup-integrity:s3:b"},
+		{"backup check of no repository", &agentv1.Command{Payload: &agentv1.Command_BackupCheck{BackupCheck: &agentv1.BackupCheck{}}}, ""},
+		{"backup run of the target", &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}}}}, "backup:t1"},
 		{"agent", &agentv1.Command{Payload: &agentv1.Command_AgentRestart{AgentRestart: &agentv1.AgentRestart{}}}, "agent"},
 		{"edge", &agentv1.Command{Payload: &agentv1.Command_EdgeApply{EdgeApply: &agentv1.EdgeApply{}}}, "edge"},
 	} {

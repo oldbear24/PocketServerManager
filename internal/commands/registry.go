@@ -115,7 +115,7 @@ func backup(c *agentv1.Command) string {
 	case *agentv1.Command_BackupRun:
 		repository = p.BackupRun.GetRepository()
 	case *agentv1.Command_BackupCheck:
-		repository = p.BackupCheck.GetRepository()
+		return integrity(p.BackupCheck.GetRepository())
 	case *agentv1.Command_BackupUnlock:
 		repository = p.BackupUnlock.GetRepository()
 	case *agentv1.Command_BackupForget:
@@ -124,11 +124,12 @@ func backup(c *agentv1.Command) string {
 	if repository == nil {
 		return ""
 	}
-	// a target's commands run one after another; the URL of a local one is
-	// the same /repo in each job, whatever the directory. Measuring what a
-	// target's repository reads without a lock and may take long: it waits
-	// only for another measure, never holds up a check someone waits for. One
-	// that may create the repository still runs in turn with the others.
+	// a target's commands run one after another, but for its integrity
+	// checks (see integrity); the URL of a local one is the same /repo in
+	// each job, whatever the directory. Measuring what a target's
+	// repository reads without a lock and may take long: it waits only for
+	// another measure, never holds up a check someone waits for. One that
+	// may create the repository still runs in turn with the others.
 	if id := repository.GetTargetId(); id != "" {
 		if init := c.GetBackupInit(); init.GetUsage() && init.GetRepoId() != "" {
 			return "backup-usage:" + id
@@ -136,6 +137,21 @@ func backup(c *agentv1.Command) string {
 		return "backup:" + id
 	}
 	return "backup:" + repository.GetUrl()
+}
+
+// integrity orders a target's integrity checks (#31) with each other only. A
+// check reads without a lock for hours, and only when it found errors reads
+// again under restic's own lock, which other servers' commands meet in the
+// repository anyway: the target's runs, its measure and a change of it never
+// queue behind it.
+func integrity(repository *agentv1.BackupRepository) string {
+	if repository == nil {
+		return ""
+	}
+	if id := repository.GetTargetId(); id != "" {
+		return "backup-integrity:" + id
+	}
+	return "backup-integrity:" + repository.GetUrl()
 }
 
 // restoreResource orders a restore with what else writes its destination
