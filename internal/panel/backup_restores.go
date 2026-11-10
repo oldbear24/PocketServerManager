@@ -41,6 +41,9 @@ const (
 	restorePreviewGood = 30 * time.Minute
 	// restorePreviewQueue is how long a preview waits for its server.
 	restorePreviewQueue = 5 * time.Minute
+	// restoreQueue is how long a restore waits for its server, so that an
+	// application never stops long after someone asked.
+	restoreQueue = 30 * time.Minute
 	// maxRestoreIncludes is how many items of a snapshot a restore picks.
 	maxRestoreIncludes = 100
 )
@@ -52,6 +55,13 @@ func (p *Panel) registerBackupRestores() {
 	p.Commands.OnFinish("backup.browse", p.folderListed)
 	p.Commands.OnFinish("backup.run", p.backupRunEnded)
 	p.Commands.OnFinish("backup.restore", p.restoreFinished)
+	p.Commands.OnStart("backup.restore", p.restoreStarted)
+	// the alerts of a restore's data go once no restore of it is left,
+	// as with its job or its target
+	p.App.OnRecordAfterDeleteSuccess(schema.BackupRestores).BindFunc(func(e *core.RecordEvent) error {
+		p.restoreRemoved(e.App, e.Record)
+		return e.Next()
+	})
 }
 
 func (p *Panel) bindBackupRestoreRoutes(group *router.RouterGroup[*core.RequestEvent]) {
@@ -60,6 +70,8 @@ func (p *Panel) bindBackupRestoreRoutes(group *router.RouterGroup[*core.RequestE
 	group.GET("/backup-jobs/{id}/snapshots", p.handleSnapshots).BindFunc(everyone)
 	group.GET("/backup-jobs/{id}/snapshots/{snapshot}/files", p.handleSnapshotFiles).BindFunc(operators)
 	group.POST("/backup-jobs/{id}/restores", p.handleCreateRestore).BindFunc(operators)
+	group.POST("/backup-restores/{id}/start", p.handleStartRestore).BindFunc(operators)
+	group.POST("/backup-restores/{id}/cancel", p.handleCancelRestore).BindFunc(operators)
 	group.DELETE("/backup-restores/{id}", p.handleDiscardRestore).BindFunc(operators)
 }
 
@@ -520,7 +532,9 @@ func (p *Panel) restoreFinished(command *core.Record) {
 	}
 	if payload.DryRun {
 		p.previewFinished(restore, command)
+		return
 	}
+	p.realRestoreFinished(restore, command)
 }
 
 // previewFinished keeps a preview on its draft, which is good to start

@@ -28,6 +28,12 @@ const (
 	// ActionChainSealed records `panel audit seal`, which vouches for entries
 	// nothing proved.
 	ActionChainSealed = "chain_sealed"
+	// ActionBackupRestore records a restore of a snapshot someone started:
+	// it writes data on a server, and may stop its applications (#30).
+	ActionBackupRestore = "backup_restore"
+	// ActionBackupDownload records a download of a snapshot someone
+	// redeemed: the data leaves PocketCloud (#30).
+	ActionBackupDownload = "backup_download"
 )
 
 var sensitiveSetting = regexp.MustCompile(`(?i)password|secret|token|key`)
