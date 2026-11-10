@@ -537,6 +537,72 @@ func TestAReadOnlyParentBindKeepsRunning(t *testing.T) {
 	}
 }
 
+// TestAContainerThatMountsALinkedFolderStops (#30, AC1): a container whose
+// bind mount reaches the destination through a symbolic link of the server,
+// absolute or relative, a folder's or a file's, counts as one that writes
+// the destination: the preview says it stops, the restore stops it, and a
+// PocketCloud container that writes it so refuses the restore.
+func TestAContainerThatMountsALinkedFolderStops(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.volume(t, "app_data", map[string]string{"a.txt": "v1", "config.yml": "c1"})
+	snapshot := h.backup(t, "app_data")
+	h.folder(t, "/data/app", map[string]string{"a.txt": "v2", "config.yml": "c2"})
+	h.folder(t, "/srv", nil)
+	if err := os.Symlink("/data/app", filepath.Join(h.host, "srv/app")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../data", filepath.Join(h.host, "srv/data")); err != nil {
+		t.Fatal(err)
+	}
+	h.container("pg", nil, "always", 0, bindMount("/srv/app", "/var/lib/postgresql/data", false))
+	h.container("conf", nil, "always", 0, bindMount("/srv/data/app/config.yml", "/etc/app.yml", false))
+	h.container("reader", nil, "always", 0, bindMount("/srv/app", "/in", true))
+	h.container("next-door", nil, "always", 0, bindMount("/srv/data/app2", "/x", false))
+	for _, asked := range []string{"/srv/app", "/data/app"} {
+		preview := &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r1", JobTag: testJobTag, TargetPath: asked,
+			Source: "/volumes/app_data", DryRun: true}
+		result, err := h.restore(context.Background(), "p1", preview)
+		if err != nil {
+			t.Fatalf("%s: %v", asked, err)
+		}
+		var names []string
+		for _, raw := range result["would_stop"].([]any) {
+			names = append(names, raw.(map[string]any)["name"].(string))
+		}
+		slices.Sort(names)
+		if !slices.Equal(names, []string{"conf", "pg"}) {
+			t.Errorf("%s: the preview would stop %q", asked, names)
+		}
+	}
+	payload := &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r1", JobTag: testJobTag, TargetPath: "/data/app",
+		Source: "/volumes/app_data", Overwrite: true, ConfirmedStops: []string{"conf", "pg"}}
+	result, err := h.restore(context.Background(), "c1", payload)
+	if err != nil {
+		t.Fatalf("%v %v", err, result)
+	}
+	var stopped []string
+	for _, raw := range result["app_stopped"].([]any) {
+		stopped = append(stopped, raw.(map[string]any)["name"].(string))
+	}
+	slices.Sort(stopped)
+	events := h.happened()
+	if !slices.Equal(stopped, []string{"conf", "pg"}) || len(events) < 6 ||
+		!slices.Equal(events[len(events)-6:], []string{"job:restore", "stop:conf", "stop:pg", "job:end", "start:pg", "start:conf"}) {
+		t.Errorf("stopped %q: %q", stopped, events)
+	}
+	if files := readTree(t, filepath.Join(h.host, "data/app")); files["a.txt"] != "v1" || h.status("pg") != "running" || h.status("conf") != "running" {
+		t.Errorf("after: %v %s %s", files, h.status("pg"), h.status("conf"))
+	}
+
+	// a PocketCloud container that writes the destination through a link
+	h.container("pocketcloud-site-1", map[string]string{"pocketcloud.role": "site"}, "always", 0, bindMount("/srv/app", "/srv/site", false))
+	preview := &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r2", JobTag: testJobTag, TargetPath: "/data/app",
+		Source: "/volumes/app_data", DryRun: true}
+	if _, err := h.restore(context.Background(), "p2", preview); err == nil || !strings.Contains(err.Error(), "pocketcloud-site-1 is a PocketCloud container (site) that writes the destination") {
+		t.Errorf("a PocketCloud writer through a link: %v", err)
+	}
+}
+
 // TestContainersStartAgainWhenResticFails (#30, AC1/SAFE): a restore that
 // fails once it stopped the application starts it again, with its restart
 // policies, and says what it started; one whose files restic could not all

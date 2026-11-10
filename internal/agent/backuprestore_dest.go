@@ -233,6 +233,23 @@ func (a *Agent) ownVolumes(ctx context.Context) ([]string, error) {
 // there, the missing names after it, and that it does not exist. A file of
 // the server in the way is an error.
 func resolveServerTarget(root, dir string) (string, bool, error) {
+	return followServerPath(root, dir, false)
+}
+
+// resolveServerSource follows a bind mount's source, a folder or a file of
+// the server, through root as the Engine follows it, and says where it
+// leads; the source as it is when it cannot be followed.
+func resolveServerSource(root, source string) string {
+	real, _, err := followServerPath(root, source, true)
+	if err != nil {
+		return source
+	}
+	return real
+}
+
+// followServerPath is resolveServerTarget, which, with endsInFile, takes a file
+// of the server at the end of p too.
+func followServerPath(root, dir string, endsInFile bool) (string, bool, error) {
 	if _, err := os.Stat(root); err != nil {
 		return "", false, fmt.Errorf("the agent cannot see the server's directories at %s, where the server's / is mounted: %w", root, err)
 	}
@@ -275,6 +292,9 @@ func resolveServerTarget(root, dir string) (string, bool, error) {
 			continue
 		}
 		if !info.IsDir() {
+			if endsInFile && !slices.ContainsFunc(rest, func(name string) bool { return name != "" && name != "." }) {
+				return next, true, nil
+			}
 			return "", false, fmt.Errorf("%s is a file on this server, not a folder: a restore writes into a folder", next)
 		}
 		resolved = next

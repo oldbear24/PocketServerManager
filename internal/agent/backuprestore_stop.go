@@ -91,23 +91,35 @@ type restoreUser struct {
 
 // affected are the running containers a restore stops, dependents first:
 // those of stack, and those that mount a destination volume, or a folder of
-// the server read-write that holds a destination or is in one. A container
-// that reads a folder above a destination, such as a node exporter that
-// mounts / read-only, runs on. A PocketCloud container that writes a
-// destination refuses the restore.
+// the server read-write that holds a destination or is in one, as it is
+// named or where its symbolic links lead. A container that reads a folder
+// above a destination, such as a node exporter that mounts / read-only,
+// runs on. A PocketCloud container that writes a destination refuses the
+// restore.
 func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []restoreDest) ([]restoreUser, error) {
 	containers, err := a.Docker.Containers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	self := a.ownContainerID(ctx)
+	// where a bind's source leads on the server, as a destination's folder
+	// is where its links lead
+	resolved := map[string]string{}
+	resolve := func(source string) string {
+		real, ok := resolved[source]
+		if !ok {
+			real = resolveServerSource(a.hostRoot(), source)
+			resolved[source] = real
+		}
+		return real
+	}
 	var users []restoreUser
 	for _, container := range containers {
 		// the agent, and the restore.s own job
 		if container.ID == self || container.Labels["pocketcloud.command"] == commandID {
 			continue
 		}
-		uses, writes := usesDests(container, dests)
+		uses, writes := usesDests(container, dests, resolve)
 		inStack := stack != "" && container.Labels[composeProjectLabel] == stack
 		if !uses && !inStack {
 			continue
@@ -141,8 +153,11 @@ func firstName(container dockerapi.Container) string {
 	return container.Names[0]
 }
 
-// usesDests says whether a container uses a destination, and writes it.
-func usesDests(container dockerapi.Container, dests []restoreDest) (bool, bool) {
+// usesDests says whether a container uses a destination, and writes it. A
+// bind mount counts by its source as the container list says it, as it was
+// given, and by where its symbolic links lead on the server, which resolve
+// says: a destination's folder is where its links lead.
+func usesDests(container dockerapi.Container, dests []restoreDest, resolve func(source string) string) (bool, bool) {
 	uses, writes := false, false
 	for _, mount := range container.Mounts {
 		for _, dest := range dests {
@@ -150,7 +165,8 @@ func usesDests(container dockerapi.Container, dests []restoreDest) (bool, bool) 
 			case dest.volume != "" && mount.Type == "volume" && mount.Name == dest.volume:
 				uses = true
 				writes = writes || mount.RW
-			case dest.dir != "" && mount.Type == "bind" && mount.RW && backup.Overlap(mount.Source, dest.dir):
+			case dest.dir != "" && mount.Type == "bind" && mount.RW &&
+				(backup.Overlap(mount.Source, dest.dir) || backup.Overlap(resolve(mount.Source), dest.dir)):
 				uses, writes = true, true
 			}
 		}
