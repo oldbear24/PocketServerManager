@@ -1417,12 +1417,14 @@ func slowDownload(t *testing.T) (*restoresHarness, string, string) {
 }
 
 // TestADownloadStopsWhenTheBrowserLeaves (#30, SAFE): a browser that leaves
-// a download stops the agent's job, and the download is cancelled.
+// a download stops the agent's job long before restic would have dumped
+// everything, and the download is cancelled.
 func TestADownloadStopsWhenTheBrowserLeaves(t *testing.T) {
 	r, id, snapshot := slowDownload(t)
 	server := httptest.NewServer(r.handler)
 	t.Cleanup(server.Close)
-	t.Setenv("FAKE_RESTIC_SLOW_MS", "300")
+	// restic takes 16 seconds to dump the volume's 1 MiB
+	t.Setenv("FAKE_RESTIC_SLOW_MS", "1000")
 	restoreID, link := r.download(id, map[string]any{"target": r.disk.Id, "snapshot": snapshot, "path": "/volumes/app_data", "kind": "dir"})
 
 	ctx, leave := context.WithCancel(context.Background())
@@ -1439,6 +1441,7 @@ func TestADownloadStopsWhenTheBrowserLeaves(t *testing.T) {
 		t.Fatalf("the download's first bytes: %v %d", err, response.StatusCode)
 	}
 	command := r.restore(restoreID).GetString("command")
+	left := time.Now()
 	leave()
 	_ = response.Body.Close()
 
@@ -1455,6 +1458,9 @@ func TestADownloadStopsWhenTheBrowserLeaves(t *testing.T) {
 		}
 		return true
 	})
+	if took := time.Since(left); took > 8*time.Second {
+		t.Errorf("the dump's job went %s after the browser left, as restic ended", took)
+	}
 }
 
 // TestAFailedDownloadAbortsTheResponse (#30, SAFE): a dump that fails after
