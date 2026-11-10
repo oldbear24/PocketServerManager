@@ -141,7 +141,7 @@ func TestResources(t *testing.T) {
 func TestSecretCarryingTypesAreNotOpenToTheAPI(t *testing.T) {
 	for _, commandType := range []string{
 		"stack.deploy", "cert.install", "db.server.create", "db.database.create", "db.database.rotate",
-		"backup.run", "backup.init", "backup.restore", "agent.update", "exec.start", "edge.apply",
+		"backup.run", "backup.init", "backup.restore", "backup.dump", "agent.update", "exec.start", "edge.apply",
 	} {
 		if role := Specs[commandType].Role; role != "" {
 			t.Errorf("%s can be requested through the API by %s", commandType, role)

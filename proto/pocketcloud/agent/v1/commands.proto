@@ -138,6 +138,9 @@ message Command {
     BackupUnlock backup_unlock = 226;
     // backup_forget applies a retention policy.
     BackupForget backup_forget = 227;
+    // backup_dump streams a snapshot's folder as a tar, or one file as it
+    // is, to the panel while a browser downloads it (#30).
+    BackupDump backup_dump = 228;
 
     // agent_update swaps the agent container using a temporary updater container.
     AgentUpdate agent_update = 230;
@@ -849,38 +852,121 @@ message BackupRetention {
   int32 yearly = 6;
 }
 
-// BackupRestore restores a snapshot in a job container.
+// BackupRestore restores a snapshot in a job container (#30). The same
+// command previews a restore (dry_run) and runs it: the panel builds both from
+// one `backup_restores` record, and gives the target's secrets only to a
+// command that matches the record. A restore to the original location sets
+// original; a restore to a new folder sets target_path; never both.
+//
+// A real restore stops the containers that use the destination, restores,
+// and starts them again, all in the agent: also after a failure, a cancel or
+// an agent restart.
 message BackupRestore {
-  // repository is the source repository.
+  // repository is the source repository; the panel stores only target_id and
+  // url, and adds the rest when it delivers the command.
   BackupRepository repository = 1;
-  // snapshot_id is the snapshot to restore.
+  // snapshot_id is the snapshot to restore: its full id, 64 hex characters.
   string snapshot_id = 2;
-  // target_volume is the destination volume, if any.
+  // target_volume is not used: the agent refuses a restore that sets it. A
+  // volume goes back to its original location through original.
   string target_volume = 3;
-  // target_path is the destination host path, if any.
+  // target_path is the server's folder that a restore to a new folder
+  // writes source into; a missing one is created.
   string target_path = 4;
-  // include limits the restore to these paths.
+  // include limits the restore to these absolute paths of the snapshot, each
+  // under its root's source; at most 100.
   repeated string include = 5;
-  // dry_run lists what would be restored without changing anything.
+  // dry_run previews the restore: what restic would write, what the
+  // destination holds and the containers that would stop. Nothing changes.
   bool dry_run = 6;
+  // restore_id is the `backup_restores` record the command belongs to.
+  string restore_id = 7;
+  // job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
+  string job_tag = 8;
+  // source is the snapshot's directory that a restore to a new folder
+  // restores; `/` is the whole snapshot.
+  string source = 9;
+  // original lists, for a restore to the original location, each snapshot
+  // path and where it goes back.
+  repeated BackupRestoreRoot original = 10;
+  // overwrite says that a person confirmed the destination may hold files
+  // the restore overwrites. Without it the agent refuses a destination that
+  // is not empty.
+  bool overwrite = 11;
+  // replace also deletes what the destination holds that the snapshot does
+  // not (restic's --delete); only with overwrite and without include.
+  bool replace = 12;
+  // stack is the Compose project whose containers stop with the other users
+  // of the destination, if any.
+  string stack = 13;
+  // confirmed_stops are the names of the containers the preview said would
+  // stop. A real restore that would stop another one is refused.
+  repeated string confirmed_stops = 14;
+}
+
+// BackupRestoreRoot is one root of a restore to the original location: a
+// path of the snapshot and the volume or the directory of the server it goes
+// back into.
+message BackupRestoreRoot {
+  // source is the snapshot's path: `/volumes/<name>` for a volume, or the
+  // server's directory as the backup saved it. Empty asks the preview to
+  // find the snapshot's path of the directory.
+  string source = 1;
+  // volume is a volume of the server, which must exist.
+  string volume = 2;
+  // path is a directory of the server, which must exist.
+  string path = 3;
 }
 
 // BackupSnapshots lists the snapshots of a repository.
 message BackupSnapshots {
   // repository is the repository.
   BackupRepository repository = 1;
-  // tags limits the list to snapshots with these tags.
+  // tags limits the list to snapshots with all of these tags.
   repeated string tags = 2;
+  // limit is how many of the newest snapshots are listed: 500 when zero, at
+  // most 1000 (#30).
+  int32 limit = 3;
 }
 
 // BackupBrowse lists the files of a snapshot.
 message BackupBrowse {
   // repository is the repository.
   BackupRepository repository = 1;
-  // snapshot_id is the snapshot.
+  // snapshot_id is the snapshot: its full id, 64 hex characters.
   string snapshot_id = 2;
-  // path is the directory to list.
+  // path is the directory to list: an absolute path of the snapshot.
   string path = 3;
+  // offset is how many entries of the directory are skipped, directories
+  // first, then by name (#30).
+  int32 offset = 4;
+  // limit is how many entries are listed: 200 when zero, at most 1000.
+  int32 limit = 5;
+  // match keeps only the entries whose name holds it, in any case.
+  string match = 6;
+  // job_tag is the tag `job:<id>` of the job whose snapshot is browsed: the
+  // panel checks that the command goes to a server that may read the target.
+  string job_tag = 7;
+}
+
+// BackupDump streams a snapshot's folder as a tar, or one file as it is, to
+// the panel, which passes it on to a browser as it arrives (#30). Nothing is
+// stored on the way.
+message BackupDump {
+  // repository is the source repository; the panel stores only target_id and
+  // url, and adds the rest when it delivers the command.
+  BackupRepository repository = 1;
+  // snapshot_id is the snapshot: its full id, 64 hex characters.
+  string snapshot_id = 2;
+  // path is an absolute path of the snapshot: a directory is sent as a tar,
+  // a file as it is.
+  string path = 3;
+  // restore_id is the `backup_restores` record the download belongs to.
+  string restore_id = 4;
+  // file_name is the name the browser saves the download under.
+  string file_name = 5;
+  // job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
+  string job_tag = 6;
 }
 
 // BackupCheck verifies a repository with `restic check`.

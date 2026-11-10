@@ -154,6 +154,7 @@ type Command struct {
 	//	*Command_BackupCheck
 	//	*Command_BackupUnlock
 	//	*Command_BackupForget
+	//	*Command_BackupDump
 	//	*Command_AgentUpdate
 	//	*Command_AgentRestart
 	//	*Command_AgentRotateCertificate
@@ -694,6 +695,15 @@ func (x *Command) GetBackupForget() *BackupForget {
 	return nil
 }
 
+func (x *Command) GetBackupDump() *BackupDump {
+	if x != nil {
+		if x, ok := x.Payload.(*Command_BackupDump); ok {
+			return x.BackupDump
+		}
+	}
+	return nil
+}
+
 func (x *Command) GetAgentUpdate() *AgentUpdate {
 	if x != nil {
 		if x, ok := x.Payload.(*Command_AgentUpdate); ok {
@@ -1002,6 +1012,12 @@ type Command_BackupForget struct {
 	BackupForget *BackupForget `protobuf:"bytes,227,opt,name=backup_forget,json=backupForget,proto3,oneof"`
 }
 
+type Command_BackupDump struct {
+	// backup_dump streams a snapshot's folder as a tar, or one file as it
+	// is, to the panel while a browser downloads it (#30).
+	BackupDump *BackupDump `protobuf:"bytes,228,opt,name=backup_dump,json=backupDump,proto3,oneof"`
+}
+
 type Command_AgentUpdate struct {
 	// agent_update swaps the agent container using a temporary updater container.
 	AgentUpdate *AgentUpdate `protobuf:"bytes,230,opt,name=agent_update,json=agentUpdate,proto3,oneof"`
@@ -1131,6 +1147,8 @@ func (*Command_BackupCheck) isCommand_Payload() {}
 func (*Command_BackupUnlock) isCommand_Payload() {}
 
 func (*Command_BackupForget) isCommand_Payload() {}
+
+func (*Command_BackupDump) isCommand_Payload() {}
 
 func (*Command_AgentUpdate) isCommand_Payload() {}
 
@@ -4998,23 +5016,59 @@ func (x *BackupRetention) GetYearly() int32 {
 	return 0
 }
 
-// BackupRestore restores a snapshot in a job container.
+// BackupRestore restores a snapshot in a job container (#30). The same
+// command previews a restore (dry_run) and runs it: the panel builds both from
+// one `backup_restores` record, and gives the target's secrets only to a
+// command that matches the record. A restore to the original location sets
+// original; a restore to a new folder sets target_path; never both.
+//
+// A real restore stops the containers that use the destination, restores,
+// and starts them again, all in the agent: also after a failure, a cancel or
+// an agent restart.
 type BackupRestore struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// repository is the source repository.
+	// repository is the source repository; the panel stores only target_id and
+	// url, and adds the rest when it delivers the command.
 	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
-	// snapshot_id is the snapshot to restore.
+	// snapshot_id is the snapshot to restore: its full id, 64 hex characters.
 	SnapshotId string `protobuf:"bytes,2,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	// target_volume is the destination volume, if any.
+	// target_volume is not used: the agent refuses a restore that sets it. A
+	// volume goes back to its original location through original.
 	TargetVolume string `protobuf:"bytes,3,opt,name=target_volume,json=targetVolume,proto3" json:"target_volume,omitempty"`
-	// target_path is the destination host path, if any.
+	// target_path is the server's folder that a restore to a new folder
+	// writes source into; a missing one is created.
 	TargetPath string `protobuf:"bytes,4,opt,name=target_path,json=targetPath,proto3" json:"target_path,omitempty"`
-	// include limits the restore to these paths.
+	// include limits the restore to these absolute paths of the snapshot, each
+	// under its root's source; at most 100.
 	Include []string `protobuf:"bytes,5,rep,name=include,proto3" json:"include,omitempty"`
-	// dry_run lists what would be restored without changing anything.
-	DryRun        bool `protobuf:"varint,6,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// dry_run previews the restore: what restic would write, what the
+	// destination holds and the containers that would stop. Nothing changes.
+	DryRun bool `protobuf:"varint,6,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	// restore_id is the `backup_restores` record the command belongs to.
+	RestoreId string `protobuf:"bytes,7,opt,name=restore_id,json=restoreId,proto3" json:"restore_id,omitempty"`
+	// job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
+	JobTag string `protobuf:"bytes,8,opt,name=job_tag,json=jobTag,proto3" json:"job_tag,omitempty"`
+	// source is the snapshot's directory that a restore to a new folder
+	// restores; `/` is the whole snapshot.
+	Source string `protobuf:"bytes,9,opt,name=source,proto3" json:"source,omitempty"`
+	// original lists, for a restore to the original location, each snapshot
+	// path and where it goes back.
+	Original []*BackupRestoreRoot `protobuf:"bytes,10,rep,name=original,proto3" json:"original,omitempty"`
+	// overwrite says that a person confirmed the destination may hold files
+	// the restore overwrites. Without it the agent refuses a destination that
+	// is not empty.
+	Overwrite bool `protobuf:"varint,11,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
+	// replace also deletes what the destination holds that the snapshot does
+	// not (restic's --delete); only with overwrite and without include.
+	Replace bool `protobuf:"varint,12,opt,name=replace,proto3" json:"replace,omitempty"`
+	// stack is the Compose project whose containers stop with the other users
+	// of the destination, if any.
+	Stack string `protobuf:"bytes,13,opt,name=stack,proto3" json:"stack,omitempty"`
+	// confirmed_stops are the names of the containers the preview said would
+	// stop. A real restore that would stop another one is refused.
+	ConfirmedStops []string `protobuf:"bytes,14,rep,name=confirmed_stops,json=confirmedStops,proto3" json:"confirmed_stops,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *BackupRestore) Reset() {
@@ -5089,20 +5143,147 @@ func (x *BackupRestore) GetDryRun() bool {
 	return false
 }
 
+func (x *BackupRestore) GetRestoreId() string {
+	if x != nil {
+		return x.RestoreId
+	}
+	return ""
+}
+
+func (x *BackupRestore) GetJobTag() string {
+	if x != nil {
+		return x.JobTag
+	}
+	return ""
+}
+
+func (x *BackupRestore) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *BackupRestore) GetOriginal() []*BackupRestoreRoot {
+	if x != nil {
+		return x.Original
+	}
+	return nil
+}
+
+func (x *BackupRestore) GetOverwrite() bool {
+	if x != nil {
+		return x.Overwrite
+	}
+	return false
+}
+
+func (x *BackupRestore) GetReplace() bool {
+	if x != nil {
+		return x.Replace
+	}
+	return false
+}
+
+func (x *BackupRestore) GetStack() string {
+	if x != nil {
+		return x.Stack
+	}
+	return ""
+}
+
+func (x *BackupRestore) GetConfirmedStops() []string {
+	if x != nil {
+		return x.ConfirmedStops
+	}
+	return nil
+}
+
+// BackupRestoreRoot is one root of a restore to the original location: a
+// path of the snapshot and the volume or the directory of the server it goes
+// back into.
+type BackupRestoreRoot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source is the snapshot's path: `/volumes/<name>` for a volume, or the
+	// server's directory as the backup saved it. Empty asks the preview to
+	// find the snapshot's path of the directory.
+	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	// volume is a volume of the server, which must exist.
+	Volume string `protobuf:"bytes,2,opt,name=volume,proto3" json:"volume,omitempty"`
+	// path is a directory of the server, which must exist.
+	Path          string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupRestoreRoot) Reset() {
+	*x = BackupRestoreRoot{}
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupRestoreRoot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupRestoreRoot) ProtoMessage() {}
+
+func (x *BackupRestoreRoot) ProtoReflect() protoreflect.Message {
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupRestoreRoot.ProtoReflect.Descriptor instead.
+func (*BackupRestoreRoot) Descriptor() ([]byte, []int) {
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *BackupRestoreRoot) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *BackupRestoreRoot) GetVolume() string {
+	if x != nil {
+		return x.Volume
+	}
+	return ""
+}
+
+func (x *BackupRestoreRoot) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
 // BackupSnapshots lists the snapshots of a repository.
 type BackupSnapshots struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// repository is the repository.
 	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
-	// tags limits the list to snapshots with these tags.
-	Tags          []string `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty"`
+	// tags limits the list to snapshots with all of these tags.
+	Tags []string `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty"`
+	// limit is how many of the newest snapshots are listed: 500 when zero, at
+	// most 1000 (#30).
+	Limit         int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BackupSnapshots) Reset() {
 	*x = BackupSnapshots{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5114,7 +5295,7 @@ func (x *BackupSnapshots) String() string {
 func (*BackupSnapshots) ProtoMessage() {}
 
 func (x *BackupSnapshots) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[53]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5127,7 +5308,7 @@ func (x *BackupSnapshots) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupSnapshots.ProtoReflect.Descriptor instead.
 func (*BackupSnapshots) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{53}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *BackupSnapshots) GetRepository() *BackupRepository {
@@ -5144,22 +5325,39 @@ func (x *BackupSnapshots) GetTags() []string {
 	return nil
 }
 
+func (x *BackupSnapshots) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
 // BackupBrowse lists the files of a snapshot.
 type BackupBrowse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// repository is the repository.
 	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
-	// snapshot_id is the snapshot.
+	// snapshot_id is the snapshot: its full id, 64 hex characters.
 	SnapshotId string `protobuf:"bytes,2,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	// path is the directory to list.
-	Path          string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// path is the directory to list: an absolute path of the snapshot.
+	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// offset is how many entries of the directory are skipped, directories
+	// first, then by name (#30).
+	Offset int32 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	// limit is how many entries are listed: 200 when zero, at most 1000.
+	Limit int32 `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	// match keeps only the entries whose name holds it, in any case.
+	Match string `protobuf:"bytes,6,opt,name=match,proto3" json:"match,omitempty"`
+	// job_tag is the tag `job:<id>` of the job whose snapshot is browsed: the
+	// panel checks that the command goes to a server that may read the target.
+	JobTag        string `protobuf:"bytes,7,opt,name=job_tag,json=jobTag,proto3" json:"job_tag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BackupBrowse) Reset() {
 	*x = BackupBrowse{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5171,7 +5369,7 @@ func (x *BackupBrowse) String() string {
 func (*BackupBrowse) ProtoMessage() {}
 
 func (x *BackupBrowse) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[54]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5184,7 +5382,7 @@ func (x *BackupBrowse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupBrowse.ProtoReflect.Descriptor instead.
 func (*BackupBrowse) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{54}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *BackupBrowse) GetRepository() *BackupRepository {
@@ -5208,6 +5406,129 @@ func (x *BackupBrowse) GetPath() string {
 	return ""
 }
 
+func (x *BackupBrowse) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *BackupBrowse) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *BackupBrowse) GetMatch() string {
+	if x != nil {
+		return x.Match
+	}
+	return ""
+}
+
+func (x *BackupBrowse) GetJobTag() string {
+	if x != nil {
+		return x.JobTag
+	}
+	return ""
+}
+
+// BackupDump streams a snapshot's folder as a tar, or one file as it is, to
+// the panel, which passes it on to a browser as it arrives (#30). Nothing is
+// stored on the way.
+type BackupDump struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// repository is the source repository; the panel stores only target_id and
+	// url, and adds the rest when it delivers the command.
+	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
+	// snapshot_id is the snapshot: its full id, 64 hex characters.
+	SnapshotId string `protobuf:"bytes,2,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
+	// path is an absolute path of the snapshot: a directory is sent as a tar,
+	// a file as it is.
+	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// restore_id is the `backup_restores` record the download belongs to.
+	RestoreId string `protobuf:"bytes,4,opt,name=restore_id,json=restoreId,proto3" json:"restore_id,omitempty"`
+	// file_name is the name the browser saves the download under.
+	FileName string `protobuf:"bytes,5,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
+	// job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
+	JobTag        string `protobuf:"bytes,6,opt,name=job_tag,json=jobTag,proto3" json:"job_tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackupDump) Reset() {
+	*x = BackupDump{}
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackupDump) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackupDump) ProtoMessage() {}
+
+func (x *BackupDump) ProtoReflect() protoreflect.Message {
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackupDump.ProtoReflect.Descriptor instead.
+func (*BackupDump) Descriptor() ([]byte, []int) {
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *BackupDump) GetRepository() *BackupRepository {
+	if x != nil {
+		return x.Repository
+	}
+	return nil
+}
+
+func (x *BackupDump) GetSnapshotId() string {
+	if x != nil {
+		return x.SnapshotId
+	}
+	return ""
+}
+
+func (x *BackupDump) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *BackupDump) GetRestoreId() string {
+	if x != nil {
+		return x.RestoreId
+	}
+	return ""
+}
+
+func (x *BackupDump) GetFileName() string {
+	if x != nil {
+		return x.FileName
+	}
+	return ""
+}
+
+func (x *BackupDump) GetJobTag() string {
+	if x != nil {
+		return x.JobTag
+	}
+	return ""
+}
+
 // BackupCheck verifies a repository with `restic check`.
 type BackupCheck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -5221,7 +5542,7 @@ type BackupCheck struct {
 
 func (x *BackupCheck) Reset() {
 	*x = BackupCheck{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5233,7 +5554,7 @@ func (x *BackupCheck) String() string {
 func (*BackupCheck) ProtoMessage() {}
 
 func (x *BackupCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[55]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5246,7 +5567,7 @@ func (x *BackupCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupCheck.ProtoReflect.Descriptor instead.
 func (*BackupCheck) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{55}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *BackupCheck) GetRepository() *BackupRepository {
@@ -5274,7 +5595,7 @@ type BackupUnlock struct {
 
 func (x *BackupUnlock) Reset() {
 	*x = BackupUnlock{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[56]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5286,7 +5607,7 @@ func (x *BackupUnlock) String() string {
 func (*BackupUnlock) ProtoMessage() {}
 
 func (x *BackupUnlock) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[56]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5299,7 +5620,7 @@ func (x *BackupUnlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupUnlock.ProtoReflect.Descriptor instead.
 func (*BackupUnlock) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{56}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *BackupUnlock) GetRepository() *BackupRepository {
@@ -5332,7 +5653,7 @@ type BackupForget struct {
 
 func (x *BackupForget) Reset() {
 	*x = BackupForget{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[57]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5344,7 +5665,7 @@ func (x *BackupForget) String() string {
 func (*BackupForget) ProtoMessage() {}
 
 func (x *BackupForget) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[57]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5357,7 +5678,7 @@ func (x *BackupForget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupForget.ProtoReflect.Descriptor instead.
 func (*BackupForget) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{57}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *BackupForget) GetRepository() *BackupRepository {
@@ -5427,7 +5748,7 @@ type AgentUpdate struct {
 
 func (x *AgentUpdate) Reset() {
 	*x = AgentUpdate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[58]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5439,7 +5760,7 @@ func (x *AgentUpdate) String() string {
 func (*AgentUpdate) ProtoMessage() {}
 
 func (x *AgentUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[58]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5452,7 +5773,7 @@ func (x *AgentUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentUpdate.ProtoReflect.Descriptor instead.
 func (*AgentUpdate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{58}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *AgentUpdate) GetAgentImage() string {
@@ -5492,7 +5813,7 @@ type AgentRestart struct {
 
 func (x *AgentRestart) Reset() {
 	*x = AgentRestart{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[59]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5504,7 +5825,7 @@ func (x *AgentRestart) String() string {
 func (*AgentRestart) ProtoMessage() {}
 
 func (x *AgentRestart) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[59]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5517,7 +5838,7 @@ func (x *AgentRestart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRestart.ProtoReflect.Descriptor instead.
 func (*AgentRestart) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{59}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{61}
 }
 
 // AgentRotateCertificate rotates the agent's certificate now.
@@ -5529,7 +5850,7 @@ type AgentRotateCertificate struct {
 
 func (x *AgentRotateCertificate) Reset() {
 	*x = AgentRotateCertificate{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[60]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5541,7 +5862,7 @@ func (x *AgentRotateCertificate) String() string {
 func (*AgentRotateCertificate) ProtoMessage() {}
 
 func (x *AgentRotateCertificate) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[60]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5554,7 +5875,7 @@ func (x *AgentRotateCertificate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRotateCertificate.ProtoReflect.Descriptor instead.
 func (*AgentRotateCertificate) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{60}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{62}
 }
 
 // AgentDiagnostics builds a debug bundle and uploads it with UploadArtifact.
@@ -5568,7 +5889,7 @@ type AgentDiagnostics struct {
 
 func (x *AgentDiagnostics) Reset() {
 	*x = AgentDiagnostics{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[61]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5580,7 +5901,7 @@ func (x *AgentDiagnostics) String() string {
 func (*AgentDiagnostics) ProtoMessage() {}
 
 func (x *AgentDiagnostics) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[61]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5593,7 +5914,7 @@ func (x *AgentDiagnostics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentDiagnostics.ProtoReflect.Descriptor instead.
 func (*AgentDiagnostics) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{61}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *AgentDiagnostics) GetLogLines() int32 {
@@ -5617,7 +5938,7 @@ type AgentSetLogLevel struct {
 
 func (x *AgentSetLogLevel) Reset() {
 	*x = AgentSetLogLevel{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[62]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5629,7 +5950,7 @@ func (x *AgentSetLogLevel) String() string {
 func (*AgentSetLogLevel) ProtoMessage() {}
 
 func (x *AgentSetLogLevel) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[62]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5642,7 +5963,7 @@ func (x *AgentSetLogLevel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentSetLogLevel.ProtoReflect.Descriptor instead.
 func (*AgentSetLogLevel) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{62}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *AgentSetLogLevel) GetLevel() string {
@@ -5688,7 +6009,7 @@ type DnsRewrite struct {
 
 func (x *DnsRewrite) Reset() {
 	*x = DnsRewrite{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[63]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5700,7 +6021,7 @@ func (x *DnsRewrite) String() string {
 func (*DnsRewrite) ProtoMessage() {}
 
 func (x *DnsRewrite) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[63]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5713,7 +6034,7 @@ func (x *DnsRewrite) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DnsRewrite.ProtoReflect.Descriptor instead.
 func (*DnsRewrite) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{63}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *DnsRewrite) GetProviderId() string {
@@ -5787,7 +6108,7 @@ type DnsRewriteRecord struct {
 
 func (x *DnsRewriteRecord) Reset() {
 	*x = DnsRewriteRecord{}
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[64]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5799,7 +6120,7 @@ func (x *DnsRewriteRecord) String() string {
 func (*DnsRewriteRecord) ProtoMessage() {}
 
 func (x *DnsRewriteRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[64]
+	mi := &file_pocketcloud_agent_v1_commands_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5812,7 +6133,7 @@ func (x *DnsRewriteRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DnsRewriteRecord.ProtoReflect.Descriptor instead.
 func (*DnsRewriteRecord) Descriptor() ([]byte, []int) {
-	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{64}
+	return file_pocketcloud_agent_v1_commands_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *DnsRewriteRecord) GetName() string {
@@ -5840,7 +6161,7 @@ var File_pocketcloud_agent_v1_commands_proto protoreflect.FileDescriptor
 
 const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\n" +
-	"#pocketcloud/agent/v1/commands.proto\x12\x14pocketcloud.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$pocketcloud/options/v1/options.proto\"\xb5#\n" +
+	"#pocketcloud/agent/v1/commands.proto\x12\x14pocketcloud.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a$pocketcloud/options/v1/options.proto\"\xfb#\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1b\n" +
@@ -5910,7 +6231,9 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\rbackup_browse\x18\xe0\x01 \x01(\v2\".pocketcloud.agent.v1.BackupBrowseH\x00R\fbackupBrowse\x12G\n" +
 	"\fbackup_check\x18\xe1\x01 \x01(\v2!.pocketcloud.agent.v1.BackupCheckH\x00R\vbackupCheck\x12J\n" +
 	"\rbackup_unlock\x18\xe2\x01 \x01(\v2\".pocketcloud.agent.v1.BackupUnlockH\x00R\fbackupUnlock\x12J\n" +
-	"\rbackup_forget\x18\xe3\x01 \x01(\v2\".pocketcloud.agent.v1.BackupForgetH\x00R\fbackupForget\x12G\n" +
+	"\rbackup_forget\x18\xe3\x01 \x01(\v2\".pocketcloud.agent.v1.BackupForgetH\x00R\fbackupForget\x12D\n" +
+	"\vbackup_dump\x18\xe4\x01 \x01(\v2 .pocketcloud.agent.v1.BackupDumpH\x00R\n" +
+	"backupDump\x12G\n" +
 	"\fagent_update\x18\xe6\x01 \x01(\v2!.pocketcloud.agent.v1.AgentUpdateH\x00R\vagentUpdate\x12J\n" +
 	"\ragent_restart\x18\xe7\x01 \x01(\v2\".pocketcloud.agent.v1.AgentRestartH\x00R\fagentRestart\x12i\n" +
 	"\x18agent_rotate_certificate\x18\xe8\x01 \x01(\v2,.pocketcloud.agent.v1.AgentRotateCertificateH\x00R\x16agentRotateCertificate\x12V\n" +
@@ -6275,7 +6598,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x05daily\x18\x03 \x01(\x05R\x05daily\x12\x16\n" +
 	"\x06weekly\x18\x04 \x01(\x05R\x06weekly\x12\x18\n" +
 	"\amonthly\x18\x05 \x01(\x05R\amonthly\x12\x16\n" +
-	"\x06yearly\x18\x06 \x01(\x05R\x06yearly\"\xf1\x01\n" +
+	"\x06yearly\x18\x06 \x01(\x05R\x06yearly\"\xfd\x03\n" +
 	"\rBackupRestore\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
@@ -6286,19 +6609,50 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\vtarget_path\x18\x04 \x01(\tR\n" +
 	"targetPath\x12\x18\n" +
 	"\ainclude\x18\x05 \x03(\tR\ainclude\x12\x17\n" +
-	"\adry_run\x18\x06 \x01(\bR\x06dryRun\"m\n" +
+	"\adry_run\x18\x06 \x01(\bR\x06dryRun\x12\x1d\n" +
+	"\n" +
+	"restore_id\x18\a \x01(\tR\trestoreId\x12\x17\n" +
+	"\ajob_tag\x18\b \x01(\tR\x06jobTag\x12\x16\n" +
+	"\x06source\x18\t \x01(\tR\x06source\x12C\n" +
+	"\boriginal\x18\n" +
+	" \x03(\v2'.pocketcloud.agent.v1.BackupRestoreRootR\boriginal\x12\x1c\n" +
+	"\toverwrite\x18\v \x01(\bR\toverwrite\x12\x18\n" +
+	"\areplace\x18\f \x01(\bR\areplace\x12\x14\n" +
+	"\x05stack\x18\r \x01(\tR\x05stack\x12'\n" +
+	"\x0fconfirmed_stops\x18\x0e \x03(\tR\x0econfirmedStops\"W\n" +
+	"\x11BackupRestoreRoot\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12\x16\n" +
+	"\x06volume\x18\x02 \x01(\tR\x06volume\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\"\x83\x01\n" +
 	"\x0fBackupSnapshots\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
 	"repository\x12\x12\n" +
-	"\x04tags\x18\x02 \x03(\tR\x04tags\"\x8b\x01\n" +
+	"\x04tags\x18\x02 \x03(\tR\x04tags\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xe8\x01\n" +
 	"\fBackupBrowse\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
 	"repository\x12\x1f\n" +
 	"\vsnapshot_id\x18\x02 \x01(\tR\n" +
 	"snapshotId\x12\x12\n" +
-	"\x04path\x18\x03 \x01(\tR\x04path\"\x7f\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x05R\x06offset\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\x12\x14\n" +
+	"\x05match\x18\x06 \x01(\tR\x05match\x12\x17\n" +
+	"\ajob_tag\x18\a \x01(\tR\x06jobTag\"\xde\x01\n" +
+	"\n" +
+	"BackupDump\x12F\n" +
+	"\n" +
+	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
+	"repository\x12\x1f\n" +
+	"\vsnapshot_id\x18\x02 \x01(\tR\n" +
+	"snapshotId\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12\x1d\n" +
+	"\n" +
+	"restore_id\x18\x04 \x01(\tR\trestoreId\x12\x1b\n" +
+	"\tfile_name\x18\x05 \x01(\tR\bfileName\x12\x17\n" +
+	"\ajob_tag\x18\x06 \x01(\tR\x06jobTag\"\x7f\n" +
 	"\vBackupCheck\x12F\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2&.pocketcloud.agent.v1.BackupRepositoryR\n" +
@@ -6370,7 +6724,7 @@ func file_pocketcloud_agent_v1_commands_proto_rawDescGZIP() []byte {
 }
 
 var file_pocketcloud_agent_v1_commands_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 77)
+var file_pocketcloud_agent_v1_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 79)
 var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(DnsRewriteOp)(0),              // 0: pocketcloud.agent.v1.DnsRewriteOp
 	(*Command)(nil),                // 1: pocketcloud.agent.v1.Command
@@ -6426,136 +6780,141 @@ var file_pocketcloud_agent_v1_commands_proto_goTypes = []any{
 	(*BackupRun)(nil),              // 51: pocketcloud.agent.v1.BackupRun
 	(*BackupRetention)(nil),        // 52: pocketcloud.agent.v1.BackupRetention
 	(*BackupRestore)(nil),          // 53: pocketcloud.agent.v1.BackupRestore
-	(*BackupSnapshots)(nil),        // 54: pocketcloud.agent.v1.BackupSnapshots
-	(*BackupBrowse)(nil),           // 55: pocketcloud.agent.v1.BackupBrowse
-	(*BackupCheck)(nil),            // 56: pocketcloud.agent.v1.BackupCheck
-	(*BackupUnlock)(nil),           // 57: pocketcloud.agent.v1.BackupUnlock
-	(*BackupForget)(nil),           // 58: pocketcloud.agent.v1.BackupForget
-	(*AgentUpdate)(nil),            // 59: pocketcloud.agent.v1.AgentUpdate
-	(*AgentRestart)(nil),           // 60: pocketcloud.agent.v1.AgentRestart
-	(*AgentRotateCertificate)(nil), // 61: pocketcloud.agent.v1.AgentRotateCertificate
-	(*AgentDiagnostics)(nil),       // 62: pocketcloud.agent.v1.AgentDiagnostics
-	(*AgentSetLogLevel)(nil),       // 63: pocketcloud.agent.v1.AgentSetLogLevel
-	(*DnsRewrite)(nil),             // 64: pocketcloud.agent.v1.DnsRewrite
-	(*DnsRewriteRecord)(nil),       // 65: pocketcloud.agent.v1.DnsRewriteRecord
-	nil,                            // 66: pocketcloud.agent.v1.StackDeploy.SecretsEntry
-	nil,                            // 67: pocketcloud.agent.v1.StackPull.SecretsEntry
-	nil,                            // 68: pocketcloud.agent.v1.SitePhpDeploy.EnvEntry
-	nil,                            // 69: pocketcloud.agent.v1.SitePhpDeploy.SecretsEntry
-	nil,                            // 70: pocketcloud.agent.v1.SitePhpDeploy.FilesEntry
-	nil,                            // 71: pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	nil,                            // 72: pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	nil,                            // 73: pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	nil,                            // 74: pocketcloud.agent.v1.EdgeApply.SecretsEntry
-	nil,                            // 75: pocketcloud.agent.v1.BackupRepository.EnvEntry
-	nil,                            // 76: pocketcloud.agent.v1.BackupRepository.OptionsEntry
-	nil,                            // 77: pocketcloud.agent.v1.BackupRun.EnvEntry
-	(*timestamppb.Timestamp)(nil),  // 78: google.protobuf.Timestamp
+	(*BackupRestoreRoot)(nil),      // 54: pocketcloud.agent.v1.BackupRestoreRoot
+	(*BackupSnapshots)(nil),        // 55: pocketcloud.agent.v1.BackupSnapshots
+	(*BackupBrowse)(nil),           // 56: pocketcloud.agent.v1.BackupBrowse
+	(*BackupDump)(nil),             // 57: pocketcloud.agent.v1.BackupDump
+	(*BackupCheck)(nil),            // 58: pocketcloud.agent.v1.BackupCheck
+	(*BackupUnlock)(nil),           // 59: pocketcloud.agent.v1.BackupUnlock
+	(*BackupForget)(nil),           // 60: pocketcloud.agent.v1.BackupForget
+	(*AgentUpdate)(nil),            // 61: pocketcloud.agent.v1.AgentUpdate
+	(*AgentRestart)(nil),           // 62: pocketcloud.agent.v1.AgentRestart
+	(*AgentRotateCertificate)(nil), // 63: pocketcloud.agent.v1.AgentRotateCertificate
+	(*AgentDiagnostics)(nil),       // 64: pocketcloud.agent.v1.AgentDiagnostics
+	(*AgentSetLogLevel)(nil),       // 65: pocketcloud.agent.v1.AgentSetLogLevel
+	(*DnsRewrite)(nil),             // 66: pocketcloud.agent.v1.DnsRewrite
+	(*DnsRewriteRecord)(nil),       // 67: pocketcloud.agent.v1.DnsRewriteRecord
+	nil,                            // 68: pocketcloud.agent.v1.StackDeploy.SecretsEntry
+	nil,                            // 69: pocketcloud.agent.v1.StackPull.SecretsEntry
+	nil,                            // 70: pocketcloud.agent.v1.SitePhpDeploy.EnvEntry
+	nil,                            // 71: pocketcloud.agent.v1.SitePhpDeploy.SecretsEntry
+	nil,                            // 72: pocketcloud.agent.v1.SitePhpDeploy.FilesEntry
+	nil,                            // 73: pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	nil,                            // 74: pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	nil,                            // 75: pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	nil,                            // 76: pocketcloud.agent.v1.EdgeApply.SecretsEntry
+	nil,                            // 77: pocketcloud.agent.v1.BackupRepository.EnvEntry
+	nil,                            // 78: pocketcloud.agent.v1.BackupRepository.OptionsEntry
+	nil,                            // 79: pocketcloud.agent.v1.BackupRun.EnvEntry
+	(*timestamppb.Timestamp)(nil),  // 80: google.protobuf.Timestamp
 }
 var file_pocketcloud_agent_v1_commands_proto_depIdxs = []int32{
-	78, // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
-	2,  // 1: pocketcloud.agent.v1.Command.container_start:type_name -> pocketcloud.agent.v1.ContainerStart
-	3,  // 2: pocketcloud.agent.v1.Command.container_stop:type_name -> pocketcloud.agent.v1.ContainerStop
-	4,  // 3: pocketcloud.agent.v1.Command.container_restart:type_name -> pocketcloud.agent.v1.ContainerRestart
-	5,  // 4: pocketcloud.agent.v1.Command.container_remove:type_name -> pocketcloud.agent.v1.ContainerRemove
-	7,  // 5: pocketcloud.agent.v1.Command.image_pull:type_name -> pocketcloud.agent.v1.ImagePull
-	8,  // 6: pocketcloud.agent.v1.Command.stack_deploy:type_name -> pocketcloud.agent.v1.StackDeploy
-	9,  // 7: pocketcloud.agent.v1.Command.stack_stop:type_name -> pocketcloud.agent.v1.StackStop
-	10, // 8: pocketcloud.agent.v1.Command.stack_down:type_name -> pocketcloud.agent.v1.StackDown
-	11, // 9: pocketcloud.agent.v1.Command.stack_pull:type_name -> pocketcloud.agent.v1.StackPull
-	12, // 10: pocketcloud.agent.v1.Command.stack_validate:type_name -> pocketcloud.agent.v1.StackValidate
-	13, // 11: pocketcloud.agent.v1.Command.stack_restart:type_name -> pocketcloud.agent.v1.StackRestart
-	14, // 12: pocketcloud.agent.v1.Command.stack_import:type_name -> pocketcloud.agent.v1.StackImport
-	15, // 13: pocketcloud.agent.v1.Command.logs_follow:type_name -> pocketcloud.agent.v1.LogsFollow
-	16, // 14: pocketcloud.agent.v1.Command.logs_stop:type_name -> pocketcloud.agent.v1.LogsStop
-	17, // 15: pocketcloud.agent.v1.Command.exec_start:type_name -> pocketcloud.agent.v1.ExecStart
-	19, // 16: pocketcloud.agent.v1.Command.exec_stop:type_name -> pocketcloud.agent.v1.ExecStop
-	20, // 17: pocketcloud.agent.v1.Command.site_deploy:type_name -> pocketcloud.agent.v1.SiteDeploy
-	22, // 18: pocketcloud.agent.v1.Command.site_rollback:type_name -> pocketcloud.agent.v1.SiteRollback
-	23, // 19: pocketcloud.agent.v1.Command.site_remove:type_name -> pocketcloud.agent.v1.SiteRemove
-	24, // 20: pocketcloud.agent.v1.Command.site_php_apply:type_name -> pocketcloud.agent.v1.SitePhpApply
-	26, // 21: pocketcloud.agent.v1.Command.site_php_status:type_name -> pocketcloud.agent.v1.SitePhpStatus
-	27, // 22: pocketcloud.agent.v1.Command.site_php_mail:type_name -> pocketcloud.agent.v1.SitePhpMail
-	25, // 23: pocketcloud.agent.v1.Command.site_detect:type_name -> pocketcloud.agent.v1.SiteDetect
-	28, // 24: pocketcloud.agent.v1.Command.task_run:type_name -> pocketcloud.agent.v1.TaskRun
-	29, // 25: pocketcloud.agent.v1.Command.db_server_create:type_name -> pocketcloud.agent.v1.DbServerCreate
-	30, // 26: pocketcloud.agent.v1.Command.db_server_upgrade:type_name -> pocketcloud.agent.v1.DbServerUpgrade
-	31, // 27: pocketcloud.agent.v1.Command.db_server_remove:type_name -> pocketcloud.agent.v1.DbServerRemove
-	33, // 28: pocketcloud.agent.v1.Command.db_database_create:type_name -> pocketcloud.agent.v1.DbDatabaseCreate
-	34, // 29: pocketcloud.agent.v1.Command.db_database_drop:type_name -> pocketcloud.agent.v1.DbDatabaseDrop
-	35, // 30: pocketcloud.agent.v1.Command.db_database_rotate:type_name -> pocketcloud.agent.v1.DbDatabaseRotate
-	36, // 31: pocketcloud.agent.v1.Command.db_database_clone:type_name -> pocketcloud.agent.v1.DbDatabaseClone
-	37, // 32: pocketcloud.agent.v1.Command.db_database_export:type_name -> pocketcloud.agent.v1.DbDatabaseExport
-	38, // 33: pocketcloud.agent.v1.Command.db_network_attach:type_name -> pocketcloud.agent.v1.DbNetworkAttach
-	39, // 34: pocketcloud.agent.v1.Command.db_stats:type_name -> pocketcloud.agent.v1.DbStats
-	40, // 35: pocketcloud.agent.v1.Command.db_adminer_start:type_name -> pocketcloud.agent.v1.DbAdminerStart
-	41, // 36: pocketcloud.agent.v1.Command.db_adminer_stop:type_name -> pocketcloud.agent.v1.DbAdminerStop
-	42, // 37: pocketcloud.agent.v1.Command.db_server_move:type_name -> pocketcloud.agent.v1.DbServerMove
-	44, // 38: pocketcloud.agent.v1.Command.edge_apply:type_name -> pocketcloud.agent.v1.EdgeApply
-	45, // 39: pocketcloud.agent.v1.Command.cert_install:type_name -> pocketcloud.agent.v1.CertInstall
-	46, // 40: pocketcloud.agent.v1.Command.cert_remove:type_name -> pocketcloud.agent.v1.CertRemove
-	47, // 41: pocketcloud.agent.v1.Command.acme_challenge_present:type_name -> pocketcloud.agent.v1.AcmeChallengePresent
-	48, // 42: pocketcloud.agent.v1.Command.acme_challenge_cleanup:type_name -> pocketcloud.agent.v1.AcmeChallengeCleanup
-	50, // 43: pocketcloud.agent.v1.Command.backup_init:type_name -> pocketcloud.agent.v1.BackupInit
-	51, // 44: pocketcloud.agent.v1.Command.backup_run:type_name -> pocketcloud.agent.v1.BackupRun
-	53, // 45: pocketcloud.agent.v1.Command.backup_restore:type_name -> pocketcloud.agent.v1.BackupRestore
-	54, // 46: pocketcloud.agent.v1.Command.backup_snapshots:type_name -> pocketcloud.agent.v1.BackupSnapshots
-	55, // 47: pocketcloud.agent.v1.Command.backup_browse:type_name -> pocketcloud.agent.v1.BackupBrowse
-	56, // 48: pocketcloud.agent.v1.Command.backup_check:type_name -> pocketcloud.agent.v1.BackupCheck
-	57, // 49: pocketcloud.agent.v1.Command.backup_unlock:type_name -> pocketcloud.agent.v1.BackupUnlock
-	58, // 50: pocketcloud.agent.v1.Command.backup_forget:type_name -> pocketcloud.agent.v1.BackupForget
-	59, // 51: pocketcloud.agent.v1.Command.agent_update:type_name -> pocketcloud.agent.v1.AgentUpdate
-	60, // 52: pocketcloud.agent.v1.Command.agent_restart:type_name -> pocketcloud.agent.v1.AgentRestart
-	61, // 53: pocketcloud.agent.v1.Command.agent_rotate_certificate:type_name -> pocketcloud.agent.v1.AgentRotateCertificate
-	62, // 54: pocketcloud.agent.v1.Command.agent_diagnostics:type_name -> pocketcloud.agent.v1.AgentDiagnostics
-	63, // 55: pocketcloud.agent.v1.Command.agent_set_log_level:type_name -> pocketcloud.agent.v1.AgentSetLogLevel
-	64, // 56: pocketcloud.agent.v1.Command.dns_rewrite:type_name -> pocketcloud.agent.v1.DnsRewrite
-	6,  // 57: pocketcloud.agent.v1.ImagePull.auth:type_name -> pocketcloud.agent.v1.RegistryAuth
-	66, // 58: pocketcloud.agent.v1.StackDeploy.secrets:type_name -> pocketcloud.agent.v1.StackDeploy.SecretsEntry
-	6,  // 59: pocketcloud.agent.v1.StackDeploy.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
-	38, // 60: pocketcloud.agent.v1.StackDeploy.db_networks:type_name -> pocketcloud.agent.v1.DbNetworkAttach
-	67, // 61: pocketcloud.agent.v1.StackPull.secrets:type_name -> pocketcloud.agent.v1.StackPull.SecretsEntry
-	6,  // 62: pocketcloud.agent.v1.StackPull.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
-	18, // 63: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
-	21, // 64: pocketcloud.agent.v1.SiteDeploy.php:type_name -> pocketcloud.agent.v1.SitePhpDeploy
-	68, // 65: pocketcloud.agent.v1.SitePhpDeploy.env:type_name -> pocketcloud.agent.v1.SitePhpDeploy.EnvEntry
-	69, // 66: pocketcloud.agent.v1.SitePhpDeploy.secrets:type_name -> pocketcloud.agent.v1.SitePhpDeploy.SecretsEntry
-	24, // 67: pocketcloud.agent.v1.SitePhpDeploy.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
-	70, // 68: pocketcloud.agent.v1.SitePhpDeploy.files:type_name -> pocketcloud.agent.v1.SitePhpDeploy.FilesEntry
-	24, // 69: pocketcloud.agent.v1.SiteRollback.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
-	71, // 70: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
-	72, // 71: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
-	73, // 72: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
-	32, // 73: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 74: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 75: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 76: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 77: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 78: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 79: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 80: pocketcloud.agent.v1.DbServerMove.source:type_name -> pocketcloud.agent.v1.DbConnection
-	32, // 81: pocketcloud.agent.v1.DbServerMove.target:type_name -> pocketcloud.agent.v1.DbConnection
-	43, // 82: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
-	74, // 83: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
-	75, // 84: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
-	76, // 85: pocketcloud.agent.v1.BackupRepository.options:type_name -> pocketcloud.agent.v1.BackupRepository.OptionsEntry
-	49, // 86: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 87: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	77, // 88: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
-	52, // 89: pocketcloud.agent.v1.BackupRun.retention:type_name -> pocketcloud.agent.v1.BackupRetention
-	49, // 90: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 91: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 92: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 93: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 94: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	49, // 95: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
-	0,  // 96: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
-	65, // 97: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
-	98, // [98:98] is the sub-list for method output_type
-	98, // [98:98] is the sub-list for method input_type
-	98, // [98:98] is the sub-list for extension type_name
-	98, // [98:98] is the sub-list for extension extendee
-	0,  // [0:98] is the sub-list for field type_name
+	80,  // 0: pocketcloud.agent.v1.Command.deadline:type_name -> google.protobuf.Timestamp
+	2,   // 1: pocketcloud.agent.v1.Command.container_start:type_name -> pocketcloud.agent.v1.ContainerStart
+	3,   // 2: pocketcloud.agent.v1.Command.container_stop:type_name -> pocketcloud.agent.v1.ContainerStop
+	4,   // 3: pocketcloud.agent.v1.Command.container_restart:type_name -> pocketcloud.agent.v1.ContainerRestart
+	5,   // 4: pocketcloud.agent.v1.Command.container_remove:type_name -> pocketcloud.agent.v1.ContainerRemove
+	7,   // 5: pocketcloud.agent.v1.Command.image_pull:type_name -> pocketcloud.agent.v1.ImagePull
+	8,   // 6: pocketcloud.agent.v1.Command.stack_deploy:type_name -> pocketcloud.agent.v1.StackDeploy
+	9,   // 7: pocketcloud.agent.v1.Command.stack_stop:type_name -> pocketcloud.agent.v1.StackStop
+	10,  // 8: pocketcloud.agent.v1.Command.stack_down:type_name -> pocketcloud.agent.v1.StackDown
+	11,  // 9: pocketcloud.agent.v1.Command.stack_pull:type_name -> pocketcloud.agent.v1.StackPull
+	12,  // 10: pocketcloud.agent.v1.Command.stack_validate:type_name -> pocketcloud.agent.v1.StackValidate
+	13,  // 11: pocketcloud.agent.v1.Command.stack_restart:type_name -> pocketcloud.agent.v1.StackRestart
+	14,  // 12: pocketcloud.agent.v1.Command.stack_import:type_name -> pocketcloud.agent.v1.StackImport
+	15,  // 13: pocketcloud.agent.v1.Command.logs_follow:type_name -> pocketcloud.agent.v1.LogsFollow
+	16,  // 14: pocketcloud.agent.v1.Command.logs_stop:type_name -> pocketcloud.agent.v1.LogsStop
+	17,  // 15: pocketcloud.agent.v1.Command.exec_start:type_name -> pocketcloud.agent.v1.ExecStart
+	19,  // 16: pocketcloud.agent.v1.Command.exec_stop:type_name -> pocketcloud.agent.v1.ExecStop
+	20,  // 17: pocketcloud.agent.v1.Command.site_deploy:type_name -> pocketcloud.agent.v1.SiteDeploy
+	22,  // 18: pocketcloud.agent.v1.Command.site_rollback:type_name -> pocketcloud.agent.v1.SiteRollback
+	23,  // 19: pocketcloud.agent.v1.Command.site_remove:type_name -> pocketcloud.agent.v1.SiteRemove
+	24,  // 20: pocketcloud.agent.v1.Command.site_php_apply:type_name -> pocketcloud.agent.v1.SitePhpApply
+	26,  // 21: pocketcloud.agent.v1.Command.site_php_status:type_name -> pocketcloud.agent.v1.SitePhpStatus
+	27,  // 22: pocketcloud.agent.v1.Command.site_php_mail:type_name -> pocketcloud.agent.v1.SitePhpMail
+	25,  // 23: pocketcloud.agent.v1.Command.site_detect:type_name -> pocketcloud.agent.v1.SiteDetect
+	28,  // 24: pocketcloud.agent.v1.Command.task_run:type_name -> pocketcloud.agent.v1.TaskRun
+	29,  // 25: pocketcloud.agent.v1.Command.db_server_create:type_name -> pocketcloud.agent.v1.DbServerCreate
+	30,  // 26: pocketcloud.agent.v1.Command.db_server_upgrade:type_name -> pocketcloud.agent.v1.DbServerUpgrade
+	31,  // 27: pocketcloud.agent.v1.Command.db_server_remove:type_name -> pocketcloud.agent.v1.DbServerRemove
+	33,  // 28: pocketcloud.agent.v1.Command.db_database_create:type_name -> pocketcloud.agent.v1.DbDatabaseCreate
+	34,  // 29: pocketcloud.agent.v1.Command.db_database_drop:type_name -> pocketcloud.agent.v1.DbDatabaseDrop
+	35,  // 30: pocketcloud.agent.v1.Command.db_database_rotate:type_name -> pocketcloud.agent.v1.DbDatabaseRotate
+	36,  // 31: pocketcloud.agent.v1.Command.db_database_clone:type_name -> pocketcloud.agent.v1.DbDatabaseClone
+	37,  // 32: pocketcloud.agent.v1.Command.db_database_export:type_name -> pocketcloud.agent.v1.DbDatabaseExport
+	38,  // 33: pocketcloud.agent.v1.Command.db_network_attach:type_name -> pocketcloud.agent.v1.DbNetworkAttach
+	39,  // 34: pocketcloud.agent.v1.Command.db_stats:type_name -> pocketcloud.agent.v1.DbStats
+	40,  // 35: pocketcloud.agent.v1.Command.db_adminer_start:type_name -> pocketcloud.agent.v1.DbAdminerStart
+	41,  // 36: pocketcloud.agent.v1.Command.db_adminer_stop:type_name -> pocketcloud.agent.v1.DbAdminerStop
+	42,  // 37: pocketcloud.agent.v1.Command.db_server_move:type_name -> pocketcloud.agent.v1.DbServerMove
+	44,  // 38: pocketcloud.agent.v1.Command.edge_apply:type_name -> pocketcloud.agent.v1.EdgeApply
+	45,  // 39: pocketcloud.agent.v1.Command.cert_install:type_name -> pocketcloud.agent.v1.CertInstall
+	46,  // 40: pocketcloud.agent.v1.Command.cert_remove:type_name -> pocketcloud.agent.v1.CertRemove
+	47,  // 41: pocketcloud.agent.v1.Command.acme_challenge_present:type_name -> pocketcloud.agent.v1.AcmeChallengePresent
+	48,  // 42: pocketcloud.agent.v1.Command.acme_challenge_cleanup:type_name -> pocketcloud.agent.v1.AcmeChallengeCleanup
+	50,  // 43: pocketcloud.agent.v1.Command.backup_init:type_name -> pocketcloud.agent.v1.BackupInit
+	51,  // 44: pocketcloud.agent.v1.Command.backup_run:type_name -> pocketcloud.agent.v1.BackupRun
+	53,  // 45: pocketcloud.agent.v1.Command.backup_restore:type_name -> pocketcloud.agent.v1.BackupRestore
+	55,  // 46: pocketcloud.agent.v1.Command.backup_snapshots:type_name -> pocketcloud.agent.v1.BackupSnapshots
+	56,  // 47: pocketcloud.agent.v1.Command.backup_browse:type_name -> pocketcloud.agent.v1.BackupBrowse
+	58,  // 48: pocketcloud.agent.v1.Command.backup_check:type_name -> pocketcloud.agent.v1.BackupCheck
+	59,  // 49: pocketcloud.agent.v1.Command.backup_unlock:type_name -> pocketcloud.agent.v1.BackupUnlock
+	60,  // 50: pocketcloud.agent.v1.Command.backup_forget:type_name -> pocketcloud.agent.v1.BackupForget
+	57,  // 51: pocketcloud.agent.v1.Command.backup_dump:type_name -> pocketcloud.agent.v1.BackupDump
+	61,  // 52: pocketcloud.agent.v1.Command.agent_update:type_name -> pocketcloud.agent.v1.AgentUpdate
+	62,  // 53: pocketcloud.agent.v1.Command.agent_restart:type_name -> pocketcloud.agent.v1.AgentRestart
+	63,  // 54: pocketcloud.agent.v1.Command.agent_rotate_certificate:type_name -> pocketcloud.agent.v1.AgentRotateCertificate
+	64,  // 55: pocketcloud.agent.v1.Command.agent_diagnostics:type_name -> pocketcloud.agent.v1.AgentDiagnostics
+	65,  // 56: pocketcloud.agent.v1.Command.agent_set_log_level:type_name -> pocketcloud.agent.v1.AgentSetLogLevel
+	66,  // 57: pocketcloud.agent.v1.Command.dns_rewrite:type_name -> pocketcloud.agent.v1.DnsRewrite
+	6,   // 58: pocketcloud.agent.v1.ImagePull.auth:type_name -> pocketcloud.agent.v1.RegistryAuth
+	68,  // 59: pocketcloud.agent.v1.StackDeploy.secrets:type_name -> pocketcloud.agent.v1.StackDeploy.SecretsEntry
+	6,   // 60: pocketcloud.agent.v1.StackDeploy.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
+	38,  // 61: pocketcloud.agent.v1.StackDeploy.db_networks:type_name -> pocketcloud.agent.v1.DbNetworkAttach
+	69,  // 62: pocketcloud.agent.v1.StackPull.secrets:type_name -> pocketcloud.agent.v1.StackPull.SecretsEntry
+	6,   // 63: pocketcloud.agent.v1.StackPull.registries:type_name -> pocketcloud.agent.v1.RegistryAuth
+	18,  // 64: pocketcloud.agent.v1.ExecStart.size:type_name -> pocketcloud.agent.v1.TerminalSizeHint
+	21,  // 65: pocketcloud.agent.v1.SiteDeploy.php:type_name -> pocketcloud.agent.v1.SitePhpDeploy
+	70,  // 66: pocketcloud.agent.v1.SitePhpDeploy.env:type_name -> pocketcloud.agent.v1.SitePhpDeploy.EnvEntry
+	71,  // 67: pocketcloud.agent.v1.SitePhpDeploy.secrets:type_name -> pocketcloud.agent.v1.SitePhpDeploy.SecretsEntry
+	24,  // 68: pocketcloud.agent.v1.SitePhpDeploy.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
+	72,  // 69: pocketcloud.agent.v1.SitePhpDeploy.files:type_name -> pocketcloud.agent.v1.SitePhpDeploy.FilesEntry
+	24,  // 70: pocketcloud.agent.v1.SiteRollback.apply:type_name -> pocketcloud.agent.v1.SitePhpApply
+	73,  // 71: pocketcloud.agent.v1.SitePhpApply.env:type_name -> pocketcloud.agent.v1.SitePhpApply.EnvEntry
+	74,  // 72: pocketcloud.agent.v1.SitePhpApply.secrets:type_name -> pocketcloud.agent.v1.SitePhpApply.SecretsEntry
+	75,  // 73: pocketcloud.agent.v1.DbServerCreate.tuning:type_name -> pocketcloud.agent.v1.DbServerCreate.TuningEntry
+	32,  // 74: pocketcloud.agent.v1.DbDatabaseCreate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 75: pocketcloud.agent.v1.DbDatabaseDrop.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 76: pocketcloud.agent.v1.DbDatabaseRotate.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 77: pocketcloud.agent.v1.DbDatabaseClone.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 78: pocketcloud.agent.v1.DbDatabaseExport.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 79: pocketcloud.agent.v1.DbStats.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 80: pocketcloud.agent.v1.DbAdminerStart.connection:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 81: pocketcloud.agent.v1.DbServerMove.source:type_name -> pocketcloud.agent.v1.DbConnection
+	32,  // 82: pocketcloud.agent.v1.DbServerMove.target:type_name -> pocketcloud.agent.v1.DbConnection
+	43,  // 83: pocketcloud.agent.v1.DbServerMove.databases:type_name -> pocketcloud.agent.v1.DbMoveItem
+	76,  // 84: pocketcloud.agent.v1.EdgeApply.secrets:type_name -> pocketcloud.agent.v1.EdgeApply.SecretsEntry
+	77,  // 85: pocketcloud.agent.v1.BackupRepository.env:type_name -> pocketcloud.agent.v1.BackupRepository.EnvEntry
+	78,  // 86: pocketcloud.agent.v1.BackupRepository.options:type_name -> pocketcloud.agent.v1.BackupRepository.OptionsEntry
+	49,  // 87: pocketcloud.agent.v1.BackupInit.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 88: pocketcloud.agent.v1.BackupRun.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	79,  // 89: pocketcloud.agent.v1.BackupRun.env:type_name -> pocketcloud.agent.v1.BackupRun.EnvEntry
+	52,  // 90: pocketcloud.agent.v1.BackupRun.retention:type_name -> pocketcloud.agent.v1.BackupRetention
+	49,  // 91: pocketcloud.agent.v1.BackupRestore.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	54,  // 92: pocketcloud.agent.v1.BackupRestore.original:type_name -> pocketcloud.agent.v1.BackupRestoreRoot
+	49,  // 93: pocketcloud.agent.v1.BackupSnapshots.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 94: pocketcloud.agent.v1.BackupBrowse.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 95: pocketcloud.agent.v1.BackupDump.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 96: pocketcloud.agent.v1.BackupCheck.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 97: pocketcloud.agent.v1.BackupUnlock.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	49,  // 98: pocketcloud.agent.v1.BackupForget.repository:type_name -> pocketcloud.agent.v1.BackupRepository
+	0,   // 99: pocketcloud.agent.v1.DnsRewrite.op:type_name -> pocketcloud.agent.v1.DnsRewriteOp
+	67,  // 100: pocketcloud.agent.v1.DnsRewrite.records:type_name -> pocketcloud.agent.v1.DnsRewriteRecord
+	101, // [101:101] is the sub-list for method output_type
+	101, // [101:101] is the sub-list for method input_type
+	101, // [101:101] is the sub-list for extension type_name
+	101, // [101:101] is the sub-list for extension extendee
+	0,   // [0:101] is the sub-list for field type_name
 }
 
 func init() { file_pocketcloud_agent_v1_commands_proto_init() }
@@ -6614,6 +6973,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 		(*Command_BackupCheck)(nil),
 		(*Command_BackupUnlock)(nil),
 		(*Command_BackupForget)(nil),
+		(*Command_BackupDump)(nil),
 		(*Command_AgentUpdate)(nil),
 		(*Command_AgentRestart)(nil),
 		(*Command_AgentRotateCertificate)(nil),
@@ -6627,7 +6987,7 @@ func file_pocketcloud_agent_v1_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pocketcloud_agent_v1_commands_proto_rawDesc), len(file_pocketcloud_agent_v1_commands_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   77,
+			NumMessages:   79,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

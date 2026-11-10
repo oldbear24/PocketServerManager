@@ -211,6 +211,8 @@ var Specs = map[string]Spec{
 	"backup.check":     {Timeout: 12 * time.Hour, Resource: backup},
 	"backup.unlock":    {Timeout: 5 * time.Minute, Resource: backup},
 	"backup.forget":    {Timeout: 2 * time.Hour, Resource: backup},
+	// a download streamed from the repository to a browser (#30)
+	"backup.dump": {Timeout: 12 * time.Hour},
 
 	"agent.update":             {Timeout: 15 * time.Minute, Resource: self},
 	"agent.restart":            {Timeout: 2 * time.Minute, Role: schema.RoleAdmin, Resource: self},

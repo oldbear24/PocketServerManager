@@ -686,7 +686,13 @@ type CommandProgress struct {
 	// message is a human-readable description of the step.
 	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	// percent is the overall progress from 0 to 100, or -1 if unknown.
-	Percent       int32 `protobuf:"varint,3,opt,name=percent,proto3" json:"percent,omitempty"`
+	Percent int32 `protobuf:"varint,3,opt,name=percent,proto3" json:"percent,omitempty"`
+	// done is how much of the step is done, in unit; zero if unknown (#30).
+	Done int64 `protobuf:"varint,4,opt,name=done,proto3" json:"done,omitempty"`
+	// total is how much the step has to do, in unit; zero if unknown.
+	Total int64 `protobuf:"varint,5,opt,name=total,proto3" json:"total,omitempty"`
+	// unit is what done and total count: `bytes` or `files`.
+	Unit          string `protobuf:"bytes,6,opt,name=unit,proto3" json:"unit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -740,6 +746,27 @@ func (x *CommandProgress) GetPercent() int32 {
 		return x.Percent
 	}
 	return 0
+}
+
+func (x *CommandProgress) GetDone() int64 {
+	if x != nil {
+		return x.Done
+	}
+	return 0
+}
+
+func (x *CommandProgress) GetTotal() int64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *CommandProgress) GetUnit() string {
+	if x != nil {
+		return x.Unit
+	}
+	return ""
 }
 
 // ReportCommandUpdateResponse acknowledges an update.
@@ -3122,7 +3149,9 @@ type UploadArtifactHeader struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// command_id is the command the artifact belongs to.
 	CommandId string `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	// kind says what the artifact is: `diagnostics`, `sql_export` or `restore`.
+	// kind says what the artifact is: `diagnostics`, `sql_export` or `restore`;
+	// or `backup_download`, a live one: the panel passes each chunk on to a
+	// browser as it arrives and stores nothing (#30).
 	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	// file_name is a suggested file name.
 	FileName string `protobuf:"bytes,3,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
@@ -3555,11 +3584,14 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\x06output\x18\x05 \x01(\fR\x06output\x12/\n" +
 	"\x06result\x18\x06 \x01(\v2\x17.google.protobuf.StructR\x06result\x12\x14\n" +
 	"\x05error\x18\a \x01(\tR\x05error\x12\x1c\n" +
-	"\tduplicate\x18\b \x01(\bR\tduplicate\"Y\n" +
+	"\tduplicate\x18\b \x01(\bR\tduplicate\"\x97\x01\n" +
 	"\x0fCommandProgress\x12\x12\n" +
 	"\x04step\x18\x01 \x01(\tR\x04step\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x18\n" +
-	"\apercent\x18\x03 \x01(\x05R\apercent\"5\n" +
+	"\apercent\x18\x03 \x01(\x05R\apercent\x12\x12\n" +
+	"\x04done\x18\x04 \x01(\x03R\x04done\x12\x14\n" +
+	"\x05total\x18\x05 \x01(\x03R\x05total\x12\x12\n" +
+	"\x04unit\x18\x06 \x01(\tR\x04unit\"5\n" +
 	"\x1bReportCommandUpdateResponse\x12\x16\n" +
 	"\x06cancel\x18\x01 \x01(\bR\x06cancel\"\x92\x03\n" +
 	"\tHostFacts\x12\x1a\n" +

@@ -195,6 +195,12 @@ message CommandProgress {
   string message = 2;
   // percent is the overall progress from 0 to 100, or -1 if unknown.
   int32 percent = 3;
+  // done is how much of the step is done, in unit; zero if unknown (#30).
+  int64 done = 4;
+  // total is how much the step has to do, in unit; zero if unknown.
+  int64 total = 5;
+  // unit is what done and total count: `bytes` or `files`.
+  string unit = 6;
 }
 
 // ReportCommandUpdateResponse acknowledges an update.
@@ -589,7 +595,9 @@ message UploadArtifactRequest {
 message UploadArtifactHeader {
   // command_id is the command the artifact belongs to.
   string command_id = 1;
-  // kind says what the artifact is: `diagnostics`, `sql_export` or `restore`.
+  // kind says what the artifact is: `diagnostics`, `sql_export` or `restore`;
+  // or `backup_download`, a live one: the panel passes each chunk on to a
+  // browser as it arrives and stores nothing (#30).
   string kind = 2;
   // file_name is a suggested file name.
   string file_name = 3;
