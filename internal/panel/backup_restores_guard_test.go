@@ -296,4 +296,30 @@ func TestRemovalWaitsForARestore(t *testing.T) {
 	if status, body := f.send(http.MethodDelete, "/api/pc/backup-jobs/"+job.Id, f.admin, nil); status != http.StatusNoContent {
 		t.Errorf("the job once its restores ended: %d %v", status, body)
 	}
+
+	// the server of a job whose restore runs on a third server, from a
+	// target that a fourth reaches: its jobs, and their restores, would go
+	// with it (acceptance criterion 2, the job's server dead)
+	dead := testutil.NewHost(t, f.app, "node-a")
+	elsewhere := testutil.NewHost(t, f.app, "node-b")
+	gone := f.job("gone", map[string]any{"host": dead.Id, "source_kind": schema.SourceVolume, "source": "app_data"})
+	for _, open := range []map[string]any{
+		{"status": schema.RestoreRunning, "mode": schema.RestorePath, "host": elsewhere.Id, "roots": nil, "path": "/srv/restored"},
+		{"status": schema.RestoreQueued, "mode": schema.RestoreDownload, "host": elsewhere.Id, "roots": nil, "path": "/"},
+	} {
+		restore := f.restore(gone, open)
+		if status, body := f.send(http.MethodDelete, "/api/collections/hosts/records/"+dead.Id, superuser, nil); status != http.StatusConflict || body["message"] != restoreUnderWayMessage {
+			t.Errorf("the job's server, a %s under way elsewhere: %d %v", open["mode"], status, body)
+		}
+		if _, err := f.app.FindRecordById(schema.BackupRestores, restore.Id); err != nil {
+			t.Errorf("the %s went with the job's server: %v", open["mode"], err)
+		}
+		restore.Set("status", schema.RestoreSucceeded)
+		if err := f.app.Save(restore); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, body := f.send(http.MethodDelete, "/api/collections/hosts/records/"+dead.Id, superuser, nil); status != http.StatusNoContent {
+		t.Errorf("the job's server once its restores ended: %d %v", status, body)
+	}
 }

@@ -435,8 +435,10 @@ func (p *Panel) handleRemoveTarget(e *core.RequestEvent) error {
 // targets: they would lose the only way to their repositories. They move to
 // another server first, or are removed.
 func (p *Panel) keepTargetsServer(e *core.RecordRequestEvent) error {
-	// a restore on it, or from a target it reaches, goes with it (#30)
-	if p.restoreOpenFor("host={:host} || target.host={:host}", dbx.Params{"host": e.Record.Id}) {
+	// a restore on it, from a target it reaches, or of one of its jobs, goes
+	// with it (#30): its jobs, and their restores, are removed with it,
+	// wherever a restore of theirs runs
+	if p.restoreOpenFor("host={:host} || target.host={:host} || job.host={:host}", dbx.Params{"host": e.Record.Id}) {
 		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
 	}
 	targets, err := e.App.FindRecordsByFilter(schema.BackupTargets, "host={:host}", "name", 0, 0, dbx.Params{"host": e.Record.Id})
