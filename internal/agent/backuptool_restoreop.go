@@ -286,6 +286,9 @@ func (r restic) restore(ctx context.Context, request restoreRequest, stdin io.Re
 		}
 	}
 	if request.wait {
+		// what the job mounts, which the agent holds to the folders it
+		// checked before it stops anything, said right before the ready mark
+		r.mark(progressLine(mountsReport(request.roots)))
 		if err := r.waitForGo(ctx, stdin); err != nil {
 			return nil, err
 		}
@@ -455,6 +458,20 @@ func countEntries(dir string) (int, bool) {
 		return maxEntriesCounted, true
 	}
 	return count, false
+}
+
+// mountsReport is the progress line of the step ready: the device and
+// inode of what the job mounts at each root's target, in the roots' order,
+// zero for one that cannot be read.
+func mountsReport(roots []restoreRoot) []byte {
+	mounts := make([]fileID, len(roots))
+	for i, root := range roots {
+		if id, err := dirID(root.target); err == nil {
+			mounts[i] = id
+		}
+	}
+	report, _ := json.Marshal(map[string]any{"step": "ready", "mounts": mounts})
+	return report
 }
 
 // waitForGo says the restore is ready, and waits for the agent's go: it has

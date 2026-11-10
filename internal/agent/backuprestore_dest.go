@@ -174,6 +174,35 @@ func (a *Agent) restoreFolder(dir string, mustExist bool) (restoreDest, []string
 	return restoreDest{dir: real, asked: dir, exists: exists}, notes, nil
 }
 
+// fileID is a folder's device and inode, which no link and no name can
+// stand in for.
+type fileID struct {
+	Dev uint64 `json:"dev"`
+	Ino uint64 `json:"ino"`
+}
+
+// checkMounted refuses a restore whose job mounts another folder than the
+// one checked (#30): the Engine follows a destination's links as the job
+// starts, well after restoreFolder followed them, so a link put in the
+// place of the folder, or of one above it, in between would send the
+// writable mount elsewhere on the server. mounted is what the job says it
+// mounts at /restore/<i>; each destination folder is opened again on the
+// server, name by name without following a link, and must be that very
+// folder. Volumes go by their names.
+func (a *Agent) checkMounted(dests []restoreDest, mounted []fileID) error {
+	for i, dest := range dests {
+		if dest.dir == "" {
+			continue
+		}
+		id, err := dirIDNoLinks(a.hostRoot(), dest.dir)
+		if err != nil || i >= len(mounted) || id != mounted[i] || id == (fileID{}) {
+			a.Log.Warn("a restore's destination is not the folder that was checked", "destination", dest.dir, "error", err)
+			return sentenceError(dest.dir + " changed after it was checked: preview again.")
+		}
+	}
+	return nil
+}
+
 // checkRestoreVolume checks a volume a restore writes back into: it exists,
 // and it is no part of PocketCloud.
 func (a *Agent) checkRestoreVolume(ctx context.Context, name string) error {

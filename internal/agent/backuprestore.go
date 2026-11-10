@@ -289,6 +289,9 @@ type toolProgress struct {
 	Unit    string `json:"unit"`
 	Root    int64  `json:"root"`
 	Roots   int64  `json:"roots"`
+	// Mounts are, with the step ready, the folders the job mounts at
+	// /restore/<i>
+	Mounts []fileID `json:"mounts"`
 }
 
 // previewRestore runs a restore's dry run, and adds what the agent knows:
@@ -487,6 +490,8 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 	session := &restoreSession{a: a, marker: restoreMarker{CommandID: command.GetId(), RestoreID: payload.GetRestoreId()}}
 	var stopErr error
 	wentAhead := false
+	// what the job says it mounts at /restore/<i>, with its ready mark
+	var mounted []fileID
 	labels := make([]string, len(dests))
 	for i, dest := range dests {
 		labels[i] = dest.label()
@@ -497,6 +502,13 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 		logConfig: map[string]any{"Type": "json-file", "Config": map[string]any{"max-size": "10m", "max-file": "1"}},
 		feed: func(feedCtx context.Context, stdin io.WriteCloser) {
 			defer stdin.Close()
+			// the job mounts the folders that were checked, before anything
+			// stops
+			if err := a.checkMounted(dests, mounted); err != nil {
+				stopErr = err
+				_, _ = io.WriteString(stdin, "abort\n")
+				return
+			}
 			// the users of the destination as they are now, which this
 			// restore holds from now on, until startAgain lets them go
 			users, err := a.affected(feedCtx, command.GetId(), payload.GetStack(), dests, true)
@@ -519,7 +531,15 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 		},
 		progress: func(data []byte) {
 			var line toolProgress
-			if json.Unmarshal(data, &line) != nil || line.Roots <= 0 {
+			if json.Unmarshal(data, &line) != nil {
+				return
+			}
+			if line.Step == "ready" {
+				// read before the ready mark that starts the feed
+				mounted = line.Mounts
+				return
+			}
+			if line.Roots <= 0 {
 				return
 			}
 			overall := 10 + 85*(line.Root*100+min(line.Percent, 100))/(line.Roots*100)

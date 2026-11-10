@@ -1312,6 +1312,81 @@ func TestRestoreProgressReachesThePanel(t *testing.T) {
 	}
 }
 
+// TestADestinationSwappedForALinkIsNotWritten (#30, SAFE): a link put in the
+// place of a destination folder, or of a folder above it, after the agent
+// checked it and before the job mounts it, would send the writable mount
+// into a system folder; the job says what it mounts with its ready mark,
+// the agent finds it is not the folder it checked, and nothing is written
+// and nothing stops.
+func TestADestinationSwappedForALinkIsNotWritten(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.volume(t, "app_data", map[string]string{"root": "* * * * * root evil"})
+	snapshot := h.backup(t, "app_data")
+	h.folder(t, "/srv/app/data", map[string]string{"old": "x"})
+	h.folder(t, "/etc/cron.d", nil)
+	h.folder(t, "/etc/data", nil)
+	h.container("app", nil, "always", 0, bindMount("/srv/app", "/app", false))
+	for _, test := range []struct {
+		name, dest string
+		swap       func() error
+	}{
+		{"the folder, made as the job starts", "/srv/app/restore-copy", func() error {
+			return os.Symlink("../../etc/cron.d", filepath.Join(h.host, "srv/app/restore-copy"))
+		}},
+		{"a folder above it", "/srv/app/data", func() error {
+			if err := os.Rename(filepath.Join(h.host, "srv/app"), filepath.Join(h.host, "srv/app.old")); err != nil {
+				return err
+			}
+			return os.Symlink("../etc", filepath.Join(h.host, "srv/app"))
+		}},
+	} {
+		h.mu.Lock()
+		h.events = nil
+		h.mu.Unlock()
+		h.during = func(fakedocker.Job) {
+			if err := test.swap(); err != nil {
+				t.Error(err)
+			}
+		}
+		payload := &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r1", JobTag: testJobTag, TargetPath: test.dest,
+			Source: "/volumes/app_data", Overwrite: true, ConfirmedStops: []string{"app"}}
+		result, err := h.restore(context.Background(), "c1", payload)
+		if err == nil || err.Error() != test.dest+" changed after it was checked: preview again." {
+			t.Errorf("%s: %v", test.name, err)
+		}
+		for _, dir := range []string{"etc/cron.d", "etc/data"} {
+			if files := readTree(t, filepath.Join(h.host, dir)); len(files) != 0 {
+				t.Errorf("%s: %s was written: %v", test.name, dir, files)
+			}
+		}
+		if slices.Contains(h.happened(), "stop:app") || len(result["app_stopped"].([]any)) != 0 || result["partial"] != false {
+			t.Errorf("%s: something stopped: %q %v", test.name, h.happened(), result)
+		}
+	}
+
+	// the folder the agent checked is the one the job mounts
+	h.during = nil
+	payload := &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r2", JobTag: testJobTag, TargetPath: "/srv/app.old/data",
+		Source: "/volumes/app_data", Overwrite: true}
+	if _, err := h.restore(context.Background(), "c2", payload); err != nil {
+		t.Errorf("a folder that stayed: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "srv/app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("app", filepath.Join(root, "srv/link")); err != nil {
+		t.Fatal(err)
+	}
+	id, err := dirIDNoLinks(root, "/srv/app")
+	if want, _ := dirID(filepath.Join(root, "srv/app")); err != nil || id != want || id == (fileID{}) {
+		t.Errorf("a folder: %v %v %v", id, want, err)
+	}
+	if _, err := dirIDNoLinks(root, "/srv/link"); err == nil {
+		t.Error("a link was followed")
+	}
+}
+
 // TestRestoreFolderResolvesLinksAndAMissingTail (#30, SAFE): a folder is
 // followed through its links on the server, an absolute one from the
 // server's /, and checked where it leads; the part that is not there yet is

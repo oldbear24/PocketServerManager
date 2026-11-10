@@ -721,6 +721,41 @@ func TestTheFakeResticPicksAsRestic0173Did(t *testing.T) {
 	}
 }
 
+// TestTheToolSaysWhatItMountsWithItsReadyMark (#30, SAFE): right before it
+// says it is ready, a restore that waits for the agent's go says the device
+// and inode of what its job mounts at each root's target, which the agent
+// holds to the folders it checked.
+func TestTheToolSaysWhatItMountsWithItsReadyMark(t *testing.T) {
+	env, _ := backupRepository(t)
+	source := t.TempDir()
+	writeFiles(t, source, map[string]string{"a.txt": "v1"})
+	id := snapshotOf(t, env, "/volumes/app", source)
+	dest, other := t.TempDir(), t.TempDir()
+	ready := make(chan struct{})
+	var report toolProgress
+	early := false
+	stderr := &toolMarks{w: io.Discard, marks: map[string]chan struct{}{restoreReady: ready}, progress: func(data []byte) {
+		var line toolProgress
+		if json.Unmarshal(data, &line) == nil && line.Step == "ready" {
+			report = line
+			select {
+			case <-ready:
+			default:
+				early = true
+			}
+		}
+	}}
+	args := []string{"restore", "--snapshot", id, "--root", "/volumes/app=" + dest, "--root", "/=" + other, "--expect-tag", testJobTag, "--wait"}
+	if err := BackupTool(context.Background(), args, env, strings.NewReader("go\n"), io.Discard, stderr); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := dirID(dest)
+	second, _ := dirID(other)
+	if !early || !slices.Equal(report.Mounts, []fileID{first, second}) || first == second || first == (fileID{}) {
+		t.Errorf("the job said it mounts %v before its mark %v: %v %v", report.Mounts, early, first, second)
+	}
+}
+
 // TestRestoreProgressMarksAreThrottled (#30): restic's status lines become
 // the tool's progress lines, at most one per interval, with the bytes done
 // of all the roots so far, and they stay out of what the log reads.
