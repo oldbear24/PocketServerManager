@@ -692,9 +692,12 @@ describe("the restore drawer", () => {
     fireEvent.click(drawer().getByRole("button", { name: "Download" }));
     await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
     const frame = document.querySelector("iframe")!;
+    // the panel answers its refusals as JSON, which a browser shows in a <pre>
     const page = document.implementation.createHTMLDocument("");
-    page.body.textContent =
-      "This download link has been used or has expired: start the download again.";
+    const pre = page.createElement("pre");
+    pre.textContent =
+      '{"data":{},"message":"This download link has been used or has expired: start the download again.","status":403}';
+    page.body.append(pre);
     Object.defineProperty(frame, "contentDocument", { value: page, configurable: true });
     act(() => {
       frame.dispatchEvent(new Event("load"));

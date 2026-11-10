@@ -443,14 +443,36 @@ describe("a download's frame", () => {
     frame.dispatchEvent(new Event("load"));
     expect(onError).not.toHaveBeenCalled();
 
-    // the panel's 403 loads as a document in the frame
+    // the panel's 403 loads as a document in the frame: its JSON, which a
+    // browser shows in a <pre>, beside controls of its own
+    const used = "This download link has been used or has expired: start the download again.";
     const page = document.implementation.createHTMLDocument("");
-    page.body.textContent =
-      "This download link has been used or has expired: start the download again.";
+    const pre = page.createElement("pre");
+    pre.textContent = JSON.stringify({ data: {}, message: used, status: 403 });
+    const controls = page.createElement("div");
+    controls.innerHTML = '<label><input type="checkbox">Pretty-print</label>';
+    page.body.append(pre, controls);
     Object.defineProperty(frame, "contentDocument", { value: page, configurable: true });
     frame.dispatchEvent(new Event("load"));
-    expect(onError).toHaveBeenCalledWith(
-      "This download link has been used or has expired: start the download again.",
-    );
+    expect(onError).toHaveBeenLastCalledWith(used);
+
+    // the JSON as the document's text
+    page.body.textContent = JSON.stringify({
+      data: {},
+      message: "Only admins download snapshots.",
+      status: 403,
+    });
+    frame.dispatchEvent(new Event("load"));
+    expect(onError).toHaveBeenLastCalledWith("Only admins download snapshots.");
+
+    // a text/plain answer, as the panel's 502 with the agent's words
+    page.body.innerHTML = "<pre>restic: snapshot 3f9a1c2e not found</pre>";
+    frame.dispatchEvent(new Event("load"));
+    expect(onError).toHaveBeenLastCalledWith("restic: snapshot 3f9a1c2e not found");
+
+    // JSON that is no error of the panel's is passed on as it is
+    page.body.textContent = '{"status":502}';
+    frame.dispatchEvent(new Event("load"));
+    expect(onError).toHaveBeenLastCalledWith('{"status":502}');
   });
 });

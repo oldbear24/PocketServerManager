@@ -824,12 +824,33 @@ export function restoreOpen(restore: Pick<BackupRestore, "status" | "mode">): bo
   return restore.status === "queued" || restore.status === "running";
 }
 
-/** What the document in a frame says, when it may be read. */
+/** What the document in a frame says, when it may be read: the message of
+ * the panel's JSON error, which a browser shows in a <pre> beside controls
+ * of its own, or else the document's text, as of a text/plain answer. */
 function frameText(frame: HTMLIFrameElement): string {
   try {
-    return frame.contentDocument?.body?.textContent?.trim() ?? "";
+    const body = frame.contentDocument?.body;
+    const text = body?.textContent?.trim() ?? "";
+    const shown = body?.querySelector("pre")?.textContent?.trim() ?? "";
+    return panelMessage(shown) ?? panelMessage(text) ?? text;
   } catch {
     return "";
+  }
+}
+
+/** The message of the panel's error, `{"data":{},"message":"…","status":403}`,
+ * when a text is one. */
+function panelMessage(text: string): string | null {
+  if (!text.startsWith("{")) {
+    return null;
+  }
+  try {
+    const answer: unknown = JSON.parse(text);
+    const message =
+      typeof answer === "object" && answer !== null && "message" in answer ? answer.message : null;
+    return typeof message === "string" && message.trim() !== "" ? message.trim() : null;
+  } catch {
+    return null;
   }
 }
 
