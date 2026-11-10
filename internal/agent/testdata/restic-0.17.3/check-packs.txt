@@ -1,0 +1,45 @@
+# Both passes of a check of group 3 of 20, whose one data pack had 21 bytes
+# overwritten in its middle: one line per damaged pack, restic's repair hint
+# with the pack's full id, then "Fatal: repository contains errors", exit code 1.
+# Pass 2 says the same after "create exclusive lock for repository".
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=3/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2580287316
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #3 of 1 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  1 / 1 packs
+--- stderr
+pack b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870 contains 2 errors: [blob 21331c4e611abf5acf3d01519fc668ea68a36b0a3d2b1a413767a3a597db0cc2: decrypting blob <data/21331c4e> from b6597323 failed: ciphertext verification failed unexpected pack id a5afbae31d4a59f45bc4bb28e9649346257c3bbd57246d7e1d3237240e1fbf90]
+
+The repository contains damaged pack files. These damaged files must be removed to repair the repository. This can be done using the following commands. Please read the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html first.
+
+restic repair packs b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870
+restic repair snapshots --forget
+
+Damaged pack files can be caused by backend problems, hardware problems or bugs in restic. Please open an issue at https://github.com/restic/restic/issues/new/choose for further troubleshooting!
+Fatal: repository contains errors
+--- exit 1
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --retry-lock 30m check --read-data-subset=3/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3198733109
+create exclusive lock for repository
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #3 of 1 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  1 / 1 packs
+--- stderr
+pack b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870 contains 2 errors: [blob 21331c4e611abf5acf3d01519fc668ea68a36b0a3d2b1a413767a3a597db0cc2: decrypting blob <data/21331c4e> from b6597323 failed: ciphertext verification failed unexpected pack id a5afbae31d4a59f45bc4bb28e9649346257c3bbd57246d7e1d3237240e1fbf90]
+
+The repository contains damaged pack files. These damaged files must be removed to repair the repository. This can be done using the following commands. Please read the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html first.
+
+restic repair packs b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870
+restic repair snapshots --forget
+
+Damaged pack files can be caused by backend problems, hardware problems or bugs in restic. Please open an issue at https://github.com/restic/restic/issues/new/choose for further troubleshooting!
+Fatal: repository contains errors
+--- exit 1

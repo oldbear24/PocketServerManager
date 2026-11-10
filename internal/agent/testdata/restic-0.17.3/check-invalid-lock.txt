@@ -1,0 +1,25 @@
+# A repository with a lock file of 200 random bytes: pass 2 cannot lock it and
+# says "invalid lock file", exit code 1; pass 1 takes no lock and passes.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --retry-lock 30m check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-1122353341
+create exclusive lock for repository
+--- stderr
+Fatal: invalid lock file: LoadRaw(<lock/5a09675764>): invalid data returned
+
+the `unlock --remove-all` command can be used to remove invalid locks. Make sure that no other restic process is accessing the repository when running the command
+--- exit 1
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-117724077
+load indexes
+check all packs
+1 additional files were found in the repo, which likely contain duplicate data.
+This is non-critical, you can run `restic prune` to correct this.
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #1 of 4 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  4 / 4 packs
+no errors were found
+--- stderr
+--- exit 0

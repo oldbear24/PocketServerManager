@@ -1,0 +1,16 @@
+# Pass 1 reading group 2 of 2 at RESTIC_PROGRESS_FPS=2, slowed with
+# --limit-download 3000 so that the packs' counter shows between.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --limit-download 3000 --no-lock check --read-data-subset=2/2
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2028128584
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #2 of 35 data packs (out of total 80 packs in 2 groups)
+[0:00] 77.14%  27 / 35 packs
+[0:01] 97.14%  34 / 35 packs
+[0:01] 100.00%  35 / 35 packs
+no errors were found
+--- stderr
+--- exit 0

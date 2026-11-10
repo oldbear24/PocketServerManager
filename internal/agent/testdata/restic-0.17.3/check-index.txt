@@ -1,0 +1,14 @@
+# Pass 1 of a repository one of whose index files had 7 bytes overwritten:
+# check stops after loading the index, with the hint to run restic repair
+# index.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2527863177
+load indexes
+--- stderr
+error: error loading index 1010d92b17e206f2fcb76b51ef01e7d8c358d54bb9a62e89a13361b9ade4f4ed: LoadRaw(<index/1010d92b17>): invalid data returned
+
+The repository index is damaged and must be repaired. You must run `restic repair index' to correct this.
+
+Fatal: repository contains errors
+--- exit 1

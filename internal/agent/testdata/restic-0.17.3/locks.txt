@@ -1,0 +1,30 @@
+# restic list locks, and restic --no-lock cat lock ID, while the job
+# pc-k3j9x2m4q8w1z7v held an exclusive lock; then cat lock while restic on nas
+# held a shared one. "time" is in UTC, as the holder's clock gave it.
+$ restic list locks
+--- stdout
+957548b28ad835fddfcf4c6dc87f848776d0958785334399668f9647b3dce7a0
+--- stderr
+--- exit 0
+$ restic --no-lock cat lock 957548b28ad835fddfcf4c6dc87f848776d0958785334399668f9647b3dce7a0
+--- stdout
+{
+  "time": "2026-11-10T13:18:55.32141967Z",
+  "exclusive": true,
+  "hostname": "pc-k3j9x2m4q8w1z7v",
+  "username": "root",
+  "pid": 22562
+}
+--- stderr
+--- exit 0
+$ restic --no-lock cat lock 4e44bf94c6d920736271574acc78f155699cdb82f0dd85ef42db06259f0e2aa3
+--- stdout
+{
+  "time": "2026-11-10T13:19:47.006015856Z",
+  "exclusive": false,
+  "hostname": "nas",
+  "username": "root",
+  "pid": 23062
+}
+--- stderr
+--- exit 0

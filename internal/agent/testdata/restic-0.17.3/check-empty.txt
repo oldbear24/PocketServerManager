@@ -1,0 +1,25 @@
+# Pass 1 of group 1 of 20 of a repository with no snapshot: the counters have
+# no total ("[0:00]          0 snapshots"). A size subset fails on it, a group
+# does not.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3348908659
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00]          0 snapshots
+read group #1 of 0 data packs (out of total 0 packs in 20 groups)
+[0:00]          0 packs
+no errors were found
+--- stderr
+--- exit 0
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=10M
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-1574171653
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00]          0 snapshots
+--- stderr
+Fatal: Cannot read from a repository having size 0
+--- exit 1

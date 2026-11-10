@@ -1,0 +1,89 @@
+# Pass 1 reading group 1 of 2 (45 packs), slowed with --limit-download 120,
+# while forget --group-by '' --keep-last 1 --prune from another process deleted
+# 78 of the 80 packs: no lock file existed while the check read, prune took its
+# exclusive lock, and the check met packs that were gone. This is the false
+# error that pass 2, under the exclusive lock, does not see. The "1 additional
+# files" note is a pack an interrupted backup left.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --limit-download 120 --no-lock check --read-data-subset=1/2
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3126854640
+load indexes
+check all packs
+1 additional files were found in the repo, which likely contain duplicate data.
+This is non-critical, you can run `restic prune` to correct this.
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #1 of 45 data packs (out of total 80 packs in 2 groups)
+[0:06] 100.00%  45 / 45 packs
+--- stderr
+Load(<data/120f5d105f>, 508971, 0) failed: open /repo/data/12/120f5d105f720d92e8e5563f97571df8f69bdaec78700fdad9679143930fb0c5: no such file or directory
+Load(<data/120f5d105f>, 508971, 0) failed: open /repo/data/12/120f5d105f720d92e8e5563f97571df8f69bdaec78700fdad9679143930fb0c5: no such file or directory
+Load(<data/b2603682ea>, 303074, 0) failed: open /repo/data/b2/b2603682ead0d34a44d7b8c6987207601a8d9871bdddb7124b21e8077e644d28: no such file or directory
+Load(<data/b2603682ea>, 303074, 0) failed: open /repo/data/b2/b2603682ead0d34a44d7b8c6987207601a8d9871bdddb7124b21e8077e644d28: no such file or directory
+download error: open /repo/data/12/120f5d105f720d92e8e5563f97571df8f69bdaec78700fdad9679143930fb0c5: no such file or directory
+download error: open /repo/data/b2/b2603682ead0d34a44d7b8c6987207601a8d9871bdddb7124b21e8077e644d28: no such file or directory
+Load(<data/d26fb0b161>, 358507, 0) failed: open /repo/data/d2/d26fb0b161256dda3209bad405f7af3a38c80d7cc9a0bde152ad5a322cb6f697: no such file or directory
+Load(<data/d26fb0b161>, 358507, 0) failed: open /repo/data/d2/d26fb0b161256dda3209bad405f7af3a38c80d7cc9a0bde152ad5a322cb6f697: no such file or directory
+download error: open /repo/data/d2/d26fb0b161256dda3209bad405f7af3a38c80d7cc9a0bde152ad5a322cb6f697: no such file or directory
+Load(<data/722ae88556>, 263479, 0) failed: open /repo/data/72/722ae885562814c0ffea454ffc8dddd91ea4aa881fb91b0a6e828e29a831ba37: no such file or directory
+Load(<data/722ae88556>, 263479, 0) failed: open /repo/data/72/722ae885562814c0ffea454ffc8dddd91ea4aa881fb91b0a6e828e29a831ba37: no such file or directory
+Load(<data/e2ecd6ed6e>, 208043, 0) failed: open /repo/data/e2/e2ecd6ed6e66028e4304a60a4535cc1616c83235c788f83589ba391e1aac5b39: no such file or directory
+download error: open /repo/data/72/722ae885562814c0ffea454ffc8dddd91ea4aa881fb91b0a6e828e29a831ba37: no such file or directory
+Load(<data/e2ecd6ed6e>, 208043, 0) failed: open /repo/data/e2/e2ecd6ed6e66028e4304a60a4535cc1616c83235c788f83589ba391e1aac5b39: no such file or directory
+Load(<data/c20cc9d2ac>, 485214, 0) failed: open /repo/data/c2/c20cc9d2ac5b333a44e427c1006aba4934f3ea770134724b6d7302533294f20d: no such file or directory
+download error: open /repo/data/e2/e2ecd6ed6e66028e4304a60a4535cc1616c83235c788f83589ba391e1aac5b39: no such file or directory
+Load(<data/c20cc9d2ac>, 485214, 0) failed: open /repo/data/c2/c20cc9d2ac5b333a44e427c1006aba4934f3ea770134724b6d7302533294f20d: no such file or directory
+download error: open /repo/data/c2/c20cc9d2ac5b333a44e427c1006aba4934f3ea770134724b6d7302533294f20d: no such file or directory
+Load(<data/f44c8a3099>, 469376, 0) failed: open /repo/data/f4/f44c8a309950a6399c6a7856df8f947a694aa16f737c43a56768da41eb9d320a: no such file or directory
+Load(<data/f44c8a3099>, 469376, 0) failed: open /repo/data/f4/f44c8a309950a6399c6a7856df8f947a694aa16f737c43a56768da41eb9d320a: no such file or directory
+download error: open /repo/data/f4/f44c8a309950a6399c6a7856df8f947a694aa16f737c43a56768da41eb9d320a: no such file or directory
+Load(<data/b659732364>, 326831, 0) failed: open /repo/data/b6/b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870: no such file or directory
+Load(<data/b659732364>, 326831, 0) failed: open /repo/data/b6/b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870: no such file or directory
+download error: open /repo/data/b6/b6597323646d9a1a0b87300c57c625cffe338cb24e7cc9a47a680d320c992870: no such file or directory
+Load(<data/064395fc60>, 223881, 0) failed: open /repo/data/06/064395fc6098b668eb1bc4f734024f5df0a41d0aac0713da9aadb88bdf1f5d2b: no such file or directory
+Load(<data/064395fc60>, 223881, 0) failed: open /repo/data/06/064395fc6098b668eb1bc4f734024f5df0a41d0aac0713da9aadb88bdf1f5d2b: no such file or directory
+Load(<data/369d81608e>, 215962, 0) failed: open /repo/data/36/369d81608e9c742d6a9d4af82d51be10412f5bab82ef05aacc19c0e12f2ab52b: no such file or directory
+Load(<data/369d81608e>, 215962, 0) failed: open /repo/data/36/369d81608e9c742d6a9d4af82d51be10412f5bab82ef05aacc19c0e12f2ab52b: no such file or directory
+download error: open /repo/data/06/064395fc6098b668eb1bc4f734024f5df0a41d0aac0713da9aadb88bdf1f5d2b: no such file or directory
+download error: open /repo/data/36/369d81608e9c742d6a9d4af82d51be10412f5bab82ef05aacc19c0e12f2ab52b: no such file or directory
+Load(<data/e82b311d8e>, 437700, 0) failed: open /repo/data/e8/e82b311d8e58d205c69f4a4edb30715a72bd4575273ddc80d4f5f92d0c465027: no such file or directory
+Load(<data/e82b311d8e>, 437700, 0) failed: open /repo/data/e8/e82b311d8e58d205c69f4a4edb30715a72bd4575273ddc80d4f5f92d0c465027: no such file or directory
+download error: open /repo/data/e8/e82b311d8e58d205c69f4a4edb30715a72bd4575273ddc80d4f5f92d0c465027: no such file or directory
+Load(<data/b86f40b761>, 334750, 0) failed: open /repo/data/b8/b86f40b7616cf936b0a5347c74b92b287b6a5512e8fc6057630e228edb825d60: no such file or directory
+Load(<data/b86f40b761>, 334750, 0) failed: open /repo/data/b8/b86f40b7616cf936b0a5347c74b92b287b6a5512e8fc6057630e228edb825d60: no such file or directory
+download error: open /repo/data/b8/b86f40b7616cf936b0a5347c74b92b287b6a5512e8fc6057630e228edb825d60: no such file or directory
+Load(<data/1851c7e2ad>, 429781, 0) failed: open /repo/data/18/1851c7e2ad27c38c31bb91ac733c8ffc55cebe3232fe1f4d954ec1220736afc5: no such file or directory
+Load(<data/1851c7e2ad>, 429781, 0) failed: open /repo/data/18/1851c7e2ad27c38c31bb91ac733c8ffc55cebe3232fe1f4d954ec1220736afc5: no such file or directory
+Load(<data/8a192cc8cc>, 247638, 0) failed: open /repo/data/8a/8a192cc8ccdfe5788b034826d7862b7fcfc21a81006a56345c397d0b342aaee4: no such file or directory
+Load(<data/8a192cc8cc>, 247638, 0) failed: open /repo/data/8a/8a192cc8ccdfe5788b034826d7862b7fcfc21a81006a56345c397d0b342aaee4: no such file or directory
+download error: open /repo/data/18/1851c7e2ad27c38c31bb91ac733c8ffc55cebe3232fe1f4d954ec1220736afc5: no such file or directory
+download error: open /repo/data/8a/8a192cc8ccdfe5788b034826d7862b7fcfc21a81006a56345c397d0b342aaee4: no such file or directory
+Load(<data/0a14f579eb>, 271398, 0) failed: open /repo/data/0a/0a14f579eb7db35038dbff2496742ef3af2b3a427ce01eab8205ff5ac5f88c8a: no such file or directory
+Load(<data/0a14f579eb>, 271398, 0) failed: open /repo/data/0a/0a14f579eb7db35038dbff2496742ef3af2b3a427ce01eab8205ff5ac5f88c8a: no such file or directory
+Load(<data/1a19e0c314>, 231800, 0) failed: open /repo/data/1a/1a19e0c31429064ebbdc290c4c7b6935be27cd909d9b7b2ef92939c92b9f361c: no such file or directory
+download error: open /repo/data/0a/0a14f579eb7db35038dbff2496742ef3af2b3a427ce01eab8205ff5ac5f88c8a: no such file or directory
+Load(<data/1a19e0c314>, 231800, 0) failed: open /repo/data/1a/1a19e0c31429064ebbdc290c4c7b6935be27cd909d9b7b2ef92939c92b9f361c: no such file or directory
+download error: open /repo/data/1a/1a19e0c31429064ebbdc290c4c7b6935be27cd909d9b7b2ef92939c92b9f361c: no such file or directory
+Load(<data/4ab638ec40>, 493133, 0) failed: open /repo/data/4a/4ab638ec4046cb8e7593f4acb30d4e093e9a0c990463a91abf4ad1dd84c6340d: no such file or directory
+Load(<data/4ab638ec40>, 493133, 0) failed: open /repo/data/4a/4ab638ec4046cb8e7593f4acb30d4e093e9a0c990463a91abf4ad1dd84c6340d: no such file or directory
+download error: open /repo/data/4a/4ab638ec4046cb8e7593f4acb30d4e093e9a0c990463a91abf4ad1dd84c6340d: no such file or directory
+Load(<data/4c9780823a>, 382264, 0) failed: open /repo/data/4c/4c9780823aeff79864e24cd926193dc7a1347dd2e0ad29b17a214cf50fe955fb: no such file or directory
+Load(<data/4c9780823a>, 382264, 0) failed: open /repo/data/4c/4c9780823aeff79864e24cd926193dc7a1347dd2e0ad29b17a214cf50fe955fb: no such file or directory
+Load(<data/1c4d28d72d>, 255557, 0) failed: open /repo/data/1c/1c4d28d72d6215bc91ca3acd7a3f3f75430f5bcba1bdd609525da8faaa602409: no such file or directory
+Load(<data/1c4d28d72d>, 255557, 0) failed: open /repo/data/1c/1c4d28d72d6215bc91ca3acd7a3f3f75430f5bcba1bdd609525da8faaa602409: no such file or directory
+download error: open /repo/data/4c/4c9780823aeff79864e24cd926193dc7a1347dd2e0ad29b17a214cf50fe955fb: no such file or directory
+download error: open /repo/data/1c/1c4d28d72d6215bc91ca3acd7a3f3f75430f5bcba1bdd609525da8faaa602409: no such file or directory
+Load(<data/4c999bb8f1>, 453538, 0) failed: open /repo/data/4c/4c999bb8f11b24c046683d9d95efb41598a656dd56bf9edec59c093dbf99d298: no such file or directory
+Load(<data/4c999bb8f1>, 453538, 0) failed: open /repo/data/4c/4c999bb8f11b24c046683d9d95efb41598a656dd56bf9edec59c093dbf99d298: no such file or directory
+download error: open /repo/data/4c/4c999bb8f11b24c046683d9d95efb41598a656dd56bf9edec59c093dbf99d298: no such file or directory
+Load(<data/0c5e85f72d>, 310993, 0) failed: open /repo/data/0c/0c5e85f72dcb3d309451eb6a0768b8541dcf95da3c6d0af98c01ffef7d5d97be: no such file or directory
+Load(<data/0c5e85f72d>, 310993, 0) failed: open /repo/data/0c/0c5e85f72dcb3d309451eb6a0768b8541dcf95da3c6d0af98c01ffef7d5d97be: no such file or directory
+download error: open /repo/data/0c/0c5e85f72dcb3d309451eb6a0768b8541dcf95da3c6d0af98c01ffef7d5d97be: no such file or directory
+Load(<data/5e34c5a3e7>, 279317, 0) failed: open /repo/data/5e/5e34c5a3e70785392dd8a9e9b86774d69999e76425dbfa6670b9c3584e0b3eb9: no such file or directory
+Load(<data/5e34c5a3e7>, 279317, 0) failed: open /repo/data/5e/5e34c5a3e70785392dd8a9e9b86774d69999e76425dbfa6670b9c3584e0b3eb9: no such file or directory
+download error: open /repo/data/5e/5e34c5a3e70785392dd8a9e9b86774d69999e76425dbfa6670b9c3584e0b3eb9: no such file or directory
+
+The repository is damaged and must be repaired. Please follow the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html .
+
+Fatal: repository contains errors
+--- exit 1

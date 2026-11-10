@@ -1,0 +1,14 @@
+# Pass 1 of a check of group 1 of 20 of a repository of 40 snapshots: no lock,
+# no errors. The counters' last lines come without RESTIC_PROGRESS_FPS.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2738233615
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #1 of 4 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  4 / 4 packs
+no errors were found
+--- stderr
+--- exit 0

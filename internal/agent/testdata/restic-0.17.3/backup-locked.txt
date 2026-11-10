@@ -1,0 +1,12 @@
+# A backup with the tool's flags while a job of hostname pc-k3j9x2m4q8w1z7v
+# held an exclusive lock: the lock's four lines, plain text despite --json,
+# exit code 11. --quiet keeps "repo already locked, waiting" off the standard
+# output.
+$ restic backup --json --quiet --retry-lock 5s --host srv --tag job -- /volumes/vx/f1.bin
+--- stdout
+--- stderr
+unable to create lock in backend: repository is already locked exclusively by PID 27095 on pc-k3j9x2m4q8w1z7v by root (UID 0, GID 0)
+lock was created at 2026-11-10 13:28:13 (15.348873386s ago)
+storage ID 784b7d26
+the `unlock` command can be used to remove stale locks
+--- exit 11

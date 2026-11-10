@@ -1,0 +1,9 @@
+# A backup in a repository with a lock file of 200 random bytes: "Fatal:
+# invalid lock file", restic's advice to use unlock --remove-all, exit code 1.
+$ restic backup --host srv --tag job /volumes/vx/f1.bin
+--- stdout
+--- stderr
+Fatal: invalid lock file: LoadRaw(<lock/5a09675764>): invalid data returned
+
+the `unlock --remove-all` command can be used to remove invalid locks. Make sure that no other restic process is accessing the repository when running the command
+--- exit 1

@@ -1,0 +1,23 @@
+# restic unlock prints nothing and exits 0 when it removes nothing: here, first
+# while the job pc-k3j9x2m4q8w1z7v still ran (its lock was under a minute old), then
+# after it was killed (SIGKILL), from another host. Run on the host
+# pc-k3j9x2m4q8w1z7v itself, the same unlock found the PID gone and removed the
+# lock: "successfully removed 1 locks" on the standard output. A lock file
+# restic cannot read stays: unlock skips it.
+$ restic unlock
+--- stdout
+--- stderr
+--- exit 0
+$ restic unlock
+--- stdout
+--- stderr
+--- exit 0
+$ restic unlock
+--- stdout
+successfully removed 1 locks
+--- stderr
+--- exit 0
+$ restic unlock
+--- stdout
+--- stderr
+--- exit 0

@@ -1,0 +1,16 @@
+# A wrong password, exit code 12, and a repository that is not there, exit
+# code 10.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3503682859
+--- stderr
+Fatal: wrong password or no key found
+--- exit 12
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3623436361
+--- stderr
+Fatal: repository does not exist: unable to open config file: stat /repo/config: no such file or directory
+Is there a repository at the following location?
+/repo
+--- exit 10

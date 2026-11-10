@@ -1,0 +1,41 @@
+# Pass 2 while another restic, in a job of hostname pc-k3j9x2m4q8w1z7v, held
+# an exclusive lock (a check --read-data): restic's four lines, exit code 11.
+# Then the same while restic on host nas held a shared lock (a backup), with
+# --retry-lock 6s: "repo already locked, waiting up to 6s for the lock" on the
+# standard output, the four lines once the wait is over. The lock's "(… ago)" is
+# when its holder last refreshed it. Last, pass 1 while the exclusive lock was
+# held: it takes no lock, and passes.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-100283169
+create exclusive lock for repository
+repo already locked, waiting up to 0s for the lock
+--- stderr
+unable to create lock in backend: repository is already locked exclusively by PID 22562 on pc-k3j9x2m4q8w1z7v by root (UID 0, GID 0)
+lock was created at 2026-11-10 13:18:55 (12.570619994s ago)
+storage ID 957548b2
+the `unlock` command can be used to remove stale locks
+--- exit 11
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --retry-lock 6s check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2581414844
+create exclusive lock for repository
+repo already locked, waiting up to 6s for the lock
+--- stderr
+unable to create lock in backend: repository is already locked by PID 23062 on nas by root (UID 0, GID 0)
+lock was created at 2026-11-10 13:19:47 (21.566720445s ago)
+storage ID 4e44bf94
+the `unlock` command can be used to remove stale locks
+--- exit 11
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2629415965
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #1 of 4 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  4 / 4 packs
+no errors were found
+--- stderr
+--- exit 0

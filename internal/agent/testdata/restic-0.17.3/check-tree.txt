@@ -1,0 +1,18 @@
+# A structure-only pass 1 (no --read-data-subset) of a repository one of whose
+# tree packs had 7 bytes overwritten: an "error for tree" line with the tree's
+# short id, its error indented below, and the generic repair hint.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-4268904985
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+--- stderr
+error for tree 07055eee:
+  decrypting blob <tree/07055eee> from 2840f0de failed: ciphertext verification failed
+
+The repository is damaged and must be repaired. Please follow the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html .
+
+Fatal: repository contains errors
+--- exit 1

@@ -1,0 +1,47 @@
+# Both passes with the repository bound read-only, in a mount namespace of
+# their own, as pass 1's job has it. Pass 1 reads it and passes. Pass 2 cannot
+# write its lock: the backend retries the lock file for 15 minutes, then
+# "unable to create lock in backend: … read-only file system", exit code 1.
+# The "1 additional files" note is a pack an interrupted backup left.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3671943965
+load indexes
+check all packs
+1 additional files were found in the repo, which likely contain duplicate data.
+This is non-critical, you can run `restic prune` to correct this.
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #1 of 4 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  4 / 4 packs
+no errors were found
+--- stderr
+--- exit 0
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --retry-lock 30m check --read-data-subset=1/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-2117022834
+create exclusive lock for repository
+--- stderr
+Save(<lock/7551026be9>) returned error, retrying after 1.137687888s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-777062633: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1.88913872s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-2038205685: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 2.613467071s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1548906733: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 9.972441455s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3891224221: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 21.592184805s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1450519081: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 42.295075771s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-2017429975: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m18.469287435s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3099736890: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 34.10282334s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-849590088: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 59.344614529s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3957251755: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 30.346833877s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1187285193: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m13.20811208s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-943246845: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m2.490164179s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-467644091: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 48.367294979s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3092989552: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m18.521154444s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-422948462: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m6.14787748s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3198717757: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m0.060968933s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1723855634: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 40.276846927s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1718729161: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m4.596563169s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-1792162282: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 40.928175928s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-147070627: read-only file system
+Save(<lock/7551026be9>) returned error, retrying after 1m11.337007237s: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-357195553: read-only file system
+Save(<lock/7551026be9>) failed: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3116456346: read-only file system
+unable to create lock in backend: open /repo/locks/7551026be9fc82d56fb4bda95690828a7235c844d750152b160722afed5600ae-tmp-3116456346: read-only file system
+--- exit 1

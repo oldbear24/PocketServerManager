@@ -1,0 +1,22 @@
+# Pass 1 of group 2 of 20 after one of its data packs was deleted: the pack
+# check says it does not exist, then reading it fails. The "Load(...) failed"
+# lines are the backend's retries; "download error" is the read's error.
+$ restic --cache-dir /tmp/pocketcloud-check-cache --cleanup-cache --no-lock check --read-data-subset=2/20
+--- stdout
+using temporary cache in /tmp/pocketcloud-check-cache/restic-check-cache-3242672465
+load indexes
+check all packs
+check snapshots, trees and blobs
+[0:00] 100.00%  40 / 40 snapshots
+read group #2 of 5 data packs (out of total 80 packs in 20 groups)
+[0:00] 100.00%  5 / 5 packs
+--- stderr
+pack b538140e7a2b97fce36af1fa9e4e8db9918a68abe0e7a9debd752d60bca79a33: does not exist
+Load(<data/b538140e7a>, 287236, 0) failed: open /repo/data/b5/b538140e7a2b97fce36af1fa9e4e8db9918a68abe0e7a9debd752d60bca79a33: no such file or directory
+Load(<data/b538140e7a>, 287236, 0) failed: open /repo/data/b5/b538140e7a2b97fce36af1fa9e4e8db9918a68abe0e7a9debd752d60bca79a33: no such file or directory
+download error: open /repo/data/b5/b538140e7a2b97fce36af1fa9e4e8db9918a68abe0e7a9debd752d60bca79a33: no such file or directory
+
+The repository is damaged and must be repaired. Please follow the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html .
+
+Fatal: repository contains errors
+--- exit 1
