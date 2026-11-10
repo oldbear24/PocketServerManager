@@ -52,6 +52,7 @@ func (a *Agent) registerRestoreHandlers() {
 	a.Executor.Handle("backup.snapshots", a.handleBackupSnapshots)
 	a.Executor.Handle("backup.browse", a.handleBackupBrowse)
 	a.Executor.Handle("backup.restore", a.handleBackupRestore)
+	a.Executor.Handle("backup.dump", a.handleBackupDump)
 }
 
 // commandLabels are a job's labels that name its command.

@@ -94,6 +94,10 @@ type Agent struct {
 	claims dataClaims
 	// restoring are the containers restores hold stopped (#30)
 	restoring restoringSet
+	// LiveUpload opens a client of its own connection to the panel, for a
+	// download that streams for hours, and a function that closes it (#30).
+	// Tests, which have no panel to dial, replace it.
+	LiveUpload func(ctx context.Context) (agentv1.AgentServiceClient, func(), error)
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
