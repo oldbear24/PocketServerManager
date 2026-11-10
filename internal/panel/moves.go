@@ -424,6 +424,13 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 		return nil, fmt.Errorf("a move of the databases of %s is already under way", plan.stack.GetString("name"))
 	}
 
+	// a restore that holds the stack stops and starts its containers itself,
+	// and refuses its deploys until it ends: the move's deploy would be
+	// refused, and the application would stay down
+	if p.restoreHolding(plan.stack) != nil {
+		return nil, fmt.Errorf("the stack %s is being restored from a backup: move once that is done", plan.stack.GetString("name"))
+	}
+
 	// a rotation that finished during the move could not deploy the stack, and
 	// a failed move would start the application with the old password
 	if rotating, _ := p.App.FindRecordsByFilter(schema.DBUsers, "pending_password!='' && databases.stack?={:stack}", "", 1, 0,

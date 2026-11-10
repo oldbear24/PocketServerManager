@@ -754,3 +754,56 @@ func TestAMoveLeavesAStoppedStackStopped(t *testing.T) {
 		t.Errorf("a stack that never ran was deployed %d times", deploys)
 	}
 }
+
+// TestAMoveWaitsForARestoreOfItsStack (#30): a restore that holds a stack
+// stops and starts its containers itself, and refuses the stack's deploys
+// until it ends. A move of the stack's databases stops the stack and deploys
+// it once it ends, so it waits for the restore: started meanwhile, its deploy
+// would be refused, and the application would stay down.
+func TestAMoveWaitsForARestoreOfItsStack(t *testing.T) {
+	d := newDatabaseHarness(t)
+
+	old := d.createServer("pg-main", "postgres")
+	next := d.createServer("pg-next", "postgres")
+	stackID := d.newStack("quiet", "services:\n  web:\n    image: nginx:1\n", "")
+	d.createDatabase(old.Id, "quiet", stackID)
+
+	save := func(record *core.Record) {
+		t.Helper()
+		if err := d.app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newRecord := func(collection string, fields map[string]any) *core.Record {
+		t.Helper()
+		found, err := d.app.FindCollectionByNameOrId(collection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := core.NewRecord(found)
+		record.Load(fields)
+		save(record)
+		return record
+	}
+	target := newRecord(schema.BackupTargets, map[string]any{"name": "disk", "kind": "local", "host": d.host.Id, "status": schema.TargetOK})
+	job := newRecord(schema.BackupJobs, map[string]any{"name": "quiet", "host": d.host.Id, "source_kind": schema.SourceStack, "stack": stackID,
+		"targets": []string{target.Id}, "schedule": "0 5 * * *", "origin": schema.JobManual})
+	restore := newRecord(schema.BackupRestores, map[string]any{"job": job.Id, "target": target.Id, "host": d.host.Id,
+		"snapshot_id": strings.Repeat("a", 64), "mode": schema.RestoreOriginal, "status": schema.RestoreRunning, "stack_name": "quiet"})
+
+	status, body := d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "quiet"})
+	if status != http.StatusBadRequest || !strings.Contains(body, "The stack quiet is being restored from a backup: move once that is done.") {
+		t.Errorf("a move during the restore: %d %s", status, body)
+	}
+	if moves, _ := d.app.CountRecords(schema.DBMoves); moves != 0 {
+		t.Errorf("%d moves recorded during the restore", moves)
+	}
+
+	// once the restore ended
+	restore.Set("status", schema.RestoreSucceeded)
+	save(restore)
+	status, body = d.post("/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "quiet"})
+	if status != http.StatusOK {
+		t.Errorf("a move once the restore ended: %d %s", status, body)
+	}
+}
