@@ -54,6 +54,7 @@ const (
 var backupCommandTypes = []string{
 	"backup.init", "backup.run", "backup.restore", "backup.snapshots",
 	"backup.browse", "backup.check", "backup.unlock", "backup.forget",
+	"backup.dump",
 }
 
 // targetSecrets is what restic needs of a target.
@@ -743,7 +744,10 @@ func targetFingerprint(target *core.Record) string {
 // enrichBackup completes a backup command with its target's repository as it
 // is delivered: its URL, the password, the storage's credentials and options,
 // an SFTP key and host key, a local target's directory. A backup.run goes to
-// its job's server, which need not be the one that checks the target.
+// its job's server, which need not be the one that checks the target; a
+// restore or a download to the server its record names, once the command
+// is checked against the record; a listing to the target's server or the
+// job's (#30).
 func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) error {
 	repo := backupRepository(command)
 	if repo == nil || repo.GetTargetId() == "" {
@@ -774,12 +778,23 @@ func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) erro
 		if err != nil {
 			return errors.New("the backup target is gone")
 		}
-		if run := command.GetBackupRun(); run != nil {
+		switch {
+		case command.GetBackupRun() != nil:
 			// a job's server backs it up, whichever server checks the target
-			if err := p.checkRunDelivery(record, run, target); err != nil {
+			if err := p.checkRunDelivery(record, command.GetBackupRun(), target); err != nil {
 				return err
 			}
-		} else if target.GetString("host") != record.GetString("host") {
+		case command.GetBackupRestore() != nil, command.GetBackupDump() != nil:
+			// the server a restore record names, for the command it links
+			if err := p.checkRestoreDelivery(record, command, target); err != nil {
+				return err
+			}
+		case command.GetBackupSnapshots() != nil, command.GetBackupBrowse() != nil:
+			// the target's server, or the server of the job it lists
+			if err := p.checkListDelivery(record, command, target); err != nil {
+				return err
+			}
+		case target.GetString("host") != record.GetString("host"):
 			return errors.New("the backup target is reached from another server")
 		}
 		if secrets, err = p.targetSecretsOf(target); err != nil {
@@ -821,6 +836,8 @@ func backupRepository(command *agentv1.Command) *agentv1.BackupRepository {
 		return payload.BackupSnapshots.GetRepository()
 	case *agentv1.Command_BackupBrowse:
 		return payload.BackupBrowse.GetRepository()
+	case *agentv1.Command_BackupDump:
+		return payload.BackupDump.GetRepository()
 	case *agentv1.Command_BackupCheck:
 		return payload.BackupCheck.GetRepository()
 	case *agentv1.Command_BackupUnlock:
