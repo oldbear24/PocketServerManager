@@ -540,6 +540,12 @@ func TestRestoringAVolumeBringsBackTheSnapshot(t *testing.T) {
 			if mount["Source"] != r.diskDir {
 				t.Errorf("the repository's mount: %v", mount)
 			}
+		case "/var/lib/pocketcloud":
+			// the image's VOLUME, covered so that the job gets no volume
+			// of it
+			if mount["Type"] != "tmpfs" || mount["ReadOnly"] != true || mount["Source"] != nil {
+				t.Errorf("the image's volume is covered by %v", mount)
+			}
 		default:
 			t.Errorf("the job also mounts %s: %v", target, mount)
 		}
