@@ -276,8 +276,8 @@ func resolveServerSource(root, source string) string {
 	return real
 }
 
-// followServerPath is resolveServerTarget, which, with endsInFile, takes a file
-// of the server at the end of p too.
+// followServerPath is resolveServerTarget, which, with endsInFile, takes a
+// file of the server at the end of dir too.
 func followServerPath(root, dir string, endsInFile bool) (string, bool, error) {
 	if _, err := os.Stat(root); err != nil {
 		return "", false, fmt.Errorf("the agent cannot see the server's directories at %s, where the server's / is mounted: %w", root, err)

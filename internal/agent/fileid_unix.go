@@ -23,8 +23,9 @@ func dirID(dir string) (fileID, error) {
 // server's / is: each name is opened in the folder before it without
 // following a link, so that a link put in the place of any of them is an
 // error rather than a way elsewhere, however the folders change meanwhile.
+// A folder is only looked up (lookupOnly), not read.
 func dirIDNoLinks(root, dir string) (fileID, error) {
-	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(root, lookupOnly|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return fileID{}, err
 	}
@@ -32,14 +33,14 @@ func dirIDNoLinks(root, dir string) (fileID, error) {
 		if name == "" {
 			continue
 		}
-		next, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		next, err := unix.Openat(fd, name, lookupOnly|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		_ = unix.Close(fd)
 		if err != nil {
 			return fileID{}, err
 		}
 		fd = next
 	}
-	defer unix.Close(fd) //nolint:errcheck // a folder only read
+	defer unix.Close(fd) //nolint:errcheck // a folder only looked up
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return fileID{}, err

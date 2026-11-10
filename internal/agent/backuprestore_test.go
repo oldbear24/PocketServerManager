@@ -1385,6 +1385,15 @@ func TestADestinationSwappedForALinkIsNotWritten(t *testing.T) {
 	if _, err := dirIDNoLinks(root, "/srv/link"); err == nil {
 		t.Error("a link was followed")
 	}
+	if _, err := dirIDNoLinks(root, "/srv/link/x"); err == nil {
+		t.Error("a link above was followed")
+	}
+	if err := os.WriteFile(filepath.Join(root, "srv/file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dirIDNoLinks(root, "/srv/file"); err == nil {
+		t.Error("a file is no folder")
+	}
 }
 
 // TestRestoreFolderResolvesLinksAndAMissingTail (#30, SAFE): a folder is
