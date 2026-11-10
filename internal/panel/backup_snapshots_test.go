@@ -214,6 +214,68 @@ func TestSnapshotsAreListedPerJobAndTargetAndCached(t *testing.T) {
 	}
 }
 
+// TestABackupThatEndsDropsTheListingUnderWay (#30): a listing that started
+// before a backup of the job to the target ended may have read the
+// repository before the backup saved its snapshot. Its requests get its
+// answer, but it is not kept: a refresh asked for after the backup starts
+// another listing rather than join it, and the next request is answered by
+// that one, with the new snapshot.
+func TestABackupThatEndsDropsTheListingUnderWay(t *testing.T) {
+	f := newJobFixture(t)
+	f.p.ListingWait = 5 * time.Second
+	job := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+	run := f.save(schema.BackupRuns, map[string]any{"job": job.Id, "target": f.target.Id, "host": f.host.Id, "trigger": schema.RunSchedule, "status": schema.RunRunning})
+	stream := f.agent(f.host)
+	snapshot := func(id, short, at string) map[string]any {
+		return map[string]any{"id": id, "short_id": short, "time": at, "hostname": "node-1", "paths": []any{"/volumes/app_data"}, "files": 1}
+	}
+	older := snapshot(strings.Repeat("0a", 32), "0a0a0a0a", "2026-11-09T12:00:00Z")
+	newest := snapshot(snapshotID, "3f9a1c2e", "2026-11-10T12:00:00Z")
+	before := map[string]any{"total": 1, "snapshots": []any{older}}
+	after := map[string]any{"total": 2, "snapshots": []any{newest, older}}
+
+	backupRun := f.command(f.host.Id, &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: &agentv1.BackupRun{
+		RunId: run.Id, Repository: &agentv1.BackupRepository{TargetId: f.target.Id}, Tags: []string{"pocketcloud", "job:" + job.Id},
+	}}})
+	f.received(stream)
+	first := f.sendLater(http.MethodGet, snapshotsURL(job, f.target, ""), f.admin, nil)
+	stale := f.received(stream)
+	if stale.GetBackupSnapshots() == nil {
+		t.Fatalf("the listing: %v", stale)
+	}
+	// the backup saves its snapshot and ends while the listing reads
+	f.answer(f.host, backupRun.Id, agentv1.CommandState_COMMAND_STATE_SUCCEEDED, map[string]any{"snapshot_id": snapshotID}, "")
+	refreshed := f.sendLater(http.MethodGet, snapshotsURL(job, f.target, "&refresh=1"), f.admin, nil)
+	fresh := f.received(stream)
+	if fresh.GetBackupSnapshots() == nil || fresh.GetId() == stale.GetId() {
+		t.Fatalf("the listing after the backup: %v", fresh)
+	}
+
+	f.answer(f.host, stale.GetId(), agentv1.CommandState_COMMAND_STATE_SUCCEEDED, before, "")
+	if got := f.wait(first); got.status != http.StatusOK || got.body["total"] != float64(1) {
+		t.Errorf("the request of the listing that started before: %d %v", got.status, got.body)
+	}
+	if _, ok := f.p.cachedSnapshot(job.Id, f.target.Id, strings.Repeat("0a", 32)); ok {
+		t.Error("the listing that started before the backup ended was kept")
+	}
+	later := f.sendLater(http.MethodGet, snapshotsURL(job, f.target, ""), f.admin, nil)
+	if !f.quiet(stream) {
+		t.Error("a third listing went out")
+	}
+	f.answer(f.host, fresh.GetId(), agentv1.CommandState_COMMAND_STATE_SUCCEEDED, after, "")
+	for name, pending := range map[string]<-chan reply{"the refresh": refreshed, "a request meanwhile": later} {
+		if got := f.wait(pending); got.status != http.StatusOK || got.body["total"] != float64(2) {
+			t.Errorf("%s: %d %v", name, got.status, got.body)
+		}
+	}
+	if status, body := f.send(http.MethodGet, snapshotsURL(job, f.target, ""), f.admin, nil); status != http.StatusOK || body["cached"] != true || body["total"] != float64(2) {
+		t.Errorf("kept: %d %v", status, body)
+	}
+	if kept, ok := f.p.cachedSnapshot(job.Id, f.target.Id, snapshotID); !ok || kept.Time != "2026-11-10T12:00:00Z" {
+		t.Errorf("the new snapshot kept: %v %v", kept, ok)
+	}
+}
+
 // TestSnapshotsJoinTheRequestInFlightAndAnswerPending (#30, S): a request
 // that waited long enough answers that the listing is pending; the next
 // joins the same listing rather than queueing another; a failure, with the

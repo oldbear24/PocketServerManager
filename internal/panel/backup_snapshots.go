@@ -69,25 +69,30 @@ type listing struct {
 	size    int
 }
 
-// listingFlight is a listing under way, which requests wait for.
+// listingFlight is a listing under way, which requests wait for, and the
+// generation of its key it started in.
 type listingFlight struct {
-	key    string
-	done   chan struct{}
-	result listing
+	key        string
+	generation uint64
+	done       chan struct{}
+	result     listing
 }
 
 // listingCache keeps what listings of one kind gave, the least recently
 // used going first past listingCacheBytes, and the listings under way, by
-// their key and by their command.
+// their key and by their command. A key's generation counts how often what
+// is kept for it was forgotten: a listing that started in an older one may
+// have read what is no longer so.
 type listingCache struct {
 	fresh time.Duration
 
-	mu       sync.Mutex
-	entries  map[string]*list.Element
-	order    *list.List
-	bytes    int
-	flights  map[string]*listingFlight
-	commands map[string]*listingFlight
+	mu          sync.Mutex
+	entries     map[string]*list.Element
+	order       *list.List
+	bytes       int
+	flights     map[string]*listingFlight
+	commands    map[string]*listingFlight
+	generations map[string]uint64
 }
 
 type listingEntry struct {
@@ -101,6 +106,7 @@ func (c *listingCache) init() {
 		c.order = list.New()
 		c.flights = map[string]*listingFlight{}
 		c.commands = map[string]*listingFlight{}
+		c.generations = map[string]uint64{}
 	}
 }
 
@@ -141,14 +147,18 @@ func (c *listingCache) drop(element *list.Element) {
 	c.bytes -= entry.listing.size
 }
 
-// forget drops what is kept for a key.
+// forget drops what is kept for a key, and the listing under way, which
+// may have read what is no longer so: its requests still get its answer,
+// but it is not kept, and the next request starts another listing.
 func (c *listingCache) forget(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.init()
+	c.generations[key]++
 	if element, ok := c.entries[key]; ok {
 		c.drop(element)
 	}
+	delete(c.flights, key)
 }
 
 // get answers a key from the cache unless refresh is set, or waits up to
@@ -166,7 +176,7 @@ func (c *listingCache) get(ctx context.Context, key string, refresh bool, wait t
 	flight := c.flights[key]
 	if flight == nil {
 		id := core.GenerateDefaultRandomId()
-		flight = &listingFlight{key: key, done: make(chan struct{})}
+		flight = &listingFlight{key: key, generation: c.generations[key], done: make(chan struct{})}
 		c.flights[key] = flight
 		c.commands[id] = flight
 		c.mu.Unlock()
@@ -189,7 +199,9 @@ func (c *listingCache) get(ctx context.Context, key string, refresh bool, wait t
 
 // finish keeps what the listing of a command gave for key, and tells the
 // requests that wait for it. A listing whose request the panel forgot, as
-// over a restart, is kept all the same.
+// over a restart, is kept all the same, unless what was kept for its key
+// was forgotten since the panel started; one that started before its key
+// was forgotten only answers its requests.
 func (c *listingCache) finish(commandID, key string, result listing) {
 	result.at = time.Now()
 	if result.size == 0 {
@@ -203,10 +215,14 @@ func (c *listingCache) finish(commandID, key string, result listing) {
 	if flight != nil && c.flights[flight.key] == flight {
 		delete(c.flights, flight.key)
 	}
-	if element, ok := c.entries[key]; ok {
-		c.drop(element)
+	started := uint64(0)
+	if flight != nil {
+		started = flight.generation
 	}
-	if result.size <= listingCacheBytes {
+	if started == c.generations[key] && result.size <= listingCacheBytes {
+		if element, ok := c.entries[key]; ok {
+			c.drop(element)
+		}
 		c.entries[key] = c.order.PushFront(&listingEntry{key: key, listing: result})
 		c.bytes += result.size
 		for c.bytes > listingCacheBytes {
