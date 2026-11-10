@@ -98,6 +98,10 @@ type Agent struct {
 	// download that streams for hours, and a function that closes it (#30).
 	// Tests, which have no panel to dial, replace it.
 	LiveUpload func(ctx context.Context) (agentv1.AgentServiceClient, func(), error)
+	// RestoreVerifyWait, when set, is how long after starting them again a
+	// restore looks whether the containers stayed up: 10 seconds unless set.
+	// Tests, which wait for each restore, shorten it.
+	RestoreVerifyWait time.Duration
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64

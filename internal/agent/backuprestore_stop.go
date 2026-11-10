@@ -38,8 +38,18 @@ const (
 )
 
 // restoreVerifyWait is how long after starting them the restore looks at
-// whether the containers still run; tests shorten it.
+// whether the containers still run; tests shorten it, or set the agent's
+// RestoreVerifyWait.
 var restoreVerifyWait = 10 * time.Second
+
+// verifyWait is how long after starting them a restore looks at whether the
+// containers still run.
+func (a *Agent) verifyWait() time.Duration {
+	if a.RestoreVerifyWait > 0 {
+		return a.RestoreVerifyWait
+	}
+	return restoreVerifyWait
+}
 
 // markerName is what a command's id may be to name its marker.
 var markerName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -336,7 +346,7 @@ func (s *restoreSession) startAgain(verify bool) restoreStart {
 	}
 	if verify && len(running) > 0 {
 		select {
-		case <-time.After(restoreVerifyWait):
+		case <-time.After(s.a.verifyWait()):
 		case <-ctx.Done():
 		}
 		for _, container := range running {

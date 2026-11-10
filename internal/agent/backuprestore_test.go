@@ -1119,3 +1119,37 @@ func TestRestoreFolderResolvesLinksAndAMissingTail(t *testing.T) {
 		t.Errorf("into the repository: %v", err)
 	}
 }
+
+// TestTheAgentsVerifyWaitShortensTheLook: an agent whose RestoreVerifyWait
+// is set looks that long after starting the containers again whether they
+// stayed up, rather than the 10 seconds of every agent.
+func TestTheAgentsVerifyWaitShortensTheLook(t *testing.T) {
+	h := newRestoreHarness(t)
+	restoreVerifyWait = time.Hour
+	h.RestoreVerifyWait = 30 * time.Millisecond
+	h.volume(t, "app_data", map[string]string{"a.txt": "v1"})
+	snapshot := h.backup(t, "app_data")
+	h.container("app-web-1", nil, "unless-stopped", 0, volumeMount("app_data", "/data", false))
+	// it exits again as it starts after the restore
+	h.engine.OnStart = func(c *fakedocker.Container) (string, string) { return "exited", c.Health }
+
+	payload := h.payload(snapshot, "app_data")
+	payload.ConfirmedStops = []string{"app-web-1"}
+	type ended struct {
+		result map[string]any
+		err    error
+	}
+	done := make(chan ended, 1)
+	go func() {
+		result, err := h.restore(context.Background(), "c1", payload)
+		done <- ended{result, err}
+	}()
+	select {
+	case got := <-done:
+		if notRunning, _ := got.result["app_not_running"].([]any); got.err != nil || len(notRunning) != 1 || notRunning[0] != "app-web-1" {
+			t.Errorf("the restore: %v %v", got.err, got.result)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the restore waited for the agents' own time to look")
+	}
+}
