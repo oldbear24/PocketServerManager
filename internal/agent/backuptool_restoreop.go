@@ -280,8 +280,23 @@ func (r restic) restore(ctx context.Context, request restoreRequest, stdin io.Re
 		}
 	}
 	err = r.restoreRoots(ctx, request, restored(plans), result)
+	if err == nil && !request.dryRun && result.Errors > 0 {
+		// what restic could not restore leaves the destination short of the
+		// snapshot: the restore failed, as a backup that could not read
+		// everything does, and says what it did
+		err = couldNotRestore(result)
+	}
 	result.Partial = err != nil && result.FilesRestored+result.FilesDeleted > 0 || result.Errors > 0
 	return result, err
+}
+
+// couldNotRestore says what a restore whose restic restored what it could
+// could not restore.
+func couldNotRestore(result *restoreResult) error {
+	if len(result.ErrorSample) == 0 {
+		return fmt.Errorf("restic could not restore %d items, so the destination holds part of the snapshot", result.Errors)
+	}
+	return fmt.Errorf("restic could not restore %d items, so the destination holds part of the snapshot; the first: %s", result.Errors, result.ErrorSample[0])
 }
 
 // restored are the plans of the roots that are restored.

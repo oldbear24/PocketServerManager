@@ -495,13 +495,16 @@ func TestContainersStartAgainWhenResticFails(t *testing.T) {
 		t.Errorf("the marker is left: %v", err)
 	}
 
-	// restic restores what it can, and says what it could not
+	// restic restores what it can, and says what it could not: the restore
+	// failed, as the destination holds part of the snapshot, and says what
+	// it did
 	t.Setenv("FAKE_RESTIC_LOCKED_RESTORE", "")
 	t.Setenv("FAKE_RESTIC_RESTORE_FAIL_AFTER", "1")
 	writeFiles(t, h.engine.VolumeDir("app_data"), map[string]string{"a.txt": "v2", "b.txt": "b2"})
 	result, err = h.restore(context.Background(), "c2", payload)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.HasPrefix(err.Error(), "restic could not restore 1 items, so the destination holds part of the snapshot; the first: ") ||
+		!strings.Contains(err.Error(), "app_data/b.txt: permission denied") {
+		t.Fatalf("a partial restore: %v", err)
 	}
 	samples, _ := result["error_sample"].([]any)
 	if result["partial"] != true || result["errors"] != float64(1) || len(samples) != 1 || !strings.Contains(samples[0].(string), "app_data/b.txt: permission denied") ||
