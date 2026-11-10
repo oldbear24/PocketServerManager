@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"google.golang.org/protobuf/proto"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
@@ -26,6 +27,21 @@ import (
 // delivered: it is the record's own, it goes where the record says, from the
 // record's target, and it is exactly what the record builds, as someone
 // confirmed it. A command made by hand, or changed, gets no secret.
+
+func (p *Panel) registerBackupRestores() {
+	p.snapshotCache.fresh = snapshotsFresh
+	p.browseCache.fresh = browseFresh
+	p.Commands.OnFinish("backup.snapshots", p.snapshotsListed)
+	p.Commands.OnFinish("backup.browse", p.folderListed)
+	p.Commands.OnFinish("backup.run", p.backupRunEnded)
+}
+
+func (p *Panel) bindBackupRestoreRoutes(group *router.RouterGroup[*core.RequestEvent]) {
+	everyone := requireRole(schema.RoleViewer, schema.RoleOperator, schema.RoleAdmin)
+	operators := requireRole(schema.RoleOperator, schema.RoleAdmin)
+	group.GET("/backup-jobs/{id}/snapshots", p.handleSnapshots).BindFunc(everyone)
+	group.GET("/backup-jobs/{id}/snapshots/{snapshot}/files", p.handleSnapshotFiles).BindFunc(operators)
+}
 
 // restoreRoot is a root of a restore to the original location, as a record
 // keeps it: a path of the snapshot and the volume or directory of the server
