@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/pocketbase/pocketbase/core"
 
@@ -236,10 +237,11 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 }
 
 // fileName keeps a name a browser saves a download under: no folders, no
-// control characters, at most 255 bytes.
+// control characters (C0, DEL and C1, which the agent refuses as well), at
+// most 255 bytes.
 func fileName(name string) string {
 	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+		if unicode.IsControl(r) || r == '/' || r == '\\' {
 			return '-'
 		}
 		return r

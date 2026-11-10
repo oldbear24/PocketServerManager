@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pocketbase/pocketbase/core"
 
@@ -199,6 +201,46 @@ func TestADownloadStreamsTheTarToTheTicketsHolder(t *testing.T) {
 	}
 	if downloaded, _ := f.app.FindRecordsByFilter(schema.Events, "kind='backup.downloaded'", "", 0, 0); len(downloaded) != 1 {
 		t.Errorf("%d downloaded events", len(downloaded))
+	}
+}
+
+// agentTakesName is the agent's rule for the name a browser saves a
+// download under (internal/agent's checkDownloadName): valid UTF-8 of at
+// most 255 bytes, not empty, "." or "..", with no slash and no control
+// character.
+func agentTakesName(name string) bool {
+	return name != "" && name != "." && name != ".." && len(name) <= 255 && utf8.ValidString(name) &&
+		!strings.ContainsRune(name, '/') && strings.IndexFunc(name, unicode.IsControl) < 0
+}
+
+// TestDownloadNamesAreNamesTheAgentTakes (#30): the panel never stores a
+// download's name that the agent refuses, which would fail the download
+// at once, every time: control characters, C1 ones (U+0080 to U+009F)
+// included, and folders become "-".
+func TestDownloadNamesAreNamesTheAgentTakes(t *testing.T) {
+	for name, want := range map[string]string{
+		"report\u0085.pdf":   "report-.pdf",
+		"a\u0080b\u009fc":    "a-b-c",
+		"tab\tnew\nline\x7f": "tab-new-line-",
+		`back\slash`:         "back-slash",
+		"zpráva – 1.pdf":     "zpráva – 1.pdf",
+		"":                   "snapshot",
+		"..":                 "snapshot",
+	} {
+		got := fileName(name)
+		if got != want || !agentTakesName(got) {
+			t.Errorf("%q: %q, which the agent takes: %v", name, got, agentTakesName(got))
+		}
+	}
+	if long := fileName(strings.Repeat("é", 200) + "\u0085"); !agentTakesName(long) {
+		t.Errorf("a long name: %q", long)
+	}
+
+	// a file of a snapshot whose name holds one, asked for by the route
+	f := newDownloadFixture(t)
+	id, _ := f.link(map[string]any{"path": "/volumes/app_data/report\u0085.pdf", "kind": "file"})
+	if name := f.stored(schema.BackupRestores, id).GetString("download_name"); name != "report-.pdf" {
+		t.Errorf("the name: %q", name)
 	}
 }
 
