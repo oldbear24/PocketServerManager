@@ -4811,7 +4811,10 @@ type BackupRun struct {
 	HostName string `protobuf:"bytes,10,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
 	// retention is applied to the job's snapshots after the backup, with
 	// `restic forget --prune`; none keeps every snapshot.
-	Retention     *BackupRetention `protobuf:"bytes,11,opt,name=retention,proto3" json:"retention,omitempty"`
+	Retention *BackupRetention `protobuf:"bytes,11,opt,name=retention,proto3" json:"retention,omitempty"`
+	// unlock runs `restic unlock` before the backup (#31): a retry of a run
+	// that found the repository locked. restic removes only stale locks; never --remove-all.
+	Unlock        bool `protobuf:"varint,12,opt,name=unlock,proto3" json:"unlock,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4921,6 +4924,13 @@ func (x *BackupRun) GetRetention() *BackupRetention {
 		return x.Retention
 	}
 	return nil
+}
+
+func (x *BackupRun) GetUnlock() bool {
+	if x != nil {
+		return x.Unlock
+	}
+	return false
 }
 
 // BackupRetention is how many snapshots of a job a repository keeps, as
@@ -5534,7 +5544,10 @@ type BackupCheck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// repository is the repository.
 	Repository *BackupRepository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
-	// read_data_subset is restic's `--read-data-subset` value, e.g. `5%`.
+	// read_data_subset is restic's `--read-data-subset` value as `n/t`, such
+	// as `3/20`: group n of t groups of data packs, the same packs every time
+	// (#31). Empty checks the structure only and reads no data packs. The
+	// percentage and size forms are refused, as they pick packs at random.
 	ReadDataSubset string `protobuf:"bytes,2,opt,name=read_data_subset,json=readDataSubset,proto3" json:"read_data_subset,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -6573,7 +6586,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"repository\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05usage\x18\x03 \x01(\bR\x05usage\x12\x16\n" +
-	"\x06change\x18\x04 \x01(\bR\x06change\"\x80\x04\n" +
+	"\x06change\x18\x04 \x01(\bR\x06change\"\x98\x04\n" +
 	"\tBackupRun\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12F\n" +
 	"\n" +
@@ -6588,7 +6601,8 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\x0fstdin_container\x18\t \x01(\tR\x0estdinContainer\x12\x1b\n" +
 	"\thost_name\x18\n" +
 	" \x01(\tR\bhostName\x12C\n" +
-	"\tretention\x18\v \x01(\v2%.pocketcloud.agent.v1.BackupRetentionR\tretention\x1a6\n" +
+	"\tretention\x18\v \x01(\v2%.pocketcloud.agent.v1.BackupRetentionR\tretention\x12\x16\n" +
+	"\x06unlock\x18\f \x01(\bR\x06unlock\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9d\x01\n" +

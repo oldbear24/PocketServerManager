@@ -832,6 +832,9 @@ message BackupRun {
   // retention is applied to the job's snapshots after the backup, with
   // `restic forget --prune`; none keeps every snapshot.
   BackupRetention retention = 11;
+  // unlock runs `restic unlock` before the backup (#31): a retry of a run
+  // that found the repository locked. restic removes only stale locks; never --remove-all.
+  bool unlock = 12;
 }
 
 // BackupRetention is how many snapshots of a job a repository keeps, as
@@ -973,7 +976,10 @@ message BackupDump {
 message BackupCheck {
   // repository is the repository.
   BackupRepository repository = 1;
-  // read_data_subset is restic's `--read-data-subset` value, e.g. `5%`.
+  // read_data_subset is restic's `--read-data-subset` value as `n/t`, such
+  // as `3/20`: group n of t groups of data packs, the same packs every time
+  // (#31). Empty checks the structure only and reads no data packs. The
+  // percentage and size forms are refused, as they pick packs at random.
   string read_data_subset = 2;
 }
 
