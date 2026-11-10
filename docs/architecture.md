@@ -93,7 +93,7 @@ The contract is in [`proto/pocketcloud/agent/v1`](../proto/pocketcloud/agent/v1)
 | `StreamLogs` | client stream | log chunks for an active `logs.follow` |
 | `Exec` | bidi stream | terminal sessions |
 | `FetchArtifact` | server stream | agent downloads uploads and site releases |
-| `UploadArtifact` | client stream | agent uploads diagnostics bundles, imported Compose files, SQL dumps and (later) restore downloads to the panel |
+| `UploadArtifact` | client stream | agent uploads diagnostics bundles, imported Compose files and SQL dumps to the panel; a snapshot download (kind `backup_download`) is live: the panel passes each chunk on to the browser as it arrives and stores nothing |
 | `Relay` | bidi stream | admin-only connections to a temporary tool container (Adminer); opened by a command and bound to one browser session, like `Exec`. One stream carries every connection of the session, numbered by `conn_id` |
 | `RenewCertificate` | unary | identity rotation |
 
@@ -110,8 +110,9 @@ Fields holding secrets carry the `sensitive` option from `proto/pocketcloud/opti
 - After a reconnect the panel re-sends commands that were dispatched but never finished; the agent acknowledges ids it has already completed without running them again.
 - A command runs **at most once**. The agent records a command in its volume before running it. If it was killed in the middle, the replay does not run the command again: it reports a failure saying the result may be incomplete. Whether to try again is up to whoever asked for it.
 - Queued commands for an offline host expire after `command_queue_ttl_s`; dispatched and running ones time out per command type. No command stays open forever.
-- The panel's own fields of a command (status, attempts, results) cannot be set through the API, and the state machine holds for every save, superusers included.
-- Multi-step flows (new site, restore) are a parent command with children sharing a correlation id, which drives the progress timelines in the UI.
+- The panel's own fields of a command (status, attempts, results, the cancel mark) cannot be set through the API, and the state machine holds for every save, superusers included.
+- Multi-step flows (new site) are a parent command with children sharing a correlation id, which drives the progress timelines in the UI. A restore is one agent command: the agent stops the destination's users, restores and starts them again itself (#30).
+- **Commands the agent settles** (`Spec.SettledByAgent`: `backup.restore`, `backup.dump`) still have work to do after a cancel, such as starting again the containers a restore stopped. A queued one is cancelled at once, as any other. Once it left the queue, a cancel does not finish it: the panel sets `cancel_requested_at` and `cancel_reason`, shows the step `cancelling`, moves its deadline to at most five minutes away, tells the agent to stop and answers `202 {"stopping":true}`; asking again changes nothing. While the mark is set, every progress report is answered with `cancel`, which repeats a lost `CommandCancel`. The agent's final report finishes the command as cancelled, with `cancel_reason` as its error and the agent's result kept, and only then frees its ordering key. An agent that does not report in time leaves it timed out: "The agent did not stop the command in time."
 - **Commands the panel runs itself** (`commands.PanelSpecs`), such as the steps of a new site, are commands too, so the history shows them, but have no agent payload. They start as running with their own timeout, are never dispatched nor replayed to an agent, an agent's report on one is refused, and the panel settles them (`Manager.Settle`; `Manager.Report` stores progress and moves the deadline). A parent of this kind is settled by its flow, not when its children have ended. None can be created through the API.
 
 ## Compose stacks
@@ -337,6 +338,104 @@ Applications on the same host share a database server instead of each running it
 - PHP sites back up their `shared/` directory; code is reproducible from releases and sources.
 - Weekly `restic check --read-data-subset` (#31).
 - The panel backs up its own `pb_data`; the master key is exported separately. Restoring the panel keeps the CA, so agents reconnect without re-enrollment.
+
+### Restore (#30)
+
+This section is the contract that the agent, the panel and the web UI of #30 code against: the commands and their payloads, the progress and the results the agent reports, the folder rules, the REST API and the `backup_restores` records. Field names are the proto's (`UseProtoNames`), as the stored payloads have them.
+
+- **What it does.** A job's snapshots are listed per target. An operator browses one, previews a restore and restores it to the original location on the job's server: the containers that use the destination stop, the snapshot is restored, and they start again. An admin restores a folder of a snapshot into a new folder of any server (a local target's snapshots only on the target's own server), or downloads it as a tar, or one file as it is, streamed live from the repository to the browser. Everyone lists the snapshots. A restore that writes needs a preview first, at most 30 minutes old, and an overwrite is confirmed three times: in the UI, by `confirm_overwrite` at `/start` (409 without it), and by the agent and the backup tool, which refuse a destination that is not empty unless the command says `overwrite`.
+- **Commands.** The panel's routes create them; none can be requested through the API. Each carries `repository` with `target_id` and `url` only: the enricher adds the target's secrets as it delivers the command, after the delivery checks below.
+
+  | Type | Timeout | Ordering key | Settled by the agent | Agent worker slots |
+  |---|---|---|---|---|
+  | `backup.snapshots` | 5 min | none | no | `backup-read`, 4 |
+  | `backup.browse` | 5 min | none | no | `backup-read`, 4 |
+  | `backup.restore`, preview (`dry_run`) | 12 h | none | yes | `backup-read`, 4 |
+  | `backup.restore` | 12 h | `stack:<stack>` when `stack` is set; else `volume:<original[0].volume>`, `path:<original[0].path>` or `path:<target_path>` | yes | `backup.restore`, 2 |
+  | `backup.dump` | 12 h | none | yes | `backup.dump`, 2 |
+
+  ```jsonc
+  // backup.snapshots: the job's snapshots in one target, newest first
+  {"repository": {"target_id": "<target>", "url": "s3:https://s3.example.com/backups"},
+   "tags": ["pocketcloud", "job:<job id>"], "limit": 500}                // 500 when 0, at most 1000
+
+  // backup.browse: one folder of a snapshot, a page at a time
+  {"repository": {…}, "snapshot_id": "<64 hex>", "path": "/volumes/vw_data",
+   "offset": 0, "limit": 200,                                           // 200 when 0, at most 1000
+   "match": "", "job_tag": "job:<job id>"}                              // match: a case-insensitive part of a name
+
+  // backup.restore, preview of a restore to the original location (a stack's volumes)
+  {"repository": {…}, "snapshot_id": "<64 hex>", "restore_id": "<backup_restores id>", "job_tag": "job:<job id>",
+   "original": [{"source": "/volumes/notes_pgdata", "volume": "notes_pgdata"},
+                {"source": "/volumes/notes_appdata", "volume": "notes_appdata"}],
+   "replace": true, "stack": "notes", "dry_run": true}
+  // a volume job: "original": [{"source": "/volumes/<v>", "volume": "<v>"}]
+  // a directory job: "original": [{"source": "", "path": "<job.source>"}]; the preview finds the snapshot's path
+
+  // backup.restore, preview of a restore to a new folder
+  {"repository": {…}, "snapshot_id": "<64 hex>", "restore_id": "…", "job_tag": "job:<job id>",
+   "target_path": "/srv/restored/notes", "source": "/volumes/notes_appdata",   // "/" is the whole snapshot
+   "include": ["/volumes/notes_appdata/uploads"], "dry_run": true}
+
+  // backup.restore, the real one: the same builder from the record once someone started it
+  {…as its preview, without "dry_run",
+   "overwrite": true,                                     // the record's: always for the original location
+   "original": [{"source": "/srv/app", "path": "/srv/app"}],  // the preview's roots in the snapshot, sources resolved
+   "confirmed_stops": ["notes-db-1", "notes-app-1"]}      // the names of preview.would_stop
+
+  // backup.dump: a folder as a tar, or a file as it is
+  {"repository": {…}, "snapshot_id": "<64 hex>", "path": "/volumes/vw_data", "restore_id": "…",
+   "file_name": "vaultwarden-3f9a1c2e-20261110-1200.tar", "job_tag": "job:<job id>"}
+  ```
+
+  proto3 JSON leaves out false and empty fields, so compare payloads as decoded messages, never as text. `target_volume` is not used: the agent refuses a restore that sets it. The agent refuses a restore without `restore_id`, whose snapshot id is not 64 lowercase hex characters, whose `job_tag` is not `job:` and 15 lowercase letters or digits, that sets both `original` and `target_path` or neither, with more than 32 roots or more than 100 includes (each absolute, clean, and under its root's source), or that sets `replace` with an include. A real restore also needs `overwrite` for `replace` and for the original location; a preview does not, as it changes nothing: it always compares as `--overwrite always`, with `--delete` for `replace`.
+- **Delivery checks** (the panel's enricher). `backup.restore` and `backup.dump` get the target's secrets only when the command is the record's own (`preview_command` for a preview, `command` otherwise), the record names the command's target and server, the target is not pending, a local target is restored on its own server only, the payload equals what the record builds (snapshot, `job_tag`, `source`, `target_path`, roots, includes, `overwrite`, `replace`, `stack`, `dry_run`, and `confirmed_stops` against `preview.would_stop`), and an `overwrite` has a confirmer. On its first delivery only, the record must be `previewing` (a preview) or `queued` (a restore or a download), and its requester or confirmer must still have the role of its mode; a command sent again after a reconnect keeps its secrets. `backup.snapshots` and `backup.browse` go to the target's server, or to the server of the job named by `job_tag` when the job backs up to the target and the target is remote, or local on that server. The panel links `preview_command` and `command` on the record, with the id it generated, before it creates the command, as the command may be delivered at once.
+- **Folders.** `backup.RestorePath` (internal/backup/restore.go) takes a server's folder that a restore writes into: absolute and clean (no `.` or `..`, no slash at the end or twice), at most 1000 characters of valid UTF-8 with no control character, and not `/`; not one of the system's directories that a local target may not be in either (`/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/var/lib/docker`, `/boot`, `/etc`, `/bin`, `/sbin`, `/usr`, `/lib`, `/lib64`) nor under one; not PocketCloud's own (`/var/lib/pocketcloud`, `/run/pocketcloud`, `/cache`, `/repo`, `/volumes`, `/restore`, `/host`) nor under one; and not a folder that holds one of them, such as `/var` or `/var/lib`. Its error is a sentence without its capital and full stop, which the panel's `sentence` completes. The panel checks the folder of a restore to a new folder as it is given; the agent checks every destination path again, before and after it follows its links. A directory job of a folder these rules refuse, such as `/etc/nginx`, is restored to a new folder only. `backup.Overlap(a, b)` says whether two folders share files, either way round, for the checks against backups, other restores and local targets. The cases are in internal/backup/testdata/restore_paths.json, which the web's `validRestorePath` is held to as well.
+- **Progress.** An agent's `CommandProgress` gains `done`, `total` and `unit` (`bytes` or `files`), and the command's `progress` keeps them: `{"step", "message", "percent", "done", "total", "unit"}`; zero and empty mean not counted. A real restore goes through the steps `check` (5 %), `stop` (10), `restore` (10 to 95, weighted by root; `done` and `total` in bytes over all roots), `start` (97) and `verify` (99); its stop and start steps are left out when nothing stops. A preview says `check`, then `preview` with -1. A download says `download`, with the bytes sent as `done` and the size as `total` when known (0 otherwise), at most every 2 seconds. Listings say nothing. The agent forwards at most one progress every 5 seconds, and a new step at once. While a stop is asked for, the panel shows the step `cancelling` with -1.
+- **Results.** Lists are `[]any` of `map[string]any`: `structpb` refuses typed slices, and the whole result would be lost. Numbers reach the panel as JSON numbers.
+
+  ```jsonc
+  // backup.snapshots, at most 160 KB
+  {"snapshots": [{"id", "short_id", "time", "hostname", "paths" /* ≤20 */, "tags",
+                  "size_bytes" /* summary.total_bytes_processed */, "added_bytes" /* summary.data_added */,
+                  "files" /* summary.total_files_processed */, "program_version"}],
+   "total"}                                                   // newest first; total before the limit
+  // backup.browse, at most 200 KB
+  {"path", "total", "dirs", "files", "offset",
+   "entries": [{"name", "type", "size", "mtime", "mode", "bad_name"}]}   // directories first, then by name
+  // backup.restore, preview, at most 64 KiB
+  {"dry_run": true, "snapshot": {"id", "time", "paths"},
+   "roots": [{"index", "source", "destination", "in_snapshot", "exists", "entries", "entries_capped", "uid", "gid", "free_bytes"}],
+   "not_in_job": [paths], "counts": {"new", "updated", "unchanged", "deleted"}, "bytes": {"new", "updated", "deleted"},
+   "samples": {"new": […], "updated": […], "deleted": […]}, "truncated": {"new", "updated", "deleted"},
+   "would_stop": [{"name", "project"}], "total_files", "total_bytes", "notes": […]}
+  // backup.restore, real, at most 32 KiB
+  {"dry_run": false,
+   "roots": [{"source", "destination", "files_restored", "files_skipped", "files_deleted", "bytes_restored", "total_bytes", "done"}],
+   "files_restored", "bytes_restored", "files_deleted", "errors", "error_sample": [/* ≤20 */],
+   "app_stopped": [{"id", "name"}], "app_started": [names], "app_not_running": [names], "start_errors": […],
+   "partial", "refused": "not_empty" | "", "log"}
+  // backup.dump
+  {"bytes", "file_name"}
+  ```
+
+  Times are RFC 3339 in UTC. `type` is restic's node type (`dir`, `file`, `symlink`, `dev`, `chardev`, `fifo`, `socket`), `mode` the Unix permission bits, `bad_name` a name that is not valid UTF-8 (restic shows U+FFFD), which cannot be picked. A root's `entries` counts what the destination holds, up to 10,000; `entries_capped` says it holds more. `samples` are paths relative to their root, at most 300 characters, up to the preview's `--sample` (50) per action; `truncated` counts the paths of each action left out. A restore an agent restart interrupted is settled at the agent's next start as failed, "The agent restarted during the restore, so the destination may hold only part of the snapshot. It started the application again (N of M containers).", with `{"interrupted": true, "app_started", "start_errors"}`; one stopped is cancelled with the result, "The restore was stopped before it was complete: the destination holds part of the snapshot. The application was started again." A preview and a listing keep no result in the agent's `commands.json`, and the panel removes a listing's and a preview's command once it has read it.
+- **REST API** (signed in, but for the download's GET). Errors are sentences.
+
+  | Route | Role | Body or query | Responses |
+  |---|---|---|---|
+  | `GET /api/pc/backup-jobs/{id}/snapshots?target=T[&refresh=1]` | everyone | — | `200 {target, host, fetched_at, cached, total, truncated, snapshots:[{id, short_id, time (RFC3339 UTC), hostname, paths, size_bytes, added_bytes, files, run:{id, trigger}\|null}]}`; `202 {pending:true}`; 404 "The job does not exist." / "The target does not exist."; 400 "The job never backed up to that target."; 409 "The server X is offline: its agent lists the snapshots." / "Neither X nor Y is online: one of their agents lists the snapshots."; 502 the redacted error + "."; 504 "The agent of X did not answer in time: restic may still be reading the repository. Try again." |
+  | `GET /api/pc/backup-jobs/{id}/snapshots/{snapshot}/files?target=&path=&offset=&limit=&match=` | operators | — | `200 {path, total, dirs, files, offset, entries:[…]}`, or 202 as above; 400 "Choose a snapshot." / "Give an absolute path in the snapshot."; 409, 502, 504 as above. |
+  | `POST /api/pc/backup-jobs/{id}/restores` | operators for `original`, admins for `path` | `{target, snapshot, mode:"original"\|"path", host?, path?, source?, include?:[], replace?:bool}` | `202 {restore}` (status `previewing`). See the checks below. |
+  | `POST /api/pc/backup-restores/{id}/start` | the role of the mode | `{confirm_overwrite:bool}` | `200 {restore}` (queued); 409 "The preview is not ready yet." / "The preview is older than 30 minutes: preview again." (sets `expired`) / the first preview problem; 409 "The destination already holds files: confirm that the restore overwrites them." when `needs && !confirm_overwrite` (acceptance criterion 3). |
+  | `POST /api/pc/backup-restores/{id}/cancel` | operators | — | `200 {restore}` for one that was queued ("Cancelled before it started: nothing was stopped or changed."); `202 {stopping:true}` for one that is running; 400 for one that is final. |
+  | `DELETE /api/pc/backup-restores/{id}` | operators (admins for path or download) | — | 204. Only for drafts (`previewing`, `previewed`, `expired`, a failed preview); cancels a preview that is running. |
+  | `POST /api/pc/backup-jobs/{id}/downloads` | admins | `{target, snapshot, path, kind:"dir"\|"file"}` | `201 {restore, url:"/api/pc/backup-downloads/<id>?ticket=<hex>"}` |
+  | `GET /api/pc/backup-downloads/{id}?ticket=` | ticket (public route) | — | A streamed body; see the download below. |
+
+  `{restore}` is the `backup_restores` record as the collection API shows it. A snapshot list is cached per job and target for 10 minutes (`refresh=1` reads it again; a backup of the job drops it), and one request per job and target goes to an agent at a time: a route waits up to 25 seconds for it, then answers `202 {pending:true}`, and the UI asks again every 2 seconds. A folder's page is cached for 6 hours, as snapshots never change. A restore is created after these checks, in order: the snapshot is 64 hex characters; the target is one of the job's or of its runs; it is not pending; at most 100 includes, each absolute and clean; `replace` with includes is 400 "Replace works for the whole snapshot only."; for `original`, a dump job is 400 "A database dump goes back into its database with the database's own restore: restore it to a folder, or download it.", the server is the job's, a local target must be on it, and the roots come from the job as it is now (a volume, a stack's volumes, or a directory), with `stack_name` the job's stack, or for a volume job its volume's Compose project; for `path`, the server is required and must exist, the folder passes `RestorePath` (its sentence is the 400), it does not overlap a local target's directory on that server ("X is the repository of the target Y: restore elsewhere."), a local target needs its own server ("The target B2 is a folder of backup-node: only that server restores from it."), and `source` defaults to the snapshot's one path, or `/`; then 409 when the server is offline ("The server X is offline: its agent restores the snapshot."), when a backup of the job to any target is running in original mode ("A backup of <job> is running: restore when it ends."), or when another open restore overlaps the destination on that server ("A restore into X is already under way."). The record is saved as `previewing`, good for 30 minutes, and its preview queued for 5 minutes. `/start` needs the confirmation when the mode is `original`, or a root holds entries, or the preview would update or delete files; it moves the record from `previewed` to `queued` once, with `overwrite` set to that need, the confirmer, and the preview's roots; its command waits at most 30 minutes in the queue, so that an application never stops long after someone asked. Starting a restore and redeeming a download are audited as security events `backup_restore` and `backup_download`.
+- **Records.** A `backup_restores` record (see docs/data-model.md) is the plan, the preview, the authorization to deliver the target's secrets, and the history. A restore goes `previewing` → `previewed` (or `failed`, a preview that failed) → `queued` (`/start`; or `expired` after 30 minutes) → `running` (its agent started it) → `succeeded`, `failed` or `cancelled`; one queued that never starts fails ("It waited 30 minutes while the server X stayed offline or was busy, and never started: nothing was stopped or changed."), and one cancelled while queued is cancelled at once. A download starts `queued` and goes the same way from there. The panel never queues a stack command for a restore: the agent stops and starts the containers. While a restore to the original location is queued or running, its stack is held: edits, deploys, removal and REST `stack.*` commands, and `container.start`, `container.restart` and `container.remove` of its containers are refused with 409 "<stack> is being restored from a backup: this waits until that is done."; a scheduled backup of data being restored is skipped ("A restore into its data is under way on X."), one by hand is refused, and the job, its target and the target's server are not removed while a restore of theirs is open ("A restore from it is under way.").
+- **Download.** `POST /api/pc/backup-jobs/{id}/downloads` saves a record in mode `download` (status `queued`, `download_name` `<job>-<short id>-<YYYYMMDD-HHMM>.tar`, or the file's own name, `download_kind` `dir` or `file`) and gives a ticket: 32 random bytes in hex, used once, good for 60 seconds, bound to the record and the user, kept in memory. The UI opens the URL in a hidden frame. `GET /api/pc/backup-downloads/{id}?ticket=` answers 403 "This download link has been used or has expired: start the download again." to a wrong, used or expired ticket; otherwise it queues the `backup.dump` (2 minutes in the queue) and waits up to 120 seconds for its first bytes, answering 502 `text/plain` with the command's error if none come. Then it sends `Content-Type: application/x-tar` (`application/octet-stream` for a file), `Content-Disposition: attachment; filename="…"; filename*=UTF-8''…`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and `X-Accel-Buffering: no`, without `Content-Length` and without the server's write timeout. The agent streams `restic dump` through `UploadArtifact` with kind `backup_download`, on a gRPC connection of its own, in chunks of at most 1 MiB, and commits only once restic ended well; the panel passes each chunk on as it reads it, so a slow browser slows restic down and nothing is stored on the way. A failure after the first byte aborts the response, so that the browser marks the download failed rather than keep a cut tar; a browser that leaves stops the job, and the record is `cancelled`.
 
 ## Diagnostics
 
