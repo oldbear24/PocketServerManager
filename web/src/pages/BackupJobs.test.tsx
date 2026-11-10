@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
 import { MemoryRouter } from "react-router-dom";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/toast";
 import i18n from "../i18n";
 import { AuthProvider } from "../lib/auth";
 import { jobsApi, type BackupJob, type BackupRun } from "../lib/backupJobs";
+import { restoresApi } from "../lib/backupRestores";
 import type { BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Container, Host, Volume } from "../lib/types";
@@ -44,6 +45,11 @@ afterAll(() => {
   } else {
     process.env.TZ = zone;
   }
+});
+
+beforeEach(() => {
+  // the page lists the picked job's snapshots; their own tests are elsewhere
+  vi.spyOn(restoresApi, "snapshots").mockResolvedValue({ pending: true });
 });
 
 afterEach(() => {

@@ -1,7 +1,8 @@
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { RecordModel } from "pocketbase";
-import { useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
@@ -18,6 +19,12 @@ import {
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import { runFields, runsSince, type BackupJob, type BackupRun } from "../lib/backupJobs";
+import {
+  restoreDraft,
+  restoreOpen,
+  snapshotSources,
+  type BackupRestore,
+} from "../lib/backupRestores";
 import {
   anyCredential,
   backupsApi,
@@ -47,15 +54,25 @@ import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
 import type { Host } from "../lib/types";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
+import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 
-/** Backups: the summary of the last 14 days, the jobs (#29) and the targets
- * they go to (#28). Snapshots and restores come with later issues. */
+// the restore drawer, with its file browser, loads when it opens
+const RestoreDrawer = lazy(() =>
+  import("./BackupRestore").then((module) => ({ default: module.RestoreDrawer })),
+);
+
+/** Backups: the summary of the last 14 days, the jobs (#29), the snapshots
+ * of the job picked and their restores (#30), and the targets they go to
+ * (#28). Which job and target are picked, and the restore shown, are kept
+ * in the address: ?job=&target=&restore= (new, or a restore's id), with the
+ * snapshot to restore and whether to browse it first. */
 export function BackupsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const isAdmin = hasRole(user, "admin");
   const canRun = hasRole(user, "operator");
   const now = useNow(30_000);
+  const [params, setParams] = useSearchParams();
   const targets = useLiveList<BackupTarget>("backup_targets", { sort: "name" });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const jobs = useLiveList<BackupJob>("backup_jobs", { sort: "name" });
@@ -74,16 +91,57 @@ export function BackupsPage() {
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
 
+  // the first job is picked until one is
+  const job = jobs.items.find((item) => item.id === params.get("job")) ?? jobs.items[0] ?? null;
+  const sources = job ? snapshotSources(job, targets.items, runs.items) : [];
+  const source =
+    sources.find((item) => item.target.id === params.get("target")) ?? sources[0] ?? null;
+  // operators read the restores; the newest of the job, and whether one is under way
+  const restores = useLiveList<BackupRestore>("backup_restores", {
+    filter: job ? pb.filter("job = {:job}", { job: job.id }) : undefined,
+    sort: "-created",
+    perPage: 5,
+    enabled: canRun && job !== null,
+  });
+  const shown = canRun && job ? restores.items.filter((item) => item.job === job.id) : [];
+  const started = shown.filter((item) => !restoreDraft(item.status));
+  const restoring = params.get("restore") ?? "";
+
+  const pick = (values: Record<string, string>) =>
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(values)) {
+          if (value) {
+            next.set(key, value);
+          } else {
+            next.delete(key);
+          }
+        }
+        return next;
+      },
+      { replace: true },
+    );
+
   return (
     <>
       <PageHead
         title={t("nav.backups")}
         description={t("backups.lead")}
         actions={
-          isAdmin && (
-            <Button variant="primary" onClick={() => setDialog("new")}>
-              <Plus size={16} aria-hidden="true" /> {t("backups.job.new")}
-            </Button>
+          (canRun || isAdmin) && (
+            <>
+              {canRun && (
+                <Button onClick={() => pick({ restore: "new", snapshot: "", browse: "" })}>
+                  {t("backups.restoreFromBackup")}
+                </Button>
+              )}
+              {isAdmin && (
+                <Button variant="primary" onClick={() => setDialog("new")}>
+                  <Plus size={16} aria-hidden="true" /> {t("backups.job.new")}
+                </Button>
+              )}
+            </>
           )
         }
       />
@@ -105,18 +163,68 @@ export function BackupsPage() {
         now={now}
         canRun={canRun}
         isAdmin={isAdmin}
+        selected={job?.id}
+        onSelect={(item) => pick({ job: item.id, target: "" })}
         onAdd={() => setDialog("new")}
-        onEdit={(job) => setDialog(job.id)}
+        onEdit={(item) => setDialog(item.id)}
       />
-      {targets.error ? (
-        <Banner tone="err">{errorMessage(targets.error)}</Banner>
-      ) : (
-        <TargetsCard
-          targets={targets.items}
-          hosts={hosts.items}
-          loading={targets.loading}
-          isAdmin={isAdmin}
-        />
+      <div className="columns">
+        {job && (
+          <div className="column-wide">
+            <SnapshotsCard
+              job={job}
+              sources={sources}
+              target={source?.target ?? null}
+              hosts={hosts.items}
+              runs={runs.items}
+              now={now}
+              canRestore={canRun}
+              open={started.find(restoreOpen) ?? null}
+              onTarget={(id) => pick({ target: id })}
+              onRestore={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "" })}
+              onFiles={(snapshot) => pick({ restore: "new", snapshot: snapshot.id, browse: "1" })}
+              onShowRestore={(id) => pick({ restore: id })}
+            />
+            <RecentRestores
+              restores={started}
+              hosts={hosts.items}
+              now={now}
+              onShow={(id) => pick({ restore: id })}
+            />
+          </div>
+        )}
+        <div className="column-side">
+          {targets.error ? (
+            <Banner tone="err">{errorMessage(targets.error)}</Banner>
+          ) : (
+            <TargetsCard
+              targets={targets.items}
+              hosts={hosts.items}
+              loading={targets.loading}
+              isAdmin={isAdmin}
+            />
+          )}
+        </div>
+      </div>
+      {canRun && restoring && (
+        <Suspense fallback={null}>
+          <RestoreDrawer
+            jobs={jobs.items}
+            targets={targets.items}
+            hosts={hosts.items}
+            runs={runs.items}
+            stacks={stacks.items}
+            start={{
+              job: job?.id,
+              target: source?.target.id,
+              snapshot: params.get("snapshot") ?? undefined,
+              restore: restoring,
+              browse: params.get("browse") === "1",
+            }}
+            onRecord={(id) => pick({ restore: id ?? "new", browse: "" })}
+            onClose={() => pick({ restore: "", snapshot: "", browse: "" })}
+          />
+        </Suspense>
       )}
       {(dialog === "new" || edited) && (
         <JobDialog
@@ -348,23 +456,30 @@ function TargetItem({
   );
 }
 
-/** The server whose agent runs restic for a target. */
-function ServerField({
+/** The server whose agent runs restic for a target, or that a restore
+ * writes on. A server that `unavailable` names cannot be chosen. */
+export function ServerField({
+  id = "target-host",
+  label,
   hosts,
   value,
   onChange,
   hint,
+  unavailable,
 }: {
+  id?: string;
+  label?: string;
   hosts: Host[];
   value: string;
   onChange: (value: string) => void;
-  hint: string;
+  hint: ReactNode;
+  unavailable?: (host: Host) => boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <Field label={t("backups.server")} htmlFor="target-host">
+    <Field label={label ?? t("backups.server")} htmlFor={id}>
       <select
-        id="target-host"
+        id={id}
         className="input"
         required
         value={value}
@@ -372,7 +487,7 @@ function ServerField({
       >
         {value === "" && <option value="">{t("backups.chooseServer")}</option>}
         {hosts.map((item) => (
-          <option key={item.id} value={item.id}>
+          <option key={item.id} value={item.id} disabled={unavailable?.(item)}>
             {serverOption(item, t("backups.serverOffline"))}
           </option>
         ))}

@@ -88,9 +88,9 @@ export type BackupRun = RecordModel & {
  * failed; empty when the job keeps every snapshot or the run did not back up. */
 export type RunRetention = "applied" | "deferred" | "failed" | "";
 
-/** What the Jobs card reads of a run: never its log, which can be long. */
+/** What the Jobs and Snapshots cards read of a run: never its log, which can be long. */
 export const runFields =
-  "id,collectionId,collectionName,created,updated,job,target,status,trigger,scheduled_at,started_at,finished_at,bytes_added,retention,error";
+  "id,collectionId,collectionName,created,updated,job,target,status,trigger,scheduled_at,started_at,finished_at,bytes_added,total_bytes,snapshot_id,retention,error";
 
 /** A new job, as the panel takes it: only the fields of its source kind. */
 export type NewBackupJob = {

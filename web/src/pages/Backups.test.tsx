@@ -8,7 +8,7 @@ import { AuthProvider } from "../lib/auth";
 import { backupsApi, type BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Host } from "../lib/types";
-import { AddTargetDialog, BackupsPage, EditTargetDialog } from "./Backups";
+import { AddTargetDialog, BackupsPage, EditTargetDialog, ServerField } from "./Backups";
 
 const now = Date.parse("2026-11-09T12:00:00Z");
 
@@ -18,7 +18,12 @@ vi.mock("../lib/realtime", () => {
     const items = live.lists[collection] ?? [];
     return { items, loading: false, error: null, total: items.length, reload: () => {} };
   };
-  return { useLiveList: list, useLiveRecords: list, useNow: () => now };
+  return {
+    useLiveList: list,
+    useLiveRecords: list,
+    useLiveRecord: () => ({ record: null, loading: false, error: null }),
+    useNow: () => now,
+  };
 });
 
 beforeAll(() => {
@@ -748,5 +753,54 @@ describe("editing a target", () => {
 
     expect(await screen.findByText("The name is taken.")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("the page's restore", () => {
+  it("the header offers Restore from backup to operators", async () => {
+    showPage("viewer");
+    expect(screen.queryByRole("button", { name: "Restore from backup" })).not.toBeInTheDocument();
+    cleanup();
+
+    showPage("operator");
+    const button = screen.getByRole("button", { name: "Restore from backup" });
+    // only an admin adds a job
+    expect(screen.queryByRole("button", { name: "New job" })).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(await screen.findByRole("heading", { name: "Restore from backup" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Job")).toBeInTheDocument();
+    cleanup();
+
+    // left of New job, as the design has it
+    showPage("admin");
+    // the first New job is the header's; the jobs card offers one too
+    const actions = screen.getAllByRole("button", { name: "New job" })[0].parentElement!;
+    expect(
+      within(actions)
+        .getAllByRole("button")
+        .map((item) => item.textContent),
+    ).toEqual(["Restore from backup", " New job"]);
+  });
+});
+
+describe("the server field", () => {
+  it("takes its own id and label, and keeps out the servers a choice may not use", () => {
+    const onChange = vi.fn();
+    wrap(
+      <ServerField
+        id="restore-host"
+        label="Restore on"
+        hosts={hosts}
+        value="h1"
+        onChange={onChange}
+        hint="Where the files go."
+        unavailable={(host) => host.id === "h2"}
+      />,
+    );
+    const select = screen.getByLabelText("Restore on");
+    expect(select).toHaveAttribute("id", "restore-host");
+    expect(within(select).getByRole("option", { name: "pve-01" })).toBeEnabled();
+    expect(within(select).getByRole("option", { name: "nas (offline)" })).toBeDisabled();
+    expect(screen.getByText("Where the files go.")).toBeInTheDocument();
   });
 });
