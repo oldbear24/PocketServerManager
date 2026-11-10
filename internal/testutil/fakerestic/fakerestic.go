@@ -57,10 +57,43 @@ const Wrong = "wrong"
 // and restic's words, "unable to create lock in backend: repository is
 // already locked ...", as restic does once --retry-lock has passed. unlock
 // removes nothing and says nothing, as restic with no stale lock; Unlocks
-// counts its calls.
+// counts its calls. FAKE_RESTIC_LOCKED_RESTORE and FAKE_RESTIC_LOCKED_DUMP
+// do the same for restore and dump (#30).
+//
+// For restores (#30), shaped after what restic 0.17.3 prints (see the
+// agent's testdata/restic-0.17.3): version says 0.17.3, or
+// FAKE_RESTIC_VERSION. A snapshot keeps its files' modes and times, and its
+// JSON has restic's summary; snapshots lists those with the ids it is given.
+// ls --json ID DIR prints the snapshot, then DIR's node and those of what it
+// holds, not deeper; a DIR that is not there prints the snapshot alone.
+// restore ID[:SUB] --target T copies what the snapshot holds under SUB into
+// T, as --overwrite always or never, deleting what the snapshot lacks with
+// --delete, only what --include picks (relative to SUB), with each item's
+// verbose_status for -vv, a status line per file and a summary; --dry-run
+// changes nothing. A file in the way of a directory is an error, as are the
+// files after the first FAKE_RESTIC_RESTORE_FAIL_AFTER=N, each a JSON error
+// line, and the run ends with "Fatal: There were N errors" and exit code 1;
+// FAKE_RESTIC_SLOW_MS waits that long before each file. A target RunJobs
+// mounted read-only (FAKE_RESTIC_READONLY) cannot be written. dump --archive
+// tar ID PATH writes a folder as a tar of what it holds, named by their
+// paths without the leading slash, and a file as it is; with
+// FAKE_RESTIC_DUMP_FAIL=N it writes N bytes, then fails, and
+// FAKE_RESTIC_SLOW_MS waits that long before each 64 KiB.
 const script = `#!/bin/sh
 root="${FAKE_RESTIC_ROOT:?}"
 { echo "restic $*"; env | grep -E '^(RESTIC|AWS)_' | sort; echo; } >> "$root/calls"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--no-cache|--no-lock|--cleanup-cache) shift;;
+	-o|--cache-dir|--retry-lock) shift 2;;
+	*) break;;
+	esac
+done
+if [ "$1" = version ]; then
+	# no repository is opened
+	echo "restic ${FAKE_RESTIC_VERSION:-0.17.3} compiled with go1.23.9 on linux/amd64"
+	exit 0
+fi
 case "$AWS_SECRET_ACCESS_KEY$RESTIC_REST_PASSWORD" in
 *wrong*)
 	echo "Fatal: unable to open config file: Stat: Access Denied for key $AWS_SECRET_ACCESS_KEY$RESTIC_REST_PASSWORD" >&2
@@ -68,13 +101,6 @@ case "$AWS_SECRET_ACCESS_KEY$RESTIC_REST_PASSWORD" in
 	echo "$RESTIC_REPOSITORY" >&2
 	exit 1;;
 esac
-while [ $# -gt 0 ]; do
-	case "$1" in
-	--no-cache|--no-lock|--cleanup-cache) shift;;
-	-o|--cache-dir) shift 2;;
-	*) break;;
-	esac
-done
 case "$RESTIC_REPOSITORY" in
 /*) repo="$RESTIC_REPOSITORY";;
 *) repo="$root/repos/$(printf %s "$RESTIC_REPOSITORY" | tr -c 'A-Za-z0-9' '_')";;
@@ -158,6 +184,67 @@ json_list() {
 	sed 's/.*/"&"/' "$1" | paste -sd, -
 }
 
+# snapshot_dir: the directory of the snapshot whose id is $1
+snapshot_dir() {
+	for name in $(snapshots); do
+		if grep -qF "\"id\":\"$1\"" "$repo/snapshots/$name/json"; then
+			echo "$repo/snapshots/$name"
+			return 0
+		fi
+	done
+	echo "Fatal: no matching ID found for prefix \"$1\"" >&2
+	return 1
+}
+
+# node: restic ls --json's line of the snapshot's path $2, kept at $1, with
+# the node's mode as Go's os.FileMode, as restic prints it
+node() {
+	set -- "$1" "$2" $(stat -c '%u %g %a %s %Y' "$1")
+	type=file; base=0; size=",\"size\":$6"
+	if [ -L "$1" ]; then type=symlink; base=134217728; size=
+	elif [ -d "$1" ]; then type=dir; base=2147483648; size=
+	fi
+	bits=$((0$5))
+	special=$((bits >> 9))
+	mode=$((base + (bits & 511)))
+	[ $((special & 4)) -ne 0 ] && mode=$((mode + 8388608))
+	[ $((special & 2)) -ne 0 ] && mode=$((mode + 4194304))
+	[ $((special & 1)) -ne 0 ] && mode=$((mode + 1048576))
+	printf '{"name":"%s","type":"%s","path":"%s","uid":%d,"gid":%d%s,"mode":%d,"mtime":"%s","message_type":"node","struct_type":"node"}\n' \
+		"$(basename "$2")" "$type" "$2" "$3" "$4" "$size" "$mode" "$(date -u -d "@$7" +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+# readonly_target: the target $1 is a mount RunJobs made read-only
+readonly_target() {
+	[ -n "$FAKE_RESTIC_READONLY" ] || return 1
+	printf '%s\n' "$FAKE_RESTIC_READONLY" | {
+		while IFS= read -r dir; do
+			case "$1" in "$dir"|"$dir"/*) exit 0;; esac
+		done
+		exit 1
+	}
+}
+
+# included: the item $1 of a restore is one of those --include picks, a
+# folder that holds one, or in one
+included() {
+	[ -n "$includes" ] || return 0
+	printf '%s\n' "$includes" | {
+		while IFS= read -r pick; do
+			[ -n "$pick" ] || continue
+			case "$1" in "$pick"|"$pick"/*) exit 0;; esac
+			case "$pick" in "$1"/*) exit 0;; esac
+		done
+		exit 1
+	}
+}
+
+# slow: waits FAKE_RESTIC_SLOW_MS
+slow() {
+	[ -n "$FAKE_RESTIC_SLOW_MS" ] && sleep "$(awk "BEGIN{print $FAKE_RESTIC_SLOW_MS/1000}")"
+	return 0
+}
+
 case "$1" in
 cat)
 	open_repo
@@ -229,7 +316,7 @@ backup)
 				continue
 			fi
 			mkdir -p "$snap/files$(dirname "$p")"
-			cp -R "$from" "$snap/files$p"
+			cp -R --preserve=mode,timestamps "$from" "$snap/files$p"
 			echo "$p" >> "$snap/paths"
 		done
 		if [ ! -s "$snap/paths" ]; then
@@ -276,8 +363,8 @@ backup)
 $list
 FILES
 	id=$(printf '%s %s %s' "$repo" "$n" "$(date +%s%N)" | sha256sum | cut -c1-64)
-	printf '{"time":"%s","paths":[%s],"hostname":"%s","tags":[%s],"id":"%s","short_id":"%.8s"}\n' \
-		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(json_list "$snap/paths")" "$host" "$(json_list "$snap/tags")" "$id" "$id" > "$snap/json.new"
+	printf '{"time":"%s","paths":[%s],"hostname":"%s","tags":[%s],"program_version":"restic 0.17.3","summary":{"files_new":%d,"files_changed":%d,"data_added":%d,"total_files_processed":%d,"total_bytes_processed":%d},"id":"%s","short_id":"%.8s"}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$(json_list "$snap/paths")" "$host" "$(json_list "$snap/tags")" "$new" "$changed" "$added" "$count" "$total" "$id" "$id" > "$snap/json.new"
 	mv "$snap/json.new" "$snap/json"
 	printf '{"message_type":"summary","files_new":%d,"files_changed":%d,"files_unmodified":%d,"dirs_new":0,"dirs_changed":0,"dirs_unmodified":0,"data_blobs":%d,"tree_blobs":1,"data_added":%d,"data_added_packed":%d,"total_files_processed":%d,"total_bytes_processed":%d,"total_duration":0.01,"snapshot_id":"%s"}\n' \
 		"$new" "$changed" "$unmodified" "$((new + changed))" "$added" "$added" "$count" "$total" "$id"
@@ -359,20 +446,234 @@ unlock)
 snapshots)
 	shift
 	filters=
+	ids=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--json|--quiet|-q) shift;;
 		--tag) filters="$filters $2"; shift 2;;
-		*) echo "Fatal: the fake restic knows no snapshots flag $1" >&2; exit 1;;
+		-*) echo "Fatal: the fake restic knows no snapshots flag $1" >&2; exit 1;;
+		*) ids="$ids $1"; shift;;
 		esac
 	done
 	open_repo
 	out=
 	for name in $(snapshots); do
 		matches "$repo/snapshots/$name/tags" $filters || continue
+		if [ -n "$ids" ]; then
+			wanted=
+			for id in $ids; do
+				grep -qF "\"id\":\"$id\"" "$repo/snapshots/$name/json" && wanted=1
+			done
+			[ -n "$wanted" ] || continue
+		fi
 		out="$out${out:+,}$(cat "$repo/snapshots/$name/json")"
 	done
+	for id in $ids; do
+		case "$out" in
+		*"\"id\":\"$id\""*) ;;
+		*) echo "Ignoring \"$id\": failed to load snapshot [null]: no such file or directory" >&2;;
+		esac
+	done
 	echo "[$out]";;
+ls)
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--json) shift;;
+		-*) echo "Fatal: the fake restic knows no ls flag $1" >&2; exit 1;;
+		*) break;;
+		esac
+	done
+	open_repo
+	snap=$(snapshot_dir "$1") || exit 1
+	dir=${2:-/}
+	sed 's/}$/,"message_type":"snapshot","struct_type":"snapshot"}/' "$snap/json"
+	at="$snap/files$dir"
+	[ "$dir" = / ] && at="$snap/files"
+	if [ -e "$at" ] || [ -L "$at" ]; then
+		[ "$dir" = / ] || node "$at" "$dir"
+		if [ -d "$at" ] && [ ! -L "$at" ]; then
+			ls -A "$at" | while IFS= read -r child; do
+				node "$at/$child" "${dir%/}/$child"
+			done
+		fi
+	fi;;
+restore)
+	shift
+	target= dry= verbose= overwrite=always delete= includes= spec=
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--target) target=$2; shift 2;;
+		--dry-run) dry=1; shift;;
+		-vv) verbose=1; shift;;
+		-v|--json) shift;;
+		--overwrite) overwrite=$2; shift 2;;
+		--delete) delete=1; shift;;
+		--include) includes="$includes
+$2"; shift 2;;
+		-*) echo "Fatal: the fake restic knows no restore flag $1" >&2; exit 1;;
+		*) spec=$1; shift;;
+		esac
+	done
+	if [ -z "$target" ]; then
+		echo "Fatal: please specify a directory to restore to (--target)" >&2
+		exit 1
+	fi
+	open_repo
+	locked "$FAKE_RESTIC_LOCKED_RESTORE" restore
+	id=${spec%%:*}
+	sub=
+	case "$spec" in *:*) sub=${spec#*:};; esac
+	snap=$(snapshot_dir "$id") || exit 1
+	src="$snap/files$sub"
+	[ "$sub" = / ] && src="$snap/files"
+	if [ ! -e "$src" ]; then
+		echo "path ${sub#/}: not found" >&2
+		exit 1
+	fi
+	if [ ! -d "$src" ]; then
+		echo "path ${sub#/}: not a directory" >&2
+		exit 1
+	fi
+	if [ -z "$dry" ]; then
+		if readonly_target "$target"; then
+			echo "Fatal: mkdir $target: read-only file system" >&2
+			exit 1
+		fi
+		mkdir -p "$target"
+	fi
+	items=$(cd "$src" && find . -mindepth 1 | sed 's|^\.||' | sort)
+	picked=
+	total_files=0; total_bytes=0
+	while IFS= read -r item; do
+		[ -n "$item" ] && included "$item" || continue
+		picked="$picked$item
+"
+		total_files=$((total_files + 1))
+		[ -f "$src$item" ] && [ ! -L "$src$item" ] && total_bytes=$((total_bytes + $(wc -c < "$src$item")))
+	done <<ITEMS
+$items
+ITEMS
+	restored=0; skipped=0; bytes=0; bytes_skipped=0; errors=0; written=0
+	while IFS= read -r item; do
+		[ -n "$item" ] || continue
+		from="$src$item"; to="$target$item"
+		if [ -d "$from" ] && [ ! -L "$from" ]; then
+			[ -n "$dry" ] || mkdir -p "$to"
+			restored=$((restored + 1))
+			[ -n "$verbose" ] && printf '{"message_type":"verbose_status","action":"restored","item":"%s","size":0}\n' "$item"
+			continue
+		fi
+		size=0
+		[ -L "$from" ] || size=$(wc -c < "$from")
+		if [ -n "$FAKE_RESTIC_RESTORE_FAIL_AFTER" ] && [ "$written" -ge "$FAKE_RESTIC_RESTORE_FAIL_AFTER" ]; then
+			errors=$((errors + 1))
+			printf '{"message_type":"error","error":{"message":"open %s: permission denied"},"during":"restore","item":"%s"}\n' "$to" "$item" >&2
+			continue
+		fi
+		if [ -d "$to" ] && [ ! -L "$to" ]; then
+			errors=$((errors + 1))
+			printf '{"message_type":"error","error":{"message":"remove %s: directory not empty"},"during":"restore","item":"%s"}\n' "$to" "$item" >&2
+			continue
+		fi
+		slow
+		if [ -e "$to" ] && cmp -s "$from" "$to"; then
+			action=unchanged
+		elif [ -e "$to" ] && [ "$overwrite" = never ]; then
+			action=unchanged
+		elif [ -e "$to" ] || [ -L "$to" ]; then
+			action=updated
+		else
+			action=restored
+		fi
+		if [ "$action" = unchanged ]; then
+			skipped=$((skipped + 1)); bytes_skipped=$((bytes_skipped + size))
+		else
+			if [ -z "$dry" ]; then
+				rm -f "$to"
+				cp -P --preserve=mode,timestamps "$from" "$to"
+			fi
+			restored=$((restored + 1)); bytes=$((bytes + size)); written=$((written + 1))
+		fi
+		[ -n "$verbose" ] && printf '{"message_type":"verbose_status","action":"%s","item":"%s","size":%d}\n' "$action" "$item" "$size"
+		done_bytes=$((bytes + bytes_skipped))
+		printf '{"message_type":"status","percent_done":%s,"total_files":%d,"files_restored":%d,"total_bytes":%d,"bytes_restored":%d}\n' \
+			"$(awk "BEGIN{print ($total_bytes ? $done_bytes/$total_bytes : 1)}")" "$total_files" "$restored" "$total_bytes" "$bytes"
+	done <<PICKED
+$picked
+PICKED
+	if [ -z "$dry" ]; then
+		# a folder gets its own mode and time once what it holds is there
+		printf '%s' "$picked" | sort -r | while IFS= read -r item; do
+			if [ -n "$item" ] && [ -d "$src$item" ] && [ ! -L "$src$item" ]; then
+				chmod --reference="$src$item" "$target$item"
+				touch -r "$src$item" "$target$item"
+			fi
+		done
+	fi
+	if [ -n "$delete" ] && [ -d "$target" ]; then
+		(cd "$target" && find . -mindepth 1 | sed 's|^\.||' | sort -r) | while IFS= read -r extra; do
+			[ -n "$extra" ] || continue
+			printf '%s' "$items" | grep -qxF -- "$extra" && continue
+			[ -e "$target$extra" ] || [ -L "$target$extra" ] || continue
+			[ -n "$verbose" ] && printf '{"message_type":"verbose_status","action":"deleted","item":"%s","size":0}\n' "$extra"
+			[ -n "$dry" ] || rm -rf "$target$extra"
+		done
+	fi
+	printf '{"message_type":"summary","total_files":%d,"files_restored":%d,"files_skipped":%d,"total_bytes":%d,"bytes_restored":%d,"bytes_skipped":%d}\n' \
+		"$((restored + errors))" "$restored" "$skipped" "$bytes" "$bytes" "$bytes_skipped"
+	if [ "$errors" -gt 0 ]; then
+		echo "Fatal: There were $errors errors" >&2
+		exit 1
+	fi;;
+dump)
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--archive)
+			if [ "$2" != tar ]; then
+				echo "Fatal: the fake restic dumps tar archives only, not $2" >&2
+				exit 1
+			fi
+			shift 2;;
+		-*) echo "Fatal: the fake restic knows no dump flag $1" >&2; exit 1;;
+		*) break;;
+		esac
+	done
+	open_repo
+	locked "$FAKE_RESTIC_LOCKED_DUMP" dump
+	snap=$(snapshot_dir "$1") || exit 1
+	p=$2
+	at="$snap/files$p"
+	[ "$p" = / ] && at="$snap/files"
+	if [ ! -e "$at" ]; then
+		echo "Fatal: cannot dump file: path \"$p\" not found in snapshot" >&2
+		exit 1
+	fi
+	out="$root/dump.$$"
+	if [ -d "$at" ]; then
+		(cd "$snap/files" && find "./${p#/}" -mindepth 1 | sed 's|^\./||' | sort | tar --no-recursion -cf - -T -) > "$out"
+	else
+		cat "$at" > "$out"
+	fi
+	size=$(wc -c < "$out")
+	if [ -n "$FAKE_RESTIC_DUMP_FAIL" ]; then
+		head -c "$FAKE_RESTIC_DUMP_FAIL" "$out"
+		rm -f "$out"
+		echo "Fatal: cannot dump file: load(<data/4f2a9c1e>) returned error: ciphertext verification failed" >&2
+		exit 1
+	fi
+	if [ -n "$FAKE_RESTIC_SLOW_MS" ]; then
+		block=0
+		while [ $((block * 65536)) -lt "$size" ]; do
+			slow
+			dd if="$out" bs=65536 skip="$block" count=1 2>/dev/null
+			block=$((block + 1))
+		done
+	else
+		cat "$out"
+	fi
+	rm -f "$out";;
 *)
 	echo "Fatal: the fake restic knows no command $1" >&2
 	exit 1;;
@@ -444,7 +745,7 @@ func commandOf(args []string) string {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--no-cache", "--no-lock", "--cleanup-cache":
-		case "-o", "--cache-dir":
+		case "-o", "--cache-dir", "--retry-lock":
 			i++
 		default:
 			return args[i]
@@ -558,20 +859,62 @@ type Tool func(ctx context.Context, args []string, env map[string]string, stdin 
 // directories a job backs up must be mounted read-only. The tool's error
 // ends its output. A job that is stopped cancels the tool's context, as
 // the signal the Engine sends does the backup tool's.
+//
+// A restore's job (#30) mounts each destination at /restore/<i>: writable
+// only for a restore that is not a dry run, and read-only otherwise, where
+// restic cannot write it; the tool and restic find each where it is, and an
+// empty directory of its own for one the job does not mount. A dump's
+// output reaches the job's standard output as the tool writes it.
 func RunJobs(engine *fakedocker.Engine, tool Tool) {
+	RunJobsWith(engine, tool, Options{})
+}
+
+// Options change how RunJobsWith runs jobs.
+type Options struct {
+	// ServerRoot, when set, is where the server's directories are: a bind
+	// mount's source is read and written under it, as the agent's HostRoot
+	// sees them, rather than where it is on the test's machine.
+	ServerRoot string
+}
+
+// RunJobsWith is RunJobs with options.
+func RunJobsWith(engine *fakedocker.Engine, tool Tool, options Options) {
 	engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
 		if len(job.Cmd) == 0 || job.Cmd[0] != "backup-tool" {
 			return fakedocker.JobResult{Code: 1, Stderr: "error: not a backup job"}
 		}
 		env := Env(job.Env)
 		args := slices.Clone(job.Cmd[1:])
-		var sources []string
+		restoring := len(args) > 0 && args[0] == "restore"
+		writes := restoring && !slices.Contains(args, "--dry-run")
+		var sources, readOnly []string
+		restores := map[string]string{}
 		mounts, _ := job.Host["Mounts"].([]any)
 		for _, raw := range mounts {
 			mount, _ := raw.(map[string]any)
 			target, _ := mount["Target"].(string)
 			source, _ := mount["Source"].(string)
+			if mount["Type"] == "bind" && options.ServerRoot != "" {
+				source = filepath.Join(options.ServerRoot, source)
+			}
 			switch {
+			case restoring && strings.HasPrefix(target, "/restore/"):
+				if mount["ReadOnly"] != true && !writes {
+					return fakedocker.JobResult{Code: 125, Stderr: "error: a restore's preview mounts " + target + " writable"}
+				}
+				if mount["Type"] == "volume" {
+					source = engine.VolumeDir(source)
+				}
+				// the Engine makes the directory, as CreateMountpoint asks
+				if options, _ := mount["BindOptions"].(map[string]any); options["CreateMountpoint"] == true {
+					if err := os.MkdirAll(source, 0o755); err != nil { //nolint:gosec // as the Engine makes it
+						return fakedocker.JobResult{Code: 125, Stderr: err.Error()}
+					}
+				}
+				if mount["ReadOnly"] == true {
+					readOnly = append(readOnly, source)
+				}
+				restores[target] = source
 			case target == backup.LocalMount:
 				// the Engine makes the directory, as CreateMountpoint asks
 				if options, _ := mount["BindOptions"].(map[string]any); options["CreateMountpoint"] == true {
@@ -598,6 +941,27 @@ func RunJobs(engine *fakedocker.Engine, tool Tool) {
 			}
 		}
 		env["FAKE_RESTIC_MOUNTS"] = strings.Join(sources, "\n")
+		env["FAKE_RESTIC_READONLY"] = strings.Join(readOnly, "\n")
+		if restoring {
+			// each root's destination, where the job mounts it, or an empty
+			// directory of the job's own
+			for i, arg := range args {
+				if i == 0 || args[i-1] != "--root" {
+					continue
+				}
+				source, target, _ := strings.Cut(arg, "=")
+				dir, mounted := restores[target]
+				if !mounted {
+					empty, err := os.MkdirTemp("", "restore")
+					if err != nil {
+						return fakedocker.JobResult{Code: 125, Stderr: err.Error()}
+					}
+					defer os.RemoveAll(empty) //nolint:gocritic // one per root, removed with the job
+					dir = empty
+				}
+				args[i] = source + "=" + dir
+			}
+		}
 		if i := slices.Index(args, "--relay"); i >= 0 && i+1 < len(args) {
 			dir, err := os.MkdirTemp("", "relay")
 			if err != nil {
@@ -627,7 +991,12 @@ func RunJobs(engine *fakedocker.Engine, tool Tool) {
 			// as it comes, as the agent watches it for the relay
 			stderr = job.Stderr
 		}
-		err := tool(ctx, args, env, stdin, &stdout, stderr)
+		var out io.Writer = &stdout
+		if len(args) > 0 && args[0] == "dump" && job.Stdout != nil {
+			// as it comes, byte for byte, as the agent streams it
+			out = job.Stdout
+		}
+		err := tool(ctx, args, env, stdin, out, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 		}
