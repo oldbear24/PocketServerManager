@@ -893,6 +893,43 @@ describe("the restore drawer", () => {
     expect(await drawer().findByRole("button", { name: "Preview" })).toBeInTheDocument();
   });
 
+  it("says that a restore stopped before it wrote changed nothing", async () => {
+    // cancelled in the queue, in the panel's words
+    live.records["backup_restores/r1"] = restore({
+      status: "cancelled",
+      command: "c1",
+      error: "Cancelled before it started: nothing was stopped or changed.",
+    });
+    const { view } = showDrawer("operator", { restore: "r1" });
+    expect(
+      await drawer().findByText("Cancelled before it started: nothing was stopped or changed."),
+    ).toBeInTheDocument();
+    expect(drawer().queryByText(/keeps what was restored so far/)).not.toBeInTheDocument();
+    expect(drawer().queryByText(/Some files were already restored/)).not.toBeInTheDocument();
+    view.unmount();
+
+    // stopped under way before it wrote
+    live.records["backup_restores/r1"] = restore({
+      status: "cancelled",
+      command: "c1",
+      error: "Stopped by admin@example.com before it changed anything.",
+    });
+    const { view: again } = showDrawer("operator", { restore: "r1" });
+    expect(
+      await drawer().findByText("Stopped by admin@example.com before it changed anything."),
+    ).toBeInTheDocument();
+    expect(drawer().queryByText(/keeps what was restored so far/)).not.toBeInTheDocument();
+    again.unmount();
+
+    // with no words of the panel's
+    live.records["backup_restores/r1"] = restore({ status: "cancelled", command: "c1" });
+    showDrawer("operator", { restore: "r1" });
+    expect(
+      await drawer().findByText("The restore was stopped before it changed anything."),
+    ).toBeInTheDocument();
+    expect(drawer().queryByText(/keeps what was restored so far/)).not.toBeInTheDocument();
+  });
+
   it("says when a preview failed", async () => {
     live.records["backup_restores/r1"] = restore({
       status: "failed",

@@ -1340,6 +1340,8 @@ function RestoreProgress({
   const last = useRef<RestoreStep | "">("");
 
   const ended = restoreEnded(record.status);
+  // whether the destination holds what the restore wrote
+  const wrote = record.partial || record.files_restored > 0 || record.files_deleted > 0;
   const progress = command?.progress ?? null;
   const step = (restoreSteps as readonly string[]).includes(progress?.step ?? "")
     ? (progress!.step as RestoreStep)
@@ -1453,10 +1455,15 @@ function RestoreProgress({
       )}
       {record.status === "cancelled" && (
         <Banner tone="warn">
-          <div>
-            {t("backups.restore.stopped")}
-            {record.error && <span className="restore-why">{record.error}</span>}
-          </div>
+          {wrote ? (
+            <div>
+              {t("backups.restore.stopped")}
+              {record.error && <span className="restore-why">{record.error}</span>}
+            </div>
+          ) : (
+            // stopped in the queue, or before it wrote: the panel says nothing changed
+            record.error || t("backups.restore.stoppedUnchanged")
+          )}
         </Banner>
       )}
       {ended && record.partial && <Banner tone="warn">{t("backups.restore.partial")}</Banner>}

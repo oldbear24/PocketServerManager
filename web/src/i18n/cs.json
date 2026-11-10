@@ -2479,6 +2479,7 @@
       "failed": "Obnova selhala: {{error}}",
       "partial": "Část souborů už se obnovila: než data použiješ, obnov je znovu.",
       "stopped": "Obnova byla zastavena. Cíl si ponechá, co se dosud obnovilo.",
+      "stoppedUnchanged": "Obnova byla zastavena dřív, než cokoli změnila.",
       "again": "Obnovit znovu",
       "output": "Výstup obnovy",
       "started": "Obnova úlohy {{job}} začala.",

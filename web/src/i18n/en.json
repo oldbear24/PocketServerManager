@@ -2353,6 +2353,7 @@
       "failed": "The restore failed: {{error}}",
       "partial": "Some files were already restored: restore again before using the data.",
       "stopped": "The restore was stopped. The destination keeps what was restored so far.",
+      "stoppedUnchanged": "The restore was stopped before it changed anything.",
       "again": "Restore again",
       "output": "Restore output",
       "started": "The restore of {{job}} started.",
