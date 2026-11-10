@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { restoresApi, type BackupRestore, type SnapshotFolder } from "../lib/backupRestores";
@@ -290,7 +290,7 @@ describe("the restore drawer", () => {
     const dialog = within(screen.getByRole("dialog", { name: "Overwrite vw_data on nas?" }));
     expect(
       dialog.getByText(
-        "The restore replaces files with those of the snapshot from today 12:00. This cannot be undone.",
+        "The restore replaces files with those of the snapshot from Nov 9, 2026, 12:00:00 PM. This cannot be undone.",
       ),
     ).toBeInTheDocument();
     const confirm = dialog.getByRole("button", { name: "Restore and overwrite" });
@@ -897,6 +897,37 @@ describe("the restore drawer", () => {
       await drawer().findByText("The preview failed: Fatal: wrong password or no key found."),
     ).toBeInTheDocument();
     expect(drawer().getByRole("button", { name: "Preview" })).toBeEnabled();
+  });
+
+  it("takes the page's job and snapshot once the jobs have loaded", async () => {
+    signInAs("operator");
+    vi.spyOn(restoresApi, "snapshots").mockResolvedValue(snapshots(2));
+    // the page opens the drawer from the address before its lists are there
+    function Page() {
+      const [loaded, setLoaded] = useState<typeof jobs>([]);
+      return (
+        <>
+          <button type="button" onClick={() => setLoaded(jobs)}>
+            load
+          </button>
+          <RestoreDrawer
+            jobs={loaded}
+            targets={targets}
+            hosts={hosts}
+            runs={[]}
+            stacks={[]}
+            start={{ job: loaded.length > 0 ? "j1" : undefined, snapshot: first, restore: "new" }}
+            onRecord={vi.fn()}
+            onClose={vi.fn()}
+          />
+        </>
+      );
+    }
+    wrap(<Page />);
+    expect(drawer().getByRole("heading", { name: "Restore from backup" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "load", hidden: true }));
+    expect(await screen.findByRole("heading", { name: "Restore vaultwarden" })).toBeInTheDocument();
+    expect(await drawer().findByText("Time")).toBeInTheDocument();
   });
 
   it("picks the job, the target and the snapshot when none is given", async () => {

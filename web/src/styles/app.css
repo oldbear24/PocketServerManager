@@ -3221,7 +3221,12 @@ a.job-name {
 .restore-pick {
   display: grid;
   gap: 10px 12px;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* a snapshot's option is long: its id, when and its size */
+.restore-pick > :nth-child(3) {
+  grid-column: 1 / -1;
 }
 
 .restore-picks .chip {
@@ -3341,11 +3346,21 @@ a.job-name {
   min-width: 0;
 }
 
+.file-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .file-pick {
   display: inline-flex;
   align-items: center;
-  margin-right: 6px;
-  vertical-align: middle;
+  flex: none;
+}
+
+.file-name .link-button {
+  text-align: left;
 }
 
 .file-pick input {
@@ -3354,4 +3369,15 @@ a.job-name {
 
 .snapshot-browser td {
   overflow-wrap: anywhere;
+}
+
+/* a name keeps a readable width; on a phone the table scrolls instead */
+.snapshot-browser td:first-child {
+  min-width: 200px;
+}
+
+.snapshot-browser td.file-size,
+.snapshot-browser td.file-time {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }

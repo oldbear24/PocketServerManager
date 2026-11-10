@@ -110,9 +110,13 @@ export function RestoreDrawer({
   const { user } = useAuth();
   const now = useNow(15_000);
 
-  const [jobId, setJobId] = useState(start.job ?? "");
-  const [targetId, setTargetId] = useState(start.target ?? "");
-  const [snapshotId, setSnapshotId] = useState(start.snapshot ?? "");
+  // undefined until picked here: what the page picked, once it has loaded
+  const [pickedJob, setJobId] = useState<string>();
+  const [pickedTarget, setTargetId] = useState<string>();
+  const [pickedSnapshot, setSnapshotId] = useState<string>();
+  const jobId = pickedJob ?? start.job ?? "";
+  const targetId = pickedTarget ?? start.target ?? "";
+  const snapshotId = pickedSnapshot ?? start.snapshot ?? "";
   const [recordId, setRecordId] = useState<string | null>(
     start.restore && start.restore !== "new" ? start.restore : null,
   );
@@ -709,12 +713,8 @@ export function RestoreDrawer({
           open={confirming}
           dest={destinationOf(record)}
           host={server(record.host)}
-          time={formatSnapshotTime(
-            record.preview.snapshot.time || record.snapshot_time,
-            now,
-            undefined,
-            t,
-          )}
+          // a whole date reads well in the sentence, as "today" would not in Czech
+          time={formatDateTime(record.preview.snapshot.time || record.snapshot_time)}
           busy={busy}
           error={confirmError}
           onCancel={() => setConfirming(false)}
@@ -1026,33 +1026,37 @@ function SnapshotBrowser({
               return (
                 <tr key={entry.name}>
                   <td>
-                    <label
-                      className="check-line file-pick"
-                      title={entry.bad_name ? t("backups.files.badName") : undefined}
-                    >
-                      <input
-                        type="checkbox"
-                        aria-label={t("backups.files.pick", { name: entry.name })}
-                        checked={picked}
-                        disabled={entry.bad_name || (full && !picked)}
-                        onChange={(event) => toggle(entry, event.target.checked)}
-                      />
-                      <Icon size={14} aria-hidden="true" />
-                    </label>
-                    {entry.type === "dir" ? (
-                      <button
-                        type="button"
-                        className="link-button mono"
-                        onClick={() => open(itemPath)}
+                    <div className="file-name">
+                      <label
+                        className="check-line file-pick"
+                        title={entry.bad_name ? t("backups.files.badName") : undefined}
                       >
-                        {entry.name}
-                      </button>
-                    ) : (
-                      <span className="mono">{entry.name}</span>
-                    )}
+                        <input
+                          type="checkbox"
+                          aria-label={t("backups.files.pick", { name: entry.name })}
+                          checked={picked}
+                          disabled={entry.bad_name || (full && !picked)}
+                          onChange={(event) => toggle(entry, event.target.checked)}
+                        />
+                        <Icon size={14} aria-hidden="true" />
+                      </label>
+                      {entry.type === "dir" ? (
+                        <button
+                          type="button"
+                          className="link-button mono"
+                          onClick={() => open(itemPath)}
+                        >
+                          {entry.name}
+                        </button>
+                      ) : (
+                        <span className="mono">{entry.name}</span>
+                      )}
+                    </div>
                   </td>
-                  <td>{entry.type === "dir" ? "–" : formatBytes(entry.size)}</td>
-                  <td>{formatDateTime(entry.mtime)}</td>
+                  <td className="file-size">
+                    {entry.type === "dir" ? "–" : formatBytes(entry.size)}
+                  </td>
+                  <td className="file-time">{formatDateTime(entry.mtime)}</td>
                   {canDownload && (
                     <td>
                       <IconButton
@@ -1451,8 +1455,10 @@ function RestoreProgress({
       )}
       {record.status === "cancelled" && (
         <Banner tone="warn">
-          {t("backups.restore.stopped")}
-          {record.error && <span className="restore-why"> {record.error}</span>}
+          <div>
+            {t("backups.restore.stopped")}
+            {record.error && <span className="restore-why">{record.error}</span>}
+          </div>
         </Banner>
       )}
       {ended && record.partial && <Banner tone="warn">{t("backups.restore.partial")}</Banner>}
