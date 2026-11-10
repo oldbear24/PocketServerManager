@@ -1081,9 +1081,12 @@ func TestARestoreCannotStartWithoutAFreshPreview(t *testing.T) {
 		t.Errorf("a start during the preview: %d %v", status, out)
 	}
 	release()
-	restore := r.waitRestore(draft, schema.RestorePreviewed)
+	// the panel removes the preview's command once it kept the preview, and
+	// the record's link to it with it: the record is changed as it is then
+	r.gone(r.waitRestore(draft, schema.RestorePreviewed).GetString("preview_command"))
 
 	// half an hour later
+	restore := r.restore(draft)
 	restore.Set("preview_at", time.Now().UTC().Add(-31*time.Minute))
 	restore.Set("expires_at", time.Now().UTC().Add(-time.Minute))
 	if err := r.app.Save(restore); err != nil {
