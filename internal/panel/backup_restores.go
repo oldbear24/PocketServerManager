@@ -62,6 +62,10 @@ func (p *Panel) registerBackupRestores() {
 		p.restoreRemoved(e.App, e.Record)
 		return e.Next()
 	})
+	// what the panel missed is settled every minute, and once it started
+	// (see Register)
+	p.App.Cron().MustAdd("pocketcloud_backup_restores", "* * * * *", p.settleRestores)
+	p.App.Cron().MustAdd("pocketcloud_backup_restores_retention", "47 4 * * *", p.pruneRestores)
 }
 
 func (p *Panel) bindBackupRestoreRoutes(group *router.RouterGroup[*core.RequestEvent]) {
