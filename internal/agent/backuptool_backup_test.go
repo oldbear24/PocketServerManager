@@ -192,7 +192,7 @@ func resticCommands(t *testing.T, root string) []string {
 		if args, ok := strings.CutPrefix(line, "restic "); ok {
 			fields := strings.Fields(args)
 			for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
-				if fields[0] == "-o" || fields[0] == "--cache-dir" {
+				if fields[0] == "-o" || fields[0] == "--cache-dir" || fields[0] == "--retry-lock" {
 					fields = fields[1:]
 				}
 				fields = fields[1:]

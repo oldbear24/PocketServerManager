@@ -1,0 +1,8 @@
+{"message_type":"verbose_status","action":"updated","item":"/a.txt","size":3}
+{"message_type":"verbose_status","action":"unchanged","item":"/sub/b.txt","size":2}
+{"message_type":"verbose_status","action":"restored","item":"/sub/deep/c.txt","size":2}
+{"message_type":"verbose_status","action":"restored","item":"/empty","size":0}
+{"message_type":"verbose_status","action":"restored","item":"/sub/deep","size":0}
+{"message_type":"verbose_status","action":"restored","item":"/sub","size":0}
+{"message_type":"verbose_status","action":"deleted","item":"/extra.txt","size":0}
+{"message_type":"summary","total_files":5,"files_restored":5,"files_skipped":1,"total_bytes":5,"bytes_restored":5,"bytes_skipped":2}

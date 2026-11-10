@@ -1,0 +1,3 @@
+{"message_type":"error","error":{"message":"remove /restore/0/f1.bin: directory not empty"},"during":"restore","item":"/f1.bin"}
+Fatal: There were 1 errors
+
