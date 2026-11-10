@@ -661,6 +661,64 @@ func TestContainersStartAgainWhenCancelledBeforeTheReport(t *testing.T) {
 	}
 }
 
+// TestAStopAfterTheJobEndedWellKeepsTheRestore (#30): a stop that comes once
+// the job restored everything, as the application starts again, leaves the
+// restore succeeded with its result; one that comes while the containers
+// stop says that nothing changed.
+func TestAStopAfterTheJobEndedWellKeepsTheRestore(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.volume(t, "app_data", map[string]string{"a.txt": "v1"})
+	snapshot := h.backup(t, "app_data")
+	writeFiles(t, h.engine.VolumeDir("app_data"), map[string]string{"a.txt": "v2"})
+	h.container("app-1", nil, "always", 0, volumeMount("app_data", "/data", false))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.engine.OnStart = func(c *fakedocker.Container) (string, string) {
+		h.note("start:" + c.Name)
+		// the job ended: someone presses stop as the application starts
+		cancel()
+		return "running", c.Health
+	}
+	payload := h.payload(snapshot, "app_data")
+	payload.ConfirmedStops = []string{"app-1"}
+	result, err := h.restore(ctx, "c1", payload)
+	if err != nil || result["partial"] != false || result["files_restored"] != float64(1) || len(result["app_started"].([]any)) != 1 {
+		t.Errorf("the restore: %v %v", err, result)
+	}
+	if ctx.Err() == nil || !slices.Equal(h.happened(), []string{"job:restore", "stop:app-1", "job:end", "start:app-1"}) {
+		t.Errorf("the stop came at %q", h.happened())
+	}
+	if content, _ := os.ReadFile(filepath.Join(h.engine.VolumeDir("app_data"), "a.txt")); string(content) != "v1" {
+		t.Errorf("a.txt: %q", content)
+	}
+
+	// a stop while the containers stop
+	h2 := newRestoreHarness(t)
+	h2.volume(t, "app_data", map[string]string{"a.txt": "v1"})
+	snapshot = h2.backup(t, "app_data")
+	writeFiles(t, h2.engine.VolumeDir("app_data"), map[string]string{"a.txt": "v2"})
+	h2.container("app-1", nil, "always", 0, volumeMount("app_data", "/data", false))
+	h2.container("app-2", nil, "always", 0, volumeMount("app_data", "/data", false))
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	h2.engine.OnStop = func(c *fakedocker.Container) {
+		if c.Labels["pocketcloud.role"] == "" {
+			h2.note("stop:" + c.Name)
+			cancel()
+		}
+	}
+	payload = h2.payload(snapshot, "app_data")
+	payload.ConfirmedStops = []string{"app-1", "app-2"}
+	result, err = h2.restore(ctx, "c2", payload)
+	if err == nil || err.Error() != "The restore was stopped before anything changed." {
+		t.Errorf("a stop while the containers stop: %v", err)
+	}
+	if content, _ := os.ReadFile(filepath.Join(h2.engine.VolumeDir("app_data"), "a.txt")); string(content) != "v2" || h2.status("app-1") != "running" ||
+		h2.status("app-2") != "running" || result["partial"] != false {
+		t.Errorf("after the stop: %q %s %s %v", content, h2.status("app-1"), h2.status("app-2"), result)
+	}
+}
+
 // TestRestoreStopsBeforeItsDeadlineToStartTheApp (#30, SAFE): a restore's job
 // ends before the command's deadline, keeping time to start the application
 // again and to say so before the panel gives up on it.

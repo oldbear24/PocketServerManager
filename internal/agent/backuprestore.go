@@ -574,19 +574,25 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 	if len(session.stopped) > 0 {
 		startedAgain = " The application was started again."
 	}
+	// what happened decides, not what was asked last: a stop that came once
+	// the job ended well, as the application starts again, changes nothing
 	switch {
+	case stopErr != nil && errors.Is(ctx.Err(), context.Canceled):
+		// a stop while the containers stopped: the job never went ahead
+		return result, sentenceError("The restore was stopped before anything changed.")
 	case stopErr != nil:
 		return result, stopErr
+	case jobErr == nil:
+		return result, nil
 	case errors.Is(ctx.Err(), context.Canceled) && wentAhead:
 		return result, sentenceError("The restore was stopped before it was complete: the destination holds part of the snapshot." + startedAgain)
 	case errors.Is(ctx.Err(), context.Canceled):
 		return result, sentenceError("The restore was stopped before anything changed.")
-	case jobErr != nil && errors.Is(jobCtx.Err(), context.DeadlineExceeded) && wentAhead:
+	case errors.Is(jobCtx.Err(), context.DeadlineExceeded) && wentAhead:
 		return result, sentenceError("The restore ran out of time: the destination holds part of the snapshot." + startedAgain)
-	case jobErr != nil:
+	default:
 		return result, missingDirectory(jobErr)
 	}
-	return result, nil
 }
 
 // sentenceError is an error said as a whole sentence, as the panel shows it.
