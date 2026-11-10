@@ -1,0 +1,11 @@
+# restic 0.17.3, restore ID:/volumes/vx --target T --include PATTERN, where the
+# snapshot holds /volumes/vx/a.txt, /volumes/vx/empty/, /volumes/vx/sub/b.txt
+# and /volumes/vx/sub/deep/c.txt: a pattern is relative to the folder restored.
+/volumes/vx/sub	nothing
+/sub	sub sub/b.txt sub/deep sub/deep/c.txt
+sub	sub sub/b.txt sub/deep sub/deep/c.txt
+sub/b.txt	sub sub/b.txt
+/volumes/vx/sub/b.txt	nothing
+# restore ID --target T, all of the snapshot: a pattern is the snapshot's path.
+/volumes/vx/sub	volumes volumes/vx volumes/vx/sub volumes/vx/sub/b.txt volumes/vx/sub/deep volumes/vx/sub/deep/c.txt
+/sub	nothing

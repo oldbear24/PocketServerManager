@@ -747,6 +747,11 @@ type jobHooks struct {
 	// on its own, after the Engine's SIGTERM, before it is removed: a
 	// removed job is killed at once
 	stopGrace time.Duration
+	// attach reads the job's output through its attached output instead of
+	// its log, for a job that keeps none (#30): attached before it starts,
+	// and each write to stdout done before the next is read, so that a slow
+	// reader slows the job down. A write that fails stops the job.
+	attach bool
 }
 
 // runWith runs a job like run, with hooks.
@@ -755,8 +760,11 @@ func (d dockerSites) runWith(ctx context.Context, config map[string]any, hooks j
 	if err != nil {
 		return err
 	}
+	// a job whose output nobody takes any more is stopped like one whose
+	// command was cancelled
+	writeFailed := false
 	defer func() {
-		if hooks.stopGrace > 0 && ctx.Err() != nil {
+		if hooks.stopGrace > 0 && (ctx.Err() != nil || writeFailed) {
 			stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), hooks.stopGrace+cleanupTimeout)
 			_ = d.a.Docker.Stop(stop, id, int(hooks.stopGrace/time.Second))
 			cancel()
@@ -770,26 +778,49 @@ func (d dockerSites) runWith(ctx context.Context, config map[string]any, hooks j
 			return err
 		}
 	}
+	var output io.ReadCloser
+	if hooks.attach {
+		// before it starts, so that nothing it prints is lost
+		if output, err = d.a.Docker.AttachOutput(ctx, id); err != nil {
+			return fmt.Errorf("the job's output cannot be attached: %w", err)
+		}
+		defer output.Close()
+		// reading an attached connection does not end with the context
+		stop := context.AfterFunc(ctx, func() { _ = output.Close() })
+		defer stop()
+	}
 	if err := d.a.Docker.Start(ctx, id); err != nil {
 		return err
 	}
 	if hooks.started != nil {
 		hooks.started(id)
 	}
-	logs, err := d.a.Docker.Logs(ctx, id, dockerapi.LogOptions{Tail: -1, Follow: true})
-	if err != nil {
-		return err
+	if output == nil {
+		if output, err = d.a.Docker.Logs(ctx, id, dockerapi.LogOptions{Tail: -1, Follow: true}); err != nil {
+			return err
+		}
 	}
 	var lastErr lastLineWriter
 	errWriter := io.MultiWriter(stderr, &lastErr)
-	_ = dockerapi.ReadMultiplexed(logs, func(stream byte, data []byte) {
+	var writeErr error
+	_ = dockerapi.ReadMultiplexed(output, func(stream byte, data []byte) {
 		if stream == 2 {
 			_, _ = errWriter.Write(data)
 			return
 		}
-		_, _ = stdout.Write(data)
+		if writeErr != nil {
+			return
+		}
+		if _, writeErr = stdout.Write(data); writeErr != nil && hooks.attach {
+			// nobody takes the output any more: the job is not read on
+			writeFailed = true
+			_ = output.Close()
+		}
 	})
-	_ = logs.Close()
+	_ = output.Close()
+	if writeFailed {
+		return writeErr
+	}
 
 	code, err := d.a.Docker.Wait(ctx, id)
 	if err != nil {

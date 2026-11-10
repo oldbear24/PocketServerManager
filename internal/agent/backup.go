@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strings"
 	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
@@ -45,6 +46,7 @@ const (
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
 	a.Executor.Handle("backup.run", a.handleBackupRun)
+	a.registerRestoreHandlers()
 }
 
 // handleBackupInit opens a target's repository, or creates it, and says what
@@ -90,15 +92,33 @@ type backupJobSpec struct {
 	mounts []map[string]any
 	// capabilities are those the job needs besides a local target's
 	capabilities []string
-	// feed, when set, writes the job's standard input once restic reads
-	// it, as the backup tool says (relayReady), and closes it; it stops when
-	// its context ends, and never starts for a job that ends first
+	// feed, when set, writes the job's standard input once the backup tool
+	// says mark, and closes it; it stops when its context ends, and never
+	// starts for a job that ends first
 	feed func(ctx context.Context, stdin io.WriteCloser)
+	// mark is the tool's line that starts feed: relayReady, once restic
+	// reads a dump, when empty; restoreReady for a restore (#30)
+	mark string
 	// notes are lines for the run's log, said before the job starts
 	notes []string
 	// stopGrace is how long the job has to stop when its command is
 	// cancelled, before it is removed (see backupStopGrace)
 	stopGrace time.Duration
+	// noCache leaves restic's cache out: the job mounts no cache volume and
+	// restic keeps none, as a restore writes nothing of the server but its
+	// destination (#30)
+	noCache bool
+	// progress, when set, gets the JSON of each of the tool's progress
+	// lines (see progressLine), which stay out of the log
+	progress func(data []byte)
+	// attachOutput, when set, gets the job's standard output as the tool
+	// writes it, through the job's attached output, and the job keeps no
+	// log: a download's bytes never rest in the Engine's log files (#30)
+	attachOutput io.Writer
+	// logConfig is the job's log driver and its options; json-file when nil
+	logConfig map[string]any
+	// labels are added to the job's own, such as the command it runs
+	labels map[string]string
 }
 
 // checkRepository checks that the panel completed a command's repository.
@@ -128,7 +148,11 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		env = append(env, name+"="+repo.GetEnv()[name])
 	}
 	cmd := append([]string{"backup-tool"}, job.args...)
-	cmd = append(cmd, "--cache", resticCacheDir)
+	var mounts []map[string]any
+	if !job.noCache {
+		cmd = append(cmd, "--cache", resticCacheDir)
+		mounts = append(mounts, map[string]any{"Type": "volume", "Source": resticCache, "Target": resticCacheDir})
+	}
 	for _, name := range slices.Sorted(maps.Keys(repo.GetOptions())) {
 		cmd = append(cmd, "-o", name+"="+repo.GetOptions()[name])
 	}
@@ -136,7 +160,6 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	// a remote repository is reached over the network; a local one is a
 	// directory of the server, which the job alone mounts
 	network := "bridge"
-	mounts := []map[string]any{{"Type": "volume", "Source": resticCache, "Target": resticCacheDir}}
 	var capabilities []string
 	if repo.GetMount() != "" {
 		dir, err := backup.LocalPath(repo.GetMount())
@@ -161,18 +184,32 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		}
 	}
 
+	labels := maps.Clone(job.labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	// what cleanupBackupJobs goes by
+	labels["pocketcloud.role"] = "job"
+	labels[backupTargetLabel] = repo.GetTargetId()
+	logConfig := job.logConfig
+	if logConfig == nil {
+		logConfig = map[string]any{"Type": "json-file"}
+	}
+	if job.attachOutput != nil {
+		logConfig = map[string]any{"Type": "none"}
+	}
 	config := map[string]any{
 		"Image":  self.Image,
 		"Cmd":    cmd,
 		"Env":    env,
-		"Labels": map[string]string{"pocketcloud.role": "job", backupTargetLabel: repo.GetTargetId()},
+		"Labels": labels,
 		"HostConfig": map[string]any{
 			"Mounts":      mounts,
 			"NetworkMode": network,
 			"CapDrop":     []string{"ALL"},
 			"CapAdd":      capabilities,
 			"SecurityOpt": []string{"no-new-privileges"},
-			"LogConfig":   map[string]any{"Type": "json-file"},
+			"LogConfig":   logConfig,
 		},
 	}
 	if job.feed != nil {
@@ -187,15 +224,21 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	defer stopFeed()
 	fed := make(chan struct{})
 	feeding := false
-	var stderr io.Writer = &redactingWriter{w: log, secrets: secrets}
-	// the dump starts once restic reads it: the tool says when, before any
-	// secret is taken out of what it says
+	// the feed starts once the tool says so, as a dump once restic reads it:
+	// its marks, and its progress, are read before any secret is taken out
+	// of what it says, and kept out of the log
 	ready := make(chan struct{})
+	marks := &toolMarks{w: &redactingWriter{w: log, secrets: secrets}, progress: job.progress}
 	if job.feed != nil {
-		stderr = &markWatcher{w: stderr, mark: relayReady, seen: ready}
+		mark := job.mark
+		if mark == "" {
+			mark = relayReady
+		}
+		marks.marks = map[string]chan struct{}{mark: ready}
 	}
 	hooks := jobHooks{
 		stopGrace: job.stopGrace,
+		attach:    job.attachOutput != nil,
 		prepare: func(id string) error {
 			// ssh reads the key and the pinned host key from files
 			for _, file := range []struct {
@@ -245,7 +288,11 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		},
 	}
 	var stdout bytes.Buffer
-	err = dockerSites{a: a}.runWith(ctx, config, hooks, &stdout, stderr)
+	var output io.Writer = &stdout
+	if job.attachOutput != nil {
+		output = job.attachOutput
+	}
+	err = dockerSites{a: a}.runWith(ctx, config, hooks, output, marks)
 	if stdin != nil {
 		// what still feeds a job that ended stops
 		stopFeed()
@@ -256,7 +303,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	}
 	out := lastLine(stdout.Bytes())
 	var exit *exitError
-	if errors.As(err, &exit) && exit.message == relayReady {
+	if errors.As(err, &exit) && toolLine(exit.message) {
 		// the tool's own line, last as the job was killed, says nothing of why
 		exit.message = ""
 	}
@@ -269,16 +316,49 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	return out, nil
 }
 
-// markWatcher passes on a job's output line by line, and closes seen when it
-// reads mark, a line of its own, which it keeps out of what it passes on.
-type markWatcher struct {
-	w       io.Writer
-	mark    string
-	seen    chan struct{}
-	partial []byte
+// The backup tool's progress lines (#30): `--- pocketcloud: progress {json}
+// ---` on its error output, which the agent reads and keeps out of the log.
+const (
+	progressPrefix = "--- pocketcloud: progress "
+	progressSuffix = " ---"
+)
+
+// progressLine is the tool's progress line of data, a JSON object.
+func progressLine(data []byte) string {
+	return progressPrefix + string(data) + progressSuffix
 }
 
-func (m *markWatcher) Write(data []byte) (int, error) {
+// progressOf is the JSON object of a progress line, if line is one.
+func progressOf(line string) ([]byte, bool) {
+	inner, ok := strings.CutPrefix(line, progressPrefix)
+	if !ok {
+		return nil, false
+	}
+	inner, ok = strings.CutSuffix(inner, progressSuffix)
+	if !ok || !strings.HasPrefix(inner, "{") || !strings.HasSuffix(inner, "}") {
+		return nil, false
+	}
+	return []byte(inner), true
+}
+
+// toolLine says whether a line of a job's output is one of the tool's own:
+// a mark or a progress line, which says nothing of why the job failed.
+func toolLine(line string) bool {
+	_, progress := progressOf(line)
+	return line == relayReady || line == restoreReady || progress
+}
+
+// toolMarks passes on a job's error output line by line, but for the backup
+// tool's own lines: it closes the channel of each of marks it reads, and
+// hands each progress line's JSON to progress.
+type toolMarks struct {
+	w        io.Writer
+	marks    map[string]chan struct{}
+	progress func(data []byte)
+	partial  []byte
+}
+
+func (m *toolMarks) Write(data []byte) (int, error) {
 	m.partial = append(m.partial, data...)
 	for {
 		end := bytes.IndexByte(m.partial, '\n')
@@ -287,11 +367,18 @@ func (m *markWatcher) Write(data []byte) (int, error) {
 		}
 		line := m.partial[:end+1]
 		m.partial = m.partial[end+1:]
-		if string(bytes.TrimRight(line, "\r\n")) == m.mark {
+		text := string(bytes.TrimRight(line, "\r\n"))
+		if seen, ok := m.marks[text]; ok {
 			select {
-			case <-m.seen:
+			case <-seen:
 			default:
-				close(m.seen)
+				close(seen)
+			}
+			continue
+		}
+		if progress, ok := progressOf(text); ok {
+			if m.progress != nil {
+				m.progress(progress)
 			}
 			continue
 		}

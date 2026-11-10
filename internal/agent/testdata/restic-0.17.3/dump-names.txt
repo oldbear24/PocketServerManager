@@ -1,0 +1,6 @@
+-rw-r--r-- ubuntu/ubuntu     3 2020-01-02 03:04 volumes/vx/a.txt
+drwxr-xr-x ubuntu/ubuntu     0 2026-11-10 01:12 volumes/vx/empty/
+drwxrws--- ubuntu/ubuntu     0 2026-11-10 01:12 volumes/vx/sub/
+-rw-r--r-- ubuntu/ubuntu     2 2026-11-10 01:12 volumes/vx/sub/b.txt
+drwxr-xr-x ubuntu/ubuntu     0 2026-11-10 01:12 volumes/vx/sub/deep/
+-rw-r--r-- ubuntu/ubuntu     2 2026-11-10 01:12 volumes/vx/sub/deep/c.txt

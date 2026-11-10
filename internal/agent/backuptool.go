@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,6 +169,22 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	for i, name := range keepOptions {
 		keep[i] = flags.Int(name, 0, "restic's --"+name)
 	}
+	// the reads and the restore (#30)
+	snapshot := flags.String("snapshot", "", "the snapshot's full id")
+	var roots, dests, includes list
+	flags.Var(&roots, "root", "a path of the snapshot and where it goes, SRC=/restore/<i>")
+	flags.Var(&dests, "dest", "the destination of each root, as the tool names it")
+	flags.Var(&includes, "include", "a path of the snapshot the restore is limited to")
+	overwrite := flags.Bool("overwrite", false, "a destination may hold files, which the restore overwrites")
+	replace := flags.Bool("replace", false, "delete what the snapshot does not hold")
+	dryRun := flags.Bool("dry-run", false, "say what the restore would do, and do nothing")
+	wait := flags.Bool("wait", false, "wait for the agent's go before the restore writes")
+	sample := flags.Int("sample", defaultSample, "how many paths of each kind a preview says")
+	expectTag := flags.String("expect-tag", "", "the job's tag, which the snapshot must have")
+	dir := flags.String("dir", "", "the folder of the snapshot to list")
+	offset := flags.Int("offset", 0, "how many entries of the folder to skip")
+	limit := flags.Int("limit", 0, "how many entries or snapshots to say")
+	match := flags.String("match", "", "a part of the names to list, in any case")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -214,9 +229,59 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 			}
 		}
 		return err
+	case "snapshots":
+		if *limit < 0 || *limit > maxSnapshotsListed {
+			return fmt.Errorf("a list says 1 to %d snapshots, not %d", maxSnapshotsListed, *limit)
+		}
+		if *limit == 0 {
+			*limit = defaultSnapshotsListed
+		}
+		result, err := r.snapshots(ctx, tags, *limit)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(result)
+	case "ls":
+		if *offset < 0 || *limit < 0 || *limit > maxEntriesListed {
+			return fmt.Errorf("a page of a folder starts at 0 or later and says 1 to %d entries", maxEntriesListed)
+		}
+		if *limit == 0 {
+			*limit = defaultEntriesListed
+		}
+		result, err := r.ls(ctx, *snapshot, *dir, *offset, *limit, *match)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(result)
+	case "restore":
+		request, err := restoreRequestOf(*snapshot, roots, dests, includes, *overwrite, *replace, *dryRun, *wait, *sample, *expectTag)
+		if err != nil {
+			return err
+		}
+		result, err := r.restore(ctx, request, stdin)
+		// what a restore refused, or did before it failed, is said
+		if result != nil {
+			if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil && err == nil {
+				err = encodeErr
+			}
+		}
+		return err
+	case "dump":
+		if len(paths) != 1 {
+			return errors.New("a dump writes one --path of the snapshot")
+		}
+		return r.dump(ctx, *snapshot, paths[0], *expectTag, stdout)
 	}
-	return fmt.Errorf("unknown op %q: use init, backup or relay", op)
+	return fmt.Errorf("unknown op %q: use init, backup, snapshots, ls, restore, dump or relay", op)
 }
+
+// How many snapshots a list says, and entries a page of a folder (#30).
+const (
+	defaultSnapshotsListed = 500
+	maxSnapshotsListed     = 1000
+	defaultEntriesListed   = 200
+	maxEntriesListed       = 1000
+)
 
 // withoutRestic is the storage's credentials: env without restic's own
 // repository and password.
@@ -236,6 +301,13 @@ func withoutRestic(env map[string]string) map[string]string {
 // while restic waits for the repository, nor for a restic that failed.
 const relayReady = "--- pocketcloud: restic reads the dump ---"
 
+// restoreReady is the line the backup tool writes to its error output once a
+// restore has checked the repository, the snapshot and the destination, and
+// waits for the agent's go (#30): the agent stops the destination's users
+// only then, so that a wrong password, a missing snapshot or a destination
+// that is not empty never stops an application.
+const restoreReady = "--- pocketcloud: ready to restore ---"
+
 // restic runs restic for one repository.
 type restic struct {
 	env     map[string]string
@@ -251,29 +323,13 @@ type restic struct {
 // run runs restic and returns what it printed to stdout and its exit code. An
 // error is one restic did not get to: a code of its own is not one.
 func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, error) {
-	full := []string{"--no-cache"}
-	if r.cache != "" {
-		// what restic has not used for 30 days goes, as a removed target's
-		full = []string{"--cache-dir", r.cache, "--cleanup-cache"}
-	}
-	for _, option := range r.options {
-		full = append(full, "-o", option)
-	}
-	full = append(full, args...)
+	full := append(r.globals(), args...)
 	command := exec.CommandContext(ctx, "restic", full...) //nolint:gosec // restic with the job's repository
 	// a restic that is stopped removes its locks, which one killed leaves
 	// for every other to wait on; one that does not end is killed
 	command.Cancel = func() error { return command.Process.Signal(gracefulStop) }
 	command.WaitDelay = resticStopWait
-	command.Env = os.Environ()
-	names := make([]string, 0, len(r.env))
-	for name := range r.env {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		command.Env = append(command.Env, name+"="+r.env[name])
-	}
+	command.Env = r.environ(nil)
 	var stdout, stderr bytes.Buffer
 	log := &readableWriter{w: r.log}
 	command.Stdout = &stdout

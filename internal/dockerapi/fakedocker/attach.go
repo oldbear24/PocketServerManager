@@ -9,11 +9,12 @@ import (
 // attach answers like the Engine API for a client that writes a container's
 // standard input: it upgrades the connection and passes what the client sends
 // to the container, until the client leaves, which ends the input of a
-// container created with StdinOnce. The fake attaches standard input only.
+// container created with StdinOnce. Standard input is attached alone; see
+// attachOutput for the output.
 func attach(w http.ResponseWriter, r *http.Request, stdin *io.PipeWriter, once bool) {
 	query := r.URL.Query()
 	if query.Get("stream") != "1" || query.Get("stdin") != "1" || query.Get("stdout") == "1" || query.Get("stderr") == "1" {
-		writeError(w, http.StatusBadRequest, "the fake engine attaches a stream of standard input only")
+		writeError(w, http.StatusBadRequest, "the fake engine attaches a stream of standard input, or of the output, alone")
 		return
 	}
 	if stdin == nil {

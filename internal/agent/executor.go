@@ -39,7 +39,14 @@ var perTypeLimits = map[string]int{
 	// may read for an hour: it never takes the check's slots (#28)
 	"backup-check": 2,
 	"backup-usage": 1,
-	"db.":          3,
+	// a snapshot list, a folder of a snapshot and a restore's preview are
+	// short, and someone waits for each: they never wait behind the backups
+	// and restores that hold the slots of "backup." for hours (#30)
+	"backup-read": 4,
+	// a restore writes, and a download streams to a browser, for hours
+	"backup.restore": 2,
+	"backup.dump":    2,
+	"db.":            3,
 	// scheduled tasks may run for hours: they never take every worker
 	"task.": 4,
 }
@@ -132,7 +139,7 @@ func (x *Executor) Submit(command *agentv1.Command) {
 
 		switch {
 		case entry.finished():
-			x.reportFinal(id, entry.protoState(), entry.Error, entry.Result, true)
+			x.reportFinal(id, entry.protoState(), entry.Error, entry.result(), true)
 		case alive:
 			// still running: its updates reach the panel by themselves
 		case entry.State == stateHandedOver:
@@ -188,7 +195,7 @@ func (x *Executor) run(ctx context.Context, cancel context.CancelFunc, command *
 
 	release, err := x.acquire(ctx, limitKey(command))
 	if err != nil {
-		x.finish(id, stateCancelled, "The command was cancelled while waiting for a free worker.", nil)
+		x.finish(id, stateCancelled, "The command was cancelled while waiting for a free worker.", nil, false)
 		return
 	}
 	defer release()
@@ -206,17 +213,18 @@ func (x *Executor) run(ctx context.Context, cancel context.CancelFunc, command *
 	stopFlushing()
 	reporter.flush()
 
+	brief := ephemeral(command)
 	switch {
 	case errors.Is(err, errHandedOver):
 		if storeErr := x.store.setState(id, stateHandedOver, "", nil); storeErr != nil {
 			x.log.Error("failed to store a command state", "command", id, "error", storeErr)
 		}
 	case err == nil:
-		x.finish(id, stateSucceeded, "", result)
+		x.finish(id, stateSucceeded, "", result, brief)
 	case errors.Is(ctx.Err(), context.Canceled):
-		x.finish(id, stateCancelled, err.Error(), result)
+		x.finish(id, stateCancelled, err.Error(), result, brief)
 	default:
-		x.finish(id, stateFailed, err.Error(), result)
+		x.finish(id, stateFailed, err.Error(), result, brief)
 	}
 }
 
@@ -232,7 +240,8 @@ func (x *Executor) safely(ctx context.Context, handler Handler, command *agentv1
 }
 
 // limitKey is what a command counts against in perTypeLimits: its type, but
-// for a backup target's check or measure a limit of its own.
+// for a backup target's check or measure, and the reads of a repository
+// someone waits for, a limit of their own.
 func limitKey(command *agentv1.Command) string {
 	if init := command.GetBackupInit(); init != nil {
 		if init.GetUsage() {
@@ -240,7 +249,24 @@ func limitKey(command *agentv1.Command) string {
 		}
 		return "backup-check"
 	}
+	if ephemeral(command) {
+		return "backup-read"
+	}
 	return command.GetType()
+}
+
+// ephemeral says whether a command's result is an answer someone reads once,
+// which the agent keeps out of its store on disk (#30): a snapshot list, a
+// folder of a snapshot, and a restore's preview. The store is written whole
+// at every start and end, and such answers are large and many.
+func ephemeral(command *agentv1.Command) bool {
+	switch payload := command.GetPayload().(type) {
+	case *agentv1.Command_BackupSnapshots, *agentv1.Command_BackupBrowse:
+		return true
+	case *agentv1.Command_BackupRestore:
+		return payload.BackupRestore.GetDryRun()
+	}
+	return false
 }
 
 func (x *Executor) acquire(ctx context.Context, commandType string) (func(), error) {
@@ -277,8 +303,17 @@ func (x *Executor) acquire(ctx context.Context, commandType string) (func(), err
 	}, nil
 }
 
-func (x *Executor) finish(id, state, message string, result map[string]any) {
-	if err := x.store.setState(id, state, message, result); err != nil {
+// finish stores a command's end and reports it. The result of an ephemeral
+// command (see ephemeral) stays out of the store on disk: the agent keeps it
+// in memory for a report sent again while it runs.
+func (x *Executor) finish(id, state, message string, result map[string]any, ephemeral bool) {
+	var err error
+	if ephemeral {
+		err = x.store.setEphemeral(id, state, message, result)
+	} else {
+		err = x.store.setState(id, state, message, result)
+	}
+	if err != nil {
 		x.log.Error("failed to store a command state", "command", id, "error", err)
 	}
 
@@ -406,6 +441,12 @@ func (r *Reporter) Progress(step, message string, percent int32) {
 	r.state(agentv1.CommandState_COMMAND_STATE_RUNNING, &agentv1.CommandProgress{Step: step, Message: message, Percent: percent})
 }
 
+// Report reports the current step with how much of it is done, such as the
+// bytes a restore wrote of all it writes (#30).
+func (r *Reporter) Report(progress *agentv1.CommandProgress) {
+	r.state(agentv1.CommandState_COMMAND_STATE_RUNNING, progress)
+}
+
 // Write adds to the command's output; it makes a Reporter an io.Writer.
 func (r *Reporter) Write(data []byte) (int, error) {
 	r.mu.Lock()
@@ -431,6 +472,10 @@ func (r *Reporter) flush() {
 }
 
 func (r *Reporter) state(state agentv1.CommandState, progress *agentv1.CommandProgress) {
+	if r.executor == nil {
+		// a handler run by itself, as in a test, reports to nobody
+		return
+	}
 	r.sending.Lock()
 	defer r.sending.Unlock()
 

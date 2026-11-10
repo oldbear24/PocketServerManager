@@ -15,7 +15,11 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -o /out/pocketcloud-agent ./cmd/agent
 
 FROM docker:27-cli
-RUN apk add --no-cache restic openssh-client git ca-certificates tzdata
+# restic is pinned to the release whose output the backup tool reads (#30),
+# the one of the base image's Alpine 3.21: a base image on another Alpine
+# fails the build here rather than restore with another restic.
+RUN apk add --no-cache 'restic=~0.17.3' openssh-client git ca-certificates tzdata \
+    && restic version | grep -q '^restic 0\.17\.3 '
 COPY --from=build /out/pocketcloud-agent /usr/local/bin/pocketcloud-agent
 VOLUME /var/lib/pocketcloud
 LABEL org.opencontainers.image.title="pocketcloud-agent" \

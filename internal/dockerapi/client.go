@@ -208,6 +208,24 @@ type Container struct {
 	Status string            `json:"Status"`
 	Ports  []Port            `json:"Ports"`
 	Labels map[string]string `json:"Labels"`
+	// Mounts are the container's volumes and bind mounts.
+	Mounts []Mount `json:"Mounts"`
+}
+
+// Mount is a volume or a directory of the host that a container mounts, as
+// the container list reports it.
+type Mount struct {
+	// Type is volume, bind, tmpfs or npipe.
+	Type string `json:"Type"`
+	// Name is a volume's name; empty for a bind mount.
+	Name string `json:"Name"`
+	// Source is the directory on the host: a bind mount's own, or the
+	// volume's.
+	Source string `json:"Source"`
+	// Destination is where the container sees it.
+	Destination string `json:"Destination"`
+	// RW says whether the container may write it.
+	RW bool `json:"RW"`
 }
 
 // Containers lists every container, running or not.
@@ -323,6 +341,15 @@ func (c *Client) Remove(ctx context.Context, id string, volumes, force bool) err
 // "no" for a container that must stay stopped.
 func (c *Client) SetRestartPolicy(ctx context.Context, id, policy string) error {
 	body := map[string]any{"RestartPolicy": map[string]any{"Name": policy}}
+	return c.do(ctx, http.MethodPost, "/containers/"+id+"/update", nil, body, nil)
+}
+
+// UpdateRestartPolicy changes when Docker starts a container by itself, with
+// the retries of on-failure, which SetRestartPolicy leaves out: a policy put
+// back after a restore (#30) keeps its retries. Docker refuses retries with
+// any other policy, so they are 0 for those.
+func (c *Client) UpdateRestartPolicy(ctx context.Context, id, name string, maxRetry int) error {
+	body := map[string]any{"RestartPolicy": map[string]any{"Name": name, "MaximumRetryCount": maxRetry}}
 	return c.do(ctx, http.MethodPost, "/containers/"+id+"/update", nil, body, nil)
 }
 
@@ -693,6 +720,30 @@ func (c *Client) ExecStart(ctx context.Context, execID string, tty bool) (io.Rea
 // StdinOnce.
 func (c *Client) Attach(ctx context.Context, id string) (io.WriteCloser, error) {
 	res, err := c.request(ctx, http.MethodPost, "/containers/"+id+"/attach", url.Values{"stream": {"1"}, "stdin": {"1"}}, nil, map[string]string{
+		"Connection": "Upgrade",
+		"Upgrade":    "tcp",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	connection, ok := res.Body.(io.ReadWriteCloser)
+	if !ok {
+		res.Body.Close()
+		return nil, errors.New("the Docker Engine did not upgrade the attach connection")
+	}
+
+	return connection, nil
+}
+
+// AttachOutput opens what a container prints, before it starts: its standard
+// output and error, multiplexed (see ReadMultiplexed), as the process writes
+// them, until it ends. A container whose log driver is none keeps no log, and
+// this is how its output is read (#30): straight from the process, at the
+// reader's pace, as the Engine stops reading the process's pipe while the
+// attached connection is full.
+func (c *Client) AttachOutput(ctx context.Context, id string) (io.ReadCloser, error) {
+	res, err := c.request(ctx, http.MethodPost, "/containers/"+id+"/attach", url.Values{"stream": {"1"}, "stdout": {"1"}, "stderr": {"1"}}, nil, map[string]string{
 		"Connection": "Upgrade",
 		"Upgrade":    "tcp",
 	})
