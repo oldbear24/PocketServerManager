@@ -46,6 +46,7 @@ const (
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
 	a.Executor.Handle("backup.run", a.handleBackupRun)
+	a.registerRestoreHandlers()
 }
 
 // handleBackupInit opens a target's repository, or creates it, and says what

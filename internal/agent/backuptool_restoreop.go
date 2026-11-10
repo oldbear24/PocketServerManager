@@ -253,6 +253,8 @@ func (r restic) restore(ctx context.Context, request restoreRequest, stdin io.Re
 		return nil, err
 	}
 	if request.dryRun {
+		// what is checked: the agent says it compares now
+		r.mark(progressLine([]byte(`{"step":"preview"}`)))
 		return r.preview(ctx, snapshot, request, plans, notes)
 	}
 	result := &restoreResult{Roots: []restoredRoot{}, ErrorSample: []string{}}

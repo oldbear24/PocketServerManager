@@ -89,6 +89,11 @@ type Agent struct {
 	edgeLatency map[string]hostHistogram
 	// tasks are the scheduled tasks running now, by id: one run at a time (#51)
 	tasks sync.Map
+	// claims are the volumes and folders backups read and restores write
+	// now (#30)
+	claims dataClaims
+	// restoring are the containers restores hold stopped (#30)
+	restoring restoringSet
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
@@ -144,6 +149,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.removeStaleAdminers(ctx)
 	a.cleanupSiteJobs(ctx)
 	a.cleanupBackupJobs(ctx)
+	// once the jobs of the restores that ended with the agent are gone
+	a.finishInterruptedRestores(ctx)
 
 	// the edge keeps serving without the panel; one that is gone comes back
 	go a.restoreEdge(ctx)

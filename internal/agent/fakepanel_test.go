@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -57,4 +58,27 @@ func (f *fakePanel) final(t *testing.T, id string) *agentv1.ReportCommandUpdateR
 	}
 	t.Fatalf("the command %s never ended", id)
 	return nil
+}
+
+// progress are the progress steps a command reported, in order.
+func (f *fakePanel) progress(id string) []*agentv1.CommandProgress {
+	var steps []*agentv1.CommandProgress
+	for _, update := range f.reports(id) {
+		if update.GetProgress() != nil {
+			steps = append(steps, update.GetProgress())
+		}
+	}
+	return steps
+}
+
+// reporterFor is a Reporter of a command whose updates reach panel.
+func reporterFor(t *testing.T, panel *fakePanel, id string) *Reporter {
+	t.Helper()
+	store, err := openCommandStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := newExecutor(store, slog.New(slog.DiscardHandler))
+	x.SetClient(panel)
+	return &Reporter{executor: x, commandID: id}
 }

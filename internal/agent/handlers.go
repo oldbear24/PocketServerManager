@@ -76,6 +76,9 @@ func (a *Agent) protected(ctx context.Context, id string) error {
 }
 
 func (a *Agent) handleContainerStart(ctx context.Context, command *agentv1.Command, _ *Reporter) (map[string]any, error) {
+	if a.restoring.holds(command.GetContainerStart().GetDockerId()) {
+		return nil, errRestoring
+	}
 	return nil, a.Docker.Start(ctx, command.GetContainerStart().GetDockerId())
 }
 
@@ -89,6 +92,9 @@ func (a *Agent) handleContainerStop(ctx context.Context, command *agentv1.Comman
 
 func (a *Agent) handleContainerRestart(ctx context.Context, command *agentv1.Command, _ *Reporter) (map[string]any, error) {
 	payload := command.GetContainerRestart()
+	if a.restoring.holds(payload.GetDockerId()) {
+		return nil, errRestoring
+	}
 	if err := a.protected(ctx, payload.GetDockerId()); err != nil {
 		return nil, err
 	}

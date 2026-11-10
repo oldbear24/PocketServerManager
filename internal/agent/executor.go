@@ -441,6 +441,12 @@ func (r *Reporter) Progress(step, message string, percent int32) {
 	r.state(agentv1.CommandState_COMMAND_STATE_RUNNING, &agentv1.CommandProgress{Step: step, Message: message, Percent: percent})
 }
 
+// Report reports the current step with how much of it is done, such as the
+// bytes a restore wrote of all it writes (#30).
+func (r *Reporter) Report(progress *agentv1.CommandProgress) {
+	r.state(agentv1.CommandState_COMMAND_STATE_RUNNING, progress)
+}
+
 // Write adds to the command's output; it makes a Reporter an io.Writer.
 func (r *Reporter) Write(data []byte) (int, error) {
 	r.mu.Lock()
@@ -466,6 +472,10 @@ func (r *Reporter) flush() {
 }
 
 func (r *Reporter) state(state agentv1.CommandState, progress *agentv1.CommandProgress) {
+	if r.executor == nil {
+		// a handler run by itself, as in a test, reports to nobody
+		return
+	}
 	r.sending.Lock()
 	defer r.sending.Unlock()
 
