@@ -73,6 +73,9 @@ type Panel struct {
 	// waits for the agent before it answers that the listing is pending;
 	// zero is 25 seconds.
 	ListingWait time.Duration
+	// DownloadFirstByte is how long a download of a snapshot waits for the
+	// agent's first bytes; zero is 120 seconds.
+	DownloadFirstByte time.Duration
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions
@@ -82,6 +85,10 @@ type Panel struct {
 	// a snapshot's folders, gave (#30)
 	snapshotCache listingCache
 	browseCache   listingCache
+	// downloadTickets and downloads are the downloads of snapshots: their
+	// links, and those under way (#30)
+	downloadTickets downloadTickets
+	downloads       downloadSessions
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
@@ -314,6 +321,8 @@ func (p *Panel) startGateway() error {
 	p.Gateway.OnRequests = p.onRequests
 	p.Gateway.OnLatency = p.onLatency
 	p.Gateway.Fetch = p.fetchArtifact
+	// a download of a snapshot goes on to the browser as it arrives (#30)
+	p.Gateway.LiveArtifacts = map[string]gateway.LiveArtifactHandler{artifactBackupDownload: p.serveDownload}
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)

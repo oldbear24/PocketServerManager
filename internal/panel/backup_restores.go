@@ -56,6 +56,8 @@ func (p *Panel) registerBackupRestores() {
 	p.Commands.OnFinish("backup.run", p.backupRunEnded)
 	p.Commands.OnFinish("backup.restore", p.restoreFinished)
 	p.Commands.OnStart("backup.restore", p.restoreStarted)
+	p.Commands.OnStart("backup.dump", p.restoreStarted)
+	p.Commands.OnFinish("backup.dump", p.downloadFinished)
 	// the alerts of a restore's data go once no restore of it is left,
 	// as with its job or its target
 	p.App.OnRecordAfterDeleteSuccess(schema.BackupRestores).BindFunc(func(e *core.RecordEvent) error {
@@ -77,6 +79,7 @@ func (p *Panel) bindBackupRestoreRoutes(group *router.RouterGroup[*core.RequestE
 	group.POST("/backup-restores/{id}/start", p.handleStartRestore).BindFunc(operators)
 	group.POST("/backup-restores/{id}/cancel", p.handleCancelRestore).BindFunc(operators)
 	group.DELETE("/backup-restores/{id}", p.handleDiscardRestore).BindFunc(operators)
+	group.POST("/backup-jobs/{id}/downloads", p.handleCreateDownload).BindFunc(requireRole(schema.RoleAdmin))
 }
 
 // restoreBody is a restore as the route takes it.

@@ -71,8 +71,28 @@ func (p *Panel) settleStarted(restore *core.Record) {
 	}
 }
 
-// settleDownload heals a download; downloads come with their own route.
-func (p *Panel) settleDownload(*core.Record) {}
+// settleDownload heals a download: one whose link nobody used in time
+// fails; one whose command ended is settled from it; one whose browser's
+// request is gone, as a panel restart ends it, stops and fails.
+func (p *Panel) settleDownload(restore *core.Record) {
+	id := restore.GetString("command")
+	if id == "" {
+		if time.Since(restore.GetDateTime("created").Time()) > downloadTicketLife+time.Minute {
+			p.settleRestore(restore, schema.RestoreFailed, "The download link was not used in time: start the download again.")
+		}
+		return
+	}
+	command, err := p.App.FindRecordById(schema.Commands, id)
+	switch {
+	case err != nil:
+		p.settleRestore(restore, schema.RestoreFailed, "The panel restarted during the download.")
+	case commandFinal(command):
+		p.downloadFinished(command)
+	case p.downloads.get(id) == nil:
+		_ = p.Commands.Cancel(id, "The panel restarted during the download.")
+		p.settleRestore(restore, schema.RestoreFailed, "The panel restarted during the download.")
+	}
+}
 
 // hostName is a server's name, or its id once it is gone.
 func (p *Panel) hostName(id string) string {

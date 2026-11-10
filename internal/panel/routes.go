@@ -60,6 +60,10 @@ func (p *Panel) bindPublicRoutes(se *core.ServeEvent) {
 	// a Git server pushes without an account: the site's secret signs the push
 	se.Router.POST(webhookPath+"{id}", p.handleSiteWebhook)
 
+	// a browser's navigation to a download carries no auth header either: a
+	// ticket from a signed-in admin's route, used once, stands for it (#30)
+	se.Router.GET("/api/pc/backup-downloads/{id}", p.handleDownload)
+
 	se.Router.GET("/api/pc/ca.pem", func(e *core.RequestEvent) error {
 		e.Response.Header().Set("Content-Type", "application/x-pem-file")
 		e.Response.Header().Set("Content-Disposition", `attachment; filename="pocketcloud-root-ca.pem"`)
