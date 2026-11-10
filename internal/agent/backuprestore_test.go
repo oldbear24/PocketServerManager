@@ -239,7 +239,8 @@ func TestARestoreMountsOnlyTheDestinationWritable(t *testing.T) {
 	}
 	job := jobs[0]
 	mounts := mountsOf(job)
-	if len(mounts) != 1 || mounts["/restore/0"]["Type"] != "volume" || mounts["/restore/0"]["Source"] != "app_data" || mounts["/restore/0"]["ReadOnly"] != nil {
+	if len(mounts) != 2 || mounts["/restore/0"]["Type"] != "volume" || mounts["/restore/0"]["Source"] != "app_data" || mounts["/restore/0"]["ReadOnly"] != nil ||
+		!coversImageVolume(job.Host["Mounts"].([]any)) {
 		t.Errorf("mounts: %v", mounts)
 	}
 	if !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID"}) ||
@@ -288,9 +289,75 @@ func TestARestoreMountsOnlyTheDestinationWritable(t *testing.T) {
 	}
 	job = h.restoreJobs()[2]
 	mounts = mountsOf(job)
-	if len(mounts) != 2 || mounts["/repo"]["ReadOnly"] != nil || mounts["/repo"]["Source"] != disk || job.Host["NetworkMode"] != "none" ||
+	if len(mounts) != 3 || mounts["/repo"]["ReadOnly"] != nil || mounts["/repo"]["Source"] != disk || job.Host["NetworkMode"] != "none" ||
 		!slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER", "CHOWN", "FSETID"}) {
 		t.Errorf("a local target's restore: %v %v", mounts, job.Host["CapAdd"])
+	}
+}
+
+// TestEveryJobCoversTheImagesVolume (#30, found on a real Engine): the
+// agent's image declares /var/lib/pocketcloud a VOLUME, of which the Engine
+// gives a job an anonymous volume, writable, unless a mount covers it. Every
+// job, a target's check, a backup of volumes or of a folder, a listing, a
+// preview and a restore, covers it with an empty read-only tmpfs, and writes
+// nothing but restic's cache (for the jobs that keep it), a local target's
+// repository and a real restore's destinations.
+func TestEveryJobCoversTheImagesVolume(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.volume(t, "app_data", map[string]string{"a.txt": "v1"})
+	h.folder(t, "/srv/www", map[string]string{"index.html": "hi"})
+	snapshot := h.backup(t, "app_data")
+	if _, err := h.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{Repository: h.repo, Paths: []string{"/srv/www"},
+		Tags: []string{"pocketcloud", testJobTag}, HostName: "nas"}), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.handleBackupSnapshots(context.Background(), &agentv1.Command{Id: "s1", Type: "backup.snapshots", Payload: &agentv1.Command_BackupSnapshots{
+		BackupSnapshots: &agentv1.BackupSnapshots{Repository: h.repo, Tags: []string{"pocketcloud", testJobTag}}}}, &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	preview := h.payload(snapshot, "app_data")
+	preview.DryRun, preview.Overwrite = true, false
+	if _, err := h.restore(context.Background(), "p1", preview); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.restore(context.Background(), "c1", h.payload(snapshot, "app_data")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.restore(context.Background(), "c2", &agentv1.BackupRestore{Repository: h.repo, SnapshotId: snapshot, RestoreId: "r2", JobTag: testJobTag,
+		TargetPath: "/srv/restored", Source: "/volumes/app_data"}); err != nil {
+		t.Fatal(err)
+	}
+	local := &agentv1.BackupRepository{TargetId: "t2", Url: "/repo", Password: "repo-password-2", Mount: filepath.Join(t.TempDir(), "restic")}
+	if _, err := h.handleBackupInit(context.Background(), initCommand(local), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	h.repo = local
+	snapshot = h.backup(t, "app_data")
+	if _, err := h.restore(context.Background(), "c3", h.payload(snapshot, "app_data")); err != nil {
+		t.Fatal(err)
+	}
+
+	h.mu.Lock()
+	jobs := slices.Clone(h.jobs)
+	h.mu.Unlock()
+	if len(jobs) != 10 {
+		t.Fatalf("%d jobs ran", len(jobs))
+	}
+	for _, job := range jobs {
+		op := job.Cmd[1]
+		writes := op == "restore" && !slices.Contains(job.Cmd, "--dry-run")
+		mounts, _ := job.Host["Mounts"].([]any)
+		if !coversImageVolume(mounts) {
+			t.Errorf("%s leaves the image's volume to the Engine: %v", op, mounts)
+		}
+		for _, raw := range mounts {
+			mount := raw.(map[string]any)
+			target, _ := mount["Target"].(string)
+			if mount["ReadOnly"] == true || target == resticCacheDir || target == "/repo" || writes && strings.HasPrefix(target, restoreJobMount+"/") {
+				continue
+			}
+			t.Errorf("%s mounts %s writable: %v", op, target, mount)
+		}
 	}
 }
 
@@ -338,7 +405,7 @@ func TestADryRunMountsReadOnlyAndCreatesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mounts := mountsOf(h.restoreJobs()[1]); len(mounts) != 1 || mounts["/cache"] == nil {
+	if mounts := mountsOf(h.restoreJobs()[1]); len(mounts) != 2 || mounts["/cache"] == nil || mounts[imageVolume] == nil {
 		t.Errorf("the preview of a new folder mounts %v", mounts)
 	}
 	if _, err := os.Stat(filepath.Join(h.host, "srv")); !errors.Is(err, os.ErrNotExist) {

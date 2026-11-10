@@ -166,7 +166,7 @@ func TestDumpJobLogsNothing(t *testing.T) {
 	h.mu.Unlock()
 	logConfig, _ := job.Host["LogConfig"].(map[string]any)
 	mounts := mountsOf(job)
-	if logConfig["Type"] != "none" || len(mounts) != 1 || mounts["/cache"] == nil || job.Labels["pocketcloud.command"] != "d1" ||
+	if logConfig["Type"] != "none" || len(mounts) != 2 || mounts["/cache"] == nil || !coversImageVolume(job.Host["Mounts"].([]any)) || job.Labels["pocketcloud.command"] != "d1" ||
 		!strings.Contains(strings.Join(job.Cmd, " "), "dump --snapshot "+snapshot+" --path /volumes/app_data/secret.txt --expect-tag "+testJobTag) {
 		t.Errorf("the job: %v %v %q", job.Host["LogConfig"], mounts, job.Cmd)
 	}
@@ -274,7 +274,7 @@ func TestTheSnapshotListAndAFolderComeFromAJob(t *testing.T) {
 	h.mu.Lock()
 	job := h.jobs[len(h.jobs)-1]
 	h.mu.Unlock()
-	if !strings.Contains(strings.Join(job.Cmd, " "), "snapshots --tag pocketcloud --tag "+testJobTag+" --limit 500") || len(mountsOf(job)) != 1 ||
+	if !strings.Contains(strings.Join(job.Cmd, " "), "snapshots --tag pocketcloud --tag "+testJobTag+" --limit 500") || len(mountsOf(job)) != 2 || mountsOf(job)["/cache"] == nil ||
 		job.Labels["pocketcloud.command"] != "s1" {
 		t.Errorf("the list's job: %q %v", job.Cmd, mountsOf(job))
 	}

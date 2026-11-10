@@ -100,8 +100,8 @@ func TestABackupTargetIsCreatedOnceInAJobOfItsOwn(t *testing.T) {
 		t.Errorf("host config: %v", job.Host)
 	}
 	// restic's cache, and nothing else of the server
-	if mounts, _ := job.Host["Mounts"].([]any); len(mounts) != 1 || mounts[0].(map[string]any)["Source"] != resticCache ||
-		mounts[0].(map[string]any)["Type"] != "volume" || job.Host["CapAdd"] != nil {
+	if mounts, _ := job.Host["Mounts"].([]any); len(mounts) != 2 || mounts[0].(map[string]any)["Source"] != resticCache ||
+		mounts[0].(map[string]any)["Type"] != "volume" || !coversImageVolume(mounts) || job.Host["CapAdd"] != nil {
 		t.Errorf("a remote target's job mounts %v, may %v", mounts, job.Host["CapAdd"])
 	}
 	calls := fakerestic.Calls(t, root)
@@ -156,7 +156,7 @@ func TestALocalTargetIsTheOnlyThingItsJobMounts(t *testing.T) {
 		t.Errorf("usage: %v %v %q", measured, err, job.Cmd)
 	}
 	mounts, _ := job.Host["Mounts"].([]any)
-	if len(mounts) != 2 {
+	if len(mounts) != 3 || !coversImageVolume(mounts) {
 		t.Fatalf("mounts: %v", mounts)
 	}
 	mount := mounts[1].(map[string]any)
@@ -261,6 +261,19 @@ func TestBackupJobsLeftByARestartAreRemoved(t *testing.T) {
 	if stop < 0 || remove < stop || engine.Called("/containers/"+exited+"/stop") {
 		t.Errorf("calls: %q", engine.Calls())
 	}
+}
+
+// coversImageVolume says whether a job's mounts cover the agent image's
+// VOLUME with an empty read-only tmpfs, which leaves the job no anonymous
+// volume of it (#30).
+func coversImageVolume(mounts []any) bool {
+	for _, raw := range mounts {
+		mount, _ := raw.(map[string]any)
+		if mount["Target"] == imageVolume {
+			return mount["Type"] == "tmpfs" && mount["ReadOnly"] == true && mount["Source"] == nil
+		}
+	}
+	return false
 }
 
 func anyStrings(value any) []string {

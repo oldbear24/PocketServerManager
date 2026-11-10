@@ -41,6 +41,9 @@ const (
 	// once is killed, and its locks keep other backups and retentions
 	// waiting. A target's check takes no lock, and is removed at once.
 	backupStopGrace = 30 * time.Second
+	// imageVolume is the VOLUME of the agent's image (images/agent/
+	// Dockerfile), the agent's state, which a job covers (#30).
+	imageVolume = "/var/lib/pocketcloud"
 )
 
 func (a *Agent) registerBackupHandlers() {
@@ -178,6 +181,10 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 		capabilities = []string{"DAC_OVERRIDE", "FOWNER"}
 	}
 	mounts = append(mounts, job.mounts...)
+	// the agent's image declares its state folder a VOLUME, of which the
+	// Engine would give every job an anonymous volume, writable and left
+	// behind: an empty read-only tmpfs takes its place
+	mounts = append(mounts, map[string]any{"Type": "tmpfs", "Target": imageVolume, "ReadOnly": true})
 	for _, capability := range job.capabilities {
 		if !slices.Contains(capabilities, capability) {
 			capabilities = append(capabilities, capability)

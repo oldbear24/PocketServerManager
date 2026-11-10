@@ -73,7 +73,7 @@ func TestARestoreJobKeepsNoCacheAndSaysItsCommand(t *testing.T) {
 	if err != nil || string(out) != `{"ok":true}` {
 		t.Fatalf("%s %v", out, err)
 	}
-	if slices.Contains(job.Cmd, "--cache") || len(mountsOf(job)) != 0 {
+	if slices.Contains(job.Cmd, "--cache") || len(mountsOf(job)) != 1 || !coversImageVolume(job.Host["Mounts"].([]any)) {
 		t.Errorf("the job uses the cache: %q %v", job.Cmd, mountsOf(job))
 	}
 	if job.Labels["pocketcloud.command"] != "c1" || job.Labels["pocketcloud.role"] != "job" || job.Labels[backupTargetLabel] != "t1" {

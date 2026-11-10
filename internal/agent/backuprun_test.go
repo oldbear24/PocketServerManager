@@ -168,7 +168,7 @@ func TestABackupRunMountsItsVolumesReadOnly(t *testing.T) {
 		t.Errorf("the job's command: %q", job.Cmd)
 	}
 	mounts := mountsOf(job)
-	if len(mounts) != 3 || mounts["/cache"]["Source"] != resticCache {
+	if len(mounts) != 4 || mounts["/cache"]["Source"] != resticCache || !coversImageVolume(job.Host["Mounts"].([]any)) {
 		t.Errorf("mounts: %v", mounts)
 	}
 	for _, name := range []string{"umami_data", "umami_cache"} {
@@ -385,7 +385,7 @@ func TestADirectoryIsFollowedOnTheServerBeforeItIsMounted(t *testing.T) {
 			t.Fatalf("%s: %v: %v", dir, err, result)
 		}
 		job := r.lastJob(t)
-		if mount := mountsOf(job)[disk]; mount["Type"] != "bind" || mount["Source"] != disk || mount["ReadOnly"] != true || len(mountsOf(job)) != 2 {
+		if mount := mountsOf(job)[disk]; mount["Type"] != "bind" || mount["Source"] != disk || mount["ReadOnly"] != true || len(mountsOf(job)) != 3 {
 			t.Errorf("%s: the mounts: %v", dir, mountsOf(job))
 		}
 		if i := slices.Index(job.Cmd, "--path"); i < 0 || job.Cmd[i+1] != disk {
@@ -595,7 +595,7 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 		"--stdin-name", "umami-db.pgdump", "--relay", dumpSocket, "--cache", "/cache"}) {
 		t.Errorf("the job's command: %q", job.Cmd)
 	}
-	if len(mountsOf(job)) != 1 || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) || job.Stdin == nil {
+	if len(mountsOf(job)) != 2 || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) || job.Stdin == nil {
 		t.Errorf("the job: %v", job.Host)
 	}
 	// attached before it started
