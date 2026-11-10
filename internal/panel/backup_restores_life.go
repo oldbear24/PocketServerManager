@@ -146,7 +146,11 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	if mode == schema.RestoreOriginal {
 		draft.Set("roots", roots)
 	}
-	if problem := p.restoreBlocked(job, target, mode, host, restoreDestinations(draft), restore.Id); problem != nil {
+	stacks := stoppedProjects(restore)
+	if mode == schema.RestoreOriginal {
+		stacks = append(stacks, restore.GetString("stack_name"))
+	}
+	if problem := p.restoreBlocked(job, target, mode, host, restoreDestinations(draft), stacks, restore.Id); problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
 	repository, err := p.repositoryOf(target)

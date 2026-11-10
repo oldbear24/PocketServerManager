@@ -160,7 +160,7 @@ func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 	if problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
-	if problem := p.restoreBlocked(job, target, body.Mode, plan.host, destinationsOf(body.Mode, plan.roots, plan.path), ""); problem != nil {
+	if problem := p.restoreBlocked(job, target, body.Mode, plan.host, destinationsOf(body.Mode, plan.roots, plan.path), []string{plan.stack}, ""); problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
 	repository, err := p.repositoryOf(target)
@@ -403,8 +403,10 @@ func restoreDestinations(restore *core.Record) []destination {
 
 // restoreBlocked says why a restore cannot be queued now, if it cannot: its
 // server is offline, a backup of the job is running, for a restore of the
-// job's own data, or another restore into the same data is under way.
-func (p *Panel) restoreBlocked(job, target *core.Record, mode string, host *core.Record, dests []destination, self string) *targetProblem {
+// job's own data, another restore into the same data is under way, or the
+// databases of a stack whose containers it stops are moving (stacks are
+// those Compose projects).
+func (p *Panel) restoreBlocked(job, target *core.Record, mode string, host *core.Record, dests []destination, stacks []string, self string) *targetProblem {
 	if !p.Commands.Connected(host.Id) {
 		return &targetProblem{http.StatusConflict, fmt.Sprintf("The server %s is offline: its agent restores the snapshot.", host.GetString("name"))}
 	}
@@ -421,6 +423,20 @@ func (p *Panel) restoreBlocked(job, target *core.Record, mode string, host *core
 	}
 	if into := p.restoreUnderWay(host.Id, dests, self); into != "" {
 		return &targetProblem{http.StatusConflict, fmt.Sprintf("A restore into %s is already under way.", into)}
+	}
+	// a move stops the application and deploys it once it ends, which a
+	// restore queued behind it would hold: the application would stay down
+	for _, name := range stacks {
+		if name == "" {
+			continue
+		}
+		stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}", dbx.Params{"host": host.Id, "name": name})
+		if err != nil {
+			continue
+		}
+		if move := p.moveHolding(stack); move != nil {
+			return &targetProblem{http.StatusConflict, fmt.Sprintf("Databases of %s are moving to %s: restore once the move ends.", name, move.GetString("target_name"))}
+		}
 	}
 	return nil
 }

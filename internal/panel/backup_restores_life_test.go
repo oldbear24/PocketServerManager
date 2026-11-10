@@ -159,6 +159,64 @@ func TestARestoreCannotStartWithoutAFreshPreview(t *testing.T) {
 	}
 }
 
+// TestARestoreWaitsForAMoveOfItsStack (#30, SAFE): while the databases of a
+// stack move, the move stops the application and deploys it once it ends;
+// a restore queued behind it would hold that deploy, and the application
+// would stay down. A restore of the stack's data is refused as it is made,
+// and one whose preview stops a container of the stack, whatever its mode,
+// is refused at its start; once the move ended, it starts.
+func TestARestoreWaitsForAMoveOfItsStack(t *testing.T) {
+	f := newJobFixture(t)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	notes := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "notes"})
+	f.save(schema.Volumes, map[string]any{"host": f.host.Id, "name": "notes_data", "labels": map[string]string{"com.docker.compose.project": "notes"}})
+	job := f.job("notes", map[string]any{"source_kind": schema.SourceVolume, "source": "notes_data"})
+	stream := f.agent(f.host)
+	move := f.save(schema.DBMoves, map[string]any{"host": f.host.Id, "stack": notes.Id, "target_name": "pool", "status": schema.MoveRunning})
+	moving := "Databases of notes are moving to pool: restore once the move ends."
+
+	status, body := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restores", operator,
+		map[string]any{"target": f.target.Id, "snapshot": snapshotID, "mode": "original"})
+	if status != http.StatusConflict || body["message"] != moving {
+		t.Errorf("a restore made during the move: %d %v", status, body)
+	}
+	if !f.quiet(stream) {
+		t.Error("a preview went out during the move")
+	}
+
+	stops := previewResult(0, "notes-db-1")
+	stops["would_stop"] = []any{map[string]any{"name": "notes-db-1", "project": "notes"}}
+	original := f.previewed(job, stops, map[string]any{"roots": []restoreRoot{{Source: "/volumes/notes_data", Volume: "notes_data"}}, "stack_name": "notes"})
+	empty := previewResult(0)
+	empty["roots"] = []any{map[string]any{"index": 0, "source": "/", "destination": "/srv/notes", "in_snapshot": true, "exists": false, "entries": 0}}
+	empty["would_stop"] = stops["would_stop"]
+	// a restore into a folder that the stack mounts names no stack
+	folder := f.previewed(job, empty, map[string]any{"mode": schema.RestorePath, "roots": nil, "path": "/srv/notes", "source": "/"})
+	for name, test := range map[string]struct {
+		restore *core.Record
+		token   string
+	}{"to the original location": {original, operator}, "into a folder the stack mounts": {folder, f.admin}} {
+		if status, body := f.start(test.restore, test.token, true); status != http.StatusConflict || body["message"] != moving {
+			t.Errorf("a restore %s started during the move: %d %v", name, status, body)
+		}
+		if stored := f.stored(schema.BackupRestores, test.restore.Id); stored.GetString("status") != schema.RestorePreviewed {
+			t.Errorf("a restore %s refused during the move is %s", name, stored.GetString("status"))
+		}
+	}
+	if !f.quiet(stream) {
+		t.Error("a restore went out during the move")
+	}
+
+	// once the move ended
+	move.Set("status", schema.MoveDone)
+	if err := f.app.Save(move); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := f.start(original, operator, true); status != http.StatusOK || body["status"] != schema.RestoreQueued {
+		t.Errorf("a restore started once the move ended: %d %v", status, body)
+	}
+}
+
 // TestARestoreStartsOnceThoughStartedTwiceAtOnce (#30, SAFE): a draft
 // started by several requests at once becomes one restore with one
 // command.
