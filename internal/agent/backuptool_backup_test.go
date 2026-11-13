@@ -299,6 +299,40 @@ func TestARetentionLockedOutWaitsForTheNextRun(t *testing.T) {
 	}
 }
 
+// TestAClockOffThePanelsRemovesNoLock (#31): restic judges a lock's age by
+// the clock of the server it runs on, and one far ahead would take a live
+// lock for a stale one; with --no-unlock, the tool's unlocks remove nothing
+// and the log says why, and the op still tries once more, as the holder may
+// have ended.
+func TestAClockOffThePanelsRemovesNoLock(t *testing.T) {
+	env, root := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1"})
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir, "--keep-last", "1"}
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "1")
+	t.Setenv("FAKE_RESTIC_LOCKED_FORGET", "1")
+	result, log, err := runBackup(t, env, nil, append(args, "--no-unlock=12")...)
+	if err != nil || result.SnapshotID == "" || result.Forgotten != 0 {
+		t.Fatalf("%+v %v\n%s", result, err, log)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands, []string{"cat", "init", "backup", "backup", "forget", "forget"}) || fakerestic.Unlocks(t, root) != 0 {
+		t.Errorf("restic ran %q", commands)
+	}
+	off := lockedRetry + "\nThe server's clock is off by 12 min from the panel's: restic judges a lock's age by it, so no lock is removed\n"
+	if strings.Count(log, off) != 2 {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// without its minutes, and refused with anything else
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "3")
+	if _, log, _ := runBackup(t, env, nil, append(args, "--no-unlock")...); !strings.Contains(log, "\nThe server's clock is off from the panel's: restic judges") || fakerestic.Unlocks(t, root) != 0 {
+		t.Errorf("a bare --no-unlock: %s", log)
+	}
+	if _, _, err := runBackup(t, env, nil, append(args, "--no-unlock=soon")...); err == nil || !strings.Contains(err.Error(), "--no-unlock is the minutes") {
+		t.Errorf("--no-unlock=soon: %v", err)
+	}
+}
+
 // stubRestic puts a restic on PATH that runs until it is stopped: on SIGTERM
 // it writes "terminated" to the file signal of dir and ends, as restic
 // removes its locks; with ignore, it notes the signal and runs on.

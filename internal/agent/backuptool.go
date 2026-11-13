@@ -53,7 +53,9 @@ import (
 //	       output, and ends with the dump's exit code.
 //
 // Every op takes restic's options as -o key=value, and --cache DIR for
-// restic's cache; without it restic keeps none.
+// restic's cache; without it restic keeps none. --no-unlock=N says that the
+// server's clock is N minutes off the panel's: restic judges a lock's age by
+// it, so no unlock of the tool removes anything, and the log says why (#31).
 
 // The environment of the backup tool's job: restic's own variables.
 const (
@@ -158,6 +160,8 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	expect := flags.String("expect", "", "the id of the repository, which must exist")
 	usage := flags.Bool("usage", false, "say how much the repository holds")
 	cache := flags.String("cache", "", "restic's cache directory")
+	var noUnlock clockFlag
+	flags.Var(&noUnlock, "no-unlock", "the minutes the server's clock is off the panel's: no lock is removed")
 	host := flags.String("host", "", "the snapshot's host")
 	var tags, paths list
 	flags.Var(&tags, "tag", "a tag of the snapshot")
@@ -204,7 +208,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	secrets := backup.Secrets(env[envResticPassword], withoutRestic(env), "")
 	log := &redactingWriter{w: stderr, secrets: secrets}
 	defer log.Flush()
-	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine}
+	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine, noUnlock: noUnlock}
 
 	switch op {
 	case "init":
@@ -318,6 +322,52 @@ type restic struct {
 	cache string
 	// mark writes a line of the tool's own, such as relayReady, as it is
 	mark func(line string)
+	// noUnlock says the server's clock is off the panel's: unlock removes
+	// nothing (#31)
+	noUnlock clockFlag
+}
+
+// clockFlag is --no-unlock (#31): the server's clock is so far off the
+// panel's that restic would take a live lock for a stale one, and the tool
+// removes none. The agent says by how many minutes, --no-unlock=N.
+type clockFlag struct {
+	set     bool
+	minutes int
+}
+
+func (c *clockFlag) String() string {
+	if c == nil || !c.set {
+		return ""
+	}
+	return strconv.Itoa(c.minutes)
+}
+
+// IsBoolFlag lets --no-unlock come without its minutes.
+func (c *clockFlag) IsBoolFlag() bool { return true }
+
+func (c *clockFlag) Set(value string) error {
+	switch value {
+	case "true":
+		c.set, c.minutes = true, 0
+	case "false":
+		c.set, c.minutes = false, 0
+	default:
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("--no-unlock is the minutes the clock is off by, not %q", value)
+		}
+		c.set, c.minutes = true, n
+	}
+	return nil
+}
+
+// why says why no lock is removed.
+func (c clockFlag) why() string {
+	off := "off"
+	if c.minutes > 0 {
+		off = fmt.Sprintf("off by %d min", c.minutes)
+	}
+	return "The server's clock is " + off + " from the panel's: restic judges a lock's age by it, so no lock is removed"
 }
 
 // run runs restic and returns what it printed to stdout and its exit code. An
@@ -366,9 +416,14 @@ func lockLine(stderr []byte) string {
 // unlock removes the locks that no restic holds any more: those of a
 // process that is gone, and those nobody refreshed for 30 minutes, as a
 // restic that was killed left; a live restic refreshes its own every 5
-// minutes, which stays.
-func (r restic) unlock(ctx context.Context) {
-	fmt.Fprintln(r.log, "The repository is locked: removing the locks no restic holds any more, and trying once more")
+// minutes, which stays. why goes to the log first. Never --remove-all, and
+// nothing at all while the server's clock is off the panel's (#31).
+func (r restic) unlock(ctx context.Context, why string) {
+	fmt.Fprintln(r.log, why)
+	if r.noUnlock.set {
+		fmt.Fprintln(r.log, r.noUnlock.why())
+		return
+	}
 	out, code, said, err := r.run(ctx, "unlock")
 	switch {
 	case err != nil:

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,11 @@ const (
 	// is removed at once; an integrity check's second pass holds restic's
 	// exclusive lock, which a killed one leaves for 30 minutes (#31).
 	backupStopGrace = 30 * time.Second
+	// maxLockClockSkew is how far the server's clock may be off the panel's
+	// before the backup tool removes no lock (#31): restic judges a lock's
+	// age by the clock of the server it runs on, and one whose clock is far
+	// ahead takes a live lock for a stale one.
+	maxLockClockSkew = 5 * time.Minute
 	// imageVolume is the VOLUME of the agent's image (images/agent/
 	// Dockerfile), the agent's state, which a job covers (#30).
 	imageVolume = "/var/lib/pocketcloud"
@@ -134,6 +140,16 @@ type backupJobSpec struct {
 	repoReadOnly bool
 }
 
+// clockSkewed says how far the server's clock is off the panel's, as the last
+// heartbeat measured it, and whether that is more than maxLockClockSkew.
+func (a *Agent) clockSkewed() (time.Duration, bool) {
+	skew := time.Duration(a.lastSkew.Load()) * time.Microsecond
+	if skew < 0 {
+		skew = -skew
+	}
+	return skew, skew > maxLockClockSkew
+}
+
 // checkRepository checks that the panel completed a command's repository.
 func checkRepository(repo *agentv1.BackupRepository) error {
 	if repo.GetUrl() == "" || repo.GetPassword() == "" {
@@ -168,6 +184,10 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	}
 	for _, name := range slices.Sorted(maps.Keys(repo.GetOptions())) {
 		cmd = append(cmd, "-o", name+"="+repo.GetOptions()[name])
+	}
+	if skew, off := a.clockSkewed(); off {
+		// the tool's unlocks remove nothing, and say why (#31)
+		cmd = append(cmd, "--no-unlock="+strconv.Itoa(int(skew.Round(time.Minute)/time.Minute)))
 	}
 
 	// a remote repository is reached over the network; a local one is a

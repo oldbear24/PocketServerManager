@@ -155,7 +155,7 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	if err == nil && code == resticLocked && (dump == nil || !dump.connected()) {
 		// a lock that no restic refreshes, of a job that was killed, keeps
 		// every other out until restic unlock removes it
-		r.unlock(ctx)
+		r.unlock(ctx, lockedRetry)
 		out, code, said, err = r.run(ctx, args...)
 	}
 	if err != nil {
@@ -198,6 +198,10 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	return &result, nil
 }
 
+// lockedRetry is what the log says as an op that found the repository
+// locked runs restic unlock, before it tries once more.
+const lockedRetry = "The repository is locked: removing the locks no restic holds any more, and trying once more"
+
 // lockedError is restic that could not lock the repository, once more after
 // restic unlock.
 type lockedError struct{ said string }
@@ -219,7 +223,7 @@ func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (i
 	fmt.Fprintf(r.log, "Applying the retention: keep %s\n", strings.Join(policy, ", "))
 	out, code, said, err := r.run(ctx, args...)
 	if err == nil && code == resticLocked {
-		r.unlock(ctx)
+		r.unlock(ctx, lockedRetry)
 		out, code, said, err = r.run(ctx, args...)
 	}
 	if err != nil {

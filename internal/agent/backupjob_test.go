@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
+	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
 // TestToolMarksKeepTheToolsLinesOutOfTheLog (#30): the backup tool's marks
@@ -238,6 +240,54 @@ func TestEveryBackupJobIsNamedAfterItsCommand(t *testing.T) {
 	}
 	if want := []string{"kinit0000000001", "krun00000000001", "klist0000000001", "kbrowse00000001", "kpreview0000001", "krestore0000001", "kdump0000000001"}; !slices.Equal(named, want) {
 		t.Errorf("jobs named after their commands: %q, want %q", named, want)
+	}
+}
+
+// TestAServerWhoseClockIsOffUnlocksNothing (#31): while the server's clock
+// is more than 5 minutes off the panel's, ahead or behind, every backup tool
+// call says by how many minutes, and the tool's unlocks remove nothing; a
+// run that finds the repository locked tries once more all the same.
+func TestAServerWhoseClockIsOffUnlocksNothing(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	r.volume(t, "data", map[string]string{"a": "1"})
+	for i, c := range []struct {
+		skew time.Duration
+		flag string
+	}{
+		{6*time.Minute + 20*time.Second, "--no-unlock=6"},
+		{-(7*time.Minute + 40*time.Second), "--no-unlock=8"},
+		{5 * time.Minute, ""},
+		{-5 * time.Minute, ""},
+		{0, ""},
+	} {
+		r.lastSkew.Store(c.skew.Microseconds())
+		// the first try of each run finds the repository locked
+		t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", strconv.Itoa(i+1))
+		result, err := r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+			Repository: repo, Volumes: []string{"data"}, Tags: []string{"pocketcloud", "job:j1"}, HostName: "nas",
+		}), &Reporter{})
+		job := r.lastJob(t)
+		var flags []string
+		for _, arg := range job.Cmd {
+			if strings.HasPrefix(arg, "--no-unlock") {
+				flags = append(flags, arg)
+			}
+		}
+		log, _ := result["log"].(string)
+		switch {
+		case c.flag == "" && len(flags) > 0, c.flag != "" && !slices.Equal(flags, []string{c.flag}):
+			t.Errorf("a clock off by %v: %q", c.skew, job.Cmd)
+		case c.flag != "" && !strings.Contains(log, "so no lock is removed\n"):
+			t.Errorf("a clock off by %v: the log\n%s", c.skew, log)
+		case c.flag == "" && strings.Contains(log, "so no lock is removed"):
+			t.Errorf("a clock off by %v removed no lock:\n%s", c.skew, log)
+		case err != nil:
+			t.Errorf("a clock off by %v: %v", c.skew, err)
+		}
+	}
+	if unlocks := fakerestic.Unlocks(t, r.root); unlocks != 3 {
+		t.Errorf("restic unlock ran %d times, for the 3 runs whose server's clock was right", unlocks)
 	}
 }
 
