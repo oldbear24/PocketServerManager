@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -330,6 +331,141 @@ func TestAClockOffThePanelsRemovesNoLock(t *testing.T) {
 	}
 	if _, _, err := runBackup(t, env, nil, append(args, "--no-unlock=soon")...); err == nil || !strings.Contains(err.Error(), "--no-unlock is the minutes") {
 		t.Errorf("--no-unlock=soon: %v", err)
+	}
+}
+
+// runFailure runs the backup op and returns its last line as a failure, and
+// that line as it is.
+func runFailure(t *testing.T, env map[string]string, stdin io.Reader, args ...string) (backup.RunFailure, map[string]any, error) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := BackupTool(context.Background(), append([]string{"backup"}, args...), env, stdin, &stdout, &stderr)
+	var failure backup.RunFailure
+	var line map[string]any
+	if last := lastLine(stdout.Bytes()); len(last) > 0 {
+		if json.Unmarshal(last, &failure) != nil || json.Unmarshal(last, &line) != nil {
+			t.Fatalf("the last line %q", last)
+		}
+	}
+	return failure, line, err
+}
+
+// TestABackupThatSavedNothingSaysWhy (#31): when restic saved no snapshot,
+// the op's last line says the failure's class, restic's exit code and, for
+// a repository that stayed locked, the lock restic named, dated from now;
+// its error says what it said before, so #29's texts stay.
+func TestABackupThatSavedNothingSaysWhy(t *testing.T) {
+	env, _ := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1"})
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "2")
+	t.Setenv("FAKE_RESTIC_LOCK_HOST", "pc-k3j9x2m4q8w1z7v")
+	t.Setenv("FAKE_RESTIC_LOCK_PID", "27095")
+	t.Setenv("FAKE_RESTIC_LOCK_AGE", "40m0.5s")
+	age := 40*time.Minute + 500*time.Millisecond
+	before := time.Now()
+	failure, line, err := runFailure(t, env, nil, args...)
+	after := time.Now()
+	held := "unable to create lock in backend: repository is already locked exclusively by PID 27095 on pc-k3j9x2m4q8w1z7v by root (UID 0, GID 0)"
+	if err == nil || err.Error() != held {
+		t.Errorf("the error: %v", err)
+	}
+	lock := failure.Lock
+	if failure.Failure != backup.FailureLocked || failure.ResticCode != 11 || lock == nil || lock.PID != 27095 || lock.Host != "pc-k3j9x2m4q8w1z7v" ||
+		lock.User != "root" || !lock.Exclusive || lock.AgeS != 2400 || lock.StorageID != "4f2a9c1e" ||
+		lock.Created.Before(before.Add(-age)) || lock.Created.After(after.Add(-age)) || lock.Created.Location() != time.UTC {
+		t.Errorf("a repository that stayed locked: %+v %+v", failure, lock)
+	}
+	if len(line) != 3 || line["lock"] == nil {
+		t.Errorf("the line: %v", line)
+	}
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "0")
+
+	for _, c := range []struct {
+		name, fail, failure string
+		code                int
+		env                 map[string]string
+		want                string
+	}{
+		{name: "an unreadable lock file", fail: "invalid lock file: LoadRaw(<lock/5a09675764>): invalid data returned",
+			failure: backup.FailureLockInvalid, code: 1, want: "Fatal: invalid lock file: LoadRaw(<lock/5a09675764>): invalid data returned"},
+		{name: "another failure of restic", fail: "unable to save snapshot: connection refused", failure: backup.FailureRestic, code: 1,
+			want: "Fatal: unable to save snapshot: connection refused"},
+		{name: "a wrong password", failure: backup.FailurePassword, code: 12, env: map[string]string{"RESTIC_PASSWORD": "another-password"},
+			want: "a repository is there, and the password is not its own: Fatal: wrong password or no key found"},
+		{name: "a repository that is gone", failure: backup.FailureRepository, code: 10, env: map[string]string{"RESTIC_REPOSITORY": "rest:http://backup-node:8000/gone/"},
+			want: "the repository is gone, with its snapshots: "},
+		{name: "a bucket that is gone", failure: backup.FailureRepository, code: 1, env: map[string]string{"RESTIC_REPOSITORY": "s3:http://minio:9000/nobucket"},
+			want: "the repository is gone, with its snapshots: Fatal: unable to open config file: Stat: The specified bucket does not exist"},
+	} {
+		t.Setenv("FAKE_RESTIC_BACKUP_FAIL", c.fail)
+		changed := maps.Clone(env)
+		maps.Copy(changed, c.env)
+		failure, line, err := runFailure(t, changed, nil, args...)
+		if failure.Failure != c.failure || failure.ResticCode != c.code || failure.Lock != nil || line["lock"] != nil {
+			t.Errorf("%s: %+v", c.name, failure)
+		}
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+	}
+	t.Setenv("FAKE_RESTIC_BACKUP_FAIL", "")
+
+	// a dump that failed is the source's failure
+	socket := filepath.Join(t.TempDir(), "dump.sock")
+	failure, _, err = runFailure(t, env, dumpFrames(t, "CREATE", &backup.DumpEnd{Code: 2, Message: "pg_dump: connection refused"}),
+		"--host", "nas", "--tag", "pocketcloud", "--tag", "job:db", "--stdin-name", "db.sql", "--relay", socket)
+	if failure.Failure != backup.FailureSource || failure.ResticCode != 1 || err == nil || !strings.HasPrefix(err.Error(), "the dump failed with exit code 2") {
+		t.Errorf("a dump that failed: %+v %v", failure, err)
+	}
+
+	// a snapshot saved without some files says the snapshot, which is no
+	// failure of this kind
+	t.Setenv("FAKE_RESTIC_UNREADABLE", "a")
+	if _, line, err := runFailure(t, env, nil, args...); err == nil || line["failure"] != nil || line["snapshot_id"] == "" {
+		t.Errorf("a partial backup: %v %v", line, err)
+	}
+}
+
+// TestTheRetryOfALockedRunUnlocksFirst (#31): the retry of a run that found
+// the repository locked runs plain restic unlock before the backup, which
+// removes only the locks no restic holds any more, never --remove-all; a
+// lock that stays then gets #29's unlock and second try, as any backup's.
+func TestTheRetryOfALockedRunUnlocksFirst(t *testing.T) {
+	env, root := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1"})
+	args := []string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir, "--unlock"}
+	result, log, err := runBackup(t, env, nil, args...)
+	if err != nil || result.SnapshotID == "" {
+		t.Fatalf("%+v %v\n%s", result, err, log)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands, []string{"cat", "init", "unlock", "backup"}) {
+		t.Errorf("restic ran %q", commands)
+	}
+	if !strings.HasPrefix(log, "Removing the locks no restic holds any more before the retry\nBacking up ") {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "2")
+	if failure, _, err := runFailure(t, env, nil, args...); err == nil || failure.Failure != backup.FailureLocked {
+		t.Errorf("a lock that stays: %+v %v", failure, err)
+	}
+	if commands := resticCommands(t, root); !slices.Equal(commands[4:], []string{"unlock", "backup", "unlock", "backup"}) {
+		t.Errorf("restic ran %q", commands)
+	}
+
+	// nothing is removed while the server's clock is off
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "0")
+	unlocks := fakerestic.Unlocks(t, root)
+	if _, log, err := runBackup(t, env, nil, append(args, "--no-unlock=9")...); err != nil || fakerestic.Unlocks(t, root) != unlocks ||
+		!strings.HasPrefix(log, "Removing the locks no restic holds any more before the retry\nThe server's clock is off by 9 min") {
+		t.Errorf("a clock off: %v\n%s", err, log)
+	}
+	if strings.Contains(fakerestic.Calls(t, root), "remove-all") {
+		t.Error("restic unlock --remove-all ran")
 	}
 }
 

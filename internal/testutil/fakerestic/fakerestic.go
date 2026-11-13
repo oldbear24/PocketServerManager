@@ -49,7 +49,8 @@ const Wrong = "wrong"
 // --keep-X N keeps the newest N snapshots of a group, as --keep-last does:
 // together they keep as many as the largest. A forgotten snapshot moves to
 // the repository's forgotten directory. FAKE_RESTIC_FORGET_FAIL makes forget
-// fail with its text.
+// fail with its text, and FAKE_RESTIC_BACKUP_FAIL backup, with exit code 1
+// and nothing saved (#31).
 //
 // The fake holds no locks. FAKE_RESTIC_LOCKED_BACKUP=N makes the first N
 // backups of the test, and FAKE_RESTIC_LOCKED_FORGET=N the first N forgets,
@@ -331,6 +332,10 @@ backup)
 	open_repo
 	# what keeps a backup out is a forget's or a prune's exclusive lock
 	locked "$FAKE_RESTIC_LOCKED_BACKUP" backup exclusively
+	if [ -n "$FAKE_RESTIC_BACKUP_FAIL" ]; then
+		echo "Fatal: $FAKE_RESTIC_BACKUP_FAIL" >&2
+		exit 1
+	fi
 	last=$(snapshots | tail -n 1)
 	n=$(expr "${last:-0}" + 1)
 	while ! mkdir "$repo/snapshots/$(printf %08d "$n")" 2>/dev/null; do n=$(expr "$n" + 1); done

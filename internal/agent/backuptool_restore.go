@@ -155,6 +155,9 @@ func (r restic) stream(ctx context.Context, options streamOptions, args ...strin
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
 		said := r.said([]byte(tail.String()))
+		if exit.ExitCode() == resticLocked {
+			r.sawLocked(tail.String())
+		}
 		if line := lockLine([]byte(tail.String())); exit.ExitCode() == resticLocked && line != "" {
 			said = backup.Redact(line, r.secrets...)
 		}

@@ -47,7 +47,11 @@ import (
 //	       said too, with the error. A backup or a retention that finds
 //	       the repository locked runs restic unlock, which removes the
 //	       locks no restic holds any more, and tries once more; a
-//	       retention still locked out waits for the next run.
+//	       retention still locked out waits for the next run. --unlock
+//	       runs restic unlock before the backup, as the retry of a run that
+//	       found the repository locked does (#31). A backup that saved
+//	       nothing says why as its result: the failure's class, restic's
+//	       exit code and the lock that kept it out (backup.RunFailure).
 //	relay  what restic runs for a dump: it reads the frames from the backup
 //	       tool's --socket SOCKET and writes the dump to its standard
 //	       output, and ends with the dump's exit code.
@@ -163,6 +167,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	var noUnlock clockFlag
 	flags.Var(&noUnlock, "no-unlock", "the minutes the server's clock is off the panel's: no lock is removed")
 	host := flags.String("host", "", "the snapshot's host")
+	unlockFirst := flags.Bool("unlock", false, "restic unlock before the backup")
 	var tags, paths list
 	flags.Var(&tags, "tag", "a tag of the snapshot")
 	flags.Var(&paths, "path", "a directory to back up")
@@ -208,7 +213,8 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	secrets := backup.Secrets(env[envResticPassword], withoutRestic(env), "")
 	log := &redactingWriter{w: stderr, secrets: secrets}
 	defer log.Flush()
-	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine, noUnlock: noUnlock}
+	r := restic{env: env, options: opts, log: log, secrets: secrets, cache: *cache, mark: log.WriteLine,
+		seen: &resticSeen{}, noUnlock: noUnlock}
 
 	switch op {
 	case "init":
@@ -222,13 +228,23 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 		if err != nil {
 			return err
 		}
+		run.unlock = *unlockFirst
 		if stdin == nil {
 			stdin = strings.NewReader("")
 		}
 		result, err := r.backup(ctx, run, stdin)
-		// a snapshot that was saved is said, even one that lacks files
-		if result != nil {
-			if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil && err == nil {
+		// a snapshot that was saved is said, even one that lacks files;
+		// else why restic saved none (#31)
+		var said any
+		var failed *resticError
+		switch {
+		case result != nil:
+			said = result
+		case errors.As(err, &failed):
+			said = failed.result()
+		}
+		if said != nil {
+			if encodeErr := json.NewEncoder(stdout).Encode(said); encodeErr != nil && err == nil {
 				err = encodeErr
 			}
 		}
@@ -322,9 +338,25 @@ type restic struct {
 	cache string
 	// mark writes a line of the tool's own, such as relayReady, as it is
 	mark func(line string)
+	// seen is what the runs of restic said, which every copy of r shares
+	seen *resticSeen
 	// noUnlock says the server's clock is off the panel's: unlock removes
 	// nothing (#31)
 	noUnlock clockFlag
+}
+
+// resticSeen is what the runs of restic said (#31).
+type resticSeen struct {
+	// lock is the lock of the last run that found the repository locked
+	lock *backup.Lock
+}
+
+// sawLocked keeps the lock restic named as it found the repository locked,
+// dated from now.
+func (r restic) sawLocked(stderr string) {
+	if r.seen != nil {
+		r.seen.lock = backup.ParseLocked(backup.Redact(stderr, r.secrets...), time.Now())
+	}
 }
 
 // clockFlag is --no-unlock (#31): the server's clock is so far off the
@@ -389,6 +421,9 @@ func (r restic) run(ctx context.Context, args ...string) ([]byte, int, string, e
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
 		said := r.said(stderr.Bytes())
+		if exit.ExitCode() == resticLocked {
+			r.sawLocked(stderr.String())
+		}
 		if line := lockLine(stderr.Bytes()); exit.ExitCode() == resticLocked && line != "" {
 			// which restic holds the lock, and where
 			said = backup.Redact(line, r.secrets...)

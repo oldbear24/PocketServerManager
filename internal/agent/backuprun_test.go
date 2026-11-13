@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
@@ -867,5 +869,71 @@ func TestBackupRunsHaveSlotsOfTheirOwn(t *testing.T) {
 	}
 	if perTypeLimits["backup.run"] != 2 {
 		t.Errorf("limits: %v", perTypeLimits)
+	}
+}
+
+// TestARunSaysWhyItFailed (#31): when restic saved nothing, a run's answer
+// carries the failure's class, restic's exit code and the lock that kept it
+// out beside its log, and crosses the stream as it is; the retry of a run
+// that found the repository locked unlocks first; a directory the Engine
+// would not mount, as it is gone, is the source's failure.
+func TestARunSaysWhyItFailed(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	r.volume(t, "data", map[string]string{"a": "1"})
+	run := &agentv1.BackupRun{Repository: repo, Volumes: []string{"data"}, Tags: []string{"pocketcloud", "job:j31"}, HostName: "nas"}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "2")
+	t.Setenv("FAKE_RESTIC_LOCK_HOST", "pc-k3j9x2m4q8w1z7v")
+	result, err := r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	lock, _ := result["lock"].(map[string]any)
+	if err == nil || !strings.Contains(err.Error(), "is already locked exclusively by PID 1 on pc-k3j9x2m4q8w1z7v") || result["refused"] != true ||
+		result["failure"] != backup.FailureLocked || result["restic_code"] != int64(11) || result["snapshot_id"] != nil {
+		t.Errorf("a repository that stayed locked: %v %v", result, err)
+	}
+	if lock["host"] != "pc-k3j9x2m4q8w1z7v" || lock["pid"] != float64(1) || lock["exclusive"] != true || lock["age_s"] != float64(300) || lock["created"] == nil {
+		t.Errorf("the lock: %v", lock)
+	}
+	if log, _ := result["log"].(string); !strings.Contains(log, "lock was created at") {
+		t.Errorf("the log:\n%s", log)
+	}
+	if _, err := structpb.NewStruct(result); err != nil {
+		t.Errorf("the answer cannot cross the stream: %v", err)
+	}
+	if slices.Contains(r.lastJob(t).Cmd, "--unlock") {
+		t.Errorf("a first run unlocks first: %q", r.lastJob(t).Cmd)
+	}
+
+	// its retry runs restic unlock before the backup
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "0")
+	run.Unlock = true
+	result, err = r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	if err != nil || result["snapshot_id"] == nil || result["failure"] != nil {
+		t.Fatalf("the retry: %v %v", result, err)
+	}
+	if commands := resticCommands(t, r.root); !slices.Equal(commands[len(commands)-2:], []string{"unlock", "backup"}) || !slices.Contains(r.lastJob(t).Cmd, "--unlock") {
+		t.Errorf("restic ran %q for %q", commands, r.lastJob(t).Cmd)
+	}
+
+	// another failure, and none of restic's
+	t.Setenv("FAKE_RESTIC_BACKUP_FAIL", "unable to save snapshot: connection refused")
+	result, err = r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	if err == nil || result["failure"] != backup.FailureRestic || result["restic_code"] != int64(1) || result["lock"] != nil {
+		t.Errorf("restic failed: %v %v", result, err)
+	}
+	t.Setenv("FAKE_RESTIC_BACKUP_FAIL", "")
+	dir := t.TempDir()
+	r.engine.Fail("POST /containers/create", `invalid mount config for type "bind": bind source path does not exist: `+dir)
+	result, err = r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{Repository: repo, Paths: []string{dir},
+		Tags: []string{"pocketcloud", "job:j31"}, HostName: "nas"}), &Reporter{})
+	r.engine.Fail("POST /containers/create", "")
+	if err == nil || err.Error() != "the directory "+dir+" does not exist on this server" || result["failure"] != backup.FailureSource || result["restic_code"] != nil {
+		t.Errorf("a directory that is gone: %v %v", result, err)
+	}
+	r.engine.Fail("POST /containers/create", "the Engine is gone")
+	result, err = r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	r.engine.Fail("POST /containers/create", "")
+	if err == nil || result["failure"] != nil {
+		t.Errorf("a job that did not start: %v %v", result, err)
 	}
 }
