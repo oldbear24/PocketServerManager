@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Settings } from "lucide-react";
+import { AlertCircle, CheckCircle2, Settings, XCircle } from "lucide-react";
 
 import { PageHead } from "../components/Layout";
 import {
@@ -10,6 +10,7 @@ import {
   EmptyState,
   Field,
   IconButton,
+  IssueBanner,
   Kpi,
   ProgressBar,
   SegmentedControl,
@@ -46,6 +47,20 @@ export function ComponentDemoPage() {
           }
           note="One is offline"
         />
+        <Kpi
+          label="Integrity check"
+          value="OK"
+          tone="ok"
+          icon={<CheckCircle2 size={24} aria-hidden="true" />}
+          note="restic check · Sunday 06:00"
+        />
+        <Kpi
+          label="Integrity check"
+          value="Errors"
+          tone="err"
+          icon={<XCircle size={24} aria-hidden="true" />}
+          note="1 target has errors"
+        />
       </div>
 
       <Card title="Buttons" note="note" side="side">
@@ -53,6 +68,8 @@ export function ComponentDemoPage() {
           <Button>Default</Button>
           <Button variant="primary">Primary</Button>
           <Button variant="danger">Danger</Button>
+          <Button variant="warning">Warning</Button>
+          <Button variant="critical">Critical</Button>
           <Button size="small">Small</Button>
           <Button disabled>Disabled</Button>
           <IconButton aria-label="Settings">
@@ -75,6 +92,24 @@ export function ComponentDemoPage() {
 
       <Banner tone="warn">A warning banner.</Banner>
       <Banner tone="err">An error banner.</Banner>
+
+      {(["err", "warn", "info"] as const).map((tone) => (
+        <IssueBanner
+          key={tone}
+          id={`demo-issue-${tone}`}
+          tone={tone}
+          icon={<AlertCircle size={20} aria-hidden="true" />}
+          title={`An issue banner (${tone})`}
+          detail="repository is already locked by PID 4121 on nas (02:58)"
+          meta="attempt 1 of 4 · next try: 03:35"
+          actions={
+            <>
+              {tone !== "info" && <Button variant="critical">Unlock and retry</Button>}
+              <Button>Show log</Button>
+            </>
+          }
+        />
+      ))}
 
       <Card title="Table" flush>
         <Table label="Example table">

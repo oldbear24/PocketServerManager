@@ -398,6 +398,31 @@ code,
   letter-spacing: 0;
 }
 
+/* a status figure: its word and icon in the status's text colour, which
+   only repeats what they say */
+.kpi-value.ok {
+  color: var(--ok-text);
+}
+
+.kpi-value.warn {
+  color: var(--warn-text);
+}
+
+.kpi-value.err {
+  color: var(--err-text);
+}
+
+.kpi-value.with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kpi-value.with-icon svg {
+  flex: none;
+}
+
 .kpi-note {
   font-size: 12px;
   color: var(--text-2);
@@ -458,6 +483,20 @@ code,
 
 .button.warning:hover:not(:disabled) {
   background: color-mix(in srgb, var(--warn) 88%, white);
+}
+
+/* what fixes a failure, as Unlock and retry of a failed backup (#31) */
+.button.critical {
+  background: var(--err);
+  border-color: var(--err);
+  color: var(--on-err);
+  font-weight: 600;
+}
+
+.button.critical:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--err) 88%, white);
+  border-color: color-mix(in srgb, var(--err) 88%, white);
+  color: var(--on-err);
 }
 
 .button.small {
@@ -959,6 +998,102 @@ code,
   background: var(--accent-bg);
   color: var(--accent);
   border-color: transparent;
+}
+
+/* A problem to act on, as the design's failed-backup banner (#31) */
+.issue-banner {
+  --issue-icon: var(--err);
+  --issue-bg: var(--err-bg);
+  --issue-border: var(--err-border);
+  --issue-title: var(--err-title);
+  --issue-detail: var(--err-detail);
+  --issue-control: var(--err-control);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-card);
+  background: var(--issue-bg);
+  border: 1px solid var(--issue-border);
+  min-width: 0;
+}
+
+.issue-banner.warn {
+  --issue-icon: var(--warn);
+  --issue-bg: var(--warn-bg);
+  --issue-border: var(--warn-border);
+  --issue-title: var(--warn-title);
+  --issue-detail: var(--warn-detail);
+  --issue-control: var(--warn-control);
+}
+
+.issue-banner.info {
+  --issue-icon: var(--info);
+  --issue-bg: var(--info-bg);
+  --issue-border: var(--info-border);
+  --issue-title: var(--info-title);
+  --issue-detail: var(--info-detail);
+  --issue-control: var(--info-control);
+}
+
+.issue-banner-icon {
+  display: inline-flex;
+  flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
+  color: var(--issue-icon);
+}
+
+.issue-banner-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.issue-banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--issue-title);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-detail {
+  font-size: 12.5px;
+  color: var(--issue-detail);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--issue-detail);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-banner-actions .button {
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* the secondary action, as Show log: an outline in the banner's colour */
+.issue-banner-actions .button:not(.critical, .warning, .primary) {
+  background: transparent;
+  border-color: var(--issue-control);
+  color: var(--issue-title);
+}
+
+.issue-banner-actions .button:not(.critical, .warning, .primary):hover:not(:disabled) {
+  background: var(--issue-control);
+  color: var(--issue-title);
 }
 
 /* Toasts */
@@ -2322,18 +2457,6 @@ td .row-actions {
 
 .site-kpis .kpi-value {
   font-size: 24px;
-}
-
-.site-kpis .kpi-value.ok {
-  color: var(--ok-text);
-}
-
-.site-kpis .kpi-value.warn {
-  color: var(--warn-text);
-}
-
-.site-kpis .kpi-value.err {
-  color: var(--err-text);
 }
 
 .request-bars-plot {
