@@ -2006,7 +2006,19 @@
       "storedNote_other": "in {{count}} targets",
       "notMeasured": "the targets are not measured yet",
       "nextRun": "Next run",
-      "nothingScheduled": "no job is scheduled"
+      "nothingScheduled": "no job is scheduled",
+      "integrity": "Integrity check",
+      "integrityOk": "OK",
+      "integrityErrors": "Errors",
+      "integrityUnverified": "Not verified",
+      "integrityNote": "restic check · {{when}}",
+      "integrityChecking": "checking {{name}}…",
+      "integrityNever": "no check has run yet",
+      "integrityOff": "checks are off",
+      "integrityErrorsNote_one": "{{count}} target has errors",
+      "integrityErrorsNote_other": "{{count}} targets have errors",
+      "integrityUnverifiedNote_one": "{{count}} target not verified",
+      "integrityUnverifiedNote_other": "{{count}} targets not verified"
     },
     "strip": {
       "legend": "What the colours of the 14 days mean",

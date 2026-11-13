@@ -18,6 +18,12 @@ import {
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import {
+  checkFields,
+  openChecksFilter,
+  unverifiedFilter,
+  type BackupCheck,
+} from "../lib/backupChecks";
 import { runFields, runsSince, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import {
   draftRecord,
@@ -54,7 +60,7 @@ import { formatRelative } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
-import type { Host } from "../lib/types";
+import type { Alert, Host } from "../lib/types";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 
@@ -89,6 +95,15 @@ export function BackupsPage() {
     filter: pb.filter("created >= {:since}", { since }),
     fields: runFields,
   });
+  // the integrity checks under way, and the targets an alert says are not
+  // verified (#31)
+  const openChecks = useLiveList<BackupCheck>("backup_checks", {
+    filter: openChecksFilter,
+    fields: checkFields,
+    sort: "-created",
+    perPage: 100,
+  });
+  const unverified = useLiveList<Alert>("alerts", { filter: unverifiedFilter, perPage: 200 });
   // "new", or the id of the job being changed
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
@@ -164,6 +179,8 @@ export function BackupsPage() {
         runs={runs.items}
         targets={targets.items}
         hosts={hosts.items}
+        unverified={unverified.items}
+        openChecks={openChecks.items}
         now={now}
       />
       <JobsCard
