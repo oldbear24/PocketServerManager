@@ -71,6 +71,7 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 	if err != nil {
 		return nil, err
 	}
+	job.labels = commandLabels(command)
 	// what it reads, which no restore writes while it runs (#30)
 	release, err := a.claims.claim(false, backupClaimKeys(job))
 	if err != nil {
