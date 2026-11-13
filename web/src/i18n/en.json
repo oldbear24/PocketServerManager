@@ -36,7 +36,9 @@
     "openAlerts_one": "{{count}} open alert",
     "openAlerts_other": "{{count}} open alerts",
     "domainsAlert_one": "{{count}} open alert",
-    "domainsAlert_other": "{{count}} open alerts"
+    "domainsAlert_other": "{{count}} open alerts",
+    "backupsAlert_one": "{{count}} open alert",
+    "backupsAlert_other": "{{count}} open alerts"
   },
   "auth": {
     "signIn": "Sign in",
@@ -627,7 +629,12 @@
   },
   "alert": {
     "agent_offline": "{{name}}: the agent stopped responding",
-    "audit_integrity": "The integrity check of the audit log failed"
+    "audit_integrity": "The integrity check of the audit log failed",
+    "backup_failed": "{{name}}: a backup failed",
+    "backup_skipped": "{{name}}: a backup was skipped",
+    "backup_retention": "{{name}}: old snapshots are not being removed",
+    "backup_check_failed": "{{name}}: a backup repository has errors",
+    "backup_check_unverified": "{{name}}: a backup repository is not verified"
   },
   "chart": {
     "now": "now",

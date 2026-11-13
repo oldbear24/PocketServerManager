@@ -40,7 +40,11 @@
     "domainsAlert_one": "{{count}} otevřené upozornění",
     "domainsAlert_other": "{{count}} otevřených upozornění",
     "domainsAlert_few": "{{count}} otevřená upozornění",
-    "domainsAlert_many": "{{count}} otevřených upozornění"
+    "domainsAlert_many": "{{count}} otevřených upozornění",
+    "backupsAlert_one": "{{count}} otevřené upozornění",
+    "backupsAlert_few": "{{count}} otevřená upozornění",
+    "backupsAlert_many": "{{count}} otevřených upozornění",
+    "backupsAlert_other": "{{count}} otevřených upozornění"
   },
   "auth": {
     "signIn": "Přihlásit se",
@@ -661,7 +665,12 @@
   },
   "alert": {
     "agent_offline": "{{name}}: agent přestal odpovídat",
-    "audit_integrity": "Kontrola integrity auditu selhala"
+    "audit_integrity": "Kontrola integrity auditu selhala",
+    "backup_failed": "{{name}}: záloha selhala",
+    "backup_skipped": "{{name}}: záloha byla přeskočena",
+    "backup_retention": "{{name}}: staré snapshoty se neodstraňují",
+    "backup_check_failed": "{{name}}: repozitář záloh obsahuje chyby",
+    "backup_check_unverified": "{{name}}: repozitář záloh není ověřený"
   },
   "chart": {
     "now": "teď",
