@@ -1,6 +1,7 @@
 import { ClientResponseError, type RecordModel } from "pocketbase";
 
 import type { Tone } from "../components/ui";
+import type { BackupCheck, CheckStatus } from "./backupChecks";
 import { formatBytes, formatNumber, percentOf } from "./format";
 import { pb } from "./pb";
 import type { Host } from "./types";
@@ -55,6 +56,21 @@ export type BackupTarget = RecordModel & {
   /** the days a bucket's Object Lock keeps objects, as the admin states it */
   immutable_days: number;
   note: string;
+  /** how the newest integrity check that completed went (#31); "" before one did */
+  integrity_status: "ok" | "failed" | "";
+  /** when it finished */
+  integrity_at: string;
+  /** its first errors, when it found some */
+  integrity_error: string;
+  /** the newest check's id, whatever its state */
+  last_check: string;
+  last_check_status: CheckStatus | "";
+  /** why the newest check did not complete */
+  last_check_error: string;
+  /** "" while checks are off, and until the panel's next pass sets it */
+  next_check_at: string;
+  /** the group of data packs the next check reads, from 1; 0 reads as 1 */
+  integrity_group: number;
 };
 
 export type NewBackupTarget = {
@@ -100,6 +116,12 @@ export const backupsApi = {
 
   /** the repository's data stays where it is */
   remove: (id: string) => pb.send(`/api/pc/backup-targets/${id}`, { method: "DELETE" }),
+
+  /** an integrity check now (#31), on the target's server: its row and command */
+  check: (id: string) =>
+    pb.send<{ check: string; command: string }>(`/api/pc/backup-targets/${id}/check`, {
+      method: "POST",
+    }),
 };
 
 /** Whether adding a target ended with the agent not answering (504) or not
@@ -120,6 +142,79 @@ export function targetTone(status: BackupTargetStatus | ""): Tone {
     default:
       return "off";
   }
+}
+
+/** Where a target's integrity stands, as its line says it: a check queued or
+ * running, the confirmed errors of the newest check that completed, a newer
+ * one that could not tell, the newest that completed being fine, or none. */
+export type IntegrityStatus =
+  "queued" | "running" | "failed" | "suspect" | "error" | "ok" | "never";
+
+/** A target's integrity, with its open check when one is loaded. Confirmed
+ * errors stay until a check finds none, whatever a later attempt that did not
+ * complete says. */
+export function integrityStatus(
+  target: Pick<BackupTarget, "integrity_status" | "last_check_status">,
+  open?: Pick<BackupCheck, "status"> | null,
+): IntegrityStatus {
+  const going = open?.status ?? target.last_check_status;
+  if (going === "queued" || going === "running") {
+    return going;
+  }
+  if (target.integrity_status === "failed") {
+    return "failed";
+  }
+  if (target.last_check_status === "suspect" || target.last_check_status === "error") {
+    return target.last_check_status;
+  }
+  return target.integrity_status === "ok" ? "ok" : "never";
+}
+
+/** The tone of a target's integrity: a check under way is info, confirmed
+ * errors err, a check that could not tell warn, fine ok, never checked off. */
+export function integrityTone(
+  target: Pick<BackupTarget, "integrity_status" | "last_check_status">,
+  open?: Pick<BackupCheck, "status"> | null,
+): Tone {
+  switch (integrityStatus(target, open)) {
+    case "queued":
+    case "running":
+      return "info";
+    case "failed":
+      return "err";
+    case "suspect":
+    case "error":
+      return "warn";
+    case "ok":
+      return "ok";
+    case "never":
+      return "off";
+  }
+}
+
+/** Why a target cannot be checked now, as the panel would refuse it: still
+ * pending, a check of it open, its server offline, or an agent that does not
+ * check repositories; null when it can be. */
+export function checkBlocker(
+  target: Pick<BackupTarget, "status" | "repo_id" | "last_check_status">,
+  host: Pick<Host, "status" | "capabilities"> | undefined,
+  open?: Pick<BackupCheck, "status"> | null,
+): "pending" | "busy" | "offline" | "agent" | null {
+  if (target.status === "pending" || !target.repo_id) {
+    return "pending";
+  }
+  const going = open?.status ?? target.last_check_status;
+  if (going === "queued" || going === "running") {
+    return "busy";
+  }
+  if (!host || (host.status !== "online" && host.status !== "degraded")) {
+    return "offline";
+  }
+  const capabilities = host.capabilities ?? [];
+  if (capabilities.length > 0 && !capabilities.includes("backup.check")) {
+    return "agent";
+  }
+  return null;
 }
 
 /** How much a target holds, as its line reads. */

@@ -5,10 +5,13 @@ import i18n from "../i18n";
 import {
   anyCredential,
   backupsApi,
+  checkBlocker,
   emptyTargetForm,
   formatUsedOf,
   halfCredentials,
   hostKeys,
+  integrityStatus,
+  integrityTone,
   keyscanCommand,
   parseDays,
   sameHostKeys,
@@ -343,11 +346,74 @@ describe("the backup targets API", () => {
     await backupsApi.change("t1", { name: "NAS 2" });
     await backupsApi.refresh("t1");
     await backupsApi.remove("t1");
+    await backupsApi.check("t1");
     expect(send.mock.calls).toEqual([
       ["/api/pc/backup-targets", { method: "POST", body }],
       ["/api/pc/backup-targets/t1", { method: "PATCH", body: { name: "NAS 2" } }],
       ["/api/pc/backup-targets/t1/refresh", { method: "POST" }],
       ["/api/pc/backup-targets/t1", { method: "DELETE" }],
+      ["/api/pc/backup-targets/t1/check", { method: "POST" }],
     ]);
+  });
+});
+
+describe("a target's integrity", () => {
+  const fine = { integrity_status: "ok", last_check_status: "ok" } as const;
+
+  it("is under way while a check is open, whatever the last one found", () => {
+    expect(integrityStatus(fine, { status: "running" })).toBe("running");
+    expect(integrityTone(fine, { status: "running" })).toBe("info");
+    expect(integrityStatus({ integrity_status: "failed", last_check_status: "queued" })).toBe(
+      "queued",
+    );
+    expect(integrityTone({ integrity_status: "failed", last_check_status: "queued" })).toBe("info");
+  });
+
+  it("keeps confirmed errors until a check finds none", () => {
+    const failed = { integrity_status: "failed", last_check_status: "error" } as const;
+    expect(integrityStatus(failed)).toBe("failed");
+    expect(integrityTone(failed)).toBe("err");
+    // the open check's row is older than the target's summary: it ended
+    expect(integrityStatus(failed, { status: "error" })).toBe("failed");
+  });
+
+  it("warns when the newest check could not tell", () => {
+    for (const status of ["suspect", "error"] as const) {
+      expect(integrityStatus({ integrity_status: "ok", last_check_status: status })).toBe(status);
+      expect(integrityTone({ integrity_status: "ok", last_check_status: status })).toBe("warn");
+    }
+  });
+
+  it("is fine after an OK check, and off before any completed", () => {
+    expect(integrityTone(fine)).toBe("ok");
+    // skipped or stopped says nothing of the repository
+    expect(integrityTone({ integrity_status: "ok", last_check_status: "skipped" })).toBe("ok");
+    expect(integrityStatus({ integrity_status: "", last_check_status: "" })).toBe("never");
+    expect(integrityTone({ integrity_status: "", last_check_status: "cancelled" })).toBe("off");
+  });
+});
+
+describe("why a target cannot be checked now", () => {
+  const ready = { status: "ok", repo_id: "5f1c2a", last_check_status: "ok" } as const;
+  const online = { status: "online", capabilities: ["backup.run", "backup.check"] } as const;
+
+  it("is nothing for a target with a repository on a connected, new enough agent", () => {
+    expect(checkBlocker(ready, { ...online, capabilities: [...online.capabilities] })).toBeNull();
+    expect(checkBlocker(ready, { status: "degraded", capabilities: ["backup.check"] })).toBeNull();
+    // an agent too old to name what it handles is not refused here
+    expect(checkBlocker(ready, { status: "online", capabilities: null })).toBeNull();
+  });
+
+  it("says pending, busy, offline or an old agent, as the panel refuses them", () => {
+    const host = { ...online, capabilities: [...online.capabilities] };
+    expect(checkBlocker({ ...ready, status: "pending" }, host)).toBe("pending");
+    expect(checkBlocker({ ...ready, repo_id: "" }, host)).toBe("pending");
+    expect(checkBlocker({ ...ready, last_check_status: "running" }, host)).toBe("busy");
+    expect(checkBlocker(ready, host, { status: "queued" })).toBe("busy");
+    expect(checkBlocker(ready, { status: "offline", capabilities: ["backup.check"] })).toBe(
+      "offline",
+    );
+    expect(checkBlocker(ready, undefined)).toBe("offline");
+    expect(checkBlocker(ready, { status: "online", capabilities: ["backup.run"] })).toBe("agent");
   });
 });

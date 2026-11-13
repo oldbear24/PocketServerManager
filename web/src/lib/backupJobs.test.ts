@@ -6,21 +6,27 @@ import {
   dayKey,
   describeCron,
   describeRetention,
+  failedRuns,
   formatMoment,
   guessEngine,
+  holderState,
   jobsApi,
   lastDays,
   lastRun,
+  lockStaleAt,
   nextJob,
   parseKeep,
   parseTime,
   presetCron,
+  resticLine,
   runFields,
+  runIssue,
   runStrip,
   runsSince,
   shortError,
   successPercent,
   successRate,
+  supersededRuns,
   validPath,
   validVolume,
   type BackupRun,
@@ -28,6 +34,7 @@ import {
   type SchedulePreset,
 } from "./backupJobs";
 import { pb } from "./pb";
+import type { Command, Host } from "./types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -239,6 +246,7 @@ describe("the 14-day strip", () => {
       succeeded: 1,
       failed: 0,
       skipped: 0,
+      retried: 0,
       state: "ok",
     });
     expect(strip.every((day) => day.failed === 0)).toBe(true);
@@ -293,6 +301,244 @@ describe("the success over 14 days", () => {
     expect(successPercent(5, 5)).toBe(100);
     expect(successPercent(0, 3)).toBe(0);
     expect(successPercent(0, 0)).toBeNull();
+  });
+});
+
+describe("a run tried again", () => {
+  // 03:00 locked, retried at 03:35 and at 04:05, which succeeded
+  const first = run("2026-11-09 03:00:00.000Z", "failed", { id: "r1", failure: "locked" });
+  const second = run("2026-11-09 03:35:00.000Z", "failed", {
+    id: "r2",
+    trigger: "retry",
+    attempt: 2,
+    retry_of: "r1",
+    failure: "restic",
+  });
+  const third = run("2026-11-09 04:05:00.000Z", "succeeded", {
+    id: "r3",
+    trigger: "retry",
+    attempt: 3,
+    retry_of: "r2",
+  });
+
+  it("counts only the last attempt of its chain in the strip and the success", () => {
+    expect([...supersededRuns([first, second, third])]).toEqual(["r1", "r2"]);
+    const day = runStrip([first, second, third], now, "UTC")[13];
+    expect(day).toEqual({
+      day: "2026-11-09",
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+      retried: 1,
+      state: "ok",
+    });
+    expect(successRate([first, second, third], now, "UTC")).toEqual({ succeeded: 1, total: 1 });
+  });
+
+  it("leaves a failure out while its retry runs, and counts it once that is gone", () => {
+    const going = { ...third, status: "running" as const };
+    expect(runStrip([first, second, going], now, "UTC")[13].state).toBe("off");
+    expect(successRate([first, second, going], now, "UTC")).toEqual({ succeeded: 0, total: 0 });
+    // the retry's record is older than the runs loaded: the failure stands
+    expect(runStrip([second], now, "UTC")[13]).toMatchObject({ failed: 1, state: "err" });
+    // a retry that failed in the end is the day's failure
+    const last = { ...third, status: "failed" as const };
+    expect(runStrip([first, second, last], now, "UTC")[13]).toMatchObject({
+      failed: 1,
+      retried: 0,
+      state: "err",
+    });
+  });
+
+  it("is read with its retry fields, still without its log", () => {
+    const fields = runFields.split(",");
+    for (const field of [
+      "host",
+      "command",
+      "attempt",
+      "retry_of",
+      "retry_at",
+      "retry_note",
+      "failure",
+      "lock",
+    ]) {
+      expect(fields).toContain(field);
+    }
+    expect(fields).not.toContain("log");
+  });
+});
+
+describe("the runs a banner is about", () => {
+  const jobs = [
+    { id: "j1", targets: ["t1", "t2"], label_removed: false },
+    { id: "j2", targets: ["t1"], label_removed: false },
+    { id: "j3", targets: ["t1"], label_removed: true },
+  ];
+
+  it("are the newest of each job and target that failed, or a retry under way, newest first", () => {
+    const runs = [
+      // j1 → t1: failed, then succeeded: nothing to say
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "a1" }),
+      run("2026-11-09 02:00:00.000Z", "succeeded", { id: "a2" }),
+      // j1 → t2: succeeded, then failed
+      run("2026-11-09 01:00:00.000Z", "succeeded", { id: "b1", target: "t2" }),
+      run("2026-11-09 03:00:00.000Z", "failed", { id: "b2", target: "t2" }),
+      // j2 → t1: failed, and its retry is queued
+      run("2026-11-09 04:00:00.000Z", "failed", { id: "c1", job: "j2" }),
+      run("2026-11-09 04:35:00.000Z", "queued", {
+        id: "c2",
+        job: "j2",
+        trigger: "retry",
+        retry_of: "c1",
+      }),
+    ];
+    expect(failedRuns(jobs, runs).map((item) => item.id)).toEqual(["c2", "b2"]);
+  });
+
+  it("leave out runs a retry could not start: a label gone, a target taken out, a job gone", () => {
+    const runs = [
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "x1", job: "j3" }),
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "x2", job: "j2", target: "t2" }),
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "x3", job: "gone" }),
+    ];
+    expect(failedRuns(jobs, runs)).toEqual([]);
+  });
+
+  it("are not a run queued by hand or skipped", () => {
+    const runs = [
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "y1" }),
+      run("2026-11-09 02:00:00.000Z", "queued", { id: "y2", trigger: "manual" }),
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "z1", target: "t2" }),
+      run("2026-11-09 02:00:00.000Z", "skipped", { id: "z2", target: "t2" }),
+    ];
+    expect(failedRuns(jobs, runs)).toEqual([]);
+  });
+});
+
+describe("the holder of a lock", () => {
+  const hosts = [
+    { id: "h1", stream_open: true },
+    { id: "h2", stream_open: false },
+  ] as Host[];
+  const command = (status: Command["status"], host = "h1") => ({ status, host });
+  const lock = { command: "k3j9x2m4q8w1z7v" };
+
+  it("is alive while its command is open, or timed out with its server not connected", () => {
+    for (const status of ["queued", "dispatched", "running"] as const) {
+      expect(holderState(lock, command(status), hosts)).toBe("alive");
+    }
+    expect(holderState(lock, command("timed_out", "h2"), hosts)).toBe("alive");
+    expect(holderState(lock, command("timed_out", "gone"), hosts)).toBe("alive");
+  });
+
+  it("is gone once its command ended, or is no more", () => {
+    for (const status of ["succeeded", "failed", "cancelled"] as const) {
+      expect(holderState(lock, command(status), hosts)).toBe("gone");
+    }
+    expect(holderState(lock, command("timed_out", "h1"), hosts)).toBe("gone");
+    expect(holderState(lock, undefined, hosts)).toBe("gone");
+  });
+
+  it("is unknown when PocketCloud does not run it", () => {
+    expect(holderState({ command: "" }, undefined, hosts)).toBe("unknown");
+    expect(holderState(null, undefined, hosts)).toBe("unknown");
+  });
+
+  it("leaves a lock that restic counts as stale 32 minutes after its last refresh", () => {
+    expect(lockStaleAt({ created: "2026-11-09T02:58:00Z" })).toBe(
+      Date.parse("2026-11-09T03:30:00Z"),
+    );
+    // an older agent's lock line has no time
+    expect(lockStaleAt({})).toBeNull();
+    expect(lockStaleAt(null)).toBeNull();
+  });
+});
+
+describe("what a failed run's banner says", () => {
+  const job = { enabled: true, label_removed: false, next_run_at: "2026-11-10 02:00:00.000Z" };
+  const planned = "2026-11-09 03:35:00.000Z";
+
+  it("waits for a holder that still runs, with the button held", () => {
+    expect(
+      runIssue({ status: "failed", failure: "locked", retry_at: planned }, "alive", job),
+    ).toEqual({ tone: "warn", state: "waitsHolder", action: "unlock", held: true });
+  });
+
+  it("offers unlock and retry once the holder is gone or unknown", () => {
+    for (const holder of ["gone", "unknown"] as const) {
+      expect(
+        runIssue({ status: "failed", failure: "locked", retry_at: planned }, holder, job),
+      ).toEqual({ tone: "warn", state: "retryAt", action: "unlock", held: false });
+      expect(
+        runIssue({ status: "failed", failure: "locked", retry_at: "", attempt: 4 }, holder, job),
+      ).toEqual({ tone: "err", state: "noMore", action: "unlock", held: false });
+    }
+  });
+
+  it("says when a retryable failure is tried again", () => {
+    for (const failure of ["restic", "interrupted"] as const) {
+      expect(runIssue({ status: "failed", failure, retry_at: planned }, "unknown", job)).toEqual({
+        tone: "warn",
+        state: "retryAt",
+        action: "retry",
+        held: false,
+      });
+    }
+  });
+
+  it("says the next scheduled run takes a dropped retry's place, else no more retries", () => {
+    const dropped = { status: "failed" as const, failure: "restic" as const, retry_at: "" };
+    expect(runIssue(dropped, "unknown", job)).toEqual({
+      tone: "warn",
+      state: "nextRun",
+      action: "retry",
+      held: false,
+    });
+    expect(runIssue({ ...dropped, attempt: 4 }, "unknown", job).state).toBe("noMore");
+    expect(runIssue(dropped, "unknown", { ...job, enabled: false }).state).toBe("noMore");
+    expect(runIssue(dropped, "unknown", { ...job, next_run_at: "" }).state).toBe("noMore");
+  });
+
+  it("says a failure that does not pass by itself is not retried", () => {
+    for (const failure of ["repository", "password", "partial", "source", "timeout", ""] as const) {
+      expect(runIssue({ status: "failed", failure }, "unknown", job)).toEqual({
+        tone: "err",
+        state: "notRetried",
+        action: "retry",
+        held: false,
+      });
+    }
+  });
+
+  it("offers nothing for an unreadable lock, nor while a retry runs", () => {
+    expect(runIssue({ status: "failed", failure: "lock_invalid" }, "unknown", job)).toEqual({
+      tone: "err",
+      state: "invalidLock",
+      action: null,
+      held: false,
+    });
+    for (const status of ["queued", "running"] as const) {
+      expect(runIssue({ status }, "unknown", job)).toEqual({
+        tone: "info",
+        state: "retrying",
+        action: null,
+        held: false,
+      });
+    }
+  });
+
+  it("shows restic's own line without what goes before it", () => {
+    expect(
+      resticLine(
+        "unable to create lock in backend: repository is already locked by PID 1 on nas by root (UID 0, GID 0)\nmore",
+      ),
+    ).toBe("repository is already locked by PID 1 on nas by root (UID 0, GID 0)");
+    expect(
+      resticLine("Fatal: Unable to create lock in backend: repository is already locked"),
+    ).toBe("repository is already locked");
+    expect(resticLine("Fatal: wrong password or no key found")).toBe(
+      "wrong password or no key found",
+    );
   });
 });
 
@@ -436,5 +682,7 @@ describe("the jobs API", () => {
     });
     await jobsApi.remove("j1");
     expect(send).toHaveBeenCalledWith("/api/pc/backup-jobs/j1", { method: "DELETE" });
+    await jobsApi.retry("r1");
+    expect(send).toHaveBeenCalledWith("/api/pc/backup-runs/r1/retry", { method: "POST" });
   });
 });

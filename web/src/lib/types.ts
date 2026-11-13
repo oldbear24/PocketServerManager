@@ -63,6 +63,8 @@ export type Host = RecordModel & {
   cert_serial: string;
   cert_expires_at: string;
   host_shell_enabled: boolean;
+  /** the command types its agent handles; empty from an agent too old to say */
+  capabilities?: string[] | null;
 };
 
 export type CommandStatus =
