@@ -427,8 +427,9 @@ func TestOnePassOfTheBackupSchedulerRunsAtATime(t *testing.T) {
 // TestARetryFollowsAHolderThatRuns (#31, AC2): a run a lock kept out, whose
 // holder is a PocketCloud command that still runs, names it, and its retry
 // waits for it: every 30 minutes, without counting an attempt, for 12 hours,
-// then it is given up with a critical alert. Once the holder ended, the retry
-// goes, unlocking first.
+// then it is given up with a critical alert. The route refuses while the
+// holder runs, promising the retry only while one is planned. Once the
+// holder ended, the retry goes, unlocking first.
 func TestARetryFollowsAHolderThatRuns(t *testing.T) {
 	f, job, _ := newRetryFixture(t)
 	nas := testutil.NewHost(t, f.app, "nas")
@@ -449,6 +450,13 @@ func TestARetryFollowsAHolderThatRuns(t *testing.T) {
 		t.Errorf("the holder: %v", state)
 	}
 
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	url := "/api/pc/backup-runs/" + run.Id + "/retry"
+	// the route refuses while the holder runs, and the retry follows it
+	if status, out := f.send(http.MethodPost, url, operator, nil); status != http.StatusConflict ||
+		out["message"] != "The repository is locked by Check the integrity of b2 on nas, which is still running: PocketCloud retries once it ends." {
+		t.Errorf("while the holder runs: %d %v", status, out)
+	}
 	f.p.RunDueBackups(finished.Add(6 * time.Minute))
 	run = f.fresh(run)
 	if runs := f.runsOf(job); len(runs) != 1 {
@@ -470,12 +478,11 @@ func TestARetryFollowsAHolderThatRuns(t *testing.T) {
 		t.Errorf("the alert: %v", a)
 	}
 
-	// the route refuses while the holder runs, and unlocks once it ended
-	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
-	url := "/api/pc/backup-runs/" + run.Id + "/retry"
+	// the route refuses while the holder runs, now with no retry to follow
+	// it, and unlocks once it ended
 	if status, out := f.send(http.MethodPost, url, operator, nil); status != http.StatusConflict ||
-		out["message"] != "The repository is locked by Check the integrity of b2 on nas, which is still running: PocketCloud retries once it ends." {
-		t.Errorf("while the holder runs: %d %v", status, out)
+		out["message"] != "The repository is locked by Check the integrity of b2 on nas, which is still running: try again once it ends." {
+		t.Errorf("while the holder runs, given up: %d %v", status, out)
 	}
 	if err := f.p.Commands.Cancel(holder.Id, "Cancelled by admin@example.com"); err != nil {
 		t.Fatal(err)

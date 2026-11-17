@@ -596,7 +596,12 @@ func (p *Panel) handleRetryRun(e *core.RequestEvent) error {
 		lock := runLock(run)
 		if state, holder := p.lockHolder(lock); state == holderAlive {
 			label, server := holderNames(lock, holder)
-			return conflict(fmt.Sprintf("The repository is locked by %s on %s, which is still running: PocketCloud retries once it ends.", label, server))
+			// only a planned retry follows the holder
+			then := "try again once it ends"
+			if !run.GetDateTime("retry_at").IsZero() {
+				then = "PocketCloud retries once it ends"
+			}
+			return conflict(fmt.Sprintf("The repository is locked by %s on %s, which is still running: %s.", label, server, then))
 		}
 		if stale := lock.StaleAt(); time.Now().Before(stale) {
 			planned, err := p.planRetryAt(run, stale)
