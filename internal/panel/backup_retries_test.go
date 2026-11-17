@@ -966,6 +966,102 @@ func TestADisabledJobPlansNoRetry(t *testing.T) {
 	}
 }
 
+// TestARetryThatNeverRanFreesItsRun (#31): a retry that ends without having
+// run, skipped as it waited its whole time, cancelled before it started, or
+// settled as its command is gone, frees the run it was to try again: its
+// retry_of is cleared, saying why, so the route and the scheduler may try
+// that run again, and the run's alert, which promised the retry, is
+// critical again. A retry that started keeps its retry_of.
+func TestARetryThatNeverRanFreesItsRun(t *testing.T) {
+	f, _, _ := newRetryFixture(t)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	// failed is a failed run of a new job whose scheduler's retry is queued
+	failed := func(name string) (job, run, retry *core.Record) {
+		t.Helper()
+		job = f.job(name, map[string]any{"source_kind": schema.SourceVolume, "source": name})
+		run = f.failRun(job, "Fatal: boom", map[string]any{"failure": "restic"})
+		f.p.RunDueBackups(run.GetDateTime("retry_at").Time().Add(time.Minute))
+		runs := f.runsOf(job)
+		if len(runs) != 2 || runs[1].GetString("retry_of") != run.Id || runs[1].GetString("status") != schema.RunQueued {
+			t.Fatalf("%s: the scheduler's retry: %v", name, runs)
+		}
+		return job, run, runs[1]
+	}
+	freed := func(job, retry *core.Record, status string) {
+		t.Helper()
+		name := job.GetString("name")
+		if retry = f.fresh(retry); retry.GetString("status") != status || retry.GetString("retry_of") != "" ||
+			retry.GetString("retry_note") != "It never ran, so the run it was to try again may be tried again." || retry.GetString("trigger") != schema.RunRetry {
+			t.Errorf("%s: the retry that never ran: %v", name, retry.FieldsData())
+		}
+		if a := f.openAlert(alertBackupFailed, job.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityCritical ||
+			a.GetString("message") != "Backup "+name+" → b2 failed: Fatal: boom; its retry never ran." {
+			t.Errorf("%s: the alert: %v", name, a)
+		}
+	}
+	retryNow := func(run *core.Record) (int, map[string]any) {
+		t.Helper()
+		return f.send(http.MethodPost, "/api/pc/backup-runs/"+run.Id+"/retry", operator, nil)
+	}
+
+	// skipped, as it waited its whole time: the route tries the run again
+	job, run, retry := failed("skipped")
+	f.endRun(retry, map[string]any{"status": schema.CommandTimedOut, "error": "The server stayed offline, so the command was never delivered."})
+	freed(job, retry, schema.RunSkipped)
+	if status, out := retryNow(run); status != http.StatusOK {
+		t.Errorf("the route after a retry that never ran: %d %v", status, out)
+	} else if again, err := f.app.FindRecordById(schema.BackupRuns, out["run"].(string)); err != nil || again.GetString("retry_of") != run.Id || again.GetInt("attempt") != 2 {
+		t.Errorf("the route's retry: %v %v", again, err)
+	}
+
+	// cancelled before it started: the scheduler claims a retry planned
+	// again, as the route plans one for a young lock
+	job, run, retry = failed("cancelled")
+	f.endRun(retry, map[string]any{"status": schema.CommandCancelled, "error": "Cancelled by operator@example.com"})
+	freed(job, retry, schema.RunCancelled)
+	planned := f.fresh(run)
+	planned.Set("retry_at", types.NowDateTime())
+	if err := f.app.Save(planned); err != nil {
+		t.Fatal(err)
+	}
+	f.p.RunDueBackups(time.Now().Add(time.Minute))
+	if runs := f.runsOf(job); len(runs) != 3 || runs[2].GetString("retry_of") != run.Id || runs[2].GetString("status") != schema.RunQueued {
+		t.Errorf("the scheduler's retry after one that never ran: %v", runs)
+	}
+
+	// its command gone before it started
+	job, run, retry = failed("gone")
+	command, err := f.app.FindRecordById(schema.Commands, retry.GetString("command"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.Delete(command); err != nil {
+		t.Fatal(err)
+	}
+	// older than a run whose command is still being made
+	if _, err := f.app.DB().NewQuery("UPDATE backup_runs SET created={:at} WHERE id={:id}").
+		Bind(map[string]any{"at": types.NowDateTime().Add(-2 * time.Minute).String(), "id": retry.Id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if f.p.runGoing(job, f.target) {
+		t.Error("a retry whose command is gone is still going")
+	}
+	freed(job, retry, schema.RunCancelled)
+	if status, out := retryNow(run); status != http.StatusOK {
+		t.Errorf("the route after a retry whose command went: %d %v", status, out)
+	}
+
+	// a retry that started keeps its retry_of: it ran, and is the newer run
+	_, run, retry = failed("started")
+	ended := f.endRun(retry, map[string]any{"status": schema.CommandCancelled, "started_at": types.NowDateTime(), "error": "Cancelled by operator@example.com"})
+	if ended.GetString("status") != schema.RunCancelled || ended.GetString("retry_of") != run.Id || ended.GetString("retry_note") != "" {
+		t.Errorf("a retry that started: %v", ended.FieldsData())
+	}
+	if status, out := retryNow(run); status != http.StatusConflict || out["message"] != "A newer run of this job to this target exists." {
+		t.Errorf("a run whose retry started: %d %v", status, out)
+	}
+}
+
 // TestARunByHandTakesTheRetrysPlace (#31): running a job by hand gives up the
 // planned retries of its runs to the targets it runs to.
 func TestARunByHandTakesTheRetrysPlace(t *testing.T) {

@@ -410,6 +410,48 @@ func newerRunIn(app core.App, run *core.Record) bool {
 	return err != nil || len(newer) > 0
 }
 
+// retryNeverRanNote says on a retry that ended without having run that the
+// run it was to try again may be tried again.
+const retryNeverRanNote = "It never ran, so the run it was to try again may be tried again."
+
+// freeRetryOf frees the run that a retry ending without having run, skipped
+// or cancelled before it started, was to try again: it clears the retry's
+// retry_of, saying why, so that the route and the scheduler may try that
+// run again, which the unique retry_of would refuse for good. It returns the
+// run it freed, "" for none.
+func freeRetryOf(retry *core.Record) string {
+	prev := retry.GetString("retry_of")
+	status := retry.GetString("status")
+	if prev == "" || status != schema.RunSkipped && (status != schema.RunCancelled || !retry.GetDateTime("started_at").IsZero()) {
+		return ""
+	}
+	retry.Set("retry_of", "")
+	retry.Set("retry_note", retryNeverRanNote)
+	return prev
+}
+
+// retryNeverRan raises the alert of a run whose retry never ran again,
+// critical: it promised that retry, and no other is planned. A run that is
+// tried again meanwhile, or whose place a newer run took, is left alone.
+func (p *Panel) retryNeverRan(runID string) {
+	if runID == "" {
+		return
+	}
+	run, err := p.App.FindRecordById(schema.BackupRuns, runID)
+	if err != nil || run.GetString("status") != schema.RunFailed || !run.GetDateTime("retry_at").IsZero() || retriedIn(p.App, run.Id) || newerRunIn(p.App, run) {
+		return
+	}
+	job, err := p.App.FindRecordById(schema.BackupJobs, run.GetString("job"))
+	if err != nil {
+		return
+	}
+	target, err := p.App.FindRecordById(schema.BackupTargets, run.GetString("target"))
+	if err != nil {
+		return
+	}
+	p.alertFailure(job, target, run, retryGivenUp(run, "Its retry never ran."), retryPlan{})
+}
+
 // retriedIn tells whether a run is tried again by another, as the app (a
 // transaction's) sees it.
 func retriedIn(app core.App, runID string) bool {
