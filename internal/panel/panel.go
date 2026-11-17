@@ -72,7 +72,10 @@ type Panel struct {
 
 	terminalTickets terminalTickets
 	adminers        adminerSessions
-	later           laterWork
+	// siteConnects connects a site to a database one call at a time: a new
+	// site's database end and its setup's next step may both connect it
+	siteConnects keyedLocks
+	later        laterWork
 
 	auditKeyOnce sync.Once
 	auditKey     []byte

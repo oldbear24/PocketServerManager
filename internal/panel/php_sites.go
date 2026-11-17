@@ -803,6 +803,17 @@ func (p *Panel) connectSite(ctx context.Context, request databaseRequest, server
 	if err != nil {
 		return err
 	}
+	// the database's end and a new site's next step may connect the site at
+	// once: one connects it, and the other, which applies nothing, finds it
+	// connected; both would make its network and settings records otherwise
+	lock := p.siteConnects.of(site.Id)
+	lock.Lock()
+	defer lock.Unlock()
+	if !apply {
+		if settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id); err == nil && settings.GetString("database") == database.Id {
+			return nil
+		}
+	}
 	network := siteNetwork(site.GetString("name"))
 	if _, err := p.App.FindFirstRecordByFilter(schema.DBNetworks, "server={:server} && site={:site}",
 		dbx.Params{"server": server.Id, "site": site.Id}); err != nil {
