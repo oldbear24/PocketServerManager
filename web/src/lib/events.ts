@@ -46,19 +46,21 @@ export const domainAlertRules = [
 ];
 
 /** The rules of the alerts about backups, which link there and mark it in
- * the navigation (#29, #31): a job's to a target, keyed "<job>:<target>",
- * and a target's repository, keyed by the target. */
+ * the navigation (#29, #31, #32): a job's to a target, keyed "<job>:<target>",
+ * a target's repository, keyed by the target, and the panel's own backup. */
 export const backupAlertRules = [
   "backup_failed",
   "backup_skipped",
   "backup_retention",
   "backup_check_failed",
   "backup_check_unverified",
+  "panel_backup",
 ];
 
 /** Where an alert is fixed: the certificate or the DNS provider it is about
  * on Domains & TLS, a job's runs to a target or a target's integrity checks
- * on Backups, or its server. */
+ * on Backups, the panel's own backup there and its recovery kit in Settings
+ * (#32), or its server. */
 export function alertLink(alert: Alert): string | null {
   switch (alert.rule) {
     case "certificate_failed":
@@ -82,6 +84,11 @@ export function alertLink(alert: Alert): string | null {
     case "backup_check_failed":
     case "backup_check_unverified":
       return alert.target ? `/backups?check=${encodeURIComponent(alert.target)}` : "/backups";
+    case "recovery_kit":
+    case "panel_restored":
+      return "/settings#recovery-kit";
+    case "panel_backup":
+      return "/backups?setup=panel";
   }
   return alert.host ? `/servers/${alert.host}` : null;
 }

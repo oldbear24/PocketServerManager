@@ -254,6 +254,21 @@ describe("the modes of a restore", () => {
     expect(Object.values(modes).every((mode) => mode.disabled)).toBe(true);
     expect(modes.original.reason).toBe("role");
   });
+
+  it("never restores the panel into itself, from any target, for anyone (#32)", () => {
+    const panel = { source_kind: "panel" as const, host: "h1" };
+    for (const role of ["viewer", "operator", "admin"] as const) {
+      for (const target of [remote, local]) {
+        expect(modesFor(target, panel, role).original).toEqual({ disabled: true, reason: "panel" });
+      }
+    }
+    // an admin still downloads the encrypted copy
+    expect(modesFor(remote, panel, "admin").download).toEqual({ disabled: false });
+    expect(modesFor(remote, panel, "operator").download).toEqual({
+      disabled: true,
+      reason: "admin",
+    });
+  });
 });
 
 describe("a snapshot's paths", () => {

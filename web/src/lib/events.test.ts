@@ -40,7 +40,28 @@ describe("the backup alerts", () => {
       "backup_retention",
       "backup_check_failed",
       "backup_check_unverified",
+      "panel_backup",
     ]);
+  });
+
+  it("link the panel's own backup to its setup, and its kit and restore to Settings (#32)", () => {
+    const panel = { ...alert, target: "panel", host: "" };
+    expect(alertLink({ ...panel, rule: "panel_backup" })).toBe("/backups?setup=panel");
+    expect(alertLink({ ...panel, rule: "recovery_kit" })).toBe("/settings#recovery-kit");
+    expect(alertLink({ ...panel, rule: "panel_restored" })).toBe("/settings#recovery-kit");
+  });
+
+  it("say the panel's own alerts in the UI's language", () => {
+    const en = i18n.getFixedT("en");
+    const cs = i18n.getFixedT("cs");
+    const panel = { ...alert, target: "panel", host: "", message: "stored" };
+    expect(alertText(en, { ...panel, rule: "recovery_kit" })).toBe(
+      "The panel's recovery kit is not saved",
+    );
+    expect(alertText(cs, { ...panel, rule: "panel_backup" })).toBe("Samotný panel se nezálohuje");
+    expect(alertText(cs, { ...panel, rule: "panel_restored" })).toBe(
+      "Panel byl obnoven ze zálohy: servery se znovu připojují",
+    );
   });
 
   it("are said in the UI's language, by the server's name", () => {

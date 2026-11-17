@@ -688,12 +688,17 @@ export function validRestorePath(path: string): boolean {
 const rank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 
 /** Whether a restore mode can be used, and if not, why. */
-export type ModeState = { disabled: boolean; reason?: "dump" | "local" | "role" | "admin" };
+export type ModeState = {
+  disabled: boolean;
+  reason?: "dump" | "local" | "role" | "admin" | "panel";
+};
 
 /** The modes a person may restore a job's snapshot with from a target: the
  * original location for an operator, but not for a database dump, nor from a
- * local target of another server; a new folder or a download for an admin
- * only. The panel decides; this only hides what it would refuse. */
+ * local target of another server, nor of the panel itself, which is restored
+ * on a machine of its own with its recovery kit (#32); a new folder or a
+ * download for an admin only. The panel decides; this only hides what it
+ * would refuse. */
 export function modesFor(
   target: Pick<BackupTarget, "kind" | "host"> | null | undefined,
   job: Pick<BackupJob, "source_kind" | "host">,
@@ -702,7 +707,9 @@ export function modesFor(
   const level = role ? rank[role] : -1;
   const admin = level >= rank.admin;
   let original: ModeState = { disabled: false };
-  if (job.source_kind === "db_dump") {
+  if (job.source_kind === "panel") {
+    original = { disabled: true, reason: "panel" };
+  } else if (job.source_kind === "db_dump") {
     original = { disabled: true, reason: "dump" };
   } else if (target?.kind === "local" && target.host !== job.host) {
     original = { disabled: true, reason: "local" };

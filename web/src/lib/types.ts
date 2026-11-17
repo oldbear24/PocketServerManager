@@ -65,6 +65,9 @@ export type Host = RecordModel & {
   host_shell_enabled: boolean;
   /** the command types its agent handles; empty from an agent too old to say */
   capabilities?: string[] | null;
+  /** the address its agent dials the panel at, as its stream said it (#32);
+   * empty until it connected to a panel that records it */
+  panel_address?: string;
 };
 
 export type CommandStatus =
