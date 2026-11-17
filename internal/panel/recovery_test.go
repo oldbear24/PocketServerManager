@@ -229,6 +229,26 @@ func TestADownloadNeedsThePasswordAndAGoodPassphrase(t *testing.T) {
 	}
 }
 
+// TestAKitIsNotMadeWithoutATargetsSecrets (#32): a kit that could not open
+// one of the panel job's targets would not restore the panel: none is made,
+// and the status says the targets changed.
+func TestAKitIsNotMadeWithoutATargetsSecrets(t *testing.T) {
+	f := newRecoveryFixture(t)
+	other, _ := secrets.New(otherKey)
+	sealed, _ := other.SealString("a password of another panel")
+	f.target.Set("repo_password", sealed)
+	if err := f.app.Save(f.target); err != nil {
+		t.Fatal(err)
+	}
+	status, answer, _ := f.exportKit(f.admin, kitPassphrase, signInPassword)
+	if status != http.StatusConflict || !strings.HasPrefix(answer["message"].(string), "The secrets of the target b2 cannot be opened: ") {
+		t.Fatalf("a target whose secrets do not open: %d %v", status, answer["message"])
+	}
+	if n, _ := f.app.CountRecords(schema.RecoveryKits); n != 0 {
+		t.Fatalf("%d kits recorded", n)
+	}
+}
+
 // TestOneKitIsSealedAtATime (#32): argon2 takes 64 MiB, so a second
 // download while one is sealed is refused.
 func TestOneKitIsSealedAtATime(t *testing.T) {
