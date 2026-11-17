@@ -431,7 +431,9 @@ func writeEnv(path string, env map[string]string, pin string) error {
 		out.WriteString(name + "=" + value + "\n")
 	}
 	out.WriteString(EnvExpectCAPin + "=" + pin + "\n")
-	return os.WriteFile(path, []byte(out.String()), 0o600)
+	// no secret: readable by whoever runs docker --env-file with it, as root
+	// wrote it in recover's container
+	return os.WriteFile(path, []byte(out.String()), 0o644) //nolint:gosec // it holds no secret
 }
 
 // dialSentence says where the servers dial, and what that asks of this

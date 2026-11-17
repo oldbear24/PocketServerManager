@@ -283,6 +283,10 @@ func TestRecoverWritesTheStartEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// docker reads it as the user who runs it, and root wrote it
+	if info, _ := os.Stat(options.EnvOut); info.Mode().Perm() != 0o644 {
+		t.Fatalf("the environment's mode is %v", info.Mode())
+	}
 	want := "POCKETCLOUD_GRPC_ADDR=:9443\nPOCKETCLOUD_PUBLIC_URL=http://192.0.2.2:8090\nPOCKETCLOUD_EXPECT_CA_PIN=" + f.pin + "\n"
 	if string(raw) != want {
 		t.Fatalf("the environment:\n%s\nwant:\n%s", raw, want)
