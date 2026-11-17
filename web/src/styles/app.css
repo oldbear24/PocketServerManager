@@ -2982,6 +2982,66 @@ td .row-actions {
   color: var(--text-2);
 }
 
+/* a target's integrity checks (#31): their own line under its meta, apart
+   from #28's reachability */
+.backup-target-integrity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.backup-target-integrity-label {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.backup-target-integrity .row-actions {
+  margin-left: auto;
+}
+
+/* the integrity drawer: the check under way, the history, what one found */
+.check-running {
+  display: grid;
+  gap: 8px;
+}
+
+.check-pick {
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.check-pick.picked {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.check-findings {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.check-errors,
+.check-repair,
+.check-notes {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+.check-errors li {
+  color: var(--err-text);
+  overflow-wrap: anywhere;
+}
+
 /* Backup jobs (#29), as the design's Jobs card */
 .backup-jobs {
   min-width: 1000px;

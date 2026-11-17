@@ -20,9 +20,11 @@ import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import {
   checkFields,
+  defaultGroups,
   openChecksFilter,
   unverifiedFilter,
   type BackupCheck,
+  type CheckSettingsRecord,
 } from "../lib/backupChecks";
 import { runFields, runsSince, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import {
@@ -61,6 +63,7 @@ import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
 import type { Alert, Host } from "../lib/types";
+import { IntegrityDrawer, IntegrityLine, openCheckOf } from "./BackupIntegrity";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 
@@ -104,6 +107,20 @@ export function BackupsPage() {
     perPage: 100,
   });
   const unverified = useLiveList<Alert>("alerts", { filter: unverifiedFilter, perPage: 200 });
+  // each target's newest check, for the group it read and when it ended
+  const lastIds = targets.items.map((target) => target.last_check).filter(Boolean);
+  const lastChecks = useLiveList<BackupCheck>("backup_checks", {
+    filter: lastIds.map((id) => pb.filter("id = {:id}", { id })).join(" || "),
+    fields: checkFields,
+    perPage: 200,
+    enabled: lastIds.length > 0,
+  });
+  // how many groups a check reads the data packs in
+  const settings = useLiveList<CheckSettingsRecord>("settings", {
+    fields: "id,collectionId,collectionName,backup_check_schedule,backup_check_groups",
+    perPage: 1,
+  });
+  const groups = settings.items[0]?.backup_check_groups ?? defaultGroups;
   // "new", or the id of the job being changed
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
@@ -135,6 +152,8 @@ export function BackupsPage() {
   const newest = ours(restores.items);
   const started = open && !newest.some((item) => item.id === open.id) ? [...newest, open] : newest;
   const restoring = params.get("restore") ?? "";
+  // the target whose integrity checks are shown: ?check=<target>
+  const checked = targets.items.find((target) => target.id === params.get("check")) ?? null;
 
   const pick = (values: Record<string, string>) =>
     setParams(
@@ -233,10 +252,27 @@ export function BackupsPage() {
               hosts={hosts.items}
               loading={targets.loading}
               isAdmin={isAdmin}
+              openChecks={openChecks.items}
+              lastChecks={lastChecks.items}
+              groups={groups}
+              onDetails={(target) => pick({ check: target.id })}
             />
           )}
         </div>
       </div>
+      {checked && (
+        <IntegrityDrawer
+          key={checked.id}
+          target={checked}
+          host={hosts.items.find((host) => host.id === checked.host)}
+          openChecks={openChecks.items}
+          groups={groups}
+          now={now}
+          isAdmin={isAdmin}
+          canRun={canRun}
+          onClose={() => pick({ check: "" })}
+        />
+      )}
       {canRun && restoring && (
         <Suspense fallback={null}>
           <RestoreDrawer
@@ -279,11 +315,23 @@ export function TargetsCard({
   hosts,
   loading,
   isAdmin,
+  openChecks = [],
+  lastChecks = [],
+  groups = defaultGroups,
+  onDetails = () => {},
 }: {
   targets: BackupTarget[];
   hosts: Host[];
   loading: boolean;
   isAdmin: boolean;
+  /** the integrity checks queued or running (#31) */
+  openChecks?: BackupCheck[];
+  /** the targets' newest checks */
+  lastChecks?: BackupCheck[];
+  /** how many groups a check reads the data packs in */
+  groups?: number;
+  /** shows a target's integrity checks */
+  onDetails?: (target: BackupTarget) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -361,8 +409,20 @@ export function TargetsCard({
               <TargetItem
                 key={target.id}
                 target={target}
-                server={hosts.find((host) => host.id === target.host)?.name}
+                host={hosts.find((host) => host.id === target.host)}
                 now={now}
+                integrity={
+                  <IntegrityLine
+                    target={target}
+                    host={hosts.find((host) => host.id === target.host)}
+                    open={openCheckOf(target, openChecks)}
+                    last={lastChecks.find((check) => check.id === target.last_check) ?? null}
+                    groups={groups}
+                    now={now}
+                    isAdmin={isAdmin}
+                    onDetails={() => onDetails(target)}
+                  />
+                }
                 actions={
                   isAdmin && (
                     <div className="row-actions">
@@ -425,16 +485,20 @@ export function TargetsCard({
 
 function TargetItem({
   target,
-  server,
+  host,
   now,
+  integrity,
   actions,
 }: {
   target: BackupTarget;
-  server: string | undefined;
+  host: Host | undefined;
   now: number;
+  /** its integrity line (#31) */
+  integrity: ReactNode;
   actions: ReactNode;
 }) {
   const { t } = useTranslation();
+  const server = host?.name;
   const usage = targetUsage(target);
   const status = target.status || "pending";
   const titleId = `target-${target.id}-name`;
@@ -483,6 +547,7 @@ function TargetItem({
       {(status === "failed" || status === "pending") && target.last_error && (
         <pre className={`backup-target-error ${status}`}>{target.last_error}</pre>
       )}
+      {integrity}
     </li>
   );
 }

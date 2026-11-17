@@ -2388,6 +2388,92 @@
       "downloadFrame": "Download of {{name}}",
       "downloadOne": "A download takes one item, or a whole folder: pick one, or none."
     },
-    "restoreFromBackup": "Restore from backup"
+    "restoreFromBackup": "Restore from backup",
+    "integrity": {
+      "label": "Integrity",
+      "status": {
+        "never": "No check yet",
+        "queued": "Waiting to check",
+        "running": "Checking",
+        "ok": "OK",
+        "failed": "Errors found",
+        "suspect": "Unconfirmed errors",
+        "error": "Could not check",
+        "skipped": "Skipped",
+        "cancelled": "Stopped"
+      },
+      "checkedAt": "restic check {{when}}",
+      "group": "group {{n}} of {{t}}",
+      "structure": "structure only",
+      "took": "took {{duration}}",
+      "next": "next {{when}}",
+      "lastAttempt": "last attempt {{when}}: {{reason}}",
+      "retryAt": "next try: {{time}}",
+      "progress": "{{step}} · {{percent}}",
+      "progressLabel": "How far the check of {{name}} is",
+      "step": {
+        "lock": "waiting for the repository's lock",
+        "index": "loading the index",
+        "packs": "checking the pack files",
+        "snapshots": "checking snapshots, trees and blobs",
+        "read": "reading data",
+        "confirm": "checking again with the repository locked"
+      },
+      "checkNow": "Check now",
+      "checkNowName": "Check the integrity of {{name}} now",
+      "starting": "Starting…",
+      "started": "The integrity check of {{name}} is queued.",
+      "startFailed": "The integrity check of {{name}} did not start: {{error}}",
+      "confirmTitle": "Check {{name}} now?",
+      "confirmText": "restic reads group {{n}} of {{t}} of the data packs, about {{percent}} of the repository, through the agent of {{server}}; storage that bills downloads bills it. The check locks nothing; only if it finds errors does it check that group again with the repository locked, and backups to it wait meanwhile.",
+      "confirmTextStructure": "restic checks the repository's structure through the agent of {{server}} and reads no data packs. The check locks nothing; only if it finds errors does it check again with the repository locked.",
+      "confirm": "Check now",
+      "details": "Details",
+      "detailsName": "Integrity checks of {{name}}",
+      "drawerTitle": "Integrity of {{name}}",
+      "fact": {
+        "next": "Next check",
+        "group": "Next group",
+        "status": "Newest check"
+      },
+      "lastOk": "Last OK",
+      "history": "Recent checks",
+      "noHistory": "No check has run yet.",
+      "showCheck": "Show the check of {{when}}",
+      "trigger": {
+        "schedule": "scheduled",
+        "manual": "by hand",
+        "retry": "retry"
+      },
+      "errors_one": "{{count}} error",
+      "errors_other": "{{count}} errors",
+      "moreErrors_one": "and {{count}} more line",
+      "moreErrors_other": "and {{count}} more lines",
+      "packsRead_one": "{{read}} of {{count}} pack file read",
+      "packsRead_other": "{{read}} of {{count}} pack files read",
+      "found": "What restic found",
+      "noErrors": "restic found no errors.",
+      "confirmed": "Confirmed by a second check with the repository locked.",
+      "unconfirmedOk": "The first check, without a lock, saw errors that the second, with the repository locked, did not: most likely a prune ran meanwhile. The repository is fine.",
+      "suspect": "The first check found errors; the second could not lock the repository to confirm them. PocketCloud tries again.",
+      "repair": "How to repair",
+      "repairIndex": "The index is damaged: run restic repair index.",
+      "repairPacks": "Pack files are damaged: read restic's troubleshooting guide, then run restic repair packs {{ids}} and restic repair snapshots --forget.",
+      "repairOther": "The repository is damaged and must be repaired: follow restic's troubleshooting guide.",
+      "repairNote": "PocketCloud never repairs a repository itself: restic repair writes to it. Check again afterwards.",
+      "notes": "Notes (not errors)",
+      "showOutput": "Show output",
+      "logTitle": "Integrity check of {{name}}",
+      "stop": "Stop",
+      "stopTitle": "Stop the integrity check of {{name}}?",
+      "stopText": "restic stops and removes its lock; nothing in the repository changes. The next check reads the same group.",
+      "stopping": "The check of {{name}} is stopping.",
+      "cannot": {
+        "busy": "A check of it is under way.",
+        "offline": "Its server {{server}} is offline.",
+        "agent": "The agent of {{server}} cannot check repositories yet: update it.",
+        "pending": "Finish adding the target first."
+      }
+    }
   }
 }

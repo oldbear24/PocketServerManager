@@ -203,8 +203,17 @@ export function nextGroup(target: Pick<BackupTarget, "integrity_group">, groups:
  * how many groups the data packs are read in (0 the structure only). */
 export type CheckSettings = { schedule: string; groups: number };
 
+/** The checks' settings as the settings record keeps them, which viewers read. */
+export type CheckSettingsRecord = RecordModel & {
+  backup_check_schedule: string;
+  backup_check_groups: number;
+};
+
 /** The most groups restic 0.17 reads the packs in. */
 export const maxGroups = 256;
+
+/** The groups of a new panel, until its settings are loaded. */
+export const defaultGroups = 20;
 
 /** Groups as typed: a whole number from 0 to 256, else null. */
 export function parseGroups(text: string): number | null {
