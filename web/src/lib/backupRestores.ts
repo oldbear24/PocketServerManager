@@ -2,7 +2,7 @@ import type { RecordModel } from "pocketbase";
 import { useEffect, useRef, useState } from "react";
 
 import i18n from "../i18n";
-import { dayKey, lastDays, type BackupJob } from "./backupJobs";
+import { dayKey, lastDays, type BackupJob, type BackupRun } from "./backupJobs";
 import type { BackupTarget } from "./backups";
 import { formatBytes, formatNumber, parseDate } from "./format";
 import { pb, type Role } from "./pb";
@@ -21,8 +21,9 @@ export type BackupSnapshot = {
   /** what the backup added to the repository */
   added_bytes: number;
   files: number;
-  /** the run that made it, while the panel keeps the run */
-  run: { id: string; trigger: "schedule" | "manual" } | null;
+  /** the run that made it, while the panel keeps the run: of any trigger,
+   * a retry and a change run (#32) too */
+  run: { id: string; trigger: BackupRun["trigger"] } | null;
 };
 
 /** A job's snapshots in one target, newest first. */
