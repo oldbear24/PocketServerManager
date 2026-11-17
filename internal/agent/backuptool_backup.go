@@ -172,8 +172,14 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	}
 	if dump != nil && code != 0 {
 		// the dump's own words say why, before restic's that it failed
-		if failure := dump.failure(); failure != "" {
-			return nil, &resticError{code: code, failure: backup.FailureSource, message: backup.Redact(failure, r.secrets...)}
+		if failure, exit := dump.failure(); failure != "" {
+			class := backup.FailureSource
+			if exit == backup.RelayRetry {
+				// EX_TEMPFAIL: the panel's copy broke off or came damaged
+				// (#32), or a dump that says another try may pass
+				class = backup.FailureInterrupted
+			}
+			return nil, &resticError{code: code, failure: class, message: backup.Redact(failure, r.secrets...)}
 		}
 	}
 	summary := summaryOf(out)
@@ -379,31 +385,33 @@ func (d *dumpRelay) serve(stdin io.Reader, mark func(string)) {
 	passed.CloseWithError(err)
 }
 
-// failure is what a dump said that restic did not save, once restic ended:
-// "" when restic never ran the relay or the dump ended well, as restic's own
-// error then says why.
-func (d *dumpRelay) failure() string {
+// failure is what a dump said that restic did not save, once restic ended,
+// and the exit code of its last frame: "" when restic never ran the relay or
+// the dump ended well, as restic's own error then says why. The code is 0
+// without an exit frame; backup.RelayRetry is a failure another try may
+// pass (#32).
+func (d *dumpRelay) failure() (string, int) {
 	d.close()
 	<-d.accepted
 	if d.conn == nil {
-		return ""
+		return "", 0
 	}
 	select {
 	case verdict := <-d.verdict:
 		switch {
 		case errors.Is(verdict.err, backup.ErrDumpCut):
-			return "the dump broke off before it said how it went, and restic saved no snapshot"
+			return "the dump broke off before it said how it went, and restic saved no snapshot", 0
 		case verdict.err != nil, verdict.end.Code == 0:
 			// restic stopped reading the dump, or failed after it
-			return ""
+			return "", 0
 		}
 		failure := fmt.Sprintf("the dump failed with exit code %d, and restic saved no snapshot", verdict.end.Code)
 		if message := strings.Join(strings.Fields(verdict.end.Message), " "); message != "" {
 			failure += ": " + message
 		}
-		return failure
+		return failure, verdict.end.Code
 	case <-time.After(dumpVerdictWait):
-		return ""
+		return "", 0
 	}
 }
 

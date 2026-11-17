@@ -429,6 +429,44 @@ func TestABackupThatSavedNothingSaysWhy(t *testing.T) {
 	}
 }
 
+// TestARelayThatSaysTryAgainIsInterrupted (#32): a relay that ended with
+// backup.RelayRetry, EX_TEMPFAIL, as when the panel's copy broke off or came
+// damaged, is the failure class interrupted, which the panel tries again;
+// any other code of the relay stays the source's, which it does not, and
+// a stream cut before its exit frame too.
+func TestARelayThatSaysTryAgainIsInterrupted(t *testing.T) {
+	env, root := backupRepository(t)
+	args := func() []string {
+		return []string{"--host", "panel", "--tag", "pocketcloud", "--tag", "job:p1", "--tag", backup.PanelTag,
+			"--stdin-name", backup.PanelFileName, "--relay", filepath.Join(t.TempDir(), "dump.sock")}
+	}
+	for _, c := range []struct {
+		name    string
+		end     *backup.DumpEnd
+		failure string
+		want    string
+	}{
+		{name: "a copy that broke off", end: &backup.DumpEnd{Code: backup.RelayRetry, Message: "the panel's copy broke off after 1.0 MiB of 3.0 MiB: connection reset"},
+			failure: backup.FailureInterrupted,
+			want:    "the dump failed with exit code 75, and restic saved no snapshot: the panel's copy broke off after 1.0 MiB of 3.0 MiB: connection reset"},
+		{name: "a copy the panel no longer offers", end: &backup.DumpEnd{Code: 1, Message: "the panel no longer offers this copy: gone"},
+			failure: backup.FailureSource, want: "the dump failed with exit code 1, and restic saved no snapshot: the panel no longer offers this copy: gone"},
+		{name: "a code next to 75", end: &backup.DumpEnd{Code: 74}, failure: backup.FailureSource, want: "the dump failed with exit code 74"},
+		{name: "a stream cut", failure: backup.FailureSource, want: "the dump broke off before it said how it went"},
+	} {
+		failure, line, err := runFailure(t, env, dumpFrames(t, "PCPB", c.end), args()...)
+		if failure.Failure != c.failure || failure.ResticCode != 1 || line["failure"] != c.failure {
+			t.Errorf("%s: %+v %v", c.name, failure, line)
+		}
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+	if snapshots := fakerestic.Snapshots(t, root, env["RESTIC_REPOSITORY"]); len(snapshots) != 0 {
+		t.Errorf("%d snapshots", len(snapshots))
+	}
+}
+
 // TestTheRetryOfALockedRunUnlocksFirst (#31): the retry of a run that found
 // the repository locked runs plain restic unlock before the backup, which
 // removes only the locks no restic holds any more, never --remove-all; a
