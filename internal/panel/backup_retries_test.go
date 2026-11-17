@@ -390,6 +390,28 @@ func TestARetryIsClaimedOnce(t *testing.T) {
 	}
 }
 
+// TestOnePassOfTheBackupSchedulerRunsAtATime (#31): PocketBase's cron starts
+// a pass every minute whether the one before has ended or not; a pass, its
+// retries included, waits for the one under way, and so does a catch-up.
+func TestOnePassOfTheBackupSchedulerRunsAtATime(t *testing.T) {
+	f, _, _ := newRetryFixture(t)
+	for name, pass := range map[string]func(time.Time){"a pass": f.p.RunDueBackups, "a catch-up": f.p.CatchUpBackups} {
+		f.p.backupPass.Lock()
+		done := make(chan struct{})
+		go func() {
+			pass(time.Now())
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Errorf("%s ran while another held the scheduler", name)
+		case <-time.After(200 * time.Millisecond):
+		}
+		f.p.backupPass.Unlock()
+		<-done
+	}
+}
+
 // TestARetryFollowsAHolderThatRuns (#31, AC2): a run a lock kept out, whose
 // holder is a PocketCloud command that still runs, names it, and its retry
 // waits for it: every 30 minutes, without counting an attempt, for 12 hours,

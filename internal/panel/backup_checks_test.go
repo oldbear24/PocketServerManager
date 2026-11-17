@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 
+	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -783,6 +784,10 @@ func TestTheChecksSettingsAreHeldToTheirRules(t *testing.T) {
 	}
 	if countAudit() != audited+1 {
 		t.Errorf("%d audit entries of the settings, not %d", countAudit(), audited+1)
+	}
+	if entries, err := f.app.FindRecordsByFilter(schema.AuditLog, "collection={:c}", "-created,-id", 1, 0, map[string]any{"c": schema.Settings}); err != nil || len(entries) != 1 ||
+		entries[0].GetString("actor_kind") != audit.KindUser || entries[0].GetString("actor_label") != "admin@example.com" {
+		t.Errorf("the audit entry of the settings: %v %v", entries, err)
 	}
 	if target := f.fresh(f.target); !target.GetDateTime("next_check_at").Time().Equal(next) {
 		t.Errorf("the next check: %s, not %s", target.GetDateTime("next_check_at"), next)
