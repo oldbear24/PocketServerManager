@@ -144,10 +144,18 @@ func TestTheKitStatusFollowsTheKits(t *testing.T) {
 	if kit["status"] != kitStale || !slices.Equal(toStrings(kit["reasons"]), []string{recoverykit.SectionTargets}) {
 		t.Fatalf("after a change of credentials: %v", kit)
 	}
-	// the old kit, checked again, opens but is not current
+	// the old kit, checked again, opens but is not current: nothing is
+	// recorded of it
+	row, _ := f.app.FindFirstRecordByData(schema.RecoveryKits, "kit_id", answer["kit_id"])
 	status, checked = f.checkKit(f.admin, answer["content"].(string), kitPassphrase)
 	if status != http.StatusOK || checked["current"] != false || !slices.Equal(toStrings(checked["reasons"]), []string{"targets"}) || checked["status"] != kitStale {
 		t.Fatalf("an old kit: %d %v", status, checked)
+	}
+	if again, _ := f.app.FindFirstRecordByData(schema.RecoveryKits, "kit_id", answer["kit_id"]); again.GetString("verified_at") != row.GetString("verified_at") {
+		t.Fatal("a stale kit's check was recorded as a check")
+	}
+	if n, _ := f.app.CountRecords(schema.AuditLog, dbx.HashExp{"action": audit.ActionRecoveryKitChecked}); n != 1 {
+		t.Fatalf("%d checks audited, one of them stale", n)
 	}
 	// a change of the panel's addresses names its reason too
 	f.host.Set("panel_address", "panel.example.com:9443")
@@ -339,8 +347,11 @@ func TestAKitIsCheckedAgainstThisPanel(t *testing.T) {
 		answer["message"] != "This is no PocketCloud recovery kit." {
 		t.Fatalf("no kit: %d %v", status, answer)
 	}
-	if status, answer := f.send(http.MethodPost, "/api/pc/recovery/kit/check", f.admin, map[string]any{"kit": strings.Repeat("x", 80<<10), "passphrase": kitPassphrase}); status != http.StatusBadRequest {
-		t.Fatalf("a body too large: %d %v", status, answer)
+	// a body over the limit is not read: a kit that would open, with a
+	// passphrase far over the kit's limit
+	if status, answer := f.send(http.MethodPost, "/api/pc/recovery/kit/check", f.admin, map[string]any{"kit": other, "passphrase": strings.Repeat("x", 80<<10)}); status != http.StatusBadRequest ||
+		answer["message"] != "This is no PocketCloud recovery kit." {
+		t.Fatalf("a body too large: %d %v", status, answer["message"])
 	}
 
 	f.p.evaluateRecoveryAlerts()
@@ -462,17 +473,15 @@ func TestNoSecretReachesLogsEventsOrTheAudit(t *testing.T) {
 // days, and each resolves once its cause is gone: a checked current kit, a
 // job with targets that succeeded within 48 hours.
 func TestTheRecoveryAlerts(t *testing.T) {
+	// what changes looks at the alerts again soon after
+	recoveryDebounce = 50 * time.Millisecond
+	t.Cleanup(func() { recoveryDebounce = 5 * time.Second })
 	p, app, handler := newTestPanel(t)
 	p.evaluateRecoveryAlerts()
 	if n, _ := app.CountRecords(schema.Alerts); n != 0 {
 		t.Fatalf("%d alerts before the first server", n)
 	}
 
-	f := &jobFixture{t: t, p: p, app: app, handler: handler, host: testutil.NewHost(t, app, "node-1")}
-	f.target = f.addTarget("b2", backup.KindS3, f.host, backup.Config{Endpoint: "https://s3.example.com", Bucket: "backups"},
-		backup.Credentials{AccessKeyID: "key-id", SecretAccessKey: "the-secret-key"})
-	_, f.admin = testutil.NewUser(t, app, "admin@example.com", schema.RoleAdmin)
-	p.evaluateRecoveryAlerts()
 	alert := func(rule string) *core.Record {
 		t.Helper()
 		open, err := app.FindFirstRecordByFilter(schema.Alerts, "rule = {:rule} && target = 'panel' && status != 'resolved'", dbx.Params{"rule": rule})
@@ -481,6 +490,15 @@ func TestTheRecoveryAlerts(t *testing.T) {
 		}
 		return open
 	}
+	// the first server raises them by itself
+	f := &jobFixture{t: t, p: p, app: app, handler: handler, host: testutil.NewHost(t, app, "node-1")}
+	f.eventually("the first server's alerts", func() bool {
+		return alert(backup.AlertRecoveryKit) != nil && alert(backup.AlertPanelBackup) != nil
+	})
+	f.target = f.addTarget("b2", backup.KindS3, f.host, backup.Config{Endpoint: "https://s3.example.com", Bucket: "backups"},
+		backup.Credentials{AccessKeyID: "key-id", SecretAccessKey: "the-secret-key"})
+	_, f.admin = testutil.NewUser(t, app, "admin@example.com", schema.RoleAdmin)
+	p.evaluateRecoveryAlerts()
 	kit, backupAlert := alert(backup.AlertRecoveryKit), alert(backup.AlertPanelBackup)
 	if kit == nil || kit.GetString("severity") != schema.SeverityWarning || kit.GetString("host") != "" ||
 		!strings.HasPrefix(kit.GetString("message"), "No recovery kit was downloaded") {
@@ -561,9 +579,9 @@ func TestTheRecoveryAlerts(t *testing.T) {
 		t.Fatal("a checked kit left the alert open")
 	}
 
-	// a change makes the kit stale, and the alert comes back by itself
-	recoveryDebounce = 50 * time.Millisecond
-	t.Cleanup(func() { recoveryDebounce = 5 * time.Second })
+	// a change of the address makes the kit stale, and the alert comes back
+	// by itself, once what the check changed was looked at
+	f.eventually("the check's own look", func() bool { return !p.recoveryPending.Load() })
 	host, _ := app.FindRecordById(schema.Hosts, f.host.Id)
 	host.Set("panel_address", "192.0.2.2:9443")
 	if err := app.Save(host); err != nil {
@@ -578,11 +596,58 @@ func TestTheRecoveryAlerts(t *testing.T) {
 	if err := app.Delete(f.target); err != nil {
 		t.Fatal(err)
 	}
+	f.eventually("the target's removal to be looked at", func() bool {
+		open := alert(backup.AlertPanelBackup)
+		return !p.recoveryPending.Load() && open != nil && open.GetString("message") == "The panel's backup job panel (pb_data) has no target."
+	})
 	if err := app.Delete(host); err != nil {
 		t.Fatal(err)
 	}
 	f.eventually("the alerts to resolve without servers", func() bool {
 		return alert(backup.AlertRecoveryKit) == nil && alert(backup.AlertPanelBackup) == nil
+	})
+}
+
+// TestAPanelStartLooksAtTheRecoveryAlerts (#32): a panel with servers but
+// no kit and no backup of itself says so as it starts.
+func TestAPanelStartLooksAtTheRecoveryAlerts(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	caOfAnEarlierStart(t, app)
+	testutil.NewHost(t, app, "node-1")
+	New(app, &Config{MasterKey: testutil.MasterKey}, testUI).Register()
+	if err := serve(t, app); err != nil {
+		t.Fatal(err)
+	}
+	if !alertOpen(app, backup.AlertRecoveryKit, backup.PanelAlertTarget) || !alertOpen(app, backup.AlertPanelBackup, backup.PanelAlertTarget) {
+		t.Fatal("the start raised neither alert")
+	}
+}
+
+// TestRemovingAServerLooksAtTheKitAgain (#32): a server removed with the
+// only address it dialled changes what a kit must hold: recovery_kit opens
+// again by itself.
+func TestRemovingAServerLooksAtTheKitAgain(t *testing.T) {
+	recoveryDebounce = 50 * time.Millisecond
+	t.Cleanup(func() { recoveryDebounce = 5 * time.Second })
+	f := newRecoveryFixture(t)
+	gone := testutil.NewHost(t, f.app, "node-2")
+	gone.Set("panel_address", "198.51.100.7:9443")
+	if err := f.app.Save(gone); err != nil {
+		t.Fatal(err)
+	}
+	_, answer, _ := f.exportKit(f.admin, kitPassphrase, signInPassword)
+	f.checkKit(f.admin, answer["content"].(string), kitPassphrase)
+	f.eventually("the kit's check to be looked at", func() bool {
+		return !f.p.recoveryPending.Load() && !alertOpen(f.app, backup.AlertRecoveryKit, backup.PanelAlertTarget)
+	})
+
+	if err := f.app.Delete(gone); err != nil {
+		t.Fatal(err)
+	}
+	f.eventually("recovery_kit to open again", func() bool {
+		open, err := f.app.FindFirstRecordByFilter(schema.Alerts, "rule = 'recovery_kit' && status = 'open'")
+		return err == nil && open.GetString("message") == "The recovery kit is out of date, as the panel's addresses changed: download a new one and check it."
 	})
 }
 
