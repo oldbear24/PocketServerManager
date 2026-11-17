@@ -431,27 +431,29 @@ export function UnlockRetryDialog({
       onCancel={onClose}
       onConfirm={() => void confirm()}
     >
-      <p className="muted">{t("backups.unlock.text", { job: job.name })}</p>
-      {lock && (
-        <dl className="facts">
-          <dt>{t("backups.unlock.fact.holder")}</dt>
-          <dd>{holder}</dd>
-          <dt>{t("backups.unlock.fact.host")}</dt>
-          <dd className="mono">{lock.host || "–"}</dd>
-          <dt>{t("backups.unlock.fact.pid")}</dt>
-          <dd className="mono">{lock.pid || "–"}</dd>
-          <dt>{t("backups.unlock.fact.refreshed")}</dt>
-          <dd>
-            {lock.created
-              ? `${formatMoment(lock.created, now)} (${formatRelative(lock.created, now, { past: true })})`
-              : "–"}
-          </dd>
-          <dt>{t("backups.unlock.fact.kind")}</dt>
-          <dd>{lock.exclusive ? t("backups.unlock.exclusive") : t("backups.unlock.shared")}</dd>
-        </dl>
-      )}
-      <p className="muted small">{t("backups.unlock.agentNote", { server })}</p>
-      {error && <Banner tone="err">{error}</Banner>}
+      <div className="dialog-stack">
+        <p className="muted">{t("backups.unlock.text", { job: job.name })}</p>
+        {lock && (
+          <dl className="facts">
+            <dt>{t("backups.unlock.fact.holder")}</dt>
+            <dd>{holder}</dd>
+            <dt>{t("backups.unlock.fact.host")}</dt>
+            <dd className="mono">{lock.host || "–"}</dd>
+            <dt>{t("backups.unlock.fact.pid")}</dt>
+            <dd className="mono">{lock.pid || "–"}</dd>
+            <dt>{t("backups.unlock.fact.refreshed")}</dt>
+            <dd>
+              {lock.created
+                ? `${formatMoment(lock.created, now)} (${formatRelative(lock.created, now, { past: true })})`
+                : "–"}
+            </dd>
+            <dt>{t("backups.unlock.fact.kind")}</dt>
+            <dd>{lock.exclusive ? t("backups.unlock.exclusive") : t("backups.unlock.shared")}</dd>
+          </dl>
+        )}
+        <p className="muted small">{t("backups.unlock.agentNote", { server })}</p>
+        {error && <Banner tone="err">{error}</Banner>}
+      </div>
     </ConfirmDialog>
   );
 }

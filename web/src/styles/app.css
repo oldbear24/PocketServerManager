@@ -1154,6 +1154,12 @@ code,
   margin-bottom: 8px;
 }
 
+/* a dialog's text, facts and error, spaced apart */
+.dialog-stack {
+  display: grid;
+  gap: 12px;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
