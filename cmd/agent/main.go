@@ -9,6 +9,8 @@
 //	pocketcloud-agent version       print the version
 //	pocketcloud-agent site-tool     change the sites volume, in a site's job container
 //	pocketcloud-agent backup-tool   run restic for a backup command, in its job container
+//	pocketcloud-agent panel-recovery targets|snapshots|fetch
+//	                                take the panel's copy out of its backup, with the recovery kit
 package main
 
 import (
@@ -19,6 +21,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"golang.org/x/term"
 
 	"github.com/oldbear24/PocketServerManager/internal/agent"
 	"github.com/oldbear24/PocketServerManager/internal/version"
@@ -52,8 +56,10 @@ func main() {
 		err = agent.SiteTool(ctx, os.Args[2:], agent.SiteToolEnv(os.Getenv), os.Stdout, os.Stderr)
 	case "backup-tool":
 		err = agent.BackupTool(ctx, os.Args[2:], agent.BackupToolEnv(os.Environ()), os.Stdin, os.Stdout, os.Stderr)
+	case "panel-recovery":
+		err = panelRecovery(ctx, config, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics or version", command)
+		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics, version or panel-recovery", command)
 	}
 
 	// the backup tool's relay ends with a dump's own exit code, having said why
@@ -89,6 +95,32 @@ func enroll(ctx context.Context, config agent.Config) error {
 	a.Log.Info("the agent enrolled", "host", identity.Name, "id", identity.HostID)
 
 	return nil
+}
+
+// panelRecovery takes the panel's copy out of its backup with the recovery
+// kit (#32), beside an agent that serves or from a launcher on a new
+// machine: it opens no command store.
+func panelRecovery(ctx context.Context, config agent.Config, args []string) error {
+	a, err := agent.NewRecovery(config, os.Stderr)
+	if err != nil {
+		return err
+	}
+	return a.PanelRecovery(ctx, args, agent.RecoveryIO{
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv, Prompt: terminalPassphrase,
+	})
+}
+
+// terminalPassphrase asks for the kit's passphrase on the terminal of the
+// standard input, without echo.
+func terminalPassphrase() (string, error) {
+	fd := int(os.Stdin.Fd()) //nolint:gosec // a file descriptor
+	if !term.IsTerminal(fd) {
+		return "", agent.ErrNoTerminal
+	}
+	fmt.Fprint(os.Stderr, "The kit's passphrase: ")
+	passphrase, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr)
+	return string(passphrase), err
 }
 
 func diagnostics(ctx context.Context, config agent.Config, asJSON bool) error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -10,8 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
+	"github.com/oldbear24/PocketServerManager/internal/recoverykit"
+	"github.com/oldbear24/PocketServerManager/internal/secrets"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
@@ -151,5 +155,64 @@ func TestADumpGoesThroughTheBinarysRelay(t *testing.T) {
 	stdout, stderr, code = run(nil, "relay", "--socket", socket)
 	if code != 3 || stdout != "PGDMP" || stderr != "pg_dump: error: query failed\n" {
 		t.Errorf("the relay: %d %q %q", code, stdout, stderr)
+	}
+}
+
+// TestThePanelsRecoveryCommandsReachTheAgent (#32): the binary runs
+// panel-recovery with the kit's passphrase from the environment, as docker
+// exec -e gives it, and asks no terminal it does not have; each refusal
+// is said and ends with exit code 1.
+func TestThePanelsRecoveryCommandsReachTheAgent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the agent")
+	}
+	binary := filepath.Join(t.TempDir(), "pocketcloud-agent")
+	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	master := bytes.Repeat([]byte{7}, secrets.KeySize)
+	header := recoverykit.Header{Kit: "KIT-7Q2M-9XHC", Created: time.Date(2026, 11, 17, 10, 2, 0, 0, time.UTC), Panel: "http://192.0.2.2:8090",
+		KeyID: secrets.KeyID(master), CAPin: "sha256:" + strings.Repeat("5d", 32), PanelVersion: "0.32.0", AgentImage: "agent"}
+	text, err := recoverykit.Seal(header, recoverykit.Payload{
+		CreatedBy: "admin@example.com", MasterKey: hex.EncodeToString(master), KeyID: secrets.KeyID(master), Env: map[string]string{},
+		AgentsDial: []recoverykit.Dial{}, Job: &recoverykit.Job{ID: "p4n3lj0b0000001", Name: "panel (pb_data)"},
+		Targets: []recoverykit.Target{{ID: "t1", Name: "panel-rest", Kind: "rest", Repository: recoverykit.Repository{URL: "rest:http://192.0.2.2:8000/panel32/", Password: "rest-repo-password"}}},
+	}, "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kit := filepath.Join(t.TempDir(), "kit.pckit")
+	if err := os.WriteFile(kit, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	run := func(env []string, args ...string) (string, string, int) {
+		t.Helper()
+		command := exec.Command(binary, args...)
+		command.Env = append(os.Environ(), append([]string{"STATE_DIR=" + state}, env...)...)
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		err := command.Run()
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+		return stdout.String(), stderr.String(), command.ProcessState.ExitCode()
+	}
+	stdout, stderr, code := run([]string{"POCKETCLOUD_KIT_PASSPHRASE=correct horse battery staple"}, "panel-recovery", "targets", "--kit", kit)
+	if code != 0 || stdout != "The panel's backup job panel (pb_data) (p4n3lj0b0000001) backs up to:\n* panel-rest (rest): rest:http://192.0.2.2:8000/panel32/\n" ||
+		!strings.HasPrefix(stderr, "Kit KIT-7Q2M-9XHC of http://192.0.2.2:8090 (key ") {
+		t.Errorf("targets: %d %q %q", code, stdout, stderr)
+	}
+	if _, stderr, code := run(nil, "panel-recovery", "targets", "--kit", kit); code != 1 ||
+		stderr != "error: the kit's passphrase comes from --passphrase-file, POCKETCLOUD_KIT_PASSPHRASE or a terminal, and none is there\n" {
+		t.Errorf("no passphrase: %d %q", code, stderr)
+	}
+	if _, stderr, code := run([]string{"POCKETCLOUD_KIT_PASSPHRASE=another passphrase"}, "panel-recovery", "targets", "--kit", kit); code != 1 ||
+		stderr != "error: the passphrase does not open this kit, or the kit was changed\n" {
+		t.Errorf("a wrong passphrase: %d %q", code, stderr)
+	}
+	if entries, _ := os.ReadDir(state); len(entries) != 0 {
+		t.Errorf("the state directory holds %d entries", len(entries))
 	}
 }
