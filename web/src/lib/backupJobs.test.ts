@@ -404,14 +404,46 @@ describe("the runs a banner is about", () => {
     expect(failedRuns(jobs, runs)).toEqual([]);
   });
 
-  it("are not a run queued by hand or skipped", () => {
+  it("are not a run queued by hand, which takes the failure's place", () => {
     const runs = [
       run("2026-11-09 01:00:00.000Z", "failed", { id: "y1" }),
       run("2026-11-09 02:00:00.000Z", "queued", { id: "y2", trigger: "manual" }),
-      run("2026-11-09 01:00:00.000Z", "failed", { id: "z1", target: "t2" }),
-      run("2026-11-09 02:00:00.000Z", "skipped", { id: "z2", target: "t2" }),
     ];
     expect(failedRuns(jobs, runs)).toEqual([]);
+  });
+
+  it("keep a failure that a run which never ran came after: skipped, or cancelled before it started", () => {
+    const runs = [
+      // j1 → t1: the hourly 01:00 run waited on a lock past 02:00, whose
+      // run skipped, then failed at 02:00:30
+      run("2026-11-09 01:00:00.000Z", "failed", {
+        id: "z1",
+        started_at: "2026-11-09 01:00:01.000Z",
+        finished_at: "2026-11-09 02:00:30.000Z",
+        failure: "locked",
+      }),
+      run("2026-11-09 02:00:00.000Z", "skipped", { id: "z2" }),
+      // j1 → t2: its retry was cancelled while it waited for a worker
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "w1", target: "t2" }),
+      run("2026-11-09 01:05:00.000Z", "cancelled", {
+        id: "w2",
+        target: "t2",
+        trigger: "retry",
+        retry_of: "w1",
+      }),
+      // j2 → t1: its retry started, and was stopped: it took the place
+      run("2026-11-09 01:00:00.000Z", "failed", { id: "v1", job: "j2" }),
+      run("2026-11-09 01:05:00.000Z", "cancelled", {
+        id: "v2",
+        job: "j2",
+        trigger: "retry",
+        retry_of: "v1",
+        started_at: "2026-11-09 01:05:01.000Z",
+      }),
+    ];
+    expect(failedRuns(jobs, runs).map((item) => item.id)).toEqual(["z1", "w1"]);
+    // a run that skipped or never started is no banner of its own
+    expect(failedRuns(jobs, [runs[1], runs[3]])).toEqual([]);
   });
 });
 

@@ -596,6 +596,45 @@ describe("the failed backups", () => {
     );
   });
 
+  it("keeps a failure and its Unlock and retry when the next slot skipped while it waited", () => {
+    // the hourly 01:00 run waited on the lock past 02:00, whose run skipped,
+    // and failed at 02:00:30: 03:00 in Prague
+    show(
+      "operator",
+      [
+        run("r1", {
+          job: "j1",
+          target: "t1",
+          created: "2026-11-09 01:00:00.000Z",
+          scheduled_at: "2026-11-09 01:00:00.000Z",
+          started_at: "2026-11-09 01:00:01.000Z",
+          finished_at: "2026-11-09 02:00:30.000Z",
+          retry_at: "2026-11-09 02:35:00.000Z",
+        }),
+        run("r2", {
+          job: "j1",
+          target: "t1",
+          status: "skipped",
+          created: "2026-11-09 02:00:00.000Z",
+          scheduled_at: "2026-11-09 02:00:00.000Z",
+          started_at: "",
+          finished_at: "",
+          error: "The run before it was still going.",
+          failure: "",
+          lock: null,
+          command: "",
+        }),
+      ],
+      {},
+      { k3j9x2m4q8w1z7v: ended },
+    );
+    const failed = banner("vaultwarden @ nas failed at 03:00");
+    expect(
+      failed.getByText("to Backblaze B2 · attempt 1 of 4 · next try: 03:35"),
+    ).toBeInTheDocument();
+    expect(failed.getByRole("button", { name: "Unlock and retry" })).toBeEnabled();
+  });
+
   it("leaves once a run succeeds", () => {
     show("operator", [
       run("r1", { failure: "restic", lock: null }),

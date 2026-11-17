@@ -633,11 +633,21 @@ export function resticLine(error: string): string {
     .replace(/^unable to create lock in backend:\s*/i, "");
 }
 
-type IssueRun = Pick<BackupRun, "id" | "job" | "target" | "status" | "created"> &
-  Partial<Pick<BackupRun, "trigger">>;
+/** Whether a run never ran: skipped, or cancelled before it started. Such a
+ * run takes no failed run's place, as the panel's retries have it. */
+export function neverRan(
+  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "started_at">>,
+): boolean {
+  return run.status === "skipped" || (run.status === "cancelled" && !run.started_at);
+}
 
-/** The runs a banner is about: of each job and target, the newest run, when
- * it failed or is a retry that is queued or running; newest first. A label's
+type IssueRun = Pick<BackupRun, "id" | "job" | "target" | "status" | "created"> &
+  Partial<Pick<BackupRun, "trigger" | "started_at">>;
+
+/** The runs a banner is about: of each job and target, the newest run of
+ * those that ran or will, when it failed or is a retry that is queued or
+ * running; newest first. A run that never ran, as the slot skipped while the
+ * run before waited on a lock, leaves that run's failure standing. A label's
  * job whose label is gone, and a target the job no longer backs up to, have
  * none: no retry could start. */
 export function failedRuns<R extends IssueRun>(
@@ -648,7 +658,7 @@ export function failedRuns<R extends IssueRun>(
   const newest = new Map<string, R>();
   for (const run of runs) {
     const job = known.get(run.job);
-    if (!job || job.label_removed || !(job.targets ?? []).includes(run.target)) {
+    if (!job || job.label_removed || !(job.targets ?? []).includes(run.target) || neverRan(run)) {
       continue;
     }
     const key = `${run.job}:${run.target}`;
