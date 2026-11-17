@@ -1,10 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/toast";
+import i18n from "../i18n";
+import { api } from "../lib/api";
 import { AuthProvider } from "../lib/auth";
+import type { BackupCheck } from "../lib/backupChecks";
 import { backupsApi, type BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Host } from "../lib/types";
@@ -12,7 +16,10 @@ import { AddTargetDialog, BackupsPage, EditTargetDialog, ServerField } from "./B
 
 const now = Date.parse("2026-11-09T12:00:00Z");
 
-const live = vi.hoisted(() => ({ lists: {} as Record<string, unknown[]> }));
+const live = vi.hoisted(() => ({
+  lists: {} as Record<string, unknown[]>,
+  records: {} as Record<string, Record<string, unknown>>,
+}));
 vi.mock("../lib/realtime", () => {
   const list = (collection: string) => {
     const items = live.lists[collection] ?? [];
@@ -21,12 +28,29 @@ vi.mock("../lib/realtime", () => {
   return {
     useLiveList: list,
     useLiveRecords: list,
-    useLiveRecord: () => ({ record: null, loading: false, error: null }),
+    useLiveRecord: (collection: string, id?: string) => ({
+      record: (id && live.records[collection]?.[id]) || null,
+      loading: false,
+      error: null,
+    }),
     useNow: () => now,
   };
 });
 
+// the output streams from the panel; here it only says what it is of
+vi.mock("../components/CommandOutput", () => ({
+  CommandOutput: ({ commandId, title }: { commandId: string; title: ReactNode }) => (
+    <section aria-label="Command output" data-command={commandId}>
+      <h4>{title}</h4>
+    </section>
+  ),
+}));
+
+const zone = process.env.TZ;
+
 beforeAll(() => {
+  // the times of the checks are the browser's, here Prague's
+  process.env.TZ = "Europe/Prague";
   HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
     this.open = true;
   };
@@ -35,10 +59,20 @@ beforeAll(() => {
   };
 });
 
-afterEach(() => {
+afterAll(() => {
+  if (zone === undefined) {
+    delete process.env.TZ;
+  } else {
+    process.env.TZ = zone;
+  }
+});
+
+afterEach(async () => {
   vi.restoreAllMocks();
   pb.authStore.clear();
   live.lists = {};
+  live.records = {};
+  await i18n.changeLanguage("en");
 });
 
 function signInAs(role: User["role"]) {
@@ -53,9 +87,9 @@ function signInAs(role: User["role"]) {
   } as unknown as User);
 }
 
-function wrap(children: React.ReactNode) {
+function wrap(children: React.ReactNode, path = "/backups") {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
         <ToastProvider>{children}</ToastProvider>
       </AuthProvider>
@@ -802,5 +836,427 @@ describe("the server field", () => {
     expect(within(select).getByRole("option", { name: "pve-01" })).toBeEnabled();
     expect(within(select).getByRole("option", { name: "nas (offline)" })).toBeDisabled();
     expect(screen.getByText("Where the files go.")).toBeInTheDocument();
+  });
+});
+
+describe("a target's integrity", () => {
+  // checked last Sunday at 05:21 UTC, next on Sunday at 05:00 UTC: 06:21 and
+  // 06:00 in Prague
+  const checked = (fields: Partial<BackupTarget> = {}) =>
+    target({
+      integrity_status: "ok",
+      integrity_at: "2026-11-08 05:21:00.000Z",
+      integrity_error: "",
+      last_check: "c1",
+      last_check_status: "ok",
+      last_check_error: "",
+      next_check_at: "2026-11-15 05:00:00.000Z",
+      integrity_group: 4,
+      ...fields,
+    });
+
+  function check(fields: Partial<BackupCheck>): BackupCheck {
+    return {
+      id: "c1",
+      collectionId: "backup_checks",
+      collectionName: "backup_checks",
+      created: "2026-11-08 05:00:00.000Z",
+      updated: "2026-11-08 05:21:00.000Z",
+      target: "t1",
+      host: "h1",
+      kind: "integrity",
+      trigger: "schedule",
+      status: "ok",
+      scheduled_at: "2026-11-08 05:00:00.000Z",
+      started_at: "2026-11-08 05:00:02.000Z",
+      finished_at: "2026-11-08 05:21:00.000Z",
+      duration_ms: 1258000,
+      subset: "3/20",
+      packs_read: 118,
+      packs_total: 2361,
+      confirmed: false,
+      unconfirmed: false,
+      errors_more: 0,
+      repair: null,
+      notes: null,
+      lock: null,
+      error: "",
+      command: "k3j9x2m4q8w1z7v",
+      attempt: 1,
+      retry_of: "",
+      retry_at: "",
+      ...fields,
+    } as BackupCheck;
+  }
+
+  function show(
+    role: User["role"],
+    targets: BackupTarget[],
+    lists: Record<string, unknown[]> = {},
+    path = "/backups",
+  ) {
+    signInAs(role);
+    live.lists = { backup_targets: targets, hosts, ...lists };
+    wrap(<BackupsPage />, path);
+  }
+
+  function integrity(name: string) {
+    const line = item(name).getByText("Integrity").closest(".backup-target-integrity");
+    return within(line as HTMLElement);
+  }
+
+  function drawer(name: string) {
+    return within(screen.getByRole("dialog", { name: `Integrity of ${name}` }));
+  }
+
+  it("says how its checks stand, the group the last read and when the next is", () => {
+    show("viewer", [checked()], { backup_checks: [check({})] });
+
+    const line = integrity("Backblaze B2");
+    expect(line.getByText("OK").closest(".pill")).toHaveClass("ok");
+    expect(
+      line.getByText("restic check Sunday 06:21 · group 3 of 20 · next Sunday 06:00"),
+    ).toBeInTheDocument();
+    // everyone reads the details; only an admin checks
+    expect(
+      line.getByRole("button", { name: "Details of the integrity checks of Backblaze B2" }),
+    ).toBeInTheDocument();
+    expect(line.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
+  });
+
+  it("is said in Czech, in local time", async () => {
+    await i18n.changeLanguage("cs");
+    show("viewer", [checked()], { backup_checks: [check({})] });
+
+    const line = within(
+      item("Backblaze B2")
+        .getByText("Integrita")
+        .closest(".backup-target-integrity") as HTMLElement,
+    );
+    expect(line.getByText("V pořádku").closest(".pill")).toHaveClass("ok");
+    expect(
+      line.getByText("restic check neděle 06:21 · skupina 3 z 20 · další neděle 06:00"),
+    ).toBeInTheDocument();
+  });
+
+  it("says a target was never checked, apart from the reachability check", () => {
+    show("viewer", [bucket]);
+    const line = integrity("Backblaze B2");
+    expect(line.getByText("No check yet").closest(".pill")).toHaveClass("off");
+    // #28's check of the target stays its own
+    expect(item("Backblaze B2").getByText("OK")).toBeInTheDocument();
+  });
+
+  it("shows the step and how far a running check is", () => {
+    live.records = { commands: { cmd2: { id: "cmd2", progress: { step: "read", percent: 62 } } } };
+    show("viewer", [checked({ last_check: "c2", last_check_status: "running" })], {
+      backup_checks: [check({ id: "c2", status: "running", command: "cmd2", finished_at: "" })],
+    });
+
+    const line = integrity("Backblaze B2");
+    expect(line.getByText("Checking").closest(".pill")).toHaveClass("info");
+    expect(line.getByText(/^reading data · 62% · restic check Sunday 06:21/)).toBeInTheDocument();
+  });
+
+  it("shows the first three lines of the errors a check confirmed", () => {
+    show(
+      "viewer",
+      [
+        checked({
+          integrity_status: "failed",
+          last_check_status: "failed",
+          integrity_error:
+            "pack 1b2c: does not exist\npack 3d4e: does not exist\n\npack 5f60: does not exist\npack 7a8b: does not exist",
+        }),
+      ],
+      { backup_checks: [check({ status: "failed", confirmed: true })] },
+    );
+
+    const line = integrity("Backblaze B2");
+    expect(line.getByText("Errors found").closest(".pill")).toHaveClass("err");
+    const errors = item("Backblaze B2").getByText(/^pack 1b2c/);
+    expect(errors.tagName).toBe("PRE");
+    expect(errors.textContent).toBe(
+      "pack 1b2c: does not exist\npack 3d4e: does not exist\npack 5f60: does not exist",
+    );
+  });
+
+  it("says why the newest attempt did not complete", () => {
+    show(
+      "viewer",
+      [
+        checked({
+          last_check: "c2",
+          last_check_status: "error",
+          last_check_error: "The check did not finish in 12 hours.",
+        }),
+      ],
+      {
+        backup_checks: [
+          check({ id: "c2", status: "error", finished_at: "2026-11-09 08:00:00.000Z" }),
+        ],
+      },
+    );
+
+    const line = integrity("Backblaze B2");
+    expect(line.getByText("Could not check").closest(".pill")).toHaveClass("warn");
+    expect(
+      line.getByText(
+        "restic check Sunday 06:21 · next Sunday 06:00 · last attempt Monday 09:00: The check did not finish in 12 hours.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("lets an admin check now, after saying what is read and that only errors lock", async () => {
+    show("admin", [checked()]);
+    const started = vi.spyOn(backupsApi, "check").mockResolvedValue({ check: "c9", command: "x" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
+    );
+    const dialog = within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" }));
+    expect(
+      dialog.getByText(
+        "restic reads group 4 of 20 of the data packs, about 5% of the repository, through the agent of pve-01; storage that bills downloads bills it. The check locks nothing; only if it finds errors does it check that group again with the repository locked, and backups to it wait meanwhile.",
+      ),
+    ).toBeInTheDocument();
+    expect(started).not.toHaveBeenCalled();
+
+    fireEvent.click(dialog.getByRole("button", { name: "Check now" }));
+    expect(started).toHaveBeenCalledWith("t1");
+    expect(
+      await screen.findByText("The integrity check of Backblaze B2 is queued."),
+    ).toBeInTheDocument();
+  });
+
+  it("says a check of the structure only reads no data", () => {
+    show("admin", [checked()], {
+      settings: [{ id: "s1", backup_check_schedule: "0 5 * * 0", backup_check_groups: 0 }],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
+    );
+    expect(
+      within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" })).getByText(
+        "restic checks the repository's structure through the agent of pve-01 and reads no data packs. The check locks nothing; only if it finds errors does it check again with the repository locked.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows why the panel refused a check", async () => {
+    show("admin", [checked()]);
+    vi.spyOn(backupsApi, "check").mockRejectedValue(
+      new ClientResponseError({
+        status: 409,
+        response: { message: "An integrity check of Backblaze B2 is under way." },
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" })).getByRole("button", {
+        name: "Check now",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "The integrity check of Backblaze B2 did not start: An integrity check of Backblaze B2 is under way.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("holds Check now back, saying why, when the panel would refuse it", () => {
+    const old = { id: "h3", name: "edge", status: "online", capabilities: ["backup.run"] };
+    show(
+      "admin",
+      [
+        checked({ id: "p", name: "Pending", status: "pending", repo_id: "" }),
+        checked({ id: "o", name: "Offline", host: "h2" }),
+        checked({ id: "b", name: "Busy" }),
+        checked({ id: "a", name: "Old agent", host: "h3" }),
+        checked({ id: "r", name: "Ready" }),
+      ],
+      {
+        hosts: [...hosts, old],
+        backup_checks: [check({ id: "q", target: "b", status: "queued", finished_at: "" })],
+      },
+    );
+
+    const button = (name: string) =>
+      screen.getByRole("button", { name: `Check now: the integrity of ${name}` });
+    expect(button("Pending")).toBeDisabled();
+    expect(button("Pending")).toHaveAttribute("title", "Finish adding the target first.");
+    expect(button("Offline")).toBeDisabled();
+    expect(button("Offline")).toHaveAttribute("title", "Its server nas is offline.");
+    expect(button("Busy")).toBeDisabled();
+    expect(button("Busy")).toHaveAttribute("title", "A check of it is under way.");
+    expect(button("Old agent")).toBeDisabled();
+    expect(button("Old agent")).toHaveAttribute(
+      "title",
+      "The agent of edge cannot check repositories yet: update it.",
+    );
+    expect(button("Ready")).toBeEnabled();
+    expect(button("Ready")).not.toHaveAttribute("title");
+  });
+
+  it("opens the details, with the checks, what one found, how to repair and its output", () => {
+    const failed = check({
+      id: "c2",
+      created: "2026-11-09 05:00:00.000Z",
+      finished_at: "2026-11-09 05:40:00.000Z",
+      status: "failed",
+      trigger: "manual",
+      subset: "4/20",
+      confirmed: true,
+      errors_more: 1,
+      command: "cmd2",
+      repair: { index: true, packs: ["1b2c3d", "3d4e5f"], snapshots: true, other: false },
+      notes: ["2 additional files were found in the repo, which likely contain duplicate data."],
+    });
+    show(
+      "viewer",
+      [checked({ integrity_status: "failed", last_check: "c2", last_check_status: "failed" })],
+      { backup_checks: [failed, check({})] },
+    );
+    live.records = {
+      backup_checks: {
+        c2: {
+          ...failed,
+          errors: [
+            { kind: "pack", id: "1b2c3d", text: "pack 1b2c3d: does not exist" },
+            { kind: "pack", id: "3d4e5f", text: "pack 3d4e5f contains 2 errors: [blob x]" },
+          ],
+        },
+      },
+    };
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the integrity checks of Backblaze B2" }),
+    );
+    const details = drawer("Backblaze B2");
+    // what comes next
+    expect(details.getByText("Next check").nextElementSibling).toHaveTextContent("Sunday 06:00");
+    expect(details.getByText("Next group").nextElementSibling).toHaveTextContent("group 4 of 20");
+    expect(details.getByText("Last OK").nextElementSibling).toHaveTextContent("Sunday 06:21");
+    // the checks, newest first
+    const history = within(details.getByRole("list", { name: "Recent checks" }));
+    expect(
+      history
+        .getAllByRole("listitem")
+        .map((row) => row.querySelector(".timeline-title")?.textContent),
+    ).toEqual(["Errors found · by hand", "OK · scheduled"]);
+    expect(history.getByText("Monday 06:40 · group 4 of 20 · took 21 min")).toBeInTheDocument();
+    // what the newest found
+    expect(details.getByText("3 errors")).toBeInTheDocument();
+    expect(details.getByText("pack 1b2c3d: does not exist")).toBeInTheDocument();
+    expect(details.getByText("and 1 more line")).toBeInTheDocument();
+    expect(
+      details.getByText("Confirmed by a second check with the repository locked."),
+    ).toBeInTheDocument();
+    expect(details.getByText("The index is damaged: run restic repair index.")).toBeInTheDocument();
+    expect(
+      details.getByText(
+        "Pack files are damaged: read restic's troubleshooting guide, then run restic repair packs 1b2c3d 3d4e5f and restic repair snapshots --forget.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      details.getByText(
+        "PocketCloud never repairs a repository itself: restic repair writes to it. Check again afterwards.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      details.getByText(
+        "2 additional files were found in the repo, which likely contain duplicate data.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(details.getByRole("button", { name: "Show output" }));
+    const output = details.getByRole("region", { name: "Command output" });
+    expect(output).toHaveAttribute("data-command", "cmd2");
+    expect(within(output).getByText("Integrity check of Backblaze B2")).toBeInTheDocument();
+    // a viewer neither checks nor stops
+    expect(details.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
+  });
+
+  it("shows another check when it is picked", () => {
+    const unconfirmed = check({ id: "c0", unconfirmed: true, created: "2026-11-01 05:00:00.000Z" });
+    live.records = { backup_checks: { c1: check({}), c0: unconfirmed } };
+    show("viewer", [checked()], { backup_checks: [check({}), unconfirmed] }, "/backups?check=t1");
+
+    const details = drawer("Backblaze B2");
+    expect(details.getByText("restic found no errors.")).toBeInTheDocument();
+    const rows = details.getAllByRole("button", { name: /^OK · scheduled: Show the check of / });
+    expect(rows[0]).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(rows[1]);
+    expect(rows[1]).toHaveAttribute("aria-pressed", "true");
+    expect(
+      details.getByText(/^The first check, without a lock, saw errors that the second/),
+    ).toBeInTheDocument();
+  });
+
+  it("says no check has run yet", () => {
+    show("viewer", [bucket], {}, "/backups?check=t1");
+    expect(drawer("Backblaze B2").getByText("No check has run yet.")).toBeInTheDocument();
+  });
+
+  it("lets an operator stop a running check, after a confirmation", async () => {
+    const running = check({ id: "c2", status: "running", command: "cmd2", finished_at: "" });
+    live.records = {
+      commands: { cmd2: { id: "cmd2", progress: { step: "confirm", percent: 80 } } },
+    };
+    show(
+      "operator",
+      [checked({ last_check: "c2", last_check_status: "running" })],
+      {
+        backup_checks: [running, check({})],
+      },
+      "/backups?check=t1",
+    );
+    const stopped = vi.spyOn(api, "cancelCommand").mockResolvedValue({});
+
+    const details = drawer("Backblaze B2");
+    expect(
+      details.getByRole("progressbar", { name: "How far the check of Backblaze B2 is" }),
+    ).toHaveAttribute("aria-valuenow", "80");
+    expect(
+      details.getByText("checking again with the repository locked · 80%"),
+    ).toBeInTheDocument();
+    // an operator may stop it, but only an admin checks
+    expect(details.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
+    fireEvent.click(details.getByRole("button", { name: "Stop" }));
+    const confirm = within(
+      screen.getByRole("dialog", { name: "Stop the integrity check of Backblaze B2?" }),
+    );
+    expect(
+      confirm.getByText(
+        "restic stops and removes its lock; nothing in the repository changes. The next check reads the same group.",
+      ),
+    ).toBeInTheDocument();
+    expect(stopped).not.toHaveBeenCalled();
+    fireEvent.click(confirm.getByRole("button", { name: "Stop" }));
+    expect(stopped).toHaveBeenCalledWith("cmd2");
+    expect(await screen.findByText("The check of Backblaze B2 is stopping.")).toBeInTheDocument();
+  });
+
+  it("shows a viewer no Stop, and an admin Check now in the details", () => {
+    const running = check({ id: "c2", status: "running", command: "cmd2", finished_at: "" });
+    show(
+      "viewer",
+      [checked({ last_check: "c2", last_check_status: "running" })],
+      {
+        backup_checks: [running],
+      },
+      "/backups?check=t1",
+    );
+    expect(drawer("Backblaze B2").queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    cleanup();
+
+    show("admin", [checked()], {}, "/backups?check=t1");
+    expect(
+      drawer("Backblaze B2").getByRole("button", {
+        name: "Check now: the integrity of Backblaze B2",
+      }),
+    ).toBeEnabled();
   });
 });

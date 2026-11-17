@@ -1,4 +1,4 @@
-import { Pencil, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Pencil, Trash2, XCircle } from "lucide-react";
 import type { RecordModel } from "pocketbase";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,7 +17,14 @@ import {
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import {
+  formatCheckMoment,
+  integritySummary,
+  type BackupCheck,
+  type IntegritySummary,
+} from "../lib/backupChecks";
+import {
   cronPreset,
+  cronShaped,
   describeCron,
   describeRetention,
   dumpEngines,
@@ -28,6 +35,7 @@ import {
   guessEngine,
   jobsApi,
   lastRun,
+  maxAttempts,
   nextJob,
   parseKeep,
   parseTime,
@@ -63,24 +71,30 @@ import { formatBytes, formatNumber } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
-import type { Container, Host, Stack, Volume } from "../lib/types";
+import type { Alert, Container, Host, Stack, Volume } from "../lib/types";
 
 /** The stacks as the jobs need them: no compose files. */
 export type StackName = Pick<Stack, "id" | "name" | "host">;
 
 /** The tiles above the jobs: how the last 14 days went, what the targets
- * hold, and which job runs next. */
+ * hold, which job runs next, and how the targets' integrity checks stand. */
 export function BackupSummary({
   jobs,
   runs,
   targets,
   hosts,
+  unverified = [],
+  openChecks = [],
   now,
 }: {
   jobs: BackupJob[];
   runs: BackupRun[];
   targets: BackupTarget[];
   hosts: Host[];
+  /** the open alerts that a target's repository is not verified */
+  unverified?: Pick<Alert, "rule" | "target" | "status">[];
+  /** the integrity checks queued or running */
+  openChecks?: Pick<BackupCheck, "target" | "status">[];
   now: number;
 }) {
   const { t } = useTranslation();
@@ -122,7 +136,52 @@ export function BackupSummary({
             : t("backups.summary.nothingScheduled")
         }
       />
+      <IntegrityKpi summary={integritySummary(targets, unverified, openChecks)} now={now} />
     </section>
+  );
+}
+
+/** The integrity tile, as the design has it: a word and its icon, never the
+ * colour alone, and the next check below; while a check runs, its target. */
+function IntegrityKpi({ summary, now }: { summary: IntegritySummary; now: number }) {
+  const { t } = useTranslation();
+  let tone: "ok" | "warn" | "err" | undefined;
+  let icon: ReactNode = null;
+  let value: string;
+  let note: string;
+  switch (summary.state) {
+    case "ok":
+      tone = "ok";
+      icon = <CheckCircle2 size={24} aria-hidden="true" />;
+      value = t("backups.summary.integrityOk");
+      note = t("backups.summary.integrityNote", { when: formatCheckMoment(summary.next, now) });
+      break;
+    case "failed":
+      tone = "err";
+      icon = <XCircle size={24} aria-hidden="true" />;
+      value = t("backups.summary.integrityErrors");
+      note = t("backups.summary.integrityErrorsNote", { count: summary.count });
+      break;
+    case "unverified":
+      tone = "warn";
+      icon = <AlertTriangle size={24} aria-hidden="true" />;
+      value = t("backups.summary.integrityUnverified");
+      note = t("backups.summary.integrityUnverifiedNote", { count: summary.count });
+      break;
+    case "never":
+      value = "–";
+      note = t("backups.summary.integrityNever");
+      break;
+    case "off":
+      value = "–";
+      note = t("backups.summary.integrityOff");
+      break;
+  }
+  if (summary.running) {
+    note = t("backups.summary.integrityChecking", { name: summary.running.name });
+  }
+  return (
+    <Kpi label={t("backups.summary.integrity")} value={value} tone={tone} icon={icon} note={note} />
   );
 }
 
@@ -143,8 +202,13 @@ function StripLegend() {
   );
 }
 
-function daySummary(day: Pick<StripDay, "succeeded" | "failed" | "skipped">, t: Translate) {
-  const parts = (["succeeded", "failed", "skipped"] as const)
+/** A day's runs in words; of those that succeeded, how many did as a retry
+ * of a run that failed, which the strip no longer counts. */
+function daySummary(
+  day: Pick<StripDay, "succeeded" | "failed" | "skipped" | "retried">,
+  t: Translate,
+) {
+  const parts = (["succeeded", "retried", "failed", "skipped"] as const)
     .filter((status) => day[status] > 0)
     .map((status) => t(`backups.strip.count.${status}`, { count: day[status] }));
   return parts.length > 0 ? parts.join(", ") : t("backups.strip.none");
@@ -161,8 +225,9 @@ function DayStrip({ days }: { days: StripDay[] }) {
       succeeded: sum.succeeded + day.succeeded,
       failed: sum.failed + day.failed,
       skipped: sum.skipped + day.skipped,
+      retried: sum.retried + day.retried,
     }),
-    { succeeded: 0, failed: 0, skipped: 0 },
+    { succeeded: 0, failed: 0, skipped: 0, retried: 0 },
   );
   return (
     <div
@@ -228,7 +293,8 @@ export function describeSource(job: BackupJob, stacks: StackName[], t: Translate
   return job.origin === "label" ? `${text} · ${t("backups.job.fromLabel")}` : text;
 }
 
-/** How the job's last runs went: the newest per target, the worst first. */
+/** How the job's last runs went: the newest per target, the worst first;
+ * of a failed run, why in a word (#31), and when it is tried again. */
 function LastRun({
   job,
   runs,
@@ -264,7 +330,10 @@ function LastRun({
       ? t("backups.job.bytesAdded", {
           size: run.bytes_added > 0 ? formatBytes(run.bytes_added) : `${formatNumber(0)} B`,
         })
-      : [target?.name, shortError(run.error)].filter(Boolean).join(": ");
+      : [target?.name, failureWord(run, t) || shortError(run.error)].filter(Boolean).join(": ");
+  // the panel tries it again by itself, or once restic counts its lock as stale
+  const retryAt = run.status === "failed" ? (run.retry_at ?? "") : "";
+  const attempt = (run.attempt || 1) + 1;
   // the backup is there, but restic did not forget the old snapshots
   const retention =
     run.status === "succeeded" && (run.retention === "deferred" || run.retention === "failed")
@@ -283,6 +352,15 @@ function LastRun({
           {detail}
         </div>
       )}
+      {retryAt && (
+        <div className="run-retry" title={run.retry_note || undefined}>
+          {t("backups.job.retrying", {
+            attempt,
+            max: Math.max(maxAttempts, attempt),
+            time: formatMoment(retryAt, now),
+          })}
+        </div>
+      )}
       {retention && (
         <div
           className={`run-retention ${retention}`}
@@ -295,6 +373,12 @@ function LastRun({
       )}
     </>
   );
+}
+
+/** Why a run failed in a word, as the agent or the panel classed it: "repo
+ * zamčené"; "" for a run of an older panel, which says it only in its error. */
+function failureWord(run: Pick<BackupRun, "status" | "failure">, t: Translate): string {
+  return run.status === "failed" && run.failure ? t(`backups.runFailure.${run.failure}`) : "";
 }
 
 /** The jobs as the design lists them, with what each backs up, where to,
@@ -709,13 +793,6 @@ const defaultRetention: Retention = {
 
 function sameTargets(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
-}
-
-/** Whether a cron expression has the shape the panel takes: five fields, or
- * a macro such as @daily. The panel checks the rest. */
-function cronShaped(cron: string): boolean {
-  const text = cron.trim();
-  return /^@\w+$/.test(text) || text.split(/\s+/).length === 5;
 }
 
 /** The browser's time zone, to say which local time the presets are in. */

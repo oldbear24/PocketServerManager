@@ -45,8 +45,20 @@ export const domainAlertRules = [
   "dns_provider_failed",
 ];
 
+/** The rules of the alerts about backups, which link there and mark it in
+ * the navigation (#29, #31): a job's to a target, keyed "<job>:<target>",
+ * and a target's repository, keyed by the target. */
+export const backupAlertRules = [
+  "backup_failed",
+  "backup_skipped",
+  "backup_retention",
+  "backup_check_failed",
+  "backup_check_unverified",
+];
+
 /** Where an alert is fixed: the certificate or the DNS provider it is about
- * on Domains & TLS, or its server. */
+ * on Domains & TLS, a job's runs to a target or a target's integrity checks
+ * on Backups, or its server. */
 export function alertLink(alert: Alert): string | null {
   switch (alert.rule) {
     case "certificate_failed":
@@ -54,6 +66,22 @@ export function alertLink(alert: Alert): string | null {
       return `/domains?certificate=${encodeURIComponent(alert.target)}`;
     case "dns_provider_failed":
       return `/domains?provider=${encodeURIComponent(alert.target)}`;
+    case "backup_failed":
+    case "backup_skipped":
+    case "backup_retention": {
+      const [job, target = ""] = alert.target.split(":");
+      if (job) {
+        const query = new URLSearchParams({ job });
+        if (target) {
+          query.set("target", target);
+        }
+        return `/backups?${query.toString()}`;
+      }
+      return "/backups";
+    }
+    case "backup_check_failed":
+    case "backup_check_unverified":
+      return alert.target ? `/backups?check=${encodeURIComponent(alert.target)}` : "/backups";
   }
   return alert.host ? `/servers/${alert.host}` : null;
 }

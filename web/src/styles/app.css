@@ -398,6 +398,31 @@ code,
   letter-spacing: 0;
 }
 
+/* a status figure: its word and icon in the status's text colour, which
+   only repeats what they say */
+.kpi-value.ok {
+  color: var(--ok-text);
+}
+
+.kpi-value.warn {
+  color: var(--warn-text);
+}
+
+.kpi-value.err {
+  color: var(--err-text);
+}
+
+.kpi-value.with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kpi-value.with-icon svg {
+  flex: none;
+}
+
 .kpi-note {
   font-size: 12px;
   color: var(--text-2);
@@ -458,6 +483,20 @@ code,
 
 .button.warning:hover:not(:disabled) {
   background: color-mix(in srgb, var(--warn) 88%, white);
+}
+
+/* what fixes a failure, as Unlock and retry of a failed backup (#31) */
+.button.critical {
+  background: var(--err);
+  border-color: var(--err);
+  color: var(--on-err);
+  font-weight: 600;
+}
+
+.button.critical:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--err) 88%, white);
+  border-color: color-mix(in srgb, var(--err) 88%, white);
+  color: var(--on-err);
 }
 
 .button.small {
@@ -961,6 +1000,109 @@ code,
   border-color: transparent;
 }
 
+/* A problem to act on, as the design's failed-backup banner (#31) */
+.issue-banner {
+  --issue-icon: var(--err);
+  --issue-bg: var(--err-bg);
+  --issue-border: var(--err-border);
+  --issue-title: var(--err-title);
+  --issue-detail: var(--err-detail);
+  --issue-control: var(--err-control);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-card);
+  background: var(--issue-bg);
+  border: 1px solid var(--issue-border);
+  min-width: 0;
+}
+
+.issue-banner.warn {
+  --issue-icon: var(--warn);
+  --issue-bg: var(--warn-bg);
+  --issue-border: var(--warn-border);
+  --issue-title: var(--warn-title);
+  --issue-detail: var(--warn-detail);
+  --issue-control: var(--warn-control);
+}
+
+.issue-banner.info {
+  --issue-icon: var(--info);
+  --issue-bg: var(--info-bg);
+  --issue-border: var(--info-border);
+  --issue-title: var(--info-title);
+  --issue-detail: var(--info-detail);
+  --issue-control: var(--info-control);
+}
+
+.issue-banner-icon {
+  display: inline-flex;
+  flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
+  color: var(--issue-icon);
+}
+
+.issue-banner-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.issue-banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--issue-title);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-detail {
+  font-size: 12.5px;
+  color: var(--issue-detail);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--issue-detail);
+  overflow-wrap: anywhere;
+}
+
+.issue-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-banner-actions .button {
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* the secondary action, as Show log: an outline in the banner's colour */
+.issue-banner-actions .button:not(.critical, .warning, .primary) {
+  background: transparent;
+  border-color: var(--issue-control);
+  color: var(--issue-title);
+}
+
+.issue-banner-actions .button:not(.critical, .warning, .primary):hover:not(:disabled) {
+  background: var(--issue-control);
+  color: var(--issue-title);
+}
+
+/* the problems of the backups, under their summary (#31) */
+.failure-banners {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 /* Toasts */
 .toasts {
   position: fixed;
@@ -1010,6 +1152,12 @@ code,
   font-size: 16px;
   font-weight: 600;
   margin-bottom: 8px;
+}
+
+/* a dialog's text, facts and error, spaced apart */
+.dialog-stack {
+  display: grid;
+  gap: 12px;
 }
 
 .dialog-actions {
@@ -2324,18 +2472,6 @@ td .row-actions {
   font-size: 24px;
 }
 
-.site-kpis .kpi-value.ok {
-  color: var(--ok-text);
-}
-
-.site-kpis .kpi-value.warn {
-  color: var(--warn-text);
-}
-
-.site-kpis .kpi-value.err {
-  color: var(--err-text);
-}
-
 .request-bars-plot {
   border-radius: 4px;
 }
@@ -2859,6 +2995,69 @@ td .row-actions {
   color: var(--text-2);
 }
 
+/* a target's integrity checks (#31): their own line under its meta, apart
+   from #28's reachability */
+.backup-target-integrity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.backup-target-integrity-label {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.backup-target-integrity .row-actions {
+  margin-left: auto;
+}
+
+/* the integrity drawer: the check under way, the history, what one found */
+.check-running {
+  display: grid;
+  gap: 8px;
+}
+
+.check-pick {
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.check-pick.picked {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.check-findings {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* restic's lines and the repair's pack ids are long words: they wrap
+   anywhere, or they would widen the drawer past a phone's screen */
+.check-errors,
+.check-repair,
+.check-notes {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.check-errors li {
+  color: var(--err-text);
+}
+
 /* Backup jobs (#29), as the design's Jobs card */
 .backup-jobs {
   min-width: 1000px;
@@ -2966,6 +3165,7 @@ td .row-actions {
 }
 
 .run-detail,
+.run-retry,
 .run-retention {
   max-width: 170px;
   font-size: 12px;
@@ -2973,6 +3173,11 @@ td .row-actions {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* a failed run the panel tries again (#31): a warning until none is left */
+.run-retry {
+  color: var(--warn-text);
 }
 
 /* a backup that kept every snapshot: put off is no error, a failure is */
@@ -3019,6 +3224,7 @@ td .row-actions {
 }
 
 .server-jobs .run-detail,
+.server-jobs .run-retry,
 .server-jobs .run-retention {
   max-width: min(260px, 32vw);
 }

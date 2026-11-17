@@ -36,7 +36,9 @@
     "openAlerts_one": "{{count}} open alert",
     "openAlerts_other": "{{count}} open alerts",
     "domainsAlert_one": "{{count}} open alert",
-    "domainsAlert_other": "{{count}} open alerts"
+    "domainsAlert_other": "{{count}} open alerts",
+    "backupsAlert_one": "{{count}} open alert",
+    "backupsAlert_other": "{{count}} open alerts"
   },
   "auth": {
     "signIn": "Sign in",
@@ -590,7 +592,16 @@
     "smtpFromNote": "A relay needs a sender: the envelope sender of every message, and its From header where the site sets none. Every PHP site restarts its PHP-FPM with the change, without dropping requests; an empty relay turns mail off.",
     "smtpRemovePassword": "Remove the password",
     "smtpSaved_one": "The relay was saved; {{count}} PHP site takes it.",
-    "smtpSaved_other": "The relay was saved; {{count}} PHP sites take it."
+    "smtpSaved_other": "The relay was saved; {{count}} PHP sites take it.",
+    "backupChecks": "Integrity checks of backups",
+    "backupChecksNote": "restic check reads each target's repository on this schedule, one group of its data packs at a time.",
+    "backupCheckSchedule": "Schedule (cron, UTC)",
+    "backupCheckScheduleHint": "Empty turns the checks off. At most once a day.",
+    "backupCheckGroups": "Groups",
+    "backupCheckGroupsHint": "Each check reads the next of this many groups: 20 reads about 5 % each time, and every pack in 20 checks; 0 checks the structure only and reads no data.",
+    "backupCheckGroupsInvalid": "A whole number from 0 to 256.",
+    "backupChecksOff": "Without checks, damage in a repository shows only when you restore.",
+    "backupChecksSaved": "The integrity checks were saved."
   },
   "event": {
     "agent": {
@@ -627,7 +638,12 @@
   },
   "alert": {
     "agent_offline": "{{name}}: the agent stopped responding",
-    "audit_integrity": "The integrity check of the audit log failed"
+    "audit_integrity": "The integrity check of the audit log failed",
+    "backup_failed": "{{name}}: a backup failed",
+    "backup_skipped": "{{name}}: a backup was skipped",
+    "backup_retention": "{{name}}: old snapshots are not being removed",
+    "backup_check_failed": "{{name}}: a backup repository has errors",
+    "backup_check_unverified": "{{name}}: a backup repository is not verified"
   },
   "chart": {
     "now": "now",
@@ -1999,7 +2015,19 @@
       "storedNote_other": "in {{count}} targets",
       "notMeasured": "the targets are not measured yet",
       "nextRun": "Next run",
-      "nothingScheduled": "no job is scheduled"
+      "nothingScheduled": "no job is scheduled",
+      "integrity": "Integrity check",
+      "integrityOk": "OK",
+      "integrityErrors": "Errors",
+      "integrityUnverified": "Not verified",
+      "integrityNote": "restic check · {{when}}",
+      "integrityChecking": "checking {{name}}…",
+      "integrityNever": "no check has run yet",
+      "integrityOff": "checks are off",
+      "integrityErrorsNote_one": "{{count}} target has errors",
+      "integrityErrorsNote_other": "{{count}} targets have errors",
+      "integrityUnverifiedNote_one": "{{count}} target not verified",
+      "integrityUnverifiedNote_other": "{{count}} targets not verified"
     },
     "strip": {
       "legend": "What the colours of the 14 days mean",
@@ -2010,7 +2038,8 @@
       "count": {
         "succeeded": "{{count}} succeeded",
         "failed": "{{count}} failed",
-        "skipped": "{{count}} skipped"
+        "skipped": "{{count}} skipped",
+        "retried": "{{count}} after a retry"
       },
       "none": "no run",
       "label": "Last 14 days: {{summary}}"
@@ -2183,7 +2212,8 @@
       "retentionInvalid": "Whole numbers from 0 to 10000; empty keeps none of that kind.",
       "enabled": "Enabled: it runs on its schedule",
       "pickHint": "click a name for its snapshots",
-      "showSnapshots": "Show the snapshots of {{name}}"
+      "showSnapshots": "Show the snapshots of {{name}}",
+      "retrying": "retry {{attempt}}/{{max}}: {{time}}"
     },
     "snapshot": {
       "today": "today {{time}}",
@@ -2369,6 +2399,152 @@
       "downloadFrame": "Download of {{name}}",
       "downloadOne": "A download takes one item, or a whole folder: pick one, or none."
     },
-    "restoreFromBackup": "Restore from backup"
+    "restoreFromBackup": "Restore from backup",
+    "integrity": {
+      "label": "Integrity",
+      "status": {
+        "never": "No check yet",
+        "queued": "Waiting to check",
+        "running": "Checking",
+        "ok": "OK",
+        "failed": "Errors found",
+        "suspect": "Unconfirmed errors",
+        "error": "Could not check",
+        "skipped": "Skipped",
+        "cancelled": "Stopped"
+      },
+      "checkedAt": "restic check {{when}}",
+      "group": "group {{n}} of {{t}}",
+      "structure": "structure only",
+      "took": "took {{duration}}",
+      "next": "next {{when}}",
+      "lastAttempt": "last attempt {{when}}: {{reason}}",
+      "retryAt": "next try: {{time}}",
+      "progress": "{{step}} · {{percent}}",
+      "progressLabel": "How far the check of {{name}} is",
+      "step": {
+        "lock": "waiting for the repository's lock",
+        "index": "loading the index",
+        "packs": "checking the pack files",
+        "snapshots": "checking snapshots, trees and blobs",
+        "read": "reading data",
+        "confirm": "checking again with the repository locked"
+      },
+      "checkNow": "Check now",
+      "checkNowName": "Check now: the integrity of {{name}}",
+      "starting": "Starting…",
+      "started": "The integrity check of {{name}} is queued.",
+      "startFailed": "The integrity check of {{name}} did not start: {{error}}",
+      "confirmTitle": "Check {{name}} now?",
+      "confirmText": "restic reads group {{n}} of {{t}} of the data packs, about {{percent}} of the repository, through the agent of {{server}}; storage that bills downloads bills it. The check locks nothing; only if it finds errors does it check that group again with the repository locked, and backups to it wait meanwhile.",
+      "confirmTextStructure": "restic checks the repository's structure through the agent of {{server}} and reads no data packs. The check locks nothing; only if it finds errors does it check again with the repository locked.",
+      "confirm": "Check now",
+      "details": "Details",
+      "detailsName": "Details of the integrity checks of {{name}}",
+      "drawerTitle": "Integrity of {{name}}",
+      "fact": {
+        "next": "Next check",
+        "group": "Next group",
+        "status": "Newest check"
+      },
+      "lastOk": "Last OK",
+      "history": "Recent checks",
+      "noHistory": "No check has run yet.",
+      "showCheck": "Show the check of {{when}}",
+      "trigger": {
+        "schedule": "scheduled",
+        "manual": "by hand",
+        "retry": "retry"
+      },
+      "errors_one": "{{count}} error",
+      "errors_other": "{{count}} errors",
+      "moreErrors_one": "and {{count}} more line",
+      "moreErrors_other": "and {{count}} more lines",
+      "packsRead_one": "{{read}} of {{count}} pack file read",
+      "packsRead_other": "{{read}} of {{count}} pack files read",
+      "found": "What restic found",
+      "noErrors": "restic found no errors.",
+      "confirmed": "Confirmed by a second check with the repository locked.",
+      "unconfirmedOk": "The first check, without a lock, saw errors that the second, with the repository locked, did not: most likely a prune ran meanwhile. The repository is fine.",
+      "suspect": "The first check found errors; the second could not lock the repository to confirm them. PocketCloud tries again.",
+      "repair": "How to repair",
+      "repairIndex": "The index is damaged: run restic repair index.",
+      "repairPacks": "Pack files are damaged: read restic's troubleshooting guide, then run restic repair packs {{ids}} and restic repair snapshots --forget.",
+      "repairOther": "The repository is damaged and must be repaired: follow restic's troubleshooting guide.",
+      "repairNote": "PocketCloud never repairs a repository itself: restic repair writes to it. Check again afterwards.",
+      "notes": "Notes (not errors)",
+      "showOutput": "Show output",
+      "logTitle": "Integrity check of {{name}}",
+      "stop": "Stop",
+      "stopTitle": "Stop the integrity check of {{name}}?",
+      "stopText": "restic stops and removes its lock; nothing in the repository changes. The next check reads the same group.",
+      "stopping": "The check of {{name}} is stopping.",
+      "cannot": {
+        "busy": "A check of it is under way.",
+        "offline": "Its server {{server}} is offline.",
+        "agent": "The agent of {{server}} cannot check repositories yet: update it.",
+        "pending": "Finish adding the target first."
+      }
+    },
+    "runFailure": {
+      "locked": "repository locked",
+      "lock_invalid": "unreadable lock",
+      "repository": "repository gone",
+      "password": "wrong password",
+      "partial": "some files not read",
+      "source": "source failed",
+      "restic": "restic failed",
+      "interrupted": "interrupted",
+      "timeout": "did not finish in time"
+    },
+    "failure": {
+      "label": "Backup problems",
+      "title": "{{job}} @ {{server}} failed at {{time}}",
+      "titleVe": "{{job}} @ {{server}} failed at {{time}}",
+      "titleDay": "{{job}} @ {{server}} failed {{when}}",
+      "target": "to {{target}}",
+      "attempt": "attempt {{attempt}} of {{max}}",
+      "retryAt": "next try: {{time}}",
+      "waitsHolder": "retries when it ends",
+      "retrying": "Trying again…",
+      "nextRun": "the next scheduled run tries again: {{time}}",
+      "noMore": "no more automatic retries",
+      "notRetried": "not retried automatically: it does not go away by itself",
+      "invalidLock": "An unreadable lock file blocks the repository, and restic unlock leaves it: once no restic uses the repository, delete that lock file from the storage, then retry.",
+      "holderCommand": "Held by “{{label}}” on {{server}}, which is still running.",
+      "holderEnded": "Left by “{{label}}” on {{server}}, which has ended.",
+      "holderOther": "Held by restic on {{host}} (PID {{pid}}), which PocketCloud does not run; last refreshed: {{time}}.",
+      "staleAt": "If it is gone, restic counts its lock as stale from {{time}}.",
+      "unlockRetry": "Unlock and retry",
+      "retry": "Retry now",
+      "showLog": "Show log",
+      "heldTitle": "A restic that is still running holds the lock: PocketCloud retries once it ends.",
+      "more_one": "Show {{count}} more problem",
+      "more_other": "Show {{count}} more problems",
+      "fewer": "Show fewer",
+      "integrity": "The integrity check of {{target}} found errors",
+      "integrityDetails": "Show details",
+      "logTitle": "Log of {{job}} → {{target}}",
+      "started": "{{job}} runs again to {{target}}.",
+      "scheduled": "{{job}} is tried again once restic counts the lock as stale: {{time}}.",
+      "retryFailed": "The retry did not start: {{error}}"
+    },
+    "unlock": {
+      "title": "Unlock {{target}} and retry {{job}}?",
+      "text": "restic unlock removes only locks no restic holds any more: those nobody refreshed for 30 minutes. A running restic's lock stays, whatever this page shows. Then {{job}} runs again; for a lock younger than 30 minutes, PocketCloud waits until it is stale.",
+      "fact": {
+        "holder": "Held by",
+        "host": "Host",
+        "pid": "PID",
+        "refreshed": "Last refreshed",
+        "kind": "Lock"
+      },
+      "exclusive": "exclusive",
+      "shared": "shared",
+      "confirm": "Unlock and retry",
+      "confirmLater": "Schedule for {{time}}",
+      "busy": "Unlocking…",
+      "agentNote": "The agent of {{server}} runs restic unlock, then the backup."
+    }
   }
 }

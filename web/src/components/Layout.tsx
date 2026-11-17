@@ -20,7 +20,7 @@ import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet } from "react-router-dom";
 
 import { api } from "../lib/api";
-import { domainAlertRules } from "../lib/events";
+import { backupAlertRules, domainAlertRules } from "../lib/events";
 import { hasRole, useAuth } from "../lib/auth";
 import type { Database as DatabaseRecord } from "../lib/databases";
 import type { Role } from "../lib/pb";
@@ -60,6 +60,18 @@ function Item({ item }: { item: NavItem }) {
       )}
     </NavLink>
   );
+}
+
+/** A section's dot from its open alerts: err when any is critical, else warn,
+ * and none without an alert. */
+export function alertDot(
+  alerts: Pick<Alert, "severity">[],
+  total: number,
+): "err" | "warn" | undefined {
+  if (alerts.some((alert) => alert.severity === "critical")) {
+    return "err";
+  }
+  return total > 0 ? "warn" : undefined;
 }
 
 function Section({ heading, items }: { heading?: string; items: NavItem[] }) {
@@ -128,11 +140,13 @@ export function Layout() {
     filter: `status != 'resolved' && (${domainAlertRules.map((rule) => `rule = '${rule}'`).join(" || ")})`,
     perPage: 50,
   });
-  const domainsDot = domainAlerts.items.some((alert) => alert.severity === "critical")
-    ? "err"
-    : domainAlerts.total > 0
-      ? "warn"
-      : undefined;
+  const domainsDot = alertDot(domainAlerts.items, domainAlerts.total);
+  // a failed backup or a repository with errors marks Backups (#31)
+  const backupAlerts = useLiveList<Alert>("alerts", {
+    filter: `status != 'resolved' && (${backupAlertRules.map((rule) => `rule = '${rule}'`).join(" || ")})`,
+    perPage: 50,
+  });
+  const backupsDot = alertDot(backupAlerts.items, backupAlerts.total);
 
   const overview: NavItem[] = [
     { to: "/", label: t("nav.overview"), icon: LayoutDashboard, end: true },
@@ -142,7 +156,13 @@ export function Layout() {
     { to: "/servers", label: t("nav.servers"), icon: Server, count: hosts.total },
     { to: "/stacks", label: t("nav.stacks"), icon: Layers, count: containers.total },
     { to: "/databases", label: t("nav.databases"), icon: Database, count: databases.total },
-    { to: "/backups", label: t("nav.backups"), icon: Archive },
+    {
+      to: "/backups",
+      label: t("nav.backups"),
+      icon: Archive,
+      dot: backupsDot,
+      dotLabel: t("nav.backupsAlert", { count: backupAlerts.total }),
+    },
   ];
 
   const web: NavItem[] = [

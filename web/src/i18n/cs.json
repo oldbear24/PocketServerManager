@@ -40,7 +40,11 @@
     "domainsAlert_one": "{{count}} otevřené upozornění",
     "domainsAlert_other": "{{count}} otevřených upozornění",
     "domainsAlert_few": "{{count}} otevřená upozornění",
-    "domainsAlert_many": "{{count}} otevřených upozornění"
+    "domainsAlert_many": "{{count}} otevřených upozornění",
+    "backupsAlert_one": "{{count}} otevřené upozornění",
+    "backupsAlert_few": "{{count}} otevřená upozornění",
+    "backupsAlert_many": "{{count}} otevřených upozornění",
+    "backupsAlert_other": "{{count}} otevřených upozornění"
   },
   "auth": {
     "signIn": "Přihlásit se",
@@ -624,7 +628,16 @@
     "smtpSaved_one": "Relay byl uložen; přebírá ho {{count}} PHP web.",
     "smtpSaved_few": "Relay byl uložen; přebírají ho {{count}} PHP weby.",
     "smtpSaved_many": "Relay byl uložen; přebírá ho {{count}} PHP webu.",
-    "smtpSaved_other": "Relay byl uložen; přebírá ho {{count}} PHP webů."
+    "smtpSaved_other": "Relay byl uložen; přebírá ho {{count}} PHP webů.",
+    "backupChecks": "Kontroly integrity záloh",
+    "backupChecksNote": "restic check podle tohoto plánu čte repozitář každého cíle, pokaždé jednu skupinu jeho datových balíků.",
+    "backupCheckSchedule": "Plán (cron, UTC)",
+    "backupCheckScheduleHint": "Prázdné pole kontroly vypne. Nejvýš jednou denně.",
+    "backupCheckGroups": "Skupiny",
+    "backupCheckGroupsHint": "Každá kontrola přečte další z tolika skupin: 20 znamená asi 5 % pokaždé a všechny balíky za 20 kontrol; 0 kontroluje jen strukturu a nečte data.",
+    "backupCheckGroupsInvalid": "Celé číslo od 0 do 256.",
+    "backupChecksOff": "Bez kontrol se poškození repozitáře ukáže až při obnově.",
+    "backupChecksSaved": "Kontroly integrity byly uloženy."
   },
   "event": {
     "agent": {
@@ -661,7 +674,12 @@
   },
   "alert": {
     "agent_offline": "{{name}}: agent přestal odpovídat",
-    "audit_integrity": "Kontrola integrity auditu selhala"
+    "audit_integrity": "Kontrola integrity auditu selhala",
+    "backup_failed": "{{name}}: záloha selhala",
+    "backup_skipped": "{{name}}: záloha byla přeskočena",
+    "backup_retention": "{{name}}: staré snapshoty se neodstraňují",
+    "backup_check_failed": "{{name}}: repozitář záloh obsahuje chyby",
+    "backup_check_unverified": "{{name}}: repozitář záloh není ověřený"
   },
   "chart": {
     "now": "teď",
@@ -2093,7 +2111,23 @@
       "storedNote_other": "součet za {{count}} cílů",
       "notMeasured": "cíle zatím nejsou změřené",
       "nextRun": "Další běh",
-      "nothingScheduled": "žádná úloha není naplánovaná"
+      "nothingScheduled": "žádná úloha není naplánovaná",
+      "integrity": "Kontrola integrity",
+      "integrityOk": "OK",
+      "integrityErrors": "Chyby",
+      "integrityUnverified": "Neověřeno",
+      "integrityNote": "restic check · {{when}}",
+      "integrityChecking": "kontroluje se {{name}}…",
+      "integrityNever": "zatím neproběhla žádná kontrola",
+      "integrityOff": "kontroly jsou vypnuté",
+      "integrityErrorsNote_one": "{{count}} cíl má chyby",
+      "integrityErrorsNote_few": "{{count}} cíle mají chyby",
+      "integrityErrorsNote_many": "{{count}} cíle má chyby",
+      "integrityErrorsNote_other": "{{count}} cílů má chyby",
+      "integrityUnverifiedNote_one": "{{count}} cíl neověřen",
+      "integrityUnverifiedNote_few": "{{count}} cíle neověřeny",
+      "integrityUnverifiedNote_many": "{{count}} cíle neověřeno",
+      "integrityUnverifiedNote_other": "{{count}} cílů neověřeno"
     },
     "strip": {
       "legend": "Co znamenají barvy 14 dní",
@@ -2104,7 +2138,8 @@
       "count": {
         "succeeded": "úspěšně {{count}}",
         "failed": "s chybou {{count}}",
-        "skipped": "přeskočeno {{count}}"
+        "skipped": "přeskočeno {{count}}",
+        "retried": "po opakování {{count}}"
       },
       "none": "bez běhu",
       "label": "Posledních 14 dní: {{summary}}"
@@ -2285,7 +2320,8 @@
       "retentionInvalid": "Celá čísla od 0 do 10000; prázdné pole nedrží nic toho druhu.",
       "enabled": "Zapnuto: běží podle plánu",
       "pickHint": "klikni na název pro snapshoty",
-      "showSnapshots": "Zobrazit snapshoty úlohy {{name}}"
+      "showSnapshots": "Zobrazit snapshoty úlohy {{name}}",
+      "retrying": "pokus {{attempt}}/{{max}}: {{time}}"
     },
     "snapshot": {
       "today": "dnes {{time}}",
@@ -2495,6 +2531,160 @@
       "downloadFrame": "Stahování {{name}}",
       "downloadOne": "Stáhnout jde jednu položku, nebo celou složku: vyber jednu, nebo žádnou."
     },
-    "restoreFromBackup": "Obnovit ze zálohy"
+    "restoreFromBackup": "Obnovit ze zálohy",
+    "integrity": {
+      "label": "Integrita",
+      "status": {
+        "never": "Zatím nezkontrolováno",
+        "queued": "Čeká na kontrolu",
+        "running": "Kontroluje se",
+        "ok": "V pořádku",
+        "failed": "Nalezeny chyby",
+        "suspect": "Nepotvrzené chyby",
+        "error": "Kontrolu nešlo provést",
+        "skipped": "Přeskočeno",
+        "cancelled": "Zastaveno"
+      },
+      "checkedAt": "restic check {{when}}",
+      "group": "skupina {{n}} z {{t}}",
+      "structure": "jen struktura",
+      "took": "trvala {{duration}}",
+      "next": "další {{when}}",
+      "lastAttempt": "poslední pokus {{when}}: {{reason}}",
+      "retryAt": "další pokus: {{time}}",
+      "progress": "{{step}} · {{percent}}",
+      "progressLabel": "Průběh kontroly cíle {{name}}",
+      "step": {
+        "lock": "čeká na zámek repozitáře",
+        "index": "načítá index",
+        "packs": "kontroluje soubory balíků",
+        "snapshots": "kontroluje snapshoty, stromy a bloby",
+        "read": "čte data",
+        "confirm": "kontroluje znovu se zamčeným repozitářem"
+      },
+      "checkNow": "Zkontrolovat teď",
+      "checkNowName": "Zkontrolovat teď: integrita cíle {{name}}",
+      "starting": "Spouštím…",
+      "started": "Kontrola integrity cíle {{name}} je ve frontě.",
+      "startFailed": "Kontrola integrity cíle {{name}} nezačala: {{error}}",
+      "confirmTitle": "Zkontrolovat {{name}} teď?",
+      "confirmText": "restic přečte skupinu {{n}} z {{t}} datových balíků, asi {{percent}} repozitáře, přes agenta serveru {{server}}; úložiště, které účtuje stahování, to naúčtuje. Kontrola nic nezamyká; jen když najde chyby, zkontroluje tu skupinu znovu se zamčeným repozitářem a zálohy do něj mezitím počkají.",
+      "confirmTextStructure": "restic přes agenta serveru {{server}} zkontroluje strukturu repozitáře a nečte datové balíky. Kontrola nic nezamyká; jen když najde chyby, zkontroluje ho znovu se zamčeným repozitářem.",
+      "confirm": "Zkontrolovat",
+      "details": "Podrobnosti",
+      "detailsName": "Podrobnosti kontrol integrity cíle {{name}}",
+      "drawerTitle": "Integrita cíle {{name}}",
+      "fact": {
+        "next": "Příští kontrola",
+        "group": "Příští skupina",
+        "status": "Poslední kontrola"
+      },
+      "lastOk": "Naposledy v pořádku",
+      "history": "Poslední kontroly",
+      "noHistory": "Zatím neproběhla žádná kontrola.",
+      "showCheck": "Zobrazit kontrolu z {{when}}",
+      "trigger": {
+        "schedule": "plánovaná",
+        "manual": "ručně",
+        "retry": "opakování"
+      },
+      "errors_one": "{{count}} chyba",
+      "errors_few": "{{count}} chyby",
+      "errors_many": "{{count}} chyby",
+      "errors_other": "{{count}} chyb",
+      "moreErrors_one": "a {{count}} další řádek",
+      "moreErrors_few": "a {{count}} další řádky",
+      "moreErrors_many": "a {{count}} dalšího řádku",
+      "moreErrors_other": "a {{count}} dalších řádků",
+      "packsRead_one": "přečteno {{read}} z {{count}} souboru balíků",
+      "packsRead_few": "přečteno {{read}} z {{count}} souborů balíků",
+      "packsRead_many": "přečteno {{read}} z {{count}} souboru balíků",
+      "packsRead_other": "přečteno {{read}} z {{count}} souborů balíků",
+      "found": "Co restic našel",
+      "noErrors": "restic nenašel žádné chyby.",
+      "confirmed": "Potvrzeno druhou kontrolou se zamčeným repozitářem.",
+      "unconfirmedOk": "První kontrola bez zámku viděla chyby, které druhá, se zamčeným repozitářem, nenašla: nejspíš mezitím běžel prune. Repozitář je v pořádku.",
+      "suspect": "První kontrola našla chyby; druhá nemohla repozitář zamknout, aby je potvrdila. PocketCloud to zkusí znovu.",
+      "repair": "Jak opravit",
+      "repairIndex": "Index je poškozený: spusťte restic repair index.",
+      "repairPacks": "Soubory balíků jsou poškozené: přečtěte si průvodce řešením potíží resticu a pak spusťte restic repair packs {{ids}} a restic repair snapshots --forget.",
+      "repairOther": "Repozitář je poškozený a je třeba ho opravit: postupujte podle průvodce řešením potíží resticu.",
+      "repairNote": "PocketCloud repozitář nikdy neopravuje sám: restic repair do něj zapisuje. Potom kontrolu zopakujte.",
+      "notes": "Poznámky (nejde o chyby)",
+      "showOutput": "Zobrazit výstup",
+      "logTitle": "Kontrola integrity cíle {{name}}",
+      "stop": "Zastavit",
+      "stopTitle": "Zastavit kontrolu integrity cíle {{name}}?",
+      "stopText": "restic se zastaví a odstraní svůj zámek; v repozitáři se nic nezmění. Příští kontrola přečte stejnou skupinu.",
+      "stopping": "Kontrola cíle {{name}} se zastavuje.",
+      "cannot": {
+        "busy": "Kontrola už probíhá.",
+        "offline": "Jeho server {{server}} je offline.",
+        "agent": "Agent serveru {{server}} zatím kontroly neumí: aktualizujte ho.",
+        "pending": "Nejdřív dokončete přidání cíle."
+      }
+    },
+    "runFailure": {
+      "locked": "repo zamčené",
+      "lock_invalid": "nečitelný zámek",
+      "repository": "repozitář chybí",
+      "password": "nesprávné heslo",
+      "partial": "některé soubory nepřečteny",
+      "source": "zdroj selhal",
+      "restic": "restic selhal",
+      "interrupted": "přerušeno",
+      "timeout": "nedoběhla včas"
+    },
+    "failure": {
+      "label": "Problémy se zálohami",
+      "title": "{{job}} @ {{server}} selhala v {{time}}",
+      "titleVe": "{{job}} @ {{server}} selhala ve {{time}}",
+      "titleDay": "{{job}} @ {{server}} selhala ({{when}})",
+      "target": "do cíle {{target}}",
+      "attempt": "pokus {{attempt}} z {{max}}",
+      "retryAt": "další pokus: {{time}}",
+      "waitsHolder": "zopakuje se, až skončí",
+      "retrying": "Zkouší se znovu…",
+      "nextRun": "znovu to zkusí další plánovaný běh: {{time}}",
+      "noMore": "další automatické pokusy nebudou",
+      "notRetried": "neopakuje se automaticky: samo to nezmizí",
+      "invalidLock": "Repozitář blokuje nečitelný soubor zámku a restic unlock ho nechá být: až repozitář nebude používat žádný restic, smažte ten soubor zámku z úložiště a pak to zkuste znovu.",
+      "holderCommand": "Zámek drží příkaz „{{label}}“ na serveru {{server}}, který ještě běží.",
+      "holderEnded": "Zámek zůstal po příkazu „{{label}}“ na serveru {{server}}, který už skončil.",
+      "holderOther": "Zámek drží restic na {{host}} (PID {{pid}}), který PocketCloud nespouští; naposledy obnoven: {{time}}.",
+      "staleAt": "Pokud už neběží, restic jeho zámek považuje za opuštěný od {{time}}.",
+      "unlockRetry": "Odemknout a zopakovat",
+      "retry": "Zopakovat teď",
+      "showLog": "Zobrazit log",
+      "heldTitle": "Zámek drží restic, který ještě běží: PocketCloud zálohu zopakuje, až skončí.",
+      "more_one": "Zobrazit {{count}} další problém",
+      "more_few": "Zobrazit {{count}} další problémy",
+      "more_many": "Zobrazit {{count}} dalšího problému",
+      "more_other": "Zobrazit {{count}} dalších problémů",
+      "fewer": "Zobrazit méně",
+      "integrity": "Kontrola integrity cíle {{target}} našla chyby",
+      "integrityDetails": "Zobrazit podrobnosti",
+      "logTitle": "Log zálohy {{job}} → {{target}}",
+      "started": "Úloha {{job}} běží znovu do cíle {{target}}.",
+      "scheduled": "Úloha {{job}} se zopakuje, až restic zámek uzná za opuštěný: {{time}}.",
+      "retryFailed": "Opakování nezačalo: {{error}}"
+    },
+    "unlock": {
+      "title": "Odemknout {{target}} a zopakovat {{job}}?",
+      "text": "restic unlock odstraní jen zámky, které už žádný restic nedrží: ty, které nikdo 30 minut neobnovil. Zámek běžícího resticu zůstane, ať tato stránka ukazuje cokoli. Pak se {{job}} spustí znovu; u zámku mladšího 30 minut PocketCloud počká, až zastará.",
+      "fact": {
+        "holder": "Drží",
+        "host": "Počítač",
+        "pid": "PID",
+        "refreshed": "Naposledy obnoven",
+        "kind": "Zámek"
+      },
+      "exclusive": "výhradní",
+      "shared": "sdílený",
+      "confirm": "Odemknout a zopakovat",
+      "confirmLater": "Naplánovat na {{time}}",
+      "busy": "Odemykám…",
+      "agentNote": "restic unlock a pak zálohu spustí agent serveru {{server}}."
+    }
   }
 }

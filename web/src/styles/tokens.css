@@ -24,6 +24,24 @@
   --err: #f2706b;
   --err-bg: #2b1517;
   --err-text: #f79a95;
+  /* the failed-backup banner of the design, and its solid button (#31) */
+  --err-border: #4a2326;
+  --err-title: #f7c2bf;
+  --err-detail: #e6c4c2;
+  --err-control: #5a2c30;
+  --on-err: #1a0b0c;
+  /* the same banner as a warning and as information, mixed from their tone;
+     every text passes 4.5:1 on its background */
+  --warn-border: color-mix(in srgb, var(--warn) 15%, var(--warn-bg));
+  --warn-title: color-mix(in srgb, var(--warn) 45%, white);
+  --warn-detail: color-mix(in srgb, var(--warn) 25%, var(--text));
+  --warn-control: color-mix(in srgb, var(--warn) 24%, var(--warn-bg));
+  --info: var(--accent);
+  --info-bg: var(--accent-bg);
+  --info-border: color-mix(in srgb, var(--info) 15%, var(--info-bg));
+  --info-title: color-mix(in srgb, var(--info) 45%, white);
+  --info-detail: color-mix(in srgb, var(--info) 25%, var(--text));
+  --info-control: color-mix(in srgb, var(--info) 24%, var(--info-bg));
   --off: #6b7380;
   --off-bg: #1c2027;
   --off-text: #a7afbb;

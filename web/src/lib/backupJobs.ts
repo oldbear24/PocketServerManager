@@ -3,6 +3,7 @@ import type { RecordModel } from "pocketbase";
 import i18n from "../i18n";
 import { parseDate } from "./format";
 import { pb } from "./pb";
+import type { Command, Host } from "./types";
 
 /** What a job backs up (#29). */
 export type SourceKind = "volume" | "path" | "stack" | "db_dump";
@@ -65,7 +66,7 @@ export type BackupRun = RecordModel & {
   job: string;
   target: string;
   host: string;
-  trigger: "schedule" | "manual";
+  trigger: "schedule" | "manual" | "retry";
   status: RunStatus;
   scheduled_at: string;
   started_at: string;
@@ -81,6 +82,58 @@ export type BackupRun = RecordModel & {
   retention: RunRetention;
   /** restic's error, or why the run did not start */
   error: string;
+  /** its command, whose output is the run's log */
+  command?: string;
+  /** which try of a run this is (#31), from 1; 0 reads as 1 */
+  attempt?: number;
+  /** the run this one tries again */
+  retry_of?: string;
+  /** when the panel tries a failed run again; "" when it does not */
+  retry_at?: string;
+  /** why a retry waits, or was dropped, as the panel says it */
+  retry_note?: string;
+  /** why it failed */
+  failure?: RunFailure | "";
+  /** the lock that kept it out of the repository */
+  lock?: BackupLock | null;
+};
+
+/** Why a run failed (#31): the agent says locked, lock_invalid, repository,
+ * password, source and restic; the panel partial, interrupted and timeout. */
+export type RunFailure =
+  | "locked"
+  | "lock_invalid"
+  | "repository"
+  | "password"
+  | "partial"
+  | "source"
+  | "restic"
+  | "interrupted"
+  | "timeout";
+
+/** The failures the panel tries again by itself, as they may pass. */
+export const retryableFailures: RunFailure[] = ["locked", "restic", "interrupted"];
+
+/** The tries of a run the panel makes by itself: the first and three retries,
+ * after 5 minutes, 30 minutes and 2 hours. */
+export const maxAttempts = 4;
+
+/** A lock restic named, as the agent read it from restic's message. `created`
+ * is the holder's last refresh; the panel adds `command…` when the holder is
+ * a PocketCloud command, whose job's hostname is pc-<command id>. */
+export type BackupLock = {
+  pid: number;
+  host: string;
+  user: string;
+  exclusive: boolean;
+  created?: string;
+  age_s?: number;
+  storage_id?: string;
+  command?: string;
+  command_type?: string;
+  command_label?: string;
+  command_host?: string;
+  command_host_name?: string;
 };
 
 /** What became of a run's retention: restic forgot the old snapshots, it
@@ -90,7 +143,7 @@ export type RunRetention = "applied" | "deferred" | "failed" | "";
 
 /** What the Jobs and Snapshots cards read of a run: never its log, which can be long. */
 export const runFields =
-  "id,collectionId,collectionName,created,updated,job,target,status,trigger,scheduled_at,started_at,finished_at,bytes_added,total_bytes,snapshot_id,retention,error";
+  "id,collectionId,collectionName,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,bytes_added,total_bytes,snapshot_id,retention,error,command,attempt,retry_of,retry_at,retry_note,failure,lock";
 
 /** A new job, as the panel takes it: only the fields of its source kind. */
 export type NewBackupJob = {
@@ -123,6 +176,13 @@ export const jobsApi = {
   /** a run per target, now; a target whose run before is still going is left out */
   run: (id: string) =>
     pb.send<{ runs: string[] }>(`/api/pc/backup-jobs/${id}/run`, { method: "POST" }),
+
+  /** tries a failed run again (#31): `run` is the new run, started now; for a
+   * lock restic does not count as stale yet, `retry_at` is when it starts */
+  retry: (runId: string) =>
+    pb.send<{ run?: string; retry_at?: string }>(`/api/pc/backup-runs/${runId}/retry`, {
+      method: "POST",
+    }),
 };
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -238,6 +298,13 @@ export function describePreset(preset: SchedulePreset, t: Translate): string {
   return preset.kind === "daily"
     ? t("backups.cron.daily", { time })
     : t(`backups.cron.weekly.${preset.weekday}`, { time });
+}
+
+/** Whether a cron expression has the shape the panel takes: five fields, or
+ * a macro such as @daily. The panel checks the rest. */
+export function cronShaped(cron: string): boolean {
+  const text = cron.trim();
+  return /^@\w+$/.test(text) || text.split(/\s+/).length === 5;
 }
 
 /** A UTC cron expression in words, in local time, where it is a common one;
@@ -401,19 +468,28 @@ export function runsSince(now: number): string {
 export type StripState = "ok" | "err" | "warn" | "off";
 
 /** One day of the 14-day strip: its runs that ended, and its colour, the
- * worst of them: failed, then skipped, then succeeded. */
+ * worst of them: failed, then skipped, then succeeded. `retried` counts the
+ * runs that succeeded as a retry, which `succeeded` counts too. */
 export type StripDay = {
   day: string;
   succeeded: number;
   failed: number;
   skipped: number;
+  retried: number;
   state: StripState;
 };
 
-type CountedRun = Pick<BackupRun, "created" | "status">;
+type CountedRun = Pick<BackupRun, "created" | "status"> &
+  Partial<Pick<BackupRun, "id" | "trigger" | "retry_of">>;
+
+/** The failed runs that a loaded run tries again: their retry stands for
+ * them, so only a chain's last attempt counts. */
+export function supersededRuns(runs: Pick<BackupRun, "retry_of">[]): Set<string> {
+  return new Set(runs.map((run) => run.retry_of ?? "").filter(Boolean));
+}
 
 /** The runs of the last `count` days, by the local day they were created on,
- * oldest first. */
+ * oldest first; of a run tried again, only the last attempt. */
 export function runStrip(
   runs: CountedRun[],
   now: number,
@@ -427,9 +503,14 @@ export function runStrip(
     succeeded: 0,
     failed: 0,
     skipped: 0,
+    retried: 0,
     state: "off",
   }));
+  const superseded = supersededRuns(runs);
   for (const run of runs) {
+    if (run.status === "failed" && run.id && superseded.has(run.id)) {
+      continue;
+    }
     const at = parseDate(run.created);
     const position = at ? index.get(dayKey(at, timeZone)) : undefined;
     if (position === undefined) {
@@ -438,6 +519,9 @@ export function runStrip(
     const cell = cells[position];
     if (run.status === "succeeded" || run.status === "failed" || run.status === "skipped") {
       cell[run.status]++;
+    }
+    if (run.status === "succeeded" && run.trigger === "retry") {
+      cell.retried++;
     }
   }
   for (const cell of cells) {
@@ -449,7 +533,7 @@ export function runStrip(
 
 /** How the runs of the last 14 local days went: those that succeeded, of all
  * that succeeded, failed or were skipped. Queued, running and cancelled runs
- * count for neither. */
+ * count for neither, nor does a failed run that a retry stands for. */
 export function successRate(
   runs: CountedRun[],
   now: number,
@@ -539,6 +623,141 @@ export function shortError(error: string): string {
     .map((item) => item.trim())
     .find((item) => item !== "");
   return line ?? "";
+}
+
+/** restic's line about a run's failure, as a banner shows it: its first line
+ * without the "Fatal:" and "unable to create lock in backend:" in front. */
+export function resticLine(error: string): string {
+  return shortError(error)
+    .replace(/^fatal:\s*/i, "")
+    .replace(/^unable to create lock in backend:\s*/i, "");
+}
+
+type IssueRun = Pick<BackupRun, "id" | "job" | "target" | "status" | "created"> &
+  Partial<Pick<BackupRun, "trigger">>;
+
+/** The runs a banner is about: of each job and target, the newest run, when
+ * it failed or is a retry that is queued or running; newest first. A label's
+ * job whose label is gone, and a target the job no longer backs up to, have
+ * none: no retry could start. */
+export function failedRuns<R extends IssueRun>(
+  jobs: Pick<BackupJob, "id" | "targets" | "label_removed">[],
+  runs: R[],
+): R[] {
+  const known = new Map(jobs.map((job) => [job.id, job]));
+  const newest = new Map<string, R>();
+  for (const run of runs) {
+    const job = known.get(run.job);
+    if (!job || job.label_removed || !(job.targets ?? []).includes(run.target)) {
+      continue;
+    }
+    const key = `${run.job}:${run.target}`;
+    const seen = newest.get(key);
+    if (!seen || run.created > seen.created) {
+      newest.set(key, run);
+    }
+  }
+  return [...newest.values()]
+    .filter(
+      (run) =>
+        run.status === "failed" ||
+        (run.trigger === "retry" && (run.status === "queued" || run.status === "running")),
+    )
+    .sort((a, b) => (a.created < b.created ? 1 : a.created > b.created ? -1 : 0));
+}
+
+/** Who holds a lock, as the panel decides it: alive while its PocketCloud
+ * command is open, or timed out while its server is not connected (its agent
+ * may still run it); gone once that command ended, or is no more; unknown
+ * when another restic holds it. */
+export type HolderState = "alive" | "gone" | "unknown";
+
+export function holderState(
+  lock: Pick<BackupLock, "command"> | null | undefined,
+  command: Pick<Command, "status" | "host"> | undefined,
+  hosts: Pick<Host, "id" | "stream_open">[],
+): HolderState {
+  if (!lock?.command) {
+    return "unknown";
+  }
+  if (!command) {
+    return "gone";
+  }
+  if (
+    command.status === "queued" ||
+    command.status === "dispatched" ||
+    command.status === "running"
+  ) {
+    return "alive";
+  }
+  if (
+    command.status === "timed_out" &&
+    !hosts.find((host) => host.id === command.host)?.stream_open
+  ) {
+    return "alive";
+  }
+  return "gone";
+}
+
+/** restic counts a lock as stale 30 minutes after its holder last refreshed
+ * it; the panel waits 2 more for two servers' clocks. null when the time of
+ * the lock is not known, as from an older agent. */
+export const staleAfter = 32 * 60 * 1000;
+
+export function lockStaleAt(lock: Pick<BackupLock, "created"> | null | undefined): number | null {
+  const created = parseDate(lock?.created ?? "");
+  return created ? created.getTime() + staleAfter : null;
+}
+
+/** What a run's banner says and offers: its tone, the line about its state,
+ * and the action an operator has, "unlock" running restic unlock before the
+ * retry. `held` disables that action: the lock's holder still runs. */
+export type RunIssue = {
+  tone: "err" | "warn" | "info";
+  state:
+    "waitsHolder" | "retryAt" | "nextRun" | "noMore" | "notRetried" | "invalidLock" | "retrying";
+  action: "unlock" | "retry" | null;
+  held: boolean;
+};
+
+export function runIssue(
+  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "failure" | "retry_at" | "attempt">>,
+  holder: HolderState,
+  job: Pick<BackupJob, "enabled" | "label_removed" | "next_run_at">,
+): RunIssue {
+  if (run.status === "queued" || run.status === "running") {
+    return { tone: "info", state: "retrying", action: null, held: false };
+  }
+  const failure = run.failure ?? "";
+  if (failure === "lock_invalid") {
+    // plain unlock leaves a lock file it cannot read: only a person removes it
+    return { tone: "err", state: "invalidLock", action: null, held: false };
+  }
+  const locked = failure === "locked";
+  const alive = locked && holder === "alive";
+  let state: RunIssue["state"];
+  if (failure === "" || !retryableFailures.includes(failure)) {
+    state = "notRetried";
+  } else if (parseDate(run.retry_at ?? "")) {
+    state = alive ? "waitsHolder" : "retryAt";
+  } else if (
+    (run.attempt || 1) < maxAttempts &&
+    job.enabled &&
+    !job.label_removed &&
+    parseDate(job.next_run_at)
+  ) {
+    // the panel dropped the retry: the job's next run comes sooner
+    state = "nextRun";
+  } else {
+    state = "noMore";
+  }
+  const planned = state === "waitsHolder" || state === "retryAt" || state === "nextRun";
+  return {
+    tone: alive || planned ? "warn" : "err",
+    state,
+    action: locked ? "unlock" : "retry",
+    held: alive,
+  };
 }
 
 /** The job whose next run is the earliest, of those that run. */

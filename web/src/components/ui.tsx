@@ -15,7 +15,8 @@ import { useTranslation } from "react-i18next";
 export type Tone = "ok" | "warn" | "err" | "off" | "info";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "default" | "primary" | "danger" | "warning";
+  /** critical: the solid red of what fixes a failure, as Unlock and retry */
+  variant?: "default" | "primary" | "danger" | "warning" | "critical";
   size?: "default" | "small";
 };
 
@@ -102,24 +103,40 @@ export function Card({
   );
 }
 
+/** A figure in a tile. A status figure takes a tone, and then an icon too:
+ * its word and icon say it, the colour only repeats them. */
 export function Kpi({
   label,
   hint,
   value,
   note,
+  tone,
+  icon,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   value: ReactNode;
   note?: ReactNode;
+  tone?: "ok" | "warn" | "err";
+  icon?: ReactNode;
 }) {
+  const classes = ["kpi-value"];
+  if (tone) {
+    classes.push(tone);
+  }
+  if (icon) {
+    classes.push("with-icon");
+  }
   return (
     <div className="card kpi">
       <div className="kpi-label">
         <span>{label}</span>
         {hint && <span className="mono faint small">{hint}</span>}
       </div>
-      <div className="kpi-value">{value}</div>
+      <div className={classes.join(" ")}>
+        {icon}
+        {value}
+      </div>
       {note && <div className="kpi-note">{note}</div>}
     </div>
   );
@@ -335,6 +352,46 @@ export function Banner({
     <div className={`banner ${tone}`} role={tone === "err" ? "alert" : "status"}>
       {children}
     </div>
+  );
+}
+
+/** A problem to act on, as the design's failed-backup banner: an icon, a
+ * title, restic's own line in mono, what else is known, and what fixes it.
+ * A labelled section, not an alert: a live region would read it out again
+ * at every realtime update. */
+export function IssueBanner({
+  id,
+  tone,
+  icon,
+  title,
+  detail,
+  meta,
+  actions,
+}: {
+  /** names the section by its title */
+  id: string;
+  tone: "err" | "warn" | "info";
+  icon: ReactNode;
+  title: ReactNode;
+  detail?: ReactNode;
+  meta?: ReactNode;
+  actions?: ReactNode;
+}) {
+  const titleId = `${id}-title`;
+  return (
+    <section className={`issue-banner ${tone}`} aria-labelledby={titleId}>
+      <span className="issue-banner-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <div className="issue-banner-text">
+        <h2 id={titleId} className="issue-banner-title">
+          {title}
+        </h2>
+        {detail && <span className="issue-banner-detail mono">{detail}</span>}
+        {meta && <div className="issue-banner-meta">{meta}</div>}
+      </div>
+      {actions && <div className="issue-banner-actions">{actions}</div>}
+    </section>
   );
 }
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
 import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +23,12 @@ vi.mock("../lib/realtime", () => {
     const items = live.lists[collection] ?? [];
     return { items, loading: false, error: null, total: items.length, reload: () => {} };
   };
-  return { useLiveList: list, useLiveRecords: list, useNow: () => now };
+  return {
+    useLiveList: list,
+    useLiveRecords: list,
+    useLiveRecord: () => ({ record: null, loading: false, error: null }),
+    useNow: () => now,
+  };
 });
 
 const zone = process.env.TZ;
@@ -328,6 +333,134 @@ describe("the backups summary", () => {
   });
 });
 
+describe("the integrity tile", () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  // checked last Sunday, next on Sunday at 05:00 UTC: 06:00 in Prague
+  const checked = (fields: Partial<BackupTarget>) =>
+    target({
+      integrity_status: "ok",
+      integrity_at: "2026-11-08 05:21:00.000Z",
+      last_check_status: "ok",
+      next_check_at: "2026-11-15 05:00:00.000Z",
+      integrity_group: 2,
+      ...fields,
+    });
+  const fine = [
+    checked({}),
+    checked({ id: "t2", name: "Panel disk", kind: "local", host: "h2" }),
+    checked({ id: "t3", name: "backup-node", kind: "sftp" }),
+  ];
+  const unverified = (id: string) => ({
+    id: `a-${id}`,
+    rule: "backup_check_unverified",
+    target: id,
+    host: "h1",
+    severity: "warning",
+    status: "open",
+  });
+
+  function integrity() {
+    return tile("Integrity check");
+  }
+
+  it("is OK with its icon, and says the next check by its weekday", () => {
+    showPage("viewer", { backup_targets: fine });
+    const value = integrity().getByText("OK");
+    expect(value).toHaveClass("kpi-value", "ok");
+    // the word and an icon say it, never the colour alone
+    expect(value.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(integrity().getByText("restic check · Sunday 06:00")).toBeInTheDocument();
+  });
+
+  it("is said in Czech as the design has it", async () => {
+    await i18n.changeLanguage("cs");
+    showPage("viewer", { backup_targets: fine });
+    const czech = tile("Kontrola integrity");
+    expect(czech.getByText("OK")).toHaveClass("ok");
+    expect(czech.getByText("restic check · neděle 06:00")).toBeInTheDocument();
+  });
+
+  it("says errors, and how many targets have them", async () => {
+    const one = [checked({ integrity_status: "failed" }), ...fine.slice(1)];
+    showPage("viewer", { backup_targets: one, alerts: [unverified("t2")] });
+    const value = integrity().getByText("Errors");
+    expect(value).toHaveClass("kpi-value", "err");
+    expect(value.querySelector("svg")).not.toBeNull();
+    expect(integrity().getByText("1 target has errors")).toBeInTheDocument();
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    const failed = (count: number) =>
+      Array.from({ length: count }, (_, index) =>
+        checked({ id: `f${index}`, name: `f${index}`, integrity_status: "failed" }),
+      );
+    for (const [count, note] of [
+      [1, "1 cíl má chyby"],
+      [3, "3 cíle mají chyby"],
+      [5, "5 cílů má chyby"],
+    ] as const) {
+      showPage("viewer", { backup_targets: failed(count) });
+      expect(tile("Kontrola integrity").getByText("Chyby")).toHaveClass("err");
+      expect(tile("Kontrola integrity").getByText(note)).toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it("says when targets are not verified", async () => {
+    showPage("viewer", { backup_targets: fine, alerts: [unverified("t1"), unverified("t3")] });
+    const value = integrity().getByText("Not verified");
+    expect(value).toHaveClass("kpi-value", "warn");
+    expect(value.querySelector("svg")).not.toBeNull();
+    expect(integrity().getByText("2 targets not verified")).toBeInTheDocument();
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    showPage("viewer", { backup_targets: fine, alerts: [unverified("t2")] });
+    expect(tile("Kontrola integrity").getByText("Neověřeno")).toHaveClass("warn");
+    expect(tile("Kontrola integrity").getByText("1 cíl neověřen")).toBeInTheDocument();
+  });
+
+  it("is a dash before any check completed, and while checks are off", () => {
+    const fresh = fine.map((item) => ({
+      ...item,
+      integrity_status: "" as const,
+      integrity_at: "",
+      last_check_status: "" as const,
+    }));
+    showPage("viewer", { backup_targets: fresh });
+    expect(integrity().getByText("–").className).toBe("kpi-value");
+    expect(integrity().getByText("no check has run yet")).toBeInTheDocument();
+    cleanup();
+
+    showPage("viewer", { backup_targets: fine.map((item) => ({ ...item, next_check_at: "" })) });
+    expect(integrity().getByText("–").className).toBe("kpi-value");
+    expect(integrity().getByText("checks are off")).toBeInTheDocument();
+  });
+
+  it("names the target while its check runs", async () => {
+    const running = {
+      id: "c9",
+      collectionId: "backup_checks",
+      collectionName: "backup_checks",
+      target: "t2",
+      kind: "integrity",
+      status: "running",
+      command: "k3j9x2m4q8w1z7v",
+    };
+    showPage("viewer", { backup_targets: fine, backup_checks: [running] });
+    expect(integrity().getByText("OK")).toBeInTheDocument();
+    expect(integrity().getByText("checking Panel disk…")).toBeInTheDocument();
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    showPage("viewer", { backup_targets: fine, backup_checks: [running] });
+    expect(tile("Kontrola integrity").getByText("kontroluje se Panel disk…")).toBeInTheDocument();
+  });
+});
+
 describe("a job's source", () => {
   const t = i18n.getFixedT("en");
   const cs = i18n.getFixedT("cs");
@@ -427,6 +560,93 @@ describe("the jobs", () => {
     expect(vw.getByText("Error · 12:00")).toBeInTheDocument();
     expect(vw.getByText("Panel disk: Fatal: no space left on device")).toBeInTheDocument();
     expect(vw.queryByText("+84 MB")).not.toBeInTheDocument();
+  });
+
+  it("says why a run failed in a word, and when the panel tries it again", async () => {
+    const lockedRun = run("r5", {
+      job: "j2",
+      target: "t3",
+      status: "failed",
+      created: "2026-11-09 02:00:00.000Z",
+      finished_at: "2026-11-09 02:00:05.000Z",
+      error: locked,
+      failure: "locked",
+      attempt: 1,
+      retry_at: "2026-11-09 02:35:00.000Z",
+      retry_note: "Waits until restic counts the lock as stale.",
+    });
+    const timedOut = run("r9", {
+      job: "j3",
+      target: "t3",
+      status: "failed",
+      created: "2026-11-09 00:30:00.000Z",
+      finished_at: "2026-11-09 06:30:00.000Z",
+      error: "The command did not finish in 6 hours.",
+      failure: "timeout",
+      attempt: 4,
+    });
+    showPage("viewer", { backup_runs: [lockedRun, timedOut] });
+
+    const photosRow = row("photos");
+    expect(photosRow.getByText("Error · 03:00")).toHaveClass("err");
+    // the design's "repo zamčené", restic's words on hover
+    expect(photosRow.getByText("repository locked")).toHaveAttribute("title", locked);
+    const retry = photosRow.getByText("retry 2/4: 03:35");
+    expect(retry).toHaveClass("run-retry");
+    expect(retry).toHaveAttribute("title", "Waits until restic counts the lock as stale.");
+
+    // none left: no retry is said
+    const umamiRow = row("umami-db");
+    expect(umamiRow.getByText("did not finish in time")).toBeInTheDocument();
+    expect(umamiRow.queryByText(/^retry /)).not.toBeInTheDocument();
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    showPage("viewer", { backup_runs: [lockedRun] });
+    expect(row("photos").getByText("Chyba · 03:00")).toBeInTheDocument();
+    expect(row("photos").getByText("repo zamčené")).toBeInTheDocument();
+    expect(row("photos").getByText("pokus 2/4: 03:35")).toBeInTheDocument();
+    await i18n.changeLanguage("en");
+  });
+
+  it("counts only the last attempt of a run tried again, and says it succeeded as a retry", () => {
+    showPage("viewer", {
+      backup_runs: [
+        run("r5", {
+          job: "j2",
+          target: "t3",
+          status: "failed",
+          created: "2026-11-09 02:00:00.000Z",
+          finished_at: "2026-11-09 02:00:05.000Z",
+          error: locked,
+          failure: "locked",
+        }),
+        run("r8", {
+          job: "j2",
+          target: "t3",
+          trigger: "retry",
+          attempt: 2,
+          retry_of: "r5",
+          created: "2026-11-09 02:40:00.000Z",
+          finished_at: "2026-11-09 02:41:00.000Z",
+          bytes_added: 3e6,
+        }),
+        run("r6", { job: "j2", target: "t3", created: "2026-11-08 02:00:00.000Z" }),
+      ],
+    });
+
+    // the day succeeded: its failure was tried again
+    const strip = row("photos").getByRole("img");
+    expect(strip).toHaveAccessibleName("Last 14 days: 2 succeeded, 1 after a retry");
+    const days = [...strip.querySelectorAll("span")];
+    expect(days.map((day) => day.className).slice(-2)).toEqual(["ok", "ok"]);
+    expect(days[13].getAttribute("title")).toMatch(/: 1 succeeded, 1 after a retry$/);
+    expect(row("photos").getByText("OK · 03:41")).toBeInTheDocument();
+
+    // and so did every run that counts
+    const success = tile("Success over 14 days");
+    expect(success.getByText("100%")).toBeInTheDocument();
+    expect(success.getByText("2 of 2 runs")).toBeInTheDocument();
   });
 
   it("says when a backup's retention was put off or failed", () => {
