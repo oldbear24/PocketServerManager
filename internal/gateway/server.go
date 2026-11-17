@@ -70,6 +70,10 @@ type Server struct {
 	OfflineAfter time.Duration
 	// MonitorInterval is how often silent hosts are looked for.
 	MonitorInterval time.Duration
+	// StartGrace is how long after Start no host is marked offline: agents
+	// back off for up to a minute while a panel is down, so right after a
+	// start a silent host is one still on its way back (#32). Zero is none.
+	StartGrace time.Duration
 
 	// OnHeartbeat is told the round trip and clock skew an agent measured.
 	OnHeartbeat func(hostID string, rttMS, skewMS float64)
@@ -89,6 +93,9 @@ type Server struct {
 	ConnectionEventsElsewhere bool
 
 	limiter *rateLimiter
+
+	// started is when Start was called.
+	started time.Time
 
 	server   *grpc.Server
 	listener net.Listener
@@ -160,6 +167,7 @@ func (s *Server) Start(addr string) error {
 		s.MonitorInterval = 5 * time.Second
 	}
 	s.limiter = newRateLimiter(enrollPerMinute, time.Minute)
+	s.started = time.Now()
 	s.stopping = make(chan struct{})
 	s.rejectLast = make(map[string]time.Time)
 
