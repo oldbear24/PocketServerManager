@@ -576,6 +576,7 @@ func TestAFailedBackupAlertsWithResticsError(t *testing.T) {
 func TestAnOfflineServerSkipsItsBackups(t *testing.T) {
 	j := newJobsHarness(t, nil, func(server *gateway.Server) {
 		server.OfflineAfter = 500 * time.Millisecond
+		server.StartGrace = 0
 		server.MonitorInterval = 100 * time.Millisecond
 	})
 	b2 := j.addS3("b2", "b2-secret-key")

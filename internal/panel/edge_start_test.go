@@ -18,6 +18,7 @@ func TestAStartingPanelRefreshesItsEdges(t *testing.T) {
 	t.Cleanup(app.Cleanup)
 
 	// as an older release left it
+	caOfAnEarlierStart(t, app)
 	host := testutil.NewHost(t, app, "edge-1")
 	host.Set("roles", []string{schema.HostRoleDocker, schema.HostRoleEdge})
 	host.Set("capabilities", []string{"edge.apply"})

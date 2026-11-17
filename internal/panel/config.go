@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/oldbear24/PocketServerManager/internal/ca"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/php"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -26,6 +27,10 @@ const (
 	// the panel's own HTTPS (#63)
 	EnvHTTPSAddr      = "POCKETCLOUD_HTTPS_ADDR"
 	EnvHTTPSChallenge = "POCKETCLOUD_HTTPS_CHALLENGE"
+	// EnvExpectCAPin names the pin the database's internal CA must have
+	// (#32): a start on an empty or another database then fails instead of
+	// making a new CA.
+	EnvExpectCAPin = ca.EnvExpectPin
 
 	defaultGRPCAddr      = ":9443"
 	defaultMasterKeyFile = "master.key"
@@ -54,6 +59,9 @@ type Config struct {
 	// HTTPSChallenge is how the CA checks the panel's name: auto, http-01 or
 	// dns-01.
 	HTTPSChallenge string
+	// ExpectCAPin is the pin the database's internal CA must have, as the
+	// recovery kit and `panel recover --env-out` give it (#32). Empty: any.
+	ExpectCAPin string
 }
 
 // ConfigFromEnv returns the defaults, overridden by the environment.
@@ -66,6 +74,7 @@ func ConfigFromEnv() Config {
 		PHPImage:       envOr(EnvPHPImage, php.Image),
 		HTTPSAddr:      os.Getenv(EnvHTTPSAddr),
 		HTTPSChallenge: envOr(EnvHTTPSChallenge, schema.ChallengeAuto),
+		ExpectCAPin:    os.Getenv(EnvExpectCAPin),
 	}
 }
 
@@ -80,6 +89,8 @@ func (c *Config) BindFlags(cmd *cobra.Command) {
 	flags.StringVar(&c.HTTPSAddr, "https-addr", c.HTTPSAddr,
 		"address the panel serves HTTPS on with its own certificate from ACME; --http then only answers ACME HTTP-01 and redirects")
 	flags.StringVar(&c.HTTPSChallenge, "https-challenge", c.HTTPSChallenge, "how the CA checks the panel's name: auto, http-01 or dns-01")
+	flags.StringVar(&c.ExpectCAPin, "expect-ca-pin", c.ExpectCAPin,
+		"the pin (sha256:…) the internal CA must have: a start without it, or with another, fails instead of making a new CA")
 }
 
 // CheckHTTPS checks the panel's own HTTPS (#63) and returns the name it gets

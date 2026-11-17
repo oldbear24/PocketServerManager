@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pocketbase/pocketbase/core"
+
 	"github.com/oldbear24/PocketServerManager/internal/pki"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/secrets"
@@ -159,6 +161,109 @@ func TestReopeningKeepsTheCA(t *testing.T) {
 	other, _ := secrets.New([]byte("another-key-another-key-another-"))
 	if _, err := Open(app, other, nil); err == nil {
 		t.Fatal("opening the CA with another master key must fail")
+	}
+}
+
+// caRecords counts the internal_ca records.
+func caRecords(t *testing.T, app core.App) int {
+	t.Helper()
+	records, err := app.FindAllRecords(schema.InternalCA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(records)
+}
+
+// TestNoCAIsMadeOverADatabaseThatHadOne (#32): a database that had servers or
+// a CA but lost its record gets no new CA, which would make every server
+// enroll again; only a database that may have one makes it.
+func TestNoCAIsMadeOverADatabaseThatHadOne(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	box, _ := secrets.New(testutil.MasterKey)
+
+	_, err := OpenWith(app, box, nil, Options{HadPin: "sha256:5d1e"})
+	if err == nil || !strings.Contains(err.Error(), "This database had servers or a CA (pin sha256:5d1e) but holds no internal CA") ||
+		!strings.Contains(err.Error(), "a new CA would make every server enroll again.") {
+		t.Fatalf("a CA was made over a database that had one: %v", err)
+	}
+	if n := caRecords(t, app); n != 0 {
+		t.Fatalf("the refusal wrote %d CA records", n)
+	}
+	if _, err := OpenWith(app, box, nil, Options{}); err == nil || !strings.Contains(err.Error(), "had servers or a CA but holds") {
+		t.Fatalf("without a known pin: %v", err)
+	}
+
+	// a database that may have one makes it, and opens it from then on
+	made, err := OpenWith(app, box, nil, Options{MayCreate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := OpenWith(app, box, nil, Options{})
+	if err != nil || again.Pin() != made.Pin() {
+		t.Fatalf("the CA made did not open: %v", err)
+	}
+}
+
+// TestAnExpectedPinRefusesAnotherCA (#32): POCKETCLOUD_EXPECT_CA_PIN names
+// the CA the servers trust; another CA is refused, and with no CA at all
+// nothing is made, not even where one may be.
+func TestAnExpectedPinRefusesAnotherCA(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	box, _ := secrets.New(testutil.MasterKey)
+
+	expected := "sha256:" + strings.Repeat("ab", 32)
+	_, err := OpenWith(app, box, nil, Options{MayCreate: true, ExpectPin: expected})
+	if err == nil || err.Error() != "This database has no internal CA, but POCKETCLOUD_EXPECT_CA_PIN expects "+expected+": restore the panel's backup into it first." {
+		t.Fatalf("an empty database with an expected pin: %v", err)
+	}
+	if n := caRecords(t, app); n != 0 {
+		t.Fatalf("a CA was made although another was expected: %d records", n)
+	}
+
+	authority, err := OpenWith(app, box, nil, Options{MayCreate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = OpenWith(app, box, nil, Options{ExpectPin: expected})
+	want := "POCKETCLOUD_EXPECT_CA_PIN is " + expected + ", but this database's CA is " + authority.Pin() + ": this is not the panel your servers trust."
+	if err == nil || err.Error() != want {
+		t.Fatalf("another CA than expected: %v", err)
+	}
+
+	// the expected one opens
+	opened, err := OpenWith(app, box, nil, Options{ExpectPin: authority.Pin()})
+	if err != nil || opened.Pin() != authority.Pin() {
+		t.Fatalf("the expected CA did not open: %v", err)
+	}
+}
+
+// TestTwoCARecordsAreRefused (#32): two CAs mean two databases were merged;
+// which one the servers trust cannot be told.
+func TestTwoCARecordsAreRefused(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	box, _ := secrets.New(testutil.MasterKey)
+
+	first, err := OpenWith(app, box, nil, Options{MayCreate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a second record, as a merge of two databases would leave
+	second := &Authority{app: app, box: box}
+	if _, err := second.create(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, options := range []Options{{MayCreate: true}, {}, {ExpectPin: first.Pin()}} {
+		_, err := OpenWith(app, box, nil, options)
+		if err == nil || err.Error() != "The database holds two internal CAs: restore it whole, never merge." {
+			t.Fatalf("%+v: two CAs were not refused: %v", options, err)
+		}
+	}
+	if n := caRecords(t, app); n != 2 {
+		t.Fatalf("the refusal changed the records: %d", n)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,11 @@ import (
 
 const eventRetention = 30 * 24 * time.Hour
 
+// offlineGrace is how long after its start the gateway marks no server
+// offline: agents back off for up to a minute, with jitter, while the panel
+// is down (#32).
+const offlineGrace = 90 * time.Second
+
 // Panel holds the components of a running panel.
 type Panel struct {
 	App    core.App
@@ -48,9 +54,14 @@ type Panel struct {
 	https httpsState
 
 	Box *secrets.Box
-	// masterKey is the master key the Box was made from: the keys of the
-	// panel's copy of itself derive from it (#32)
+	// masterKey is the master key Box was made from: the keys of the
+	// panel's copy of itself derive from it, and the recovery kit holds it
+	// (#32).
 	masterKey []byte
+	// serveLock is the data directory's serve lock, held while the panel
+	// serves (#32).
+	serveLock *os.File
+
 	Audit     *audit.Writer
 	Authority *ca.Authority
 	// authority is the same CA, for the work that may start before the
@@ -130,6 +141,19 @@ type Panel struct {
 	// checkPass holds a pass of the integrity checks' scheduler (#31).
 	checkPass sync.Mutex
 
+	// restoreWatch is set from a restored panel's first start until every
+	// server is back (#32); restoreRecount while a count of them is due.
+	restoreWatch   atomic.Bool
+	restoreRecount atomic.Bool
+	// recoveryPending is set while an evaluation of the recovery's alerts
+	// is due; recoveryEval holds one (#32).
+	recoveryPending atomic.Bool
+	recoveryEval    sync.Mutex
+	// kitAttempts limits the attempts at the recovery kit's routes, and
+	// kitSealing lets one argon2 run at a time (#32).
+	kitAttempts kitAttempts
+	kitSealing  chan struct{}
+
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
 
@@ -147,6 +171,8 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Log:      slog.Default().With("component", "panel"),
 		Audit:    audit.New(app, schema.Audited),
 		Commands: commands.NewManager(app),
+
+		kitSealing: make(chan struct{}, 1),
 	}
 	p.SetEdgeImage(version.EdgeRef())
 	p.SetStarted(time.Now())
@@ -217,10 +243,11 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
-	// the panel's backup of itself (#32)
+	// the panel's backup of itself and its recovery (#32)
 	p.registerPanelExports()
 	p.registerChangeBackups()
 	p.registerPocketBaseBackups()
+	p.registerRecovery()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -229,7 +256,15 @@ func (p *Panel) Register() {
 		// comes from the setup link, and a superuser from the command line.
 		e.InstallerFunc = nil
 
+		// one panel per pb_data (#32)
+		if err := p.takeServeLock(); err != nil {
+			return err
+		}
 		if err := p.loadMasterKey(); err != nil {
+			return err
+		}
+		// the key that sealed the database, before anything is written
+		if err := p.checkKeyID(); err != nil {
 			return err
 		}
 
@@ -277,6 +312,7 @@ func (p *Panel) Register() {
 		p.bindBackupJobRoutes(group)
 		p.bindBackupRestoreRoutes(group)
 		p.bindBackupCheckRoutes(group)
+		p.bindRecoveryRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		// restores whose end the panel missed while it was down are settled,
@@ -288,6 +324,9 @@ func (p *Panel) Register() {
 		if p.UI != nil {
 			bindUI(e, p.UI)
 		}
+
+		// the recovery's alerts, with the gateway started (#32)
+		p.evaluateRecoveryAlerts()
 
 		return e.Next()
 	})
@@ -308,6 +347,7 @@ func (p *Panel) Register() {
 				p.Log.Error("failed to close the metrics database", "error", err)
 			}
 		}
+		p.releaseServeLock()
 		return e.Next()
 	})
 
@@ -322,9 +362,15 @@ func (p *Panel) Register() {
 }
 
 // startGateway opens the internal CA and starts the gRPC gateway for agents.
+// The first start after `panel recover` finishes the restore before the
+// gateway listens, so nothing stale reaches a server (#32).
 func (p *Panel) startGateway() error {
-	authority, err := ca.Open(p.App, p.Box, p.serverNames())
+	authority, err := p.openAuthority()
 	if err != nil {
+		// a refusal says itself what is wrong
+		if refused := ca.Refusal(""); errors.As(err, &refused) {
+			return err
+		}
 		return fmt.Errorf("the internal CA: %w", err)
 	}
 	p.Authority = authority
@@ -351,9 +397,17 @@ func (p *Panel) startGateway() error {
 	p.Gateway.Fetch = p.fetchArtifact
 	// a download of a snapshot goes on to the browser as it arrives (#30)
 	p.Gateway.LiveArtifacts = map[string]gateway.LiveArtifactHandler{artifactBackupDownload: p.serveDownload}
+	// agents still backing off are not offline yet (#32)
+	p.Gateway.StartGrace = offlineGrace
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)
+	}
+
+	// the first start after `panel recover`, before anything reaches a
+	// server (#32)
+	if err := p.finishRestore(); err != nil {
+		return err
 	}
 
 	if p.Config.GRPCAddr == "" {
@@ -381,7 +435,7 @@ func (p *Panel) serverNames() []string {
 // loadMasterKey refuses to start without a master key: every secret stored by
 // the panel depends on it.
 func (p *Panel) loadMasterKey() error {
-	if p.Box != nil {
+	if p.Box != nil && p.masterKey != nil {
 		return nil
 	}
 

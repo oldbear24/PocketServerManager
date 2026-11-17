@@ -77,23 +77,66 @@ type Authority struct {
 	AgentTTL time.Duration
 }
 
+// Options say when OpenWith may make a new CA, and which one it must find.
+type Options struct {
+	// MayCreate lets OpenWith make a new CA when the database holds none.
+	// The panel allows it only for a database that never had servers or a
+	// CA: a new CA would make every server enroll again (#32).
+	MayCreate bool
+	// HadPin is the pin of the CA the database had, if it knows one: what a
+	// refusal to make a new CA names.
+	HadPin string
+	// ExpectPin, when set, is the pin the database's CA must have
+	// (POCKETCLOUD_EXPECT_CA_PIN): with no CA nothing is made, and another
+	// CA is refused.
+	ExpectPin string
+}
+
 // Open loads the authority from the internal_ca record, creating it on first
 // start, and makes sure there is a valid server certificate for serverNames.
 func Open(app core.App, box *secrets.Box, serverNames []string) (*Authority, error) {
+	return OpenWith(app, box, serverNames, Options{MayCreate: true})
+}
+
+// OpenWith is Open with guards against a wrong start (#32): it refuses a
+// database with two CAs, makes a CA only where options allow, and refuses a
+// CA other than the one options expect. Nothing is written before the checks
+// pass.
+func OpenWith(app core.App, box *secrets.Box, serverNames []string, options Options) (*Authority, error) {
 	a := &Authority{app: app, box: box, AgentTTL: AgentCertTTL}
 
-	records, err := app.FindRecordsByFilter(schema.InternalCA, "", "-created", 1, 0)
+	records, err := app.FindRecordsByFilter(schema.InternalCA, "", "-created", 2, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	var record *core.Record
-	if len(records) > 0 {
+	switch {
+	case len(records) > 1:
+		return nil, Refusal("The database holds two internal CAs: restore it whole, never merge.")
+	case len(records) == 1:
 		record = records[0]
+		if options.ExpectPin != "" {
+			if pin, err := pinOfRecord(record); err != nil || pin != options.ExpectPin {
+				if err != nil {
+					pin = "unreadable (" + err.Error() + ")"
+				}
+				return nil, refusalf("%s is %s, but this database's CA is %s: this is not the panel your servers trust.", EnvExpectPin, options.ExpectPin, pin)
+			}
+		}
 		if err := a.load(record); err != nil {
 			return nil, err
 		}
-	} else {
+	case options.ExpectPin != "":
+		return nil, refusalf("This database has no internal CA, but %s expects %s: restore the panel's backup into it first.", EnvExpectPin, options.ExpectPin)
+	case !options.MayCreate:
+		had := "a CA"
+		if options.HadPin != "" {
+			had = "a CA (pin " + options.HadPin + ")"
+		}
+		return nil, refusalf("This database had servers or %s but holds no internal CA: it is damaged or not this panel's. "+
+			"Restore it from a backup: a new CA would make every server enroll again.", had)
+	default:
 		record, err = a.create()
 		if err != nil {
 			return nil, err
@@ -664,4 +707,25 @@ func normalizeNames(names []string) []string {
 	}
 	slices.Sort(result)
 	return result
+}
+
+// EnvExpectPin names the environment variable of the pin a panel's CA must
+// have (#32).
+const EnvExpectPin = "POCKETCLOUD_EXPECT_CA_PIN"
+
+// Refusal is a sentence that refuses to open the CA, as the panel prints it.
+type Refusal string
+
+func (r Refusal) Error() string { return string(r) }
+
+func refusalf(format string, args ...any) error { return Refusal(fmt.Sprintf(format, args...)) }
+
+// pinOfRecord is the pin of an internal_ca record's root, read without its
+// keys.
+func pinOfRecord(record *core.Record) (string, error) {
+	root, err := parseCertPEM(record.GetString("root_cert"))
+	if err != nil {
+		return "", err
+	}
+	return pki.PinOf(root.Raw), nil
 }

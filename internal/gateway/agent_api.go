@@ -13,12 +13,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -94,6 +97,11 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 		if v := req.GetContainerId(); v != "" {
 			host.Set("agent_container_id", v)
 		}
+		// the address the agent dials, as its identity holds it: the TLS
+		// config names no server, so gRPC sends it as the :authority (#32)
+		if v := panelAddress(ctx); v != "" {
+			host.Set("panel_address", v)
+		}
 	})
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to update the host: %v", err)
@@ -124,6 +132,24 @@ func (s *Server) SubscribeCommands(req *agentv1.SubscribeCommandsRequest, stream
 			return err
 		}
 	}
+}
+
+// maxPanelAddress is the longest address hosts.panel_address holds.
+const maxPanelAddress = 300
+
+// panelAddress is the :authority of an agent's call, the host:port it
+// dials; "" when there is none, or it is no address.
+func panelAddress(ctx context.Context) string {
+	values := metadata.ValueFromIncomingContext(ctx, ":authority")
+	if len(values) == 0 {
+		return ""
+	}
+	address := values[0]
+	if address == "" || len(address) > maxPanelAddress || !utf8.ValidString(address) ||
+		strings.ContainsFunc(address, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return ""
+	}
+	return address
 }
 
 func (s *Server) streamClosed(hostID string) {
@@ -382,8 +408,12 @@ func (s *Server) monitor(ctx context.Context) {
 }
 
 // CheckOffline marks hosts that stopped sending heartbeats as offline. Every
-// transition produces an event and an alert.
+// transition produces an event and an alert. Within StartGrace of the start
+// it waits: a host whose agent has not reconnected yet is not offline (#32).
 func (s *Server) CheckOffline() {
+	if s.StartGrace > 0 && !s.started.IsZero() && time.Since(s.started) < s.StartGrace {
+		return
+	}
 	cutoff, err := types.ParseDateTime(time.Now().UTC().Add(-s.OfflineAfter))
 	if err != nil {
 		return

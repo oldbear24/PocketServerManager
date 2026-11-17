@@ -19,5 +19,5 @@ The gateway requests client certificates but does not verify them during the han
 ## Consequences
 
 - Only someone with the CA's key can impersonate the panel. Agent certificates cannot: they only have the client-auth key usage and are signed by the agents' intermediate.
-- The host name in `PANEL` can change without touching agents, as long as it reaches the same panel.
+- The host name in `PANEL` can change without touching agents, as long as it reaches the same panel. An agent keeps the address it enrolled with in its identity and ignores `PANEL` afterwards, so what changes freely is where that address leads: the target of its DNS name can change, which is how a panel restored on a new machine takes its servers over with the same CA (#32, [ADR 0008](0008-the-panel-backup-is-sealed-and-the-kit-breaks-the-loop.md)). A changed name, IP address or port needs `pocketcloud-agent repoint` on each server, which changes the address only after the panel there proved it holds the server's CA and knows the server.
 - The panel's name is not protected by public CAs. If a publicly trusted certificate is ever used for the gateway (#23), agents still need the internal one, so the gateway keeps it.

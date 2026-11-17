@@ -1,0 +1,40 @@
+# ADR 0008: The panel's backup is sealed with the master key, and the recovery kit breaks the loop
+
+**Status:** accepted · **Issue:** #32
+
+## Context
+
+Losing the panel's machine must not mean enrolling every server again. Three facts decide how a panel can come back:
+
+- **Agents stay with what they enrolled with.** Each keeps its key, its certificate, the pinned root ([ADR 0006](0006-agents-pin-the-panel-ca.md)) and the address it dialled, and ignores `PANEL` afterwards. A panel with another CA, or at another address, is not theirs.
+- **There is no panel without its database.** The CA's keys, every server, the revocations and the audit log live in `data.db`, and every secret there is sealed with the master key, which is never in the database. `data.db` also holds what is not sealed: PocketBase's token signing secrets, password hashes, and in its stored files the final dumps of removed databases.
+- **restic runs only on agents**, in hardened job containers; the panel holds the targets' secrets and gives them to an agent only as it delivers a command.
+
+So the panel's backup needs the master key to be of any use, and the master key needs a backup of its own, which no backup of the panel can be: that is the loop.
+
+## Decision
+
+- **D1. The panel's backup is a backup job.** Its source is `panel` and its server is the **carrier**, another server whose agent uploads the copy. Scheduling, catch-up, retries, alerts, retention, listings, downloads and integrity checks are those of every job (#29–#31). A run 10 minutes after an enrollment, a removal or a revocation (trigger `change`) narrows the recovery point.
+- **D2. The panel seals the copy before a byte leaves it.** For each run the panel makes a consistent copy (`VACUUM INTO` and the stored files the database names) and seals it in the PCPB1 format with keys derived from the master key: a key per segment, AES-256-GCM in 64 KiB chunks with STREAM nonces, a trailer bound to the header. A stored file's key is convergent but keyed, so an unchanged file seals to the same bytes and restic deduplicates it, while nobody without the master key can confirm a guess of a file. The carrier fetches the sealed copy with `FetchArtifact` and streams it into `restic backup --stdin`: neither it nor the repository sees anything unencrypted.
+- **D3. restic runs on agents only, the recovery included.** `pocketcloud-agent panel-recovery fetch` takes the copy out of a repository in the agent's own job container, on a surviving server or from a launcher on the new machine, and checks it with the kit's key as it writes it.
+- **D4. The recovery kit breaks the loop.** An admin downloads a kit (PCKIT1): the master key, and what reaches and opens the panel's backup (each target's repository exactly as the enricher delivers it), the job, the addresses the servers dial and the start environment, sealed with AES-256-GCM under argon2id of a passphrase (t=3, 64 MiB, p=4; at least 12 characters; the header lines are the additional data). A kit counts only once a check opened it: the admin uploads it back with its passphrase. The panel keeps no kit, only its id and a digest per section (key, address, job, targets), so it can say which change made a kit stale and keep `recovery_kit` open until a current kit is checked.
+- **D5. `panel recover` checks everything before it writes anything, and runs before PocketBase.** Every PocketBase command bootstraps pb_data, which would make a database where the backup is to go, so `cmd/panel` catches `recover` first. It compares key ids, decrypts into a staging directory checking every chunk, checks the database (integrity, migrations, one CA that opens with the kit's key and has the backup's pin), and only then writes the key file (`O_EXCL`) and swaps pb_data in, keeping what was there. The first start then finishes the restore: queued commands are cancelled, servers are marked offline without alerts so that reconnects count as returns, sessions end (new token secrets), and a sealed `panel_restored` entry says where the restored log resumes.
+- **D6. A wrong start fails closed.** The database records the id of the master key that sealed it and the pin of its CA (`_pc_panel`). A start with another key is refused before anything is written; a CA is made only for a database that never had servers or a CA; `POCKETCLOUD_EXPECT_CA_PIN` names the CA a start must find; two CA records are refused; a serve lock keeps a second panel off one pb_data. PocketBase's own restore is refused, as it would start with whatever key is mounted.
+- **D7. The address continues.** The gateway records each agent's gRPC `:authority`, the address it dials, which every agent version sends; Settings warns about IP addresses. A new machine takes the address over; where it cannot, `pocketcloud-agent repoint` changes an agent's address after the new panel proved it holds the server's CA and knows the server. For 90 seconds after a start, no server is marked offline while agents come back from their back-off.
+
+## Alternatives
+
+- **PocketBase's backups** (a zip of pb_data): Deflate without deduplication, `metrics.db` copied while it is written, and `data.db` in plaintext in pb_data/backups or S3, with the token signing secrets that let whoever reads it sign in as anyone. They stay available for a quick copy, but restoring one is refused.
+- **A plaintext copy through the carrier**, with dedicated targets: the carrier, and every agent that gets the target's password at delivery, could read the session secrets and forge admin tokens.
+- **restic run by the operator in a container of their own** during a recovery: an exception to "restic runs only on agents", with none of the job containers' hardening.
+- **`recover` as an ordinary PocketBase command**: PocketBase would bootstrap the target directory first.
+- **Fencing an old panel that comes back** (epochs, a recovery hold on every scheduler): much larger, and only needed if the old machine returns at the same address; left to a follow-up issue, with master key rotation and renewing the gateway's certificate without a restart.
+
+## Consequences
+
+- The address must continue: a DNS name with a low TTL, or the old IP address on the new machine, or `repoint` on each server. Settings shows which addresses the servers dial.
+- The recovery point is the last panel backup. Servers enrolled since must enroll again; removals and revocations since are undone; edge, domain and site changes since are pushed back as the backup knew them; targets and passwords PocketCloud made since are gone. The change runs narrow this, they do not close it.
+- A kit goes stale when its inputs change: a new master key, another address, the panel's job or a target's credentials. `recovery_kit` names the reason until a new kit is checked.
+- The kit and its passphrase together are every secret of the panel, the CA's keys included; whoever has both must be answered by rotating every credential and enrolling every server again. Neither alone is enough, and neither the carrier nor the repository can read or forge a backup, though they can delete or roll one back: the integrity checks and `recover`'s summary of the backup's time and audit entry show that.
+- Two panels with one CA would split the servers. The old machine must stay off, and rehearsals run on a machine the agents cannot reach.
+- PCPB1 and PCKIT1 are formats of our own, built from standard parts (HKDF, AES-GCM, STREAM, argon2id). Frozen vectors pin them, and they need an independent review.

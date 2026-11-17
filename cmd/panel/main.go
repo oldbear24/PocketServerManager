@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
@@ -20,12 +21,20 @@ import (
 )
 
 func main() {
+	// before PocketBase: each of its commands bootstraps pb_data, which
+	// would make a database where the backup is to go (#32)
+	if len(os.Args) > 1 && os.Args[1] == "recover" {
+		os.Exit(runRecover(os.Args[2:]))
+	}
+
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: os.Getenv(panel.EnvDataDir),
 	})
 	app.RootCmd.Use = "panel"
 	app.RootCmd.Short = "PocketCloud panel"
 	app.RootCmd.Version = version.Version
+	app.RootCmd.Long = "PocketCloud panel.\n\nA panel lost with its machine comes back from its backup with `panel recover`, run as\n" +
+		"the first argument, before PocketBase opens pb_data: see `panel recover --help` and\ndocs/disaster-recovery.md."
 
 	config := panel.ConfigFromEnv()
 	config.BindFlags(app.RootCmd)
@@ -45,6 +54,69 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// runRecover runs `panel recover` (#32) on a cobra root of its own, and
+// returns the process's exit code: 0 once the backup is in place, 1 on any
+// refusal or error, with nothing written.
+func runRecover(args []string) int {
+	root := &cobra.Command{Use: "panel", SilenceUsage: true, SilenceErrors: true}
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.AddCommand(recoverCommand())
+	root.SetArgs(append([]string{"recover"}, args...))
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func recoverCommand() *cobra.Command {
+	options := panel.RecoverOptions{Out: os.Stdout}
+	var passphraseFile string
+
+	cmd := &cobra.Command{
+		Use:   "recover --kit FILE --from FILE.pcpb",
+		Short: "Restores the panel from its backup and recovery kit",
+		Long: `Restores a panel lost with its machine: it opens the recovery kit, checks the
+backup with the kit's master key as it decrypts it next to pb_data, checks
+the database (SQLite's integrity check, migrations this panel knows, the CA
+opens with the kit's key), and only then writes the master key file and
+puts pb_data in place. A pb_data that holds a panel is kept with --replace,
+never deleted. The first start then finishes the restore.
+
+The passphrase comes from --passphrase-file, ` + panel.EnvKitPassphrase + `, or a
+prompt. Do not run panel keygen on the new machine. See docs/disaster-recovery.md.`,
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(*cobra.Command, []string) error {
+			passphrase, err := panel.ReadPassphrase(passphraseFile, os.Stdin, os.Stderr)
+			if err != nil {
+				return err
+			}
+			options.Passphrase = passphrase
+			return panel.Recover(options)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&options.Kit, "kit", "", "the recovery kit (.pckit)")
+	flags.StringVar(&options.From, "from", "", "the panel's backup (.pcpb), as panel-recovery fetch wrote it")
+	// the data directory serve uses: PocketBase's pb_data next to the binary
+	flags.StringVar(&options.Dir, "dir", envOr(panel.EnvDataDir, filepath.Join(filepath.Dir(os.Args[0]), "pb_data")), "the pb_data to restore")
+	flags.StringVar(&options.MasterKeyFile, "master-key-file", envOr(panel.EnvMasterKeyFile, "master.key"), "where the kit's master key goes")
+	flags.StringVar(&passphraseFile, "passphrase-file", "", "a file with the kit's passphrase")
+	flags.BoolVar(&options.Replace, "replace", false, "keep a pb_data that holds a panel as <dir>.replaced-<UTC> and restore in its place")
+	flags.StringVar(&options.EnvOut, "env-out", "", "write the kit's environment and POCKETCLOUD_EXPECT_CA_PIN to this docker --env-file")
+	flags.BoolVar(&options.DryRun, "dry-run", false, "check everything and write nothing")
+	return cmd
+}
+
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func keygenCommand() *cobra.Command {
