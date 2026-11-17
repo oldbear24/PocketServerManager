@@ -327,7 +327,8 @@ func TestARunIsTriedAgainThreeTimes(t *testing.T) {
 
 // TestTheNextRunTakesARetrysPlace (#31): a retry that would come no more than
 // 10 minutes before the job's next scheduled run is not planned, and a planned
-// one whose job's next run comes as close is given up, saying so.
+// one whose job's next run comes as close is given up, saying so; the alert
+// is critical either way.
 func TestTheNextRunTakesARetrysPlace(t *testing.T) {
 	f, _, _ := newRetryFixture(t)
 	soon := time.Now().UTC().Add(12 * time.Minute)
@@ -355,6 +356,10 @@ func TestTheNextRunTakesARetrysPlace(t *testing.T) {
 	}
 	if runs := f.runsOf(later); len(runs) != 1 {
 		t.Errorf("%d runs", len(runs))
+	}
+	if a := f.openAlert(alertBackupFailed, later.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityCritical ||
+		a.GetString("message") != "Backup later → b2 failed: Fatal: boom; the next scheduled run at "+near.Format("15:04")+" UTC takes its place." {
+		t.Errorf("the alert once the next run takes the retry's place: %v", a)
 	}
 }
 
@@ -690,7 +695,9 @@ func TestTheRetryRoute(t *testing.T) {
 // server is offline, the run before it still goes, or a restore writes its
 // data; it is given up, saying why, when its job was disabled, its target
 // taken out of it, a newer run took its place, or it was missed for a day
-// while the panel was down, which alerts critical.
+// while the panel was down. A job disabled, or a retry missed, raises the
+// alert again, critical, without the retry it promised; a target taken out
+// resolved it, and a newer run's outcome is the alert's.
 func TestARetryWaitsOrIsGivenUp(t *testing.T) {
 	f, _, stream := newRetryFixture(t)
 	f.p.Commands.Disconnect(stream)
@@ -737,14 +744,32 @@ func TestARetryWaitsOrIsGivenUp(t *testing.T) {
 		name  string
 		after func(job, run *core.Record)
 		note  string
+		// alert is the alert's message once the retry is given up; "" for
+		// none open
+		alert string
 	}{
-		{"disabled", func(job, _ *core.Record) { job.Set("enabled", false); _ = f.app.Save(job) }, "The job is disabled, so it is not tried again."},
-		{"taken out", func(job, _ *core.Record) { job.Set("targets", []string{}); _ = f.app.Save(job) }, "The target is no longer one of the job's targets."},
+		{"disabled", func(job, _ *core.Record) { job.Set("enabled", false); _ = f.app.Save(job) }, "The job is disabled, so it is not tried again.",
+			"Backup disabled → b2 failed: Fatal: boom; the job is disabled, so it is not tried again."},
+		{"taken out", func(job, _ *core.Record) {
+			// as stored: the hook that resolves its alert compares it with what it was
+			job = f.fresh(job)
+			job.Set("targets", []string{})
+			if err := f.app.Save(job); err != nil {
+				t.Fatal(err)
+			}
+		}, "The target is no longer one of the job's targets.", ""},
 		{"newer", func(job, _ *core.Record) {
 			f.endRun(f.run(job), map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime(), "result": map[string]any{"snapshot_id": "4f2a"}})
-		}, "A newer run of the job to the target took its place."},
+		}, "A newer run of the job to the target took its place.", ""},
+		{"failed again", func(job, _ *core.Record) {
+			f.endRun(f.run(job), map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime(), "error": "Fatal: bang",
+				"result": map[string]any{"failure": "password"}})
+		}, "A newer run of the job to the target took its place.", "Backup failed again → b2 failed: Fatal: bang."},
 	} {
 		job, run := planned(test.name)
+		if a := f.openAlert(alertBackupFailed, job.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityWarning {
+			t.Errorf("%s: the alert of the planned retry: %v", test.name, a)
+		}
 		test.after(job, run)
 		f.p.RunDueBackups(run.GetDateTime("retry_at").Time().Add(time.Minute))
 		if given := f.fresh(run); !given.GetDateTime("retry_at").IsZero() || given.GetString("retry_note") != test.note {
@@ -752,6 +777,13 @@ func TestARetryWaitsOrIsGivenUp(t *testing.T) {
 		}
 		if runs := f.runsOf(job); len(runs) > 2 || len(runs) == 2 && runs[1].GetString("trigger") == schema.RunRetry {
 			t.Errorf("%s: %d runs", test.name, len(runs))
+		}
+		a := f.openAlert(alertBackupFailed, job.Id+":"+f.target.Id)
+		switch {
+		case test.alert == "" && a != nil:
+			t.Errorf("%s: an alert is open: %v", test.name, a.FieldsData())
+		case test.alert != "" && (a == nil || a.GetString("severity") != schema.SeverityCritical || a.GetString("message") != test.alert):
+			t.Errorf("%s: the alert once the retry is given up: %v", test.name, a)
 		}
 	}
 
@@ -845,6 +877,59 @@ func TestARunThatNeverRanTakesNoRetrysPlace(t *testing.T) {
 	f.p.RunDueBackups(run.GetDateTime("retry_at").Time().Add(time.Minute))
 	if given := f.fresh(run); !given.GetDateTime("retry_at").IsZero() || given.GetString("retry_note") != "A newer run of the job to the target took its place." {
 		t.Errorf("the retry a newer run that ran took the place of: %v", given.FieldsData())
+	}
+}
+
+// TestADisabledJobPlansNoRetry (#31): a failed run of a job that is disabled,
+// as one run by hand, or whose label is gone, is not tried again, saying
+// why, and alerts critical at once; Unlock and retry of a young lock does not
+// plan one either.
+func TestADisabledJobPlansNoRetry(t *testing.T) {
+	f, job, _ := newRetryFixture(t)
+	key := job.Id + ":" + f.target.Id
+	job.Set("enabled", false)
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/run", f.admin, nil); status != http.StatusOK {
+		t.Fatalf("run a disabled job now: %d %v", status, out)
+	}
+	runs := f.runsOf(job)
+	if len(runs) != 1 {
+		t.Fatalf("%d runs", len(runs))
+	}
+	run := f.endRun(runs[0], map[string]any{"status": schema.CommandFailed, "error": "Fatal: boom", "started_at": types.NowDateTime(),
+		"result": map[string]any{"failure": "restic"}})
+	if run.GetString("failure") != backup.FailureRestic || !run.GetDateTime("retry_at").IsZero() || run.GetString("retry_note") != "The job is disabled, so it is not tried again." {
+		t.Errorf("a disabled job's failed run: %v", run.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, key); a == nil || a.GetString("severity") != schema.SeverityCritical || a.GetString("message") != "Backup data → b2 failed: Fatal: boom." {
+		t.Errorf("its alert: %v", a)
+	}
+
+	// a label's job whose label went
+	stack := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "shop"})
+	label := f.job("shop-db", map[string]any{"origin": schema.JobLabel, "stack": stack.Id, "service": "db", "source_kind": schema.SourceDump,
+		"engine": schema.DumpPostgres, "label_removed": true})
+	if plan := f.p.planRetry(label, 1, backup.FailureRestic, nil, true, time.Now()); !plan.at.IsZero() || plan.note != labelGoneMessage {
+		t.Errorf("the plan of a job whose label is gone: %+v", plan)
+	}
+
+	// Unlock and retry of a young lock
+	created := time.Now().Add(-2 * time.Minute).UTC()
+	locked := f.failRun(job, "unable to create lock in backend: repository is already locked by PID 9 on nas by root (UID 0, GID 0)",
+		lockAnswer(backup.Lock{PID: 9, Host: "nas", User: "root", Created: created, AgeS: 120}))
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	if status, out := f.send(http.MethodPost, "/api/pc/backup-runs/"+locked.Id+"/retry", operator, nil); status != http.StatusConflict ||
+		out["message"] != "The job is disabled, so PocketCloud plans no retry of it: try again once restic counts the lock as stale, at "+
+			created.Add(32*time.Minute).Format("15:04")+" UTC." {
+		t.Errorf("Unlock and retry of a disabled job's young lock: %d %v", status, out)
+	}
+	if planned := f.fresh(locked); !planned.GetDateTime("retry_at").IsZero() || planned.GetString("retry_note") != "The job is disabled, so it is not tried again." {
+		t.Errorf("a disabled job's locked run: %v", planned.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, key); a == nil || a.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("its alert: %v", a)
 	}
 }
 
