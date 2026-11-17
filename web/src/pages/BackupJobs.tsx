@@ -256,7 +256,8 @@ const statusClass: Record<RunStatus, string> = {
 };
 
 /** What a job's source is, in a line: volume vw-data, a directory, the
- * volumes of a stack, those of one service, or a dump of a service. */
+ * volumes of a stack, those of one service, a dump of a service, or the
+ * panel's own encrypted copy (#32). */
 export function describeSource(job: BackupJob, stacks: StackName[], t: Translate): string {
   const stack = stacks.find((item) => item.id === job.stack)?.name ?? "–";
   let text: string;
@@ -286,6 +287,9 @@ export function describeSource(job: BackupJob, stacks: StackName[], t: Translate
         stack,
         service: job.service,
       });
+      break;
+    case "panel":
+      text = t("backups.source.panel");
       break;
     default:
       text = job.source;
@@ -562,7 +566,18 @@ export function JobsCard({
                     )}
                   </td>
                   <td className="job-where">
-                    <span className="mono job-host">{server}</span>
+                    {job.source_kind === "panel" ? (
+                      // the panel's copy, which the carrier uploads
+                      <>
+                        <span className="mono job-host">{t("backups.job.panelHost")}</span>
+                        <span className="muted">
+                          {" · "}
+                          {t("backups.job.via", { server })}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="mono job-host">{server}</span>
+                    )}
                     {" → "}
                     {names.length > 0 ? (
                       names.join(" + ")
