@@ -67,8 +67,13 @@ export function SnapshotsCard({
   const [shown, setShown] = useState<{ key: string; all: boolean }>({ key: "", all: false });
   const key = target ? `${job.id}|${target.id}` : null;
   const listing = useListing(key, (refresh) => restoresApi.snapshots(job.id, target!.id, refresh));
-  const server = hosts.find((host) => host.id === job.host)?.name ?? "–";
-  const targetServer = hosts.find((host) => host.id === target?.host)?.name ?? server;
+  const host = hosts.find((item) => item.id === job.host)?.name ?? "–";
+  // the panel's own copy (#32), which its carrier uploads
+  const server =
+    job.source_kind === "panel"
+      ? `${t("backups.job.panelHost")} · ${t("backups.job.via", { server: host })}`
+      : host;
+  const targetServer = hosts.find((item) => item.id === target?.host)?.name ?? host;
   const list = listing.data;
   const all = shown.key === key && shown.all;
   // a snapshot whose summary restic did not keep is measured by its run

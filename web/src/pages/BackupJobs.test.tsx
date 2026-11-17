@@ -1333,12 +1333,15 @@ describe("the panel's own backup (#32)", () => {
     expect(describeSource(panel, stacks, i18n.getFixedT("en"))).toBe(
       "PocketBase · SQLite copy, encrypted",
     );
+    // its snapshots say the same
+    expect(screen.getByText("panel · via vm → panel-sftp")).toHaveClass("card-head-note");
 
     await act(() => i18n.changeLanguage("cs"));
     expect(panelRow.getByText("PocketBase · kopie SQLite, šifrovaná")).toBeInTheDocument();
     expect(panelRow.getByText("· přes vm")).toBeInTheDocument();
     expect(panelRow.getByText("denně 04:00")).toBeInTheDocument();
     expect(panelRow.getByText("14d 8w 12m")).toBeInTheDocument();
+    expect(screen.getByText("panel · přes vm → panel-sftp")).toHaveClass("card-head-note");
   });
 
   it("is changed in its own dialog", () => {
