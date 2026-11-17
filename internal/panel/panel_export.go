@@ -650,13 +650,11 @@ func (p *Panel) sweepPanelExports(now time.Time) {
 	}
 }
 
-// registerPanelExports sweeps the spool as the panel starts, before its
-// gateway serves a copy, and hourly.
+// registerPanelExports sweeps the spool hourly. The panel's start sweeps it
+// too, before its gateway serves a copy (see Register): once it holds its
+// data dir alone, as a sweep of a panel that does not would remove another's
+// build under way.
 func (p *Panel) registerPanelExports() {
-	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
-		p.sweepPanelExports(time.Now())
-		return e.Next()
-	})
 	p.App.Cron().MustAdd("pocketcloud_panel_exports", "13 * * * *", func() { p.sweepPanelExports(time.Now()) })
 }
 

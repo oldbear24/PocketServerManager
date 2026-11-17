@@ -217,7 +217,7 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
-	// before the gateway starts, which serves the copies
+	// the panel's backup of itself (#32)
 	p.registerPanelExports()
 	p.registerChangeBackups()
 	p.registerPocketBaseBackups()
@@ -237,6 +237,10 @@ func (p *Panel) Register() {
 		if err := p.Audit.SealHead(); err != nil {
 			return fmt.Errorf("sealing the audit log: %w", err)
 		}
+
+		// what a panel that stopped left in the spool of its copies, before
+		// the gateway serves one (#32)
+		p.sweepPanelExports(time.Now())
 
 		if err := p.startGateway(); err != nil {
 			return err

@@ -602,6 +602,31 @@ func TestTheRunsOfAMinuteShareOneExport(t *testing.T) {
 	if _, err := os.Stat(f.p.exports.jobs[f.job.Id][1].path); err != nil {
 		t.Errorf("the copy a running run fetched: %v", err)
 	}
+
+	// a copy whose file is gone from the spool: its run gets a new one
+	if err := os.Remove(f.p.exports.jobs[f.job.Id][1].path); err != nil {
+		t.Fatal(err)
+	}
+	if again := f.fetch(third); bytes.Equal(again, newer) || len(f.p.exports.jobs[f.job.Id]) != 2 {
+		t.Errorf("a run whose copy is gone: the same %v, %d copies kept", bytes.Equal(again, newer), len(f.p.exports.jobs[f.job.Id]))
+	}
+}
+
+// TestACopyNeedsTheMasterKey (#32): a panel that did not load its master key
+// makes no copy.
+func TestACopyNeedsTheMasterKey(t *testing.T) {
+	f := newExportFixture(t)
+	run := f.deliveredRun(f.target)
+	key := f.p.masterKey
+	f.p.masterKey = nil
+	if _, err := f.p.fetchArtifact(f.host.Id, backup.PanelExportID(run.Id)); err == nil || err.Error() != "the panel has not loaded its master key" {
+		t.Errorf("without the key: %v", err)
+	}
+	f.p.masterKey = key
+	if len(f.spool()) != 0 {
+		t.Errorf("the spool %v", f.spool())
+	}
+	f.fetch(run)
 }
 
 // TestTheSpoolIsSwept (#32): the sweep removes the copies older than 15
