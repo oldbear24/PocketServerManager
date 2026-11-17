@@ -443,6 +443,12 @@ func TestRecoverRefusals(t *testing.T) {
 			kitOf(t, testutil.MasterKey, "sha256:"+strings.Repeat("0f", 32), f.kit)
 			return nil, nil
 		}, "This backup's CA (pin {pin}) is not the kit's (pin sha256:" + strings.Repeat("0f", 32) + "): use the kit of the panel that made it."},
+		{"a CA other than the manifest names", func(t *testing.T, f *recoverFixture) ([]byte, []string) {
+			named := "sha256:" + strings.Repeat("0e", 32)
+			exportOf(t, f.app, testutil.MasterKey, named, f.export, nil)
+			kitOf(t, testutil.MasterKey, named, f.kit)
+			return nil, nil
+		}, "The backup's CA is not the one its manifest names (pin sha256:" + strings.Repeat("0e", 32) + "): the backup is not whole."},
 		{"a damaged database", func(t *testing.T, f *recoverFixture) ([]byte, []string) {
 			exportOf(t, f.app, testutil.MasterKey, f.pin, f.export, func(db *dbx.DB) {
 				// an index that no longer matches its table
