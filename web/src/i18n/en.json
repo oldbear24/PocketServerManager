@@ -403,7 +403,10 @@
       "chain_sealed": "Log sealed",
       "terminal_session_end": "Terminal closed",
       "backup_restore": "Restore started",
-      "backup_download": "Snapshot downloaded"
+      "backup_download": "Snapshot downloaded",
+      "recovery_kit_exported": "Recovery kit downloaded",
+      "recovery_kit_checked": "Recovery kit checked",
+      "panel_restored": "Panel restored"
     },
     "verb": {
       "create": "created",
@@ -426,7 +429,10 @@
       "chain_sealed": "sealed the unproven entries of",
       "terminal_session_end": "closed a terminal on",
       "backup_restore": "started a restore of",
-      "backup_download": "downloaded a snapshot of"
+      "backup_download": "downloaded a snapshot of",
+      "recovery_kit_exported": "downloaded the recovery kit",
+      "recovery_kit_checked": "checked the recovery kit",
+      "panel_restored": "restored the panel from the backup of"
     },
     "source": {
       "ui": "UI",
@@ -601,7 +607,71 @@
     "backupCheckGroupsHint": "Each check reads the next of this many groups: 20 reads about 5 % each time, and every pack in 20 checks; 0 checks the structure only and reads no data.",
     "backupCheckGroupsInvalid": "A whole number from 0 to 256.",
     "backupChecksOff": "Without checks, damage in a repository shows only when you restore.",
-    "backupChecksSaved": "The integrity checks were saved."
+    "backupChecksSaved": "The integrity checks were saved.",
+    "recovery": {
+      "title": "Recovery kit",
+      "note": "the master key and what opens the panel's backup",
+      "lead": "Losing this machine must not mean enrolling every server again. The kit holds the master key, on which every stored secret and the servers' CA depend, and what reaches and opens the panel's backup, sealed with a passphrase.",
+      "keyId": "Master key",
+      "status": "Kit",
+      "statusSaved": "Saved: checked {{time}} by {{name}}",
+      "statusUnverified": "Downloaded {{time}}, not checked yet",
+      "statusStale": "Out of date: {{reasons}}",
+      "statusNever": "Never downloaded",
+      "reason": {
+        "key": "the master key changed",
+        "address": "the panel's addresses changed",
+        "job": "the panel's backup job changed",
+        "targets": "a target of the panel's backup changed"
+      },
+      "neverText": "Download the kit, keep it off this machine, then check it here.",
+      "unverifiedText": "Check the kit you saved: until a check opens it, PocketCloud keeps reminding you.",
+      "staleText": "Download a new kit and check it: the old one would not restore the panel as it is now.",
+      "download": "Download a recovery kit…",
+      "check": "Check a saved kit…",
+      "guide": "Recovery guide: docs/disaster-recovery.md",
+      "downloadTitle": "Download a recovery kit",
+      "downloadText": "The kit holds the master key and the credentials and passwords of the panel's backup targets: with the kit and its passphrase anyone reads every secret of this panel. Keep it off this machine, apart from its passphrase and from the backups, such as in a password manager.",
+      "passphrase": "Passphrase",
+      "passphraseAgain": "Passphrase again",
+      "passphraseHint": "Without it nobody opens the kit, PocketCloud included: it is kept nowhere.",
+      "passphraseMismatch": "The passphrases differ.",
+      "generate": "Generate one",
+      "generated": "Write this passphrase down now: it is kept nowhere and never shown again.",
+      "password": "Your sign-in password",
+      "passwordNote": "The master key leaves the panel only once you confirm it is you.",
+      "apart": "I keep the kit and its passphrase apart, off this machine and away from the backups.",
+      "noJob": "The panel has no backup job yet: this kit holds the master key alone.",
+      "downloadAction": "Download",
+      "sealing": "Sealing the kit…",
+      "downloaded": "The kit {{id}} was downloaded. Check it now: the reminder stays until a check opens it.",
+      "checkTitle": "Check a saved kit",
+      "checkText": "Choose the kit where you keep it and type its passphrase: the panel opens it as a recovery would and keeps nothing of it.",
+      "kitFile": "Kit file (.pckit)",
+      "kitTooBig": "This file is too big to be a recovery kit: a kit is at most 64 KiB.",
+      "checkAction": "Check",
+      "checking": "Opening the kit…",
+      "checkedCurrent": "The kit {{id}} opens and is current: it is saved.",
+      "checkedStale": "The kit {{id}} opens, but it is out of date: {{reasons}}. Download a new one.",
+      "agents": "Servers dial the panel at",
+      "ipWarning": "{{address}} is an IP address: a new panel machine must take it over, or each of its servers needs pocketcloud-agent repoint.",
+      "startWith": "Start a restored panel with",
+      "caPin": "CA pin",
+      "panelJob": "Panel backup",
+      "panelJobNone": "Not set up: the kit holds the master key only.",
+      "panelJobLast": "Last succeeded {{time}} · via {{server}}",
+      "panelJobNever": "Not succeeded yet",
+      "addJob": "Back up the panel",
+      "restoredTitle": "Restored from a backup",
+      "restored": "Restored {{time}} from a backup made {{from}}.",
+      "restoredBack": "Servers back: {{back}} of {{total}}.",
+      "passphraseShort_one": "At least {{count}} character.",
+      "passphraseShort_other": "At least {{count}} characters.",
+      "agentsAt_one": "{{address}} · {{count}} server",
+      "agentsAt_other": "{{address}} · {{count}} servers",
+      "unreported_one": "{{count}} server has not said yet which address it dials.",
+      "unreported_other": "{{count}} servers have not said yet which address they dial."
+    }
   },
   "event": {
     "agent": {
@@ -643,7 +713,10 @@
     "backup_skipped": "{{name}}: a backup was skipped",
     "backup_retention": "{{name}}: old snapshots are not being removed",
     "backup_check_failed": "{{name}}: a backup repository has errors",
-    "backup_check_unverified": "{{name}}: a backup repository is not verified"
+    "backup_check_unverified": "{{name}}: a backup repository is not verified",
+    "recovery_kit": "The panel's recovery kit is not saved",
+    "panel_backup": "The panel itself is not backed up",
+    "panel_restored": "The panel was restored from a backup: servers are reconnecting"
   },
   "chart": {
     "now": "now",
@@ -2048,19 +2121,22 @@
       "volume": "volume {{name}}",
       "stack": "volumes of stack {{name}}",
       "serviceVolumes": "volumes of service {{service}}: {{names}}",
-      "db_dump": "{{tool}} · {{stack}}/{{service}}"
+      "db_dump": "{{tool}} · {{stack}}/{{service}}",
+      "panel": "PocketBase · SQLite copy, encrypted"
     },
     "sourceKind": {
       "volume": "Docker volume",
       "path": "Directory on the server",
       "stack": "Volumes of a stack",
-      "db_dump": "Database dump"
+      "db_dump": "Database dump",
+      "panel": "The panel itself (pb_data)"
     },
     "sourceNote": {
       "volume": "restic reads it in a job container that mounts it read-only.",
       "path": "An absolute directory of the server, mounted read-only into the job container.",
       "stack": "Every named volume of the stack, as it has them at each run.",
-      "db_dump": "The service's running container makes the dump with its own tools, and restic keeps it as one file of the snapshot."
+      "db_dump": "The service's running container makes the dump with its own tools, and restic keeps it as one file of the snapshot.",
+      "panel": "The panel copies its database and stored files and encrypts them with a key derived from the master key. The chosen server's agent backs them up with restic and never sees them unencrypted."
     },
     "engineTool": {
       "postgres": "pg_dump",
@@ -2213,7 +2289,26 @@
       "enabled": "Enabled: it runs on its schedule",
       "pickHint": "click a name for its snapshots",
       "showSnapshots": "Show the snapshots of {{name}}",
-      "retrying": "retry {{attempt}}/{{max}}: {{time}}"
+      "retrying": "retry {{attempt}}/{{max}}: {{time}}",
+      "panelHost": "panel",
+      "via": "via {{server}}",
+      "carrier": "Server that uploads it",
+      "carrierHint": "Its agent fetches the panel's encrypted copy and backs it up with restic in a job container. Choose a server other than the panel's own machine.",
+      "carrierOld": "{{name}}'s agent cannot back up the panel yet: update it.",
+      "carrierNone": "No server's agent can back up the panel yet: update the agents.",
+      "panelExists": "The panel has its backup job already.",
+      "panelLocal": "{{target}} is a directory of {{server}}: if that is the panel's machine, one failure takes the panel and its backup."
+    },
+    "panel": {
+      "dialogTitle": "Back up the panel",
+      "editTitle": "Panel backup",
+      "what": "The panel's database and stored files, encrypted on the panel into one file: only the master key opens it. Request logs, metrics and diagnostic bundles are left out.",
+      "missingTitle": "The panel itself is not backed up",
+      "missingText": "Losing the panel's machine would mean enrolling every server again. Back it up every day to a target off that machine.",
+      "setUp": "Back up the panel",
+      "kitTitle": "The recovery kit is not saved",
+      "kitText": "The panel's backups open only with the master key, which the kit holds.",
+      "kitAction": "Open the recovery kit"
     },
     "snapshot": {
       "today": "today {{time}}",
@@ -2334,6 +2429,7 @@
       "removePick": "Remove {{path}}",
       "where": "Where",
       "dumpNoOriginal": "A database dump goes back into its database with the database's own restore: restore it to a folder, or download it.",
+      "panelNoOriginal": "The panel is restored on a machine of its own, with its recovery kit: see the steps.",
       "localOnly": "{{target}} is a folder of {{host}}: only that server restores from it.",
       "adminOnly": "Only admins restore to another folder or download.",
       "server": "Server",
@@ -2397,7 +2493,18 @@
       "downloadNotStarted": "If the download does not start, try again.",
       "downloadFolder": "Download this folder",
       "downloadFrame": "Download of {{name}}",
-      "downloadOne": "A download takes one item, or a whole folder: pick one, or none."
+      "downloadOne": "A download takes one item, or a whole folder: pick one, or none.",
+      "panel": {
+        "title": "Restore the panel",
+        "text": "A panel is not restored from inside itself. Start a new one from a snapshot and the recovery kit where the servers dial it ({{address}}): they reconnect with their own certificates.",
+        "step1": "1 · Fetch the snapshot, on a server with an agent",
+        "launcher": "Or on the new machine, through the agent's image:",
+        "step2": "2 · Restore it into the new panel's volumes",
+        "step3": "3 · Check it and start the panel at the same address",
+        "step4": "4 · In Settings › Recovery kit, watch the servers come back",
+        "download": "Download the encrypted copy",
+        "guide": "Recovery guide: docs/disaster-recovery.md"
+      }
     },
     "restoreFromBackup": "Restore from backup",
     "integrity": {
