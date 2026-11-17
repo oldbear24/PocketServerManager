@@ -1007,6 +1007,35 @@ describe("a target's integrity", () => {
     ).toBeInTheDocument();
   });
 
+  it("says when the panel tries a check that did not complete again", () => {
+    show(
+      "viewer",
+      [
+        checked({
+          last_check: "c2",
+          last_check_status: "error",
+          last_check_error: "The check did not finish in 12 hours.",
+        }),
+      ],
+      {
+        backup_checks: [
+          check({
+            id: "c2",
+            status: "error",
+            finished_at: "2026-11-09 08:00:00.000Z",
+            retry_at: "2026-11-09 13:00:00.000Z",
+          }),
+        ],
+      },
+    );
+
+    expect(
+      integrity("Backblaze B2").getByText(
+        "restic check Sunday 06:21 · next Sunday 06:00 · last attempt Monday 09:00: The check did not finish in 12 hours. · next try: Monday 14:00",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("lets an admin check now, after saying what is read and that only errors lock", async () => {
     show("admin", [checked()]);
     const started = vi.spyOn(backupsApi, "check").mockResolvedValue({ check: "c9", command: "x" });
@@ -1177,6 +1206,85 @@ describe("a target's integrity", () => {
     expect(within(output).getByText("Integrity check of Backblaze B2")).toBeInTheDocument();
     // a viewer neither checks nor stops
     expect(details.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
+  });
+
+  it("says a check could not confirm its errors, and that it is tried again only when it is", () => {
+    const suspectText =
+      "The first check found errors; the second, with the repository locked, could not be completed, so they are neither confirmed nor ruled out.";
+    // by hand, which the panel does not try again
+    const manual = check({
+      id: "c2",
+      created: "2026-11-09 11:00:00.000Z",
+      finished_at: "2026-11-09 11:40:00.000Z",
+      status: "suspect",
+      trigger: "manual",
+      subset: "4/20",
+      error: "the second pass did not start: the Docker Engine of pve-01 did not answer",
+    });
+    const errors = [{ kind: "pack", id: "1b2c3d", text: "pack 1b2c3d: does not exist" }];
+    const shown = (row: BackupCheck) => {
+      live.records = { backup_checks: { c2: { ...row, errors } } };
+      show(
+        "viewer",
+        [checked({ last_check: "c2", last_check_status: "suspect", last_check_error: row.error })],
+        { backup_checks: [row, check({})] },
+        "/backups?check=t1",
+      );
+      return drawer("Backblaze B2");
+    };
+
+    let details = shown(manual);
+    expect(details.getByText("pack 1b2c3d: does not exist")).toBeInTheDocument();
+    expect(details.getByText(suspectText)).toBeInTheDocument();
+    // why the second pass did not complete
+    expect(details.getByText(manual.error)).toHaveClass("backup-target-error");
+    expect(details.queryByText(/PocketCloud tries again/)).not.toBeInTheDocument();
+    expect(details.queryByText(/^next try:/)).not.toBeInTheDocument();
+    cleanup();
+
+    // scheduled, and tried again an hour later
+    details = shown({ ...manual, trigger: "schedule", retry_at: "2026-11-09 12:40:00.000Z" });
+    expect(details.getByText(`${suspectText} PocketCloud tries again.`)).toBeInTheDocument();
+    expect(details.getByText("next try: Monday 13:40")).toBeInTheDocument();
+  });
+
+  it("says when a check that did not complete or was skipped is tried again", () => {
+    const skipped = check({
+      id: "c2",
+      created: "2026-11-09 05:00:00.000Z",
+      started_at: "",
+      finished_at: "2026-11-09 05:00:00.000Z",
+      duration_ms: 0,
+      status: "skipped",
+      subset: "",
+      packs_read: 0,
+      packs_total: 0,
+      error: "The server pve-01 was offline at 05:00 UTC.",
+      // still offline at each try since: an hour more each time
+      retry_at: "2026-11-09 13:00:00.000Z",
+    });
+    live.records = { backup_checks: { c2: skipped } };
+    show(
+      "viewer",
+      [
+        checked({
+          last_check: "c2",
+          last_check_status: "skipped",
+          last_check_error: skipped.error,
+        }),
+      ],
+      { backup_checks: [skipped, check({})] },
+      "/backups?check=t1",
+    );
+
+    const details = drawer("Backblaze B2");
+    expect(details.getByText("The server pve-01 was offline at 05:00 UTC.")).toBeInTheDocument();
+    expect(details.getByText("next try: Monday 14:00")).toBeInTheDocument();
+    expect(
+      integrity("Backblaze B2").getByText(
+        "restic check Sunday 06:21 · next Sunday 06:00 · last attempt Monday 06:00: The server pve-01 was offline at 05:00 UTC. · next try: Monday 14:00",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows another check when it is picked", () => {

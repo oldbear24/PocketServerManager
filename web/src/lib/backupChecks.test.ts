@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
 import {
   checkFields,
+  checkRetryAt,
   czechAt,
   formatCheckMoment,
   integritySummary,
@@ -239,8 +240,34 @@ describe("a check in a list", () => {
     expect(fields).not.toContain("errors");
     expect(fields).not.toContain("log");
     // what a line, the tile and the drawer's timeline show
-    for (const field of ["target", "status", "subset", "finished_at", "command", "errors_more"]) {
+    for (const field of [
+      "target",
+      "status",
+      "subset",
+      "finished_at",
+      "command",
+      "errors_more",
+      "retry_at",
+    ]) {
       expect(fields).toContain(field);
     }
+  });
+});
+
+describe("a check's retry", () => {
+  const at = "2026-11-09 13:00:00.000Z";
+
+  it("is planned for an error, a suspect or a skipped check that has retry_at", () => {
+    for (const status of ["error", "suspect", "skipped"] as const) {
+      expect(checkRetryAt({ status, retry_at: at })).toBe(at);
+    }
+  });
+
+  it("is none without retry_at, as for a check by hand, nor for any other end", () => {
+    expect(checkRetryAt({ status: "suspect", retry_at: "" })).toBe("");
+    for (const status of ["ok", "failed", "cancelled", "queued", "running"] as const) {
+      expect(checkRetryAt({ status, retry_at: at })).toBe("");
+    }
+    expect(checkRetryAt(null)).toBe("");
   });
 });
