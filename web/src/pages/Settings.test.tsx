@@ -12,6 +12,7 @@ import { AboutCard, BackupChecksCard, SettingsPage } from "./Settings";
 
 vi.mock("../lib/realtime", () => ({
   useLiveList: () => ({ items: [], total: 0, loading: false, error: null, reload: () => {} }),
+  useNow: () => Date.now(),
 }));
 
 const zone = process.env.TZ;
@@ -221,5 +222,55 @@ describe("the integrity checks of backups in Settings (#31)", () => {
     signInAs("admin");
     page();
     expect(await screen.findByText("Integrity checks of backups")).toBeInTheDocument();
+  });
+});
+
+describe("the recovery kit in Settings (#32)", () => {
+  function signInAs(role: User["role"]) {
+    const payload = btoa(
+      JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, type: "auth" }),
+    );
+    pb.authStore.save(`header.${payload}.signature`, {
+      id: "u1",
+      collectionId: "users",
+      collectionName: "users",
+      email: `${role}@example.com`,
+      role,
+    } as unknown as User);
+  }
+
+  function page() {
+    return render(
+      <MemoryRouter>
+        <AuthProvider>
+          <ToastProvider>
+            <SettingsPage />
+          </ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("is an admin's: an operator neither sees it nor asks for it", async () => {
+    // the other cards wait for answers that never come
+    const send = vi.spyOn(pb, "send").mockReturnValue(new Promise(() => {}));
+    const getFirstListItem = vi.fn().mockResolvedValue({ id: "s1", audit_retention_days: 365 });
+    vi.spyOn(pb, "collection").mockReturnValue({ getFirstListItem } as never);
+
+    signInAs("operator");
+    const operator = page();
+    await waitFor(() => expect(screen.getByText("Language")).toBeInTheDocument());
+    expect(screen.queryByRole("heading", { name: "Recovery kit" })).not.toBeInTheDocument();
+    expect(send).not.toHaveBeenCalledWith("/api/pc/recovery", expect.anything());
+    operator.unmount();
+
+    signInAs("admin");
+    page();
+    const heading = await screen.findByRole("heading", { name: "Recovery kit" });
+    expect(send).toHaveBeenCalledWith("/api/pc/recovery", {});
+    // right after the panel's own settings
+    const panel = await screen.findByRole("heading", { name: "Panel" });
+    expect(panel.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading.closest("section")).toHaveAttribute("id", "recovery-kit");
   });
 });

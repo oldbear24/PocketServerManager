@@ -433,7 +433,10 @@
       "chain_sealed": "Zapečetění logu",
       "terminal_session_end": "Terminál zavřen",
       "backup_restore": "Obnova spuštěna",
-      "backup_download": "Snapshot stažen"
+      "backup_download": "Snapshot stažen",
+      "recovery_kit_exported": "Záchranná sada stažena",
+      "recovery_kit_checked": "Záchranná sada ověřena",
+      "panel_restored": "Panel obnoven"
     },
     "verb": {
       "create": "vytvořil",
@@ -456,7 +459,10 @@
       "chain_sealed": "zapečetil neověřené záznamy v",
       "terminal_session_end": "zavřel(a) terminál na",
       "backup_restore": "spustil(a) obnovu",
-      "backup_download": "stáhl(a) snapshot"
+      "backup_download": "stáhl(a) snapshot",
+      "recovery_kit_exported": "stáhl(a) záchrannou sadu",
+      "recovery_kit_checked": "ověřil(a) záchrannou sadu",
+      "panel_restored": "obnovil(a) panel ze zálohy z"
     },
     "source": {
       "ui": "UI",
@@ -637,7 +643,77 @@
     "backupCheckGroupsHint": "Každá kontrola přečte další z tolika skupin: 20 znamená asi 5 % pokaždé a všechny balíky za 20 kontrol; 0 kontroluje jen strukturu a nečte data.",
     "backupCheckGroupsInvalid": "Celé číslo od 0 do 256.",
     "backupChecksOff": "Bez kontrol se poškození repozitáře ukáže až při obnově.",
-    "backupChecksSaved": "Kontroly integrity byly uloženy."
+    "backupChecksSaved": "Kontroly integrity byly uloženy.",
+    "recovery": {
+      "title": "Záchranná sada",
+      "note": "hlavní klíč a to, co otevře zálohu panelu",
+      "lead": "Ztráta tohoto stroje nesmí znamenat znovu připojit každý server. Sada obsahuje hlavní klíč, na kterém závisí všechna uložená tajemství i CA serverů, a to, co zálohu panelu najde a otevře, zapečetěné heslem.",
+      "keyId": "Hlavní klíč",
+      "status": "Sada",
+      "statusSaved": "Uložená: ověřil(a) {{name}} {{time}}",
+      "statusUnverified": "Stažená {{time}}, zatím neověřená",
+      "statusStale": "Zastaralá: {{reasons}}",
+      "statusNever": "Ještě nebyla stažena",
+      "reason": {
+        "key": "změnil se hlavní klíč",
+        "address": "změnily se adresy panelu",
+        "job": "změnila se úloha zálohy panelu",
+        "targets": "změnil se cíl zálohy panelu"
+      },
+      "neverText": "Stáhni sadu, ulož ji mimo tento stroj a pak ji tu ověř.",
+      "unverifiedText": "Ověř sadu, kterou sis uložil(a): dokud ji ověření neotevře, PocketCloud ti to bude připomínat.",
+      "staleText": "Stáhni novou sadu a ověř ji: stará by neobnovila panel takový, jaký je teď.",
+      "download": "Stáhnout záchrannou sadu…",
+      "check": "Ověřit uloženou sadu…",
+      "guide": "Návod k obnově: docs/disaster-recovery.md",
+      "downloadTitle": "Stažení záchranné sady",
+      "downloadText": "Sada obsahuje hlavní klíč a přístupové údaje a hesla cílů zálohy panelu: kdo má sadu i její heslo, přečte každé tajemství tohoto panelu. Ulož ji mimo tento stroj, odděleně od jejího hesla i od záloh, třeba ve správci hesel.",
+      "passphrase": "Heslo sady",
+      "passphraseAgain": "Heslo sady znovu",
+      "passphraseHint": "Bez něj sadu neotevře nikdo, ani PocketCloud: nikde se neukládá.",
+      "passphraseMismatch": "Hesla se liší.",
+      "generate": "Vygenerovat",
+      "generated": "Toto heslo si hned zapiš: nikde se neukládá a už se nikdy nezobrazí.",
+      "password": "Tvoje přihlašovací heslo",
+      "passwordNote": "Hlavní klíč opustí panel, až potvrdíš, že jsi to ty.",
+      "apart": "Sadu a její heslo uložím odděleně, mimo tento stroj a mimo zálohy.",
+      "noJob": "Panel zatím nemá úlohu zálohy: tato sada obsahuje jen hlavní klíč.",
+      "downloadAction": "Stáhnout",
+      "sealing": "Pečetím sadu…",
+      "downloaded": "Sada {{id}} je stažená. Hned ji ověř: upozornění zůstane, dokud ji ověření neotevře.",
+      "checkTitle": "Ověření uložené sady",
+      "checkText": "Vyber sadu tam, kde ji máš uloženou, a zadej její heslo: panel ji otevře stejně jako obnova a nic z ní si nenechá.",
+      "kitFile": "Soubor sady (.pckit)",
+      "kitTooBig": "Tento soubor je na záchrannou sadu příliš velký: sada má nejvýš 64 KiB.",
+      "checkAction": "Ověřit",
+      "checking": "Otevírám sadu…",
+      "checkedCurrent": "Sada {{id}} se otevřela a je aktuální: je uložená.",
+      "checkedStale": "Sada {{id}} se otevřela, ale je zastaralá: {{reasons}}. Stáhni novou.",
+      "agents": "Servery se k panelu připojují na",
+      "ipWarning": "{{address}} je IP adresa: nový stroj panelu ji musí převzít, jinak bude na každém jejím serveru potřeba pocketcloud-agent repoint.",
+      "startWith": "Obnovený panel spusť s",
+      "caPin": "Otisk CA",
+      "panelJob": "Záloha panelu",
+      "panelJobNone": "Není nastavená: sada obsahuje jen hlavní klíč.",
+      "panelJobLast": "Naposledy úspěšná {{time}} · přes {{server}}",
+      "panelJobNever": "Zatím neproběhla úspěšně",
+      "addJob": "Zálohovat panel",
+      "restoredTitle": "Obnoveno ze zálohy",
+      "restored": "Obnoveno {{time}} ze zálohy pořízené {{from}}.",
+      "restoredBack": "Servery zpět: {{back}} z {{total}}.",
+      "passphraseShort_one": "Aspoň {{count}} znak.",
+      "passphraseShort_few": "Aspoň {{count}} znaky.",
+      "passphraseShort_many": "Aspoň {{count}} znaku.",
+      "passphraseShort_other": "Aspoň {{count}} znaků.",
+      "agentsAt_one": "{{address}} · {{count}} server",
+      "agentsAt_few": "{{address}} · {{count}} servery",
+      "agentsAt_many": "{{address}} · {{count}} serveru",
+      "agentsAt_other": "{{address}} · {{count}} serverů",
+      "unreported_one": "{{count}} server zatím neřekl, na jakou adresu se připojuje.",
+      "unreported_few": "{{count}} servery zatím neřekly, na jakou adresu se připojují.",
+      "unreported_many": "{{count}} serveru zatím neřeklo, na jakou adresu se připojuje.",
+      "unreported_other": "{{count}} serverů zatím neřeklo, na jakou adresu se připojují."
+    }
   },
   "event": {
     "agent": {
@@ -679,7 +755,10 @@
     "backup_skipped": "{{name}}: záloha byla přeskočena",
     "backup_retention": "{{name}}: staré snapshoty se neodstraňují",
     "backup_check_failed": "{{name}}: repozitář záloh obsahuje chyby",
-    "backup_check_unverified": "{{name}}: repozitář záloh není ověřený"
+    "backup_check_unverified": "{{name}}: repozitář záloh není ověřený",
+    "recovery_kit": "Záchranná sada panelu není uložená",
+    "panel_backup": "Samotný panel se nezálohuje",
+    "panel_restored": "Panel byl obnoven ze zálohy: servery se znovu připojují"
   },
   "chart": {
     "now": "teď",
@@ -2148,19 +2227,22 @@
       "volume": "svazek {{name}}",
       "stack": "svazky stacku {{name}}",
       "serviceVolumes": "svazky služby {{service}}: {{names}}",
-      "db_dump": "{{tool}} · {{stack}}/{{service}}"
+      "db_dump": "{{tool}} · {{stack}}/{{service}}",
+      "panel": "PocketBase · kopie SQLite, šifrovaná"
     },
     "sourceKind": {
       "volume": "Svazek Dockeru",
       "path": "Složka na serveru",
       "stack": "Svazky stacku",
-      "db_dump": "Výpis databáze"
+      "db_dump": "Výpis databáze",
+      "panel": "Samotný panel (pb_data)"
     },
     "sourceNote": {
       "volume": "restic ho čte v kontejneru úlohy, který ho připojí jen pro čtení.",
       "path": "Absolutní cesta ke složce serveru, do kontejneru úlohy připojená jen pro čtení.",
       "stack": "Všechny pojmenované svazky stacku, jak je má v době běhu.",
-      "db_dump": "Výpis udělá běžící kontejner služby vlastními nástroji a restic ho uloží jako jeden soubor snapshotu."
+      "db_dump": "Výpis udělá běžící kontejner služby vlastními nástroji a restic ho uloží jako jeden soubor snapshotu.",
+      "panel": "Panel zkopíruje svou databázi a uložené soubory a zašifruje je klíčem odvozeným z hlavního klíče. Agent zvoleného serveru je zálohuje resticem a nezašifrované je nikdy neuvidí."
     },
     "engineTool": {
       "postgres": "pg_dump",
@@ -2321,7 +2403,26 @@
       "enabled": "Zapnuto: běží podle plánu",
       "pickHint": "klikni na název pro snapshoty",
       "showSnapshots": "Zobrazit snapshoty úlohy {{name}}",
-      "retrying": "pokus {{attempt}}/{{max}}: {{time}}"
+      "retrying": "pokus {{attempt}}/{{max}}: {{time}}",
+      "panelHost": "panel",
+      "via": "přes {{server}}",
+      "carrier": "Server, který ji nahrává",
+      "carrierHint": "Jeho agent si stáhne šifrovanou kopii panelu a zálohuje ji resticem v kontejneru úlohy. Vyber jiný server než stroj, na kterém běží panel.",
+      "carrierOld": "Agent serveru {{name}} zatím neumí zálohovat panel: aktualizuj ho.",
+      "carrierNone": "Agent žádného serveru zatím neumí zálohovat panel: aktualizuj agenty.",
+      "panelExists": "Panel už svou úlohu zálohy má.",
+      "panelLocal": "{{target}} je složka serveru {{server}}: pokud je to stroj panelu, jedna havárie vezme panel i jeho zálohu."
+    },
+    "panel": {
+      "dialogTitle": "Záloha panelu",
+      "editTitle": "Záloha panelu",
+      "what": "Databáze panelu a jeho uložené soubory, zašifrované v panelu do jednoho souboru: otevře je jen hlavní klíč. Logy požadavků, metriky a diagnostické balíčky se vynechávají.",
+      "missingTitle": "Samotný panel se nezálohuje",
+      "missingText": "Ztráta stroje panelu by znamenala znovu připojit všechny servery. Zálohuj ho každý den do cíle mimo tento stroj.",
+      "setUp": "Zálohovat panel",
+      "kitTitle": "Záchranná sada není uložená",
+      "kitText": "Zálohy panelu otevře jen hlavní klíč, který je v sadě.",
+      "kitAction": "Otevřít záchrannou sadu"
     },
     "snapshot": {
       "today": "dnes {{time}}",
@@ -2458,6 +2559,7 @@
       "removePick": "Odebrat {{path}}",
       "where": "Kam",
       "dumpNoOriginal": "Výpis databáze se do databáze vrací její vlastní obnovou: obnov ho do složky, nebo ho stáhni.",
+      "panelNoOriginal": "Panel se obnovuje na vlastním stroji se záchrannou sadou: viz postup.",
       "localOnly": "{{target}} je složka serveru {{host}}: obnovuje z ní jen tento server.",
       "adminOnly": "Do jiné složky obnovují a stahují jen správci.",
       "server": "Server",
@@ -2529,7 +2631,18 @@
       "downloadNotStarted": "Když se stahování nespustí, zkus to znovu.",
       "downloadFolder": "Stáhnout tuto složku",
       "downloadFrame": "Stahování {{name}}",
-      "downloadOne": "Stáhnout jde jednu položku, nebo celou složku: vyber jednu, nebo žádnou."
+      "downloadOne": "Stáhnout jde jednu položku, nebo celou složku: vyber jednu, nebo žádnou.",
+      "panel": {
+        "title": "Obnova panelu",
+        "text": "Panel se neobnovuje sám ze sebe. Spusť nový ze snapshotu a záchranné sady tam, kam se servery připojují ({{address}}): připojí se zpět se svými certifikáty.",
+        "step1": "1 · Stáhni snapshot na serveru s agentem",
+        "launcher": "Nebo na novém stroji, přes image agenta:",
+        "step2": "2 · Obnov ho do svazků nového panelu",
+        "step3": "3 · Ověř ho a spusť panel na stejné adrese",
+        "step4": "4 · V Nastavení › Záchranná sada sleduj, jak se servery vracejí",
+        "download": "Stáhnout šifrovanou kopii",
+        "guide": "Návod k obnově: docs/disaster-recovery.md"
+      }
     },
     "restoreFromBackup": "Obnovit ze zálohy",
     "integrity": {

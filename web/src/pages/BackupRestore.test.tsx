@@ -1,11 +1,13 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
 import { useState, type ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import i18n from "../i18n";
+import { api } from "../lib/api";
 import { restoresApi, type BackupRestore, type SnapshotFolder } from "../lib/backupRestores";
 import { pb, type User } from "../lib/pb";
+import type { PanelInfo } from "../lib/types";
 import { BackupsPage } from "./Backups";
 import {
   command,
@@ -1097,5 +1099,197 @@ describe("the restore on the Backups page", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
     expect(screen.queryByRole("button", { name: "Restore from backup" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^Restore / })).not.toBeInTheDocument();
+  });
+});
+
+describe("the panel's own backup in the restore drawer (#32)", () => {
+  afterEach(async () => {
+    cleanup();
+    await i18n.changeLanguage("en");
+  });
+
+  const panel = job({
+    id: "jp",
+    name: "panel (pb_data)",
+    host: "h1",
+    source_kind: "panel",
+    source: "",
+    targets: ["t3"],
+  });
+  // two of the servers dial an IP address, one a name
+  const panelHosts = hosts.map((host, index) => ({
+    ...host,
+    panel_address: index < 2 ? "192.0.2.2:9443" : "panel.example.com:9443",
+  }));
+  const info = {
+    version: "0.32.0",
+    public_url: "http://192.0.2.2:8090",
+    grpc_address: "panel.example.com:9443",
+    gateway_running: true,
+    ca_pin: "sha256:ab",
+    agent_image: "ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c",
+    updater_image: "",
+    images_pinned: true,
+    agents: { connected: 3, total: 3 },
+  } as PanelInfo;
+
+  function showPanel(role: User["role"], start: RestoreStart = {}) {
+    signInAs(role);
+    vi.spyOn(api, "info").mockResolvedValue(info);
+    vi.spyOn(restoresApi, "snapshots").mockResolvedValue(snapshots(2, { target: "t3" }));
+    wrap(
+      <RestoreDrawer
+        jobs={[...jobs, panel]}
+        targets={targets}
+        hosts={panelHosts}
+        runs={[]}
+        stacks={[]}
+        start={{ job: "jp", target: "t3", snapshot: first, ...start }}
+        onRecord={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+  }
+
+  const step1 = "1 · Fetch the snapshot, on a server with an agent";
+
+  it("gives the steps, filled from the snapshot, the target, the images and the address, and no modes", async () => {
+    showPanel("admin");
+    expect(await drawer().findByText("Time")).toBeInTheDocument();
+    expect(drawer().getByRole("heading", { name: "Restore the panel" })).toBeInTheDocument();
+    // no restore here: neither its modes nor a preview
+    expect(drawer().queryByRole("radiogroup")).not.toBeInTheDocument();
+    expect(drawer().queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+    expect(
+      drawer().getByText(
+        "The panel is restored on a machine of its own, with its recovery kit: see the steps.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await drawer().findByText(/where the servers dial it \(192\.0\.2\.2:9443\): they reconnect/),
+    ).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(drawer().getByRole("region", { name: step1 }).textContent).toBe(
+        [
+          "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
+          "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
+          "  pocketcloud-agent panel-recovery fetch --kit - \\",
+          "  --target backup-node --snapshot 3f9a1c2e --out - \\",
+          "  < kit.pckit > pocketcloud-panel.pcpb",
+        ].join("\n"),
+      ),
+    );
+    expect(
+      drawer().getByRole("region", { name: "Or on the new machine, through the agent's image:" })
+        .textContent,
+    ).toBe(
+      [
+        "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
+        "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE \\",
+        "  -v /var/run/docker.sock:/var/run/docker.sock \\",
+        "  ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c \\",
+        "  panel-recovery fetch --kit - \\",
+        "  --target backup-node --snapshot 3f9a1c2e --out - \\",
+        "  < kit.pckit > pocketcloud-panel.pcpb",
+      ].join("\n"),
+    );
+    expect(
+      drawer().getByRole("region", { name: "2 · Restore it into the new panel's volumes" })
+        .textContent,
+    ).toBe(
+      [
+        "docker run --rm -it -v pocketcloud:/data \\",
+        '  -v pocketcloud-secrets:/run/secrets -v "$PWD":/work \\',
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0 recover \\",
+        "  --kit /work/kit.pckit --from /work/pocketcloud-panel.pcpb \\",
+        "  --env-out /work/panel.env",
+      ].join("\n"),
+    );
+    expect(
+      drawer().getByRole("region", {
+        name: "3 · Check it and start the panel at the same address",
+      }).textContent,
+    ).toBe(
+      [
+        "docker run --rm -v pocketcloud:/data \\",
+        "  -v pocketcloud-secrets:/run/secrets:ro \\",
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0 audit verify",
+        "docker run -d --name pocketcloud-panel --restart unless-stopped \\",
+        "  --env-file panel.env -p 8090:8090 -p 9443:9443 \\",
+        "  -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets:ro \\",
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+      ].join("\n"),
+    );
+    expect(
+      drawer().getByText("4 · In Settings › Recovery kit, watch the servers come back"),
+    ).toBeInTheDocument();
+    expect(drawer().getByRole("link", { name: "Recovery kit" })).toHaveAttribute(
+      "href",
+      "/settings#recovery-kit",
+    );
+    expect(drawer().getByText("Recovery guide: docs/disaster-recovery.md")).toBeInTheDocument();
+  });
+
+  it("fetches the newest snapshot before one is picked", async () => {
+    showPanel("operator", { snapshot: "" });
+    expect(await drawer().findByRole("heading", { name: "Restore the panel" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(drawer().getByRole("region", { name: step1 })).toHaveTextContent("--snapshot latest"),
+    );
+    expect(drawer().queryByText("Time")).not.toBeInTheDocument();
+  });
+
+  it("downloads the encrypted copy for an admin, as panel recover takes it", async () => {
+    const download = vi.spyOn(restoresApi, "download").mockResolvedValue({
+      restore: restore({
+        id: "d1",
+        job: "jp",
+        target: "t3",
+        mode: "download",
+        status: "queued",
+        path: "/pocketcloud-panel.pcpb",
+        download_name: "pocketcloud-panel.pcpb",
+        download_kind: "file",
+      }),
+      url: "/api/pc/backup-downloads/d1?ticket=ab12",
+    });
+    showPanel("admin");
+    const button = await drawer().findByRole("button", { name: "Download the encrypted copy" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(download).toHaveBeenCalledWith("jp", {
+        target: "t3",
+        snapshot: first,
+        path: "/pocketcloud-panel.pcpb",
+        kind: "file",
+      }),
+    );
+    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+      "/api/pc/backup-downloads/d1?ticket=ab12",
+    );
+  });
+
+  it("gives an operator the steps, but not the copy", async () => {
+    showPanel("operator");
+    expect(await drawer().findByRole("heading", { name: "Restore the panel" })).toBeInTheDocument();
+    expect(
+      drawer().queryByRole("button", { name: "Download the encrypted copy" }),
+    ).not.toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("says the steps in Czech", async () => {
+    await act(() => i18n.changeLanguage("cs"));
+    showPanel("admin");
+    expect(await drawer().findByRole("heading", { name: "Obnova panelu" })).toBeInTheDocument();
+    expect(
+      drawer().getByText("Panel se obnovuje na vlastním stroji se záchrannou sadou: viz postup."),
+    ).toBeInTheDocument();
+    expect(drawer().getByText("1 · Stáhni snapshot na serveru s agentem")).toBeInTheDocument();
+    expect(
+      await drawer().findByRole("button", { name: "Stáhnout šifrovanou kopii" }),
+    ).toBeInTheDocument();
   });
 });

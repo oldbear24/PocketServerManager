@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ClientResponseError } from "pocketbase";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider } from "../components/toast";
@@ -1248,5 +1248,167 @@ describe("changing a job", () => {
       await screen.findByText("The label pocketcloud.backup.schedule sets the schedule."),
     ).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("the panel's own backup (#32)", () => {
+  afterEach(async () => {
+    cleanup();
+    await i18n.changeLanguage("en");
+  });
+
+  const vm = {
+    id: "h3",
+    name: "vm",
+    status: "online",
+    capabilities: ["backup.run", "backup.run.panel"],
+  } as Host;
+  const sftp = target({ id: "t4", name: "panel-sftp", kind: "sftp", host: "h3" });
+  const panel = job({
+    id: "jp",
+    name: "panel (pb_data)",
+    host: "h3",
+    source_kind: "panel",
+    source: "",
+    targets: ["t4"],
+    // 04:00 in Prague, in winter
+    schedule: "0 3 * * *",
+    retention: { daily: 14, weekly: 8, monthly: 12 },
+    next_run_at: "2026-11-10 03:00:00.000Z",
+  });
+  const kitAlert = {
+    id: "a9",
+    collectionId: "alerts",
+    collectionName: "alerts",
+    rule: "recovery_kit",
+    target: "panel",
+    host: "",
+    severity: "warning",
+    status: "open",
+    message: "",
+  };
+
+  /** Where the app is: its path and query, to see what a click put in it. */
+  function Location() {
+    const location = useLocation();
+    return <output data-testid="location">{location.pathname + location.search}</output>;
+  }
+
+  function showAt(role: User["role"], path: string, fields: Record<string, unknown[]> = {}) {
+    signInAs(role);
+    live.lists = {
+      backup_targets: [...targets, sftp],
+      hosts: [...hosts, vm],
+      backup_jobs: jobs,
+      backup_runs: [],
+      stacks,
+      ...fields,
+    };
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <AuthProvider>
+          <ToastProvider>
+            <BackupsPage />
+            <Location />
+          </ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const missing = () => screen.queryByRole("region", { name: "The panel itself is not backed up" });
+  const kit = () => screen.queryByRole("region", { name: "The recovery kit is not saved" });
+
+  it("lists its job as the panel's, uploaded via its carrier, in both languages", async () => {
+    showAt("viewer", "/backups", { backup_jobs: [panel] });
+    const panelRow = row("panel (pb_data)");
+    expect(panelRow.getByText("PocketBase · SQLite copy, encrypted")).toBeInTheDocument();
+    expect(panelRow.getByText("panel")).toHaveClass("mono", "job-host");
+    expect(panelRow.getByText("· via vm")).toHaveClass("muted");
+    expect(document.querySelector("tr td.job-where")?.textContent).toBe(
+      "panel · via vm → panel-sftp",
+    );
+    expect(panelRow.getByText("daily 04:00")).toBeInTheDocument();
+    expect(panelRow.getByText("14d 8w 12m")).toBeInTheDocument();
+    expect(describeSource(panel, stacks, i18n.getFixedT("en"))).toBe(
+      "PocketBase · SQLite copy, encrypted",
+    );
+    // its snapshots say the same
+    expect(screen.getByText("panel · via vm → panel-sftp")).toHaveClass("card-head-note");
+
+    await act(() => i18n.changeLanguage("cs"));
+    expect(panelRow.getByText("PocketBase · kopie SQLite, šifrovaná")).toBeInTheDocument();
+    expect(panelRow.getByText("· přes vm")).toBeInTheDocument();
+    expect(panelRow.getByText("denně 04:00")).toBeInTheDocument();
+    expect(panelRow.getByText("14d 8w 12m")).toBeInTheDocument();
+    expect(screen.getByText("panel · přes vm → panel-sftp")).toHaveClass("card-head-note");
+  });
+
+  it("is changed in its own dialog", () => {
+    showAt("admin", "/backups", { backup_jobs: [panel, vaultwarden] });
+    fireEvent.click(screen.getByRole("button", { name: "Edit job panel (pb_data)" }));
+    const dialog = screen.getByRole("dialog", { name: "Panel backup" });
+    expect(within(dialog).getByLabelText("Server that uploads it")).toHaveValue("h3");
+    expect(screen.queryByRole("dialog", { name: /^Edit / })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    // the other kinds keep theirs
+    fireEvent.click(screen.getByRole("button", { name: "Edit job vaultwarden" }));
+    expect(screen.getByRole("dialog", { name: "Edit vaultwarden" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Panel backup" })).not.toBeInTheDocument();
+  });
+
+  it("asks an admin to back up the panel while it is not, and sets it up from there", () => {
+    showAt("admin", "/backups");
+    const banner = missing();
+    expect(banner).toHaveTextContent(
+      "Losing the panel's machine would mean enrolling every server again. Back it up every day to a target off that machine.",
+    );
+    fireEvent.click(within(banner!).getByRole("button", { name: "Back up the panel" }));
+    expect(screen.getByTestId("location")).toHaveTextContent("/backups?setup=panel");
+    const dialog = screen.getByRole("dialog", { name: "Back up the panel" });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("panel (pb_data)");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Back up the panel" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent(/^\/backups$/);
+  });
+
+  it("opens the setup from its alert's link, and the job's own dialog once it exists", () => {
+    showAt("admin", "/backups?setup=panel");
+    expect(screen.getByRole("dialog", { name: "Back up the panel" })).toBeInTheDocument();
+    cleanup();
+    showAt("admin", "/backups?setup=panel", { backup_jobs: [panel] });
+    expect(screen.getByRole("dialog", { name: "Panel backup" })).toBeInTheDocument();
+    expect(missing()).not.toBeInTheDocument();
+  });
+
+  it("asks no one but an admin, and nothing without a server", () => {
+    showAt("operator", "/backups?setup=panel", { alerts: [kitAlert] });
+    expect(missing()).not.toBeInTheDocument();
+    expect(kit()).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Back up the panel" })).not.toBeInTheDocument();
+    cleanup();
+    showAt("admin", "/backups", { hosts: [] });
+    expect(missing()).not.toBeInTheDocument();
+  });
+
+  it("reminds an admin of the recovery kit while its alert is open", () => {
+    showAt("admin", "/backups", { backup_jobs: [panel], alerts: [kitAlert] });
+    const banner = kit();
+    expect(banner).toHaveTextContent(
+      "The panel's backups open only with the master key, which the kit holds.",
+    );
+    expect(within(banner!).getByRole("link", { name: "Open the recovery kit" })).toHaveAttribute(
+      "href",
+      "/settings#recovery-kit",
+    );
+    cleanup();
+    showAt("admin", "/backups", {
+      backup_jobs: [panel],
+      alerts: [
+        { ...kitAlert, status: "resolved" },
+        { ...kitAlert, rule: "backup_failed" },
+      ],
+    });
+    expect(kit()).not.toBeInTheDocument();
   });
 });

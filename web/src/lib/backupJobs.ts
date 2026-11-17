@@ -5,10 +5,15 @@ import { parseDate } from "./format";
 import { pb } from "./pb";
 import type { Command, Host } from "./types";
 
-/** What a job backs up (#29). */
-export type SourceKind = "volume" | "path" | "stack" | "db_dump";
+/** What a job backs up (#29): the panel itself too (#32), whose job's host is
+ * the carrier, the server whose agent uploads the panel's encrypted copy. */
+export type SourceKind = "volume" | "path" | "stack" | "db_dump" | "panel";
 
+/** The kinds the job's dialog offers; the panel's job has a dialog of its own. */
 export const sourceKinds: SourceKind[] = ["volume", "path", "stack", "db_dump"];
+
+/** What an agent that can carry the panel's backup advertises (#32). */
+export const panelCapability = "backup.run.panel";
 
 /** Whose tools make a database dump, in the service's own container. */
 export type DumpEngine = "postgres" | "mysql" | "sqlite";
@@ -66,7 +71,9 @@ export type BackupRun = RecordModel & {
   job: string;
   target: string;
   host: string;
-  trigger: "schedule" | "manual" | "retry";
+  /** change: a run of the panel's job 10 minutes after a server was enrolled
+   * or removed, or a certificate revoked (#32) */
+  trigger: "schedule" | "manual" | "retry" | "change";
   status: RunStatus;
   scheduled_at: string;
   started_at: string;

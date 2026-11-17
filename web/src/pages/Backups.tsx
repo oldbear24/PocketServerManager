@@ -1,8 +1,8 @@
-import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { DatabaseBackup, KeyRound, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { RecordModel } from "pocketbase";
 import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { CommandOutput } from "../components/CommandOutput";
 import { PageHead } from "../components/Layout";
@@ -14,6 +14,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  IssueBanner,
   ProgressBar,
   StatusPill,
 } from "../components/ui";
@@ -68,6 +69,7 @@ import { FailureBanners } from "./BackupFailures";
 import { IntegrityDrawer, IntegrityLine, openCheckOf } from "./BackupIntegrity";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
+import { PanelJobSetup } from "./PanelJobDialog";
 
 // the restore drawer, with its file browser, loads when it opens
 const RestoreDrawer = lazy(() =>
@@ -126,6 +128,21 @@ export function BackupsPage() {
   // "new", or the id of the job being changed
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
+  // the panel's own backup (#32): its job, set up or changed at ?setup=panel,
+  // where its alert links, and whether its recovery kit's reminder is open
+  const panelJob = jobs.items.find((item) => item.source_kind === "panel") ?? null;
+  const settingUp = isAdmin && params.get("setup") === "panel";
+  const kitAlerts = useLiveList<Alert>("alerts", {
+    filter: pb.filter("rule = {:rule} && status != 'resolved'", { rule: "recovery_kit" }),
+    perPage: 1,
+    enabled: isAdmin,
+  });
+  const kitOpen = kitAlerts.items.some(
+    (alert) => alert.rule === "recovery_kit" && alert.status !== "resolved",
+  );
+  // without a server there is nothing to enroll again
+  const panelMissing =
+    isAdmin && !jobs.loading && !jobs.error && panelJob === null && hosts.items.length > 0;
 
   // the first job is picked until one is
   const job = jobs.items.find((item) => item.id === params.get("job")) ?? jobs.items[0] ?? null;
@@ -206,6 +223,38 @@ export function BackupsPage() {
         openChecks={openChecks.items}
         now={now}
       />
+      {(panelMissing || (isAdmin && kitOpen)) && (
+        <div className="failure-banners">
+          {panelMissing && (
+            <IssueBanner
+              id="panel-backup-missing"
+              tone="warn"
+              icon={<DatabaseBackup size={18} />}
+              title={t("backups.panel.missingTitle")}
+              meta={t("backups.panel.missingText")}
+              actions={
+                <Button size="small" variant="warning" onClick={() => pick({ setup: "panel" })}>
+                  {t("backups.panel.setUp")}
+                </Button>
+              }
+            />
+          )}
+          {isAdmin && kitOpen && (
+            <IssueBanner
+              id="panel-recovery-kit"
+              tone="warn"
+              icon={<KeyRound size={18} />}
+              title={t("backups.panel.kitTitle")}
+              meta={t("backups.panel.kitText")}
+              actions={
+                <Link className="button small" to="/settings#recovery-kit">
+                  {t("backups.panel.kitAction")}
+                </Link>
+              }
+            />
+          )}
+        </div>
+      )}
       <FailureBanners
         jobs={jobs.items}
         runs={runs.items}
@@ -318,7 +367,7 @@ export function BackupsPage() {
           />
         </Suspense>
       )}
-      {(dialog === "new" || edited) && (
+      {(dialog === "new" || (edited && edited.source_kind !== "panel")) && (
         <JobDialog
           key={edited?.id ?? "new"}
           job={edited ?? null}
@@ -326,6 +375,17 @@ export function BackupsPage() {
           hosts={hosts.items}
           stacks={stacks.items}
           onClose={() => setDialog(null)}
+        />
+      )}
+      {(settingUp || edited?.source_kind === "panel") && (
+        <PanelJobSetup
+          panelJob={panelJob}
+          targets={targets.items}
+          hosts={hosts.items}
+          onClose={() => {
+            setDialog(null);
+            pick({ setup: "" });
+          }}
         />
       )}
     </>

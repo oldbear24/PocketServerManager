@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { AcmeAccountsCard } from "../components/AcmeAccounts";
 import { PageHead } from "../components/Layout";
 import { PhpVersionsCard } from "../components/PhpVersions";
+import { RecoveryCard } from "../components/RecoveryCard";
 import { useToast } from "../components/toast";
 import { Banner, Button, Card, Field, SegmentedControl } from "../components/ui";
 import { languages } from "../i18n";
@@ -45,6 +46,7 @@ export function SettingsPage() {
       <div className="columns">
         <div className="column-wide">
           {hasRole(user, "admin") && <PanelSettingsCard />}
+          {hasRole(user, "admin") && <RecoveryCard />}
           {hasRole(user, "admin") && <AcmeAccountsCard />}
           {hasRole(user, "admin") && <SmtpCard />}
           {hasRole(user, "admin") && <BackupChecksCard />}
