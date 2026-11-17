@@ -115,6 +115,10 @@ type Panel struct {
 	// backupCatchUp is set until the backup scheduler's first pass, which
 	// catches up the runs the panel missed while it was down.
 	backupCatchUp atomic.Bool
+	// backupPass holds a pass of the backup scheduler, retries included
+	// (#31): PocketBase's cron starts a pass every minute whether the one
+	// before has ended or not.
+	backupPass sync.Mutex
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string

@@ -486,12 +486,24 @@ func TestARunsEndIsKeptAndAlerted(t *testing.T) {
 		strings.Contains(failed.GetString("log"), "repo-password") || failed.GetInt("duration_ms") < 89000 {
 		t.Errorf("a failed run: %v", failed.FieldsData())
 	}
-	if a := alert(alertBackupFailed); a == nil || a.GetString("message") != "Backup data → b2 failed: Fatal: unable to open config file: Access Denied for ***." ||
-		a.GetString("severity") != schema.SeverityCritical || a.GetString("host") != f.host.Id {
+	// restic failed, which may pass by itself: it is tried again (#31), and
+	// its alert is a warning that says when
+	retry := failed.GetDateTime("retry_at").Time()
+	if failed.GetString("failure") != backup.FailureRestic || retry.IsZero() {
+		t.Errorf("a failed run's retry: %v", failed.FieldsData())
+	}
+	if a := alert(alertBackupFailed); a == nil || a.GetString("message") != "Backup data → b2 failed: Fatal: unable to open config file: Access Denied for ***. PocketCloud tries again at "+retry.UTC().Format("15:04")+" UTC (attempt 2 of 4)." ||
+		a.GetString("severity") != schema.SeverityWarning || a.GetString("host") != f.host.Id {
 		t.Errorf("the alert: %v", a)
 	}
 	if stored, _ := f.app.FindRecordById(schema.BackupJobs, job.Id); stored.GetString("last_status") != schema.RunFailed {
 		t.Errorf("the job's last status: %s", stored.GetString("last_status"))
+	}
+	// one that does not pass by itself is critical at once, with restic's error
+	finish(schema.CommandFailed, "a repository is there, and the password is not its own: Fatal: wrong password", nil)
+	if a := alert(alertBackupFailed); a == nil || a.GetString("message") != "Backup data → b2 failed: A repository is there, and the password is not its own: Fatal: wrong password." ||
+		a.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("the alert of a failure that is not tried again: %v", a)
 	}
 
 	ok := finish(schema.CommandSucceeded, "", map[string]any{"snapshot_id": "4f2a", "bytes_added": 1234567, "total_bytes": 9876543210.0,
