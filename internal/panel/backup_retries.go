@@ -210,8 +210,11 @@ type retryPlan struct {
 
 // planRetry plans the retry of a run that failed with a class: one that
 // started and may pass by itself, before its last attempt, unless the job's
-// next scheduled run comes first. A lock's retry waits until restic counts
-// the lock as stale, or follows its holder while it still runs.
+// next scheduled run comes first. A run its agent stored but had not
+// started yet, as it waited for a free worker, when the agent restarted is
+// interrupted too, and tried again: nothing of it ran. A lock's retry waits
+// until restic counts the lock as stale, or follows its holder while it
+// still runs.
 func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *backup.Lock, started bool, finished time.Time) retryPlan {
 	attempt = max(attempt, 1)
 	switch failure {
@@ -219,7 +222,7 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 	default:
 		return retryPlan{}
 	}
-	if !started || attempt >= maxRunAttempts {
+	if (!started && failure != backup.FailureInterrupted) || attempt >= maxRunAttempts {
 		return retryPlan{}
 	}
 	at := finished.UTC().Add(runBackoff[attempt-1])

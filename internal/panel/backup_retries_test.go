@@ -157,8 +157,9 @@ func (f *jobFixture) payloadOf(commandID string) map[string]any {
 // a way that may pass by itself (a lock, restic, an agent that restarted) is
 // tried again 5 minutes later, a lock no sooner than restic counts it as
 // stale; the others are not, nor is a run that never started, was skipped or
-// cancelled. A failure is classed by the agent's answer, and an older agent's
-// by its error.
+// cancelled, but for one its agent stored and restarted before it started,
+// which is interrupted. A failure is classed by the agent's answer, and an
+// older agent's by its error.
 func TestWhichFailuresAreTriedAgain(t *testing.T) {
 	f, job, _ := newRetryFixture(t)
 	now := time.Now().UTC()
@@ -183,6 +184,10 @@ func TestWhichFailuresAreTriedAgain(t *testing.T) {
 		{name: "restic", message: "Fatal: unable to save snapshot: connection reset", result: map[string]any{"failure": "restic", "restic_code": 1},
 			failure: backup.FailureRestic, wait: 5 * time.Minute},
 		{name: "the agent restarted", message: "The agent restarted while running this command, so it may be incomplete.",
+			failure: backup.FailureInterrupted, wait: 5 * time.Minute},
+		// the agent stored it, and restarted while it waited for a worker
+		{name: "the agent restarted before it started", fields: map[string]any{"status": schema.CommandFailed,
+			"error": "The agent restarted while running this command, so it may be incomplete."},
 			failure: backup.FailureInterrupted, wait: 5 * time.Minute},
 		{name: "an unreadable lock", message: "Fatal: invalid lock file", result: map[string]any{"failure": "lock_invalid", "restic_code": 1},
 			failure: backup.FailureLockInvalid},
