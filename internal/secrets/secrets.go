@@ -10,6 +10,7 @@ import (
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -27,6 +28,14 @@ const (
 
 // ErrKeyMissing is returned by LoadKeyFile when the key file does not exist.
 var ErrKeyMissing = errors.New("master key file does not exist")
+
+// ErrKeyExists is returned by WriteKey when the file holds another key, or
+// something that is no key.
+var ErrKeyExists = errors.New("the file holds another master key")
+
+// keyIDPurpose names the key derived from the master key whose first half is
+// the master key's id (KeyID).
+const keyIDPurpose = "pocketcloud key id v1"
 
 // Box seals and opens values with one master key. It is safe for concurrent use.
 type Box struct {
@@ -117,6 +126,19 @@ func DeriveKey(master []byte, purpose string) ([]byte, error) {
 	return hkdf.Key(sha256.New, master, nil, purpose, KeySize)
 }
 
+// KeyID names a master key without giving it away: 32 hex characters, the
+// first half of a key derived from it for that alone (#32). The database
+// keeps the id of the key that sealed it, the panel's backup and the
+// recovery kit carry it, so a wrong key is refused before it opens anything.
+// It is empty for a key that is not KeySize bytes, which no master key is.
+func KeyID(master []byte) string {
+	derived, err := DeriveKey(master, keyIDPurpose)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(derived[:16])
+}
+
 // GenerateKey returns a new random master key.
 func GenerateKey() ([]byte, error) {
 	key := make([]byte, KeySize)
@@ -148,6 +170,45 @@ func WriteKeyFile(path string) error {
 	return err
 }
 
+// WriteKey stores a given master key at path, as WriteKeyFile stores a new
+// one: 64 hex characters and a newline, in a file of mode 0600 that it
+// creates. A recovery writes the key of its kit with it (#32). It never
+// overwrites a file: one that holds the same key already is fine, and one
+// that holds another key, or no key, is ErrKeyExists.
+func WriteKey(path string, key []byte) error {
+	if len(key) != KeySize {
+		return fmt.Errorf("master key must be %d bytes, got %d", KeySize, len(key))
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if existing, ok := parseKey(raw); ok && subtle.ConstantTimeCompare(existing, key) == 1 {
+			return nil
+		}
+		return fmt.Errorf("%w: %s", ErrKeyExists, path)
+	}
+	if err != nil {
+		return err
+	}
+
+	_, err = f.WriteString(hex.EncodeToString(key) + "\n")
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		// a file cut short would hold no key, and keep the next try out
+		_ = os.Remove(path)
+	}
+	return err
+}
+
 // LoadKeyFile reads a master key written by WriteKeyFile (hex or base64).
 func LoadKeyFile(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path)
@@ -158,14 +219,22 @@ func LoadKeyFile(path string) ([]byte, error) {
 		return nil, err
 	}
 
-	text := strings.TrimSpace(string(raw))
-
-	if key, err := hex.DecodeString(text); err == nil && len(key) == KeySize {
-		return key, nil
-	}
-	if key, err := base64.StdEncoding.DecodeString(text); err == nil && len(key) == KeySize {
+	if key, ok := parseKey(raw); ok {
 		return key, nil
 	}
 
 	return nil, fmt.Errorf("master key file %s must contain %d bytes as hex or base64", path, KeySize)
+}
+
+// parseKey reads a key file's content: the key as hex or base64.
+func parseKey(raw []byte) ([]byte, bool) {
+	text := strings.TrimSpace(string(raw))
+
+	if key, err := hex.DecodeString(text); err == nil && len(key) == KeySize {
+		return key, true
+	}
+	if key, err := base64.StdEncoding.DecodeString(text); err == nil && len(key) == KeySize {
+		return key, true
+	}
+	return nil, false
 }

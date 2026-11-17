@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -168,5 +170,125 @@ func TestDeriveKeyIsPerPurpose(t *testing.T) {
 	}
 	if _, err := DeriveKey([]byte("short"), "one"); err == nil {
 		t.Error("a short master key is accepted")
+	}
+}
+
+// The id of a key 00 01 … 1f, as HKDF-SHA256 with no salt and the info
+// "pocketcloud key id v1" gives it outside Go too: databases, panel backups
+// and recovery kits keep it, so it can never change.
+const keyIDVector = "17ac82d879a43a9e72720c907de8857d"
+
+func TestKeyIDIsStableAndNotADerivedKey(t *testing.T) {
+	master := make([]byte, KeySize)
+	for i := range master {
+		master[i] = byte(i)
+	}
+
+	id := KeyID(master)
+	if id != keyIDVector {
+		t.Fatalf("the key id is %s, not %s", id, keyIDVector)
+	}
+	if again := KeyID(bytes.Clone(master)); again != id {
+		t.Error("the key id is not stable")
+	}
+
+	other := bytes.Clone(master)
+	other[31] ^= 1
+	if KeyID(other) == id || len(KeyID(other)) != 32 {
+		t.Error("another key has the same id, or an id of another size")
+	}
+
+	// the id gives away neither the key nor a key derived for any purpose
+	for _, purpose := range []string{"pocketcloud panel backup v1", "pocketcloud recovery kit digest v1", "pocketcloud audit chain head", ""} {
+		derived, err := DeriveKey(master, purpose)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(hex.EncodeToString(derived), id) {
+			t.Errorf("the id is part of the key derived for %q", purpose)
+		}
+	}
+	if strings.Contains(hex.EncodeToString(master), id) {
+		t.Error("the id is part of the key")
+	}
+
+	for _, size := range []int{0, 16, 31, 33} {
+		if KeyID(make([]byte, size)) != "" {
+			t.Errorf("a key of %d bytes has an id", size)
+		}
+	}
+}
+
+func TestWriteKeyNeverOverwritesAnotherKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "master.key")
+	key, _ := GenerateKey()
+
+	if err := WriteKey(path, key); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("the key file has mode %o", info.Mode().Perm())
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != hex.EncodeToString(key)+"\n" {
+		t.Errorf("the key file holds %q", raw)
+	}
+	if loaded, err := LoadKeyFile(path); err != nil || !bytes.Equal(loaded, key) {
+		t.Errorf("the key reads back as %x, %v", loaded, err)
+	}
+
+	// the same key again is fine, as hex or as base64
+	if err := WriteKey(path, key); err != nil {
+		t.Errorf("writing the same key again: %v", err)
+	}
+	b64 := filepath.Join(dir, "base64.key")
+	if err := os.WriteFile(b64, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKey(b64, key); err != nil {
+		t.Errorf("a base64 file of the same key: %v", err)
+	}
+
+	// another key, or no key, is never overwritten
+	other, _ := GenerateKey()
+	if err := WriteKey(path, other); !errors.Is(err, ErrKeyExists) {
+		t.Errorf("writing another key: %v", err)
+	}
+	if again, _ := os.ReadFile(path); !bytes.Equal(again, raw) {
+		t.Error("another key changed the file")
+	}
+	junk := filepath.Join(dir, "junk.key")
+	if err := os.WriteFile(junk, []byte("not a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKey(junk, key); !errors.Is(err, ErrKeyExists) {
+		t.Errorf("a file of no key: %v", err)
+	}
+	if again, _ := os.ReadFile(junk); string(again) != "not a key\n" {
+		t.Error("a file of no key was overwritten")
+	}
+	empty := filepath.Join(dir, "empty.key")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKey(empty, key); !errors.Is(err, ErrKeyExists) {
+		t.Errorf("an empty file: %v", err)
+	}
+
+	// a key of another size is no key, and no file is left
+	short := filepath.Join(dir, "short.key")
+	if err := WriteKey(short, key[:31]); err == nil {
+		t.Error("a key of 31 bytes was written")
+	}
+	if _, err := os.Stat(short); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused key left a file: %v", err)
+	}
+	if err := WriteKey(filepath.Join(dir, "missing", "master.key"), key); err == nil || errors.Is(err, ErrKeyExists) {
+		t.Errorf("a directory that does not exist: %v", err)
 	}
 }
