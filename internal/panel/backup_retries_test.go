@@ -782,3 +782,112 @@ func TestARetryWhoseCommandCannotBeMadeFails(t *testing.T) {
 		t.Errorf("its alert: %v", a)
 	}
 }
+
+// TestWhatDidNotFailIsNotTriedAgain (#31, with #29 and #30 as they were): a
+// run and its command, made in one transaction now, are delivered with the
+// run's secrets as before, without an unlock; a run skipped as its server was
+// offline, or as a restore wrote its data, a run whose retention failed after
+// its backup did not, and a run retried by hand, keep their #29 and #30
+// records and alerts, and no retry is planned or made for any of them.
+func TestWhatDidNotFailIsNotTriedAgain(t *testing.T) {
+	f, job, _ := newRetryFixture(t)
+	minute := time.Now().UTC().Truncate(time.Minute)
+
+	// queued: its command names its run, which the enricher finds
+	f.p.runOnSchedule(job, minute)
+	runs := f.runsOf(job)
+	if len(runs) != 1 || runs[0].GetString("status") != schema.RunQueued || runs[0].GetString("command") == "" {
+		t.Fatalf("a scheduled run: %v", runs)
+	}
+	queued := runs[0]
+	command, err := f.app.FindRecordById(schema.Commands, queued.GetString("command"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := f.deliver(command)
+	if err != nil || delivered.GetBackupRun().GetRunId() != queued.Id || delivered.GetBackupRun().GetRepository().GetPassword() != "repo-password-b2" ||
+		delivered.GetBackupRun().GetUnlock() {
+		t.Errorf("its delivery: %v %v", delivered, err)
+	}
+	// its backup worked and its retention did not: an alert of the retention
+	// alone, and no retry
+	retained := f.endRun(queued, map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime(),
+		"result": map[string]any{"snapshot_id": "4f2a", "retention_error": "Fatal: unable to create lock"}})
+	if retained.GetString("status") != schema.RunSucceeded || retained.GetString("failure") != "" || !retained.GetDateTime("retry_at").IsZero() {
+		t.Errorf("a run whose retention failed: %v", retained.FieldsData())
+	}
+	if a := f.openAlert(alertBackupRetention, job.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityWarning {
+		t.Errorf("the retention's alert: %v", a)
+	}
+	if f.openAlert(alertBackupFailed, job.Id+":"+f.target.Id) != nil {
+		t.Error("a run whose backup worked failed")
+	}
+
+	// a restore writes its data: skipped, without an alert
+	restoring := f.job("restoring", map[string]any{"source_kind": schema.SourceVolume, "source": "r_data"})
+	f.restore(restoring, map[string]any{"status": schema.RestoreRunning, "roots": []restoreRoot{{Source: "/volumes/r_data", Volume: "r_data"}}})
+	f.p.runOnSchedule(restoring, minute)
+	if runs := f.runsOf(restoring); len(runs) != 1 || runs[0].GetString("status") != schema.RunSkipped ||
+		runs[0].GetString("error") != "A restore into its data is under way on node-1." || runs[0].GetString("failure") != "" ||
+		!runs[0].GetDateTime("retry_at").IsZero() {
+		t.Errorf("a run of data being restored: %v", runs)
+	}
+	if f.openAlert(alertBackupSkipped, restoring.Id+":"+f.target.Id) != nil {
+		t.Error("a run of data being restored alerted")
+	}
+
+	// the server is offline at the minute: skipped, with the warning of #29
+	f.host.Set("status", schema.HostOffline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	f.p.SetStarted(time.Now().Add(-3 * time.Minute))
+	offline := f.job("offline", map[string]any{"source_kind": schema.SourceVolume, "source": "b"})
+	f.p.runOnSchedule(offline, minute)
+	runs = f.runsOf(offline)
+	if len(runs) != 1 || runs[0].GetString("status") != schema.RunSkipped || runs[0].GetString("failure") != "" || !runs[0].GetDateTime("retry_at").IsZero() {
+		t.Fatalf("a run of an offline server: %v", runs)
+	}
+	if a := f.openAlert(alertBackupSkipped, offline.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityWarning ||
+		a.GetString("message") != "Backup offline → b2 was skipped: the server node-1 was offline at "+minute.Format("15:04")+" UTC." {
+		t.Errorf("its alert: %v", a)
+	}
+
+	// hours later, the scheduler tries none of them again
+	f.host.Set("status", schema.HostOnline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	f.p.RunDueBackups(time.Now().Add(3 * time.Hour))
+	for _, of := range []*core.Record{job, restoring, offline} {
+		for _, run := range f.runsOf(of) {
+			if run.GetString("trigger") == schema.RunRetry {
+				t.Errorf("%s was tried again: %v", of.GetString("name"), run.FieldsData())
+			}
+		}
+	}
+
+	// a run retried by hand that fails on its last attempt is critical, as a
+	// failure that is not tried again was before
+	failed := f.failRun(job, "Fatal: boom", map[string]any{"failure": "restic"})
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	for range maxRunAttempts {
+		status, out := f.send(http.MethodPost, "/api/pc/backup-runs/"+failed.Id+"/retry", operator, nil)
+		if status != http.StatusOK {
+			t.Fatalf("retry by hand: %d %v", status, out)
+		}
+		retry, err := f.app.FindRecordById(schema.BackupRuns, out["run"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		failed = f.endRun(retry, map[string]any{"status": schema.CommandFailed, "error": "Fatal: boom", "started_at": types.NowDateTime(),
+			"result": map[string]any{"failure": "restic"}})
+	}
+	if failed.GetInt("attempt") != maxRunAttempts+1 || !failed.GetDateTime("retry_at").IsZero() {
+		t.Errorf("a retry by hand past the last attempt: %v", failed.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, job.Id+":"+f.target.Id); a == nil || a.GetString("severity") != schema.SeverityCritical ||
+		a.GetString("message") != "Backup data → b2 failed: Fatal: boom." {
+		t.Errorf("its alert: %v", a)
+	}
+}
