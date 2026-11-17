@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
@@ -101,7 +102,8 @@ prompt. Do not run panel keygen on the new machine. See docs/disaster-recovery.m
 	flags := cmd.Flags()
 	flags.StringVar(&options.Kit, "kit", "", "the recovery kit (.pckit)")
 	flags.StringVar(&options.From, "from", "", "the panel's backup (.pcpb), as panel-recovery fetch wrote it")
-	flags.StringVar(&options.Dir, "dir", envOr(panel.EnvDataDir, "pb_data"), "the pb_data to restore")
+	// the data directory serve uses: PocketBase's pb_data next to the binary
+	flags.StringVar(&options.Dir, "dir", envOr(panel.EnvDataDir, filepath.Join(filepath.Dir(os.Args[0]), "pb_data")), "the pb_data to restore")
 	flags.StringVar(&options.MasterKeyFile, "master-key-file", envOr(panel.EnvMasterKeyFile, "master.key"), "where the kit's master key goes")
 	flags.StringVar(&passphraseFile, "passphrase-file", "", "a file with the kit's passphrase")
 	flags.BoolVar(&options.Replace, "replace", false, "keep a pb_data that holds a panel as <dir>.replaced-<UTC> and restore in its place")
