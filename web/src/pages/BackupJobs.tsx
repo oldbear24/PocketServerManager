@@ -24,6 +24,7 @@ import {
 } from "../lib/backupChecks";
 import {
   cronPreset,
+  cronShaped,
   describeCron,
   describeRetention,
   dumpEngines,
@@ -792,13 +793,6 @@ const defaultRetention: Retention = {
 
 function sameTargets(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
-}
-
-/** Whether a cron expression has the shape the panel takes: five fields, or
- * a macro such as @daily. The panel checks the rest. */
-function cronShaped(cron: string): boolean {
-  const text = cron.trim();
-  return /^@\w+$/.test(text) || text.split(/\s+/).length === 5;
 }
 
 /** The browser's time zone, to say which local time the presets are in. */

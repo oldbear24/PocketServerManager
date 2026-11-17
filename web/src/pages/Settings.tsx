@@ -7,10 +7,18 @@ import { AcmeAccountsCard } from "../components/AcmeAccounts";
 import { PageHead } from "../components/Layout";
 import { PhpVersionsCard } from "../components/PhpVersions";
 import { useToast } from "../components/toast";
-import { Button, Card, Field, SegmentedControl } from "../components/ui";
+import { Banner, Button, Card, Field, SegmentedControl } from "../components/ui";
 import { languages } from "../i18n";
 import { api } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import {
+  defaultGroups,
+  maxGroups,
+  parseGroups,
+  saveCheckSettings,
+  type CheckSettingsRecord,
+} from "../lib/backupChecks";
+import { cronShaped, describeCron, zoneOffset } from "../lib/backupJobs";
 import { pb } from "../lib/pb";
 import type { PanelInfo } from "../lib/types";
 
@@ -39,6 +47,7 @@ export function SettingsPage() {
           {hasRole(user, "admin") && <PanelSettingsCard />}
           {hasRole(user, "admin") && <AcmeAccountsCard />}
           {hasRole(user, "admin") && <SmtpCard />}
+          {hasRole(user, "admin") && <BackupChecksCard />}
           <PhpVersionsCard />
           <AboutCard />
         </div>
@@ -312,6 +321,119 @@ function SmtpCard() {
               {t("settings.smtpRemovePassword")}
             </Button>
           )}
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+/** When the backups' repositories are checked (#31): the schedule, cron in
+ * UTC with its local reading, and how many groups the data packs are read
+ * in. An empty schedule turns the checks off, which the card warns of. */
+export function BackupChecksCard() {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [loaded, setLoaded] = useState(false);
+  const [schedule, setSchedule] = useState("");
+  const [groups, setGroups] = useState(String(defaultGroups));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    pb.collection("settings")
+      .getFirstListItem<CheckSettingsRecord>("")
+      .then((record) => {
+        if (!cancelled) {
+          setSchedule(record.backup_check_schedule ?? "");
+          setGroups(String(record.backup_check_groups ?? 0));
+          setLoaded(true);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          toast.error(err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
+
+  if (!loaded) {
+    return null;
+  }
+
+  const parsed = parseGroups(groups);
+  const off = schedule.trim() === "";
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (parsed === null) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = await saveCheckSettings({ schedule: schedule.trim(), groups: parsed });
+      setSchedule(saved.schedule);
+      setGroups(String(saved.groups));
+      toast.success(t("settings.backupChecksSaved"));
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title={t("settings.backupChecks")} note={t("settings.backupChecksNote")}>
+      <form onSubmit={(event) => void submit(event)} style={{ display: "grid", gap: 12 }}>
+        <div className="form-grid">
+          <Field label={t("settings.backupCheckSchedule")} htmlFor="backup-check-schedule">
+            <input
+              id="backup-check-schedule"
+              className="input mono"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="0 5 * * 0"
+              aria-describedby="backup-check-schedule-hint"
+              value={schedule}
+              onChange={(event) => setSchedule(event.target.value)}
+            />
+            <p id="backup-check-schedule-hint" className="muted small">
+              {t("settings.backupCheckScheduleHint")}
+              {!off &&
+                cronShaped(schedule) &&
+                ` ${t("backups.job.cronReads", {
+                  text: describeCron(schedule.trim(), t, zoneOffset()),
+                })}`}
+            </p>
+          </Field>
+          <Field
+            label={t("settings.backupCheckGroups")}
+            htmlFor="backup-check-groups"
+            error={parsed === null ? t("settings.backupCheckGroupsInvalid") : undefined}
+          >
+            <input
+              id="backup-check-groups"
+              className="input"
+              type="number"
+              min={0}
+              max={maxGroups}
+              step={1}
+              aria-invalid={parsed === null}
+              aria-describedby="backup-check-groups-hint"
+              value={groups}
+              onChange={(event) => setGroups(event.target.value)}
+            />
+            <p id="backup-check-groups-hint" className="muted small">
+              {t("settings.backupCheckGroupsHint")}
+            </p>
+          </Field>
+        </div>
+        {off && <Banner tone="warn">{t("settings.backupChecksOff")}</Banner>}
+        <div>
+          <Button type="submit" variant="primary" disabled={busy || parsed === null}>
+            {t("common.save")}
+          </Button>
         </div>
       </form>
     </Card>

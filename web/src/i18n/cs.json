@@ -628,7 +628,16 @@
     "smtpSaved_one": "Relay byl uložen; přebírá ho {{count}} PHP web.",
     "smtpSaved_few": "Relay byl uložen; přebírají ho {{count}} PHP weby.",
     "smtpSaved_many": "Relay byl uložen; přebírá ho {{count}} PHP webu.",
-    "smtpSaved_other": "Relay byl uložen; přebírá ho {{count}} PHP webů."
+    "smtpSaved_other": "Relay byl uložen; přebírá ho {{count}} PHP webů.",
+    "backupChecks": "Kontroly integrity záloh",
+    "backupChecksNote": "restic check podle tohoto plánu čte repozitář každého cíle, pokaždé jednu skupinu jeho datových balíků.",
+    "backupCheckSchedule": "Plán (cron, UTC)",
+    "backupCheckScheduleHint": "Prázdné pole kontroly vypne. Nejvýš jednou denně.",
+    "backupCheckGroups": "Skupiny",
+    "backupCheckGroupsHint": "Každá kontrola přečte další z tolika skupin: 20 znamená asi 5 % pokaždé a všechny balíky za 20 kontrol; 0 kontroluje jen strukturu a nečte data.",
+    "backupCheckGroupsInvalid": "Celé číslo od 0 do 256.",
+    "backupChecksOff": "Bez kontrol se poškození repozitáře ukáže až při obnově.",
+    "backupChecksSaved": "Kontroly integrity byly uloženy."
   },
   "event": {
     "agent": {

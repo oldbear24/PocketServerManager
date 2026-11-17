@@ -300,6 +300,13 @@ export function describePreset(preset: SchedulePreset, t: Translate): string {
     : t(`backups.cron.weekly.${preset.weekday}`, { time });
 }
 
+/** Whether a cron expression has the shape the panel takes: five fields, or
+ * a macro such as @daily. The panel checks the rest. */
+export function cronShaped(cron: string): boolean {
+  const text = cron.trim();
+  return /^@\w+$/.test(text) || text.split(/\s+/).length === 5;
+}
+
 /** A UTC cron expression in words, in local time, where it is a common one;
  * else as it is written, saying it is UTC. */
 export function describeCron(cron: string, t: Translate, offset: number): string {

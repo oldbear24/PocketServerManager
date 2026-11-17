@@ -592,7 +592,16 @@
     "smtpFromNote": "A relay needs a sender: the envelope sender of every message, and its From header where the site sets none. Every PHP site restarts its PHP-FPM with the change, without dropping requests; an empty relay turns mail off.",
     "smtpRemovePassword": "Remove the password",
     "smtpSaved_one": "The relay was saved; {{count}} PHP site takes it.",
-    "smtpSaved_other": "The relay was saved; {{count}} PHP sites take it."
+    "smtpSaved_other": "The relay was saved; {{count}} PHP sites take it.",
+    "backupChecks": "Integrity checks of backups",
+    "backupChecksNote": "restic check reads each target's repository on this schedule, one group of its data packs at a time.",
+    "backupCheckSchedule": "Schedule (cron, UTC)",
+    "backupCheckScheduleHint": "Empty turns the checks off. At most once a day.",
+    "backupCheckGroups": "Groups",
+    "backupCheckGroupsHint": "Each check reads the next of this many groups: 20 reads about 5 % each time, and every pack in 20 checks; 0 checks the structure only and reads no data.",
+    "backupCheckGroupsInvalid": "A whole number from 0 to 256.",
+    "backupChecksOff": "Without checks, damage in a repository shows only when you restore.",
+    "backupChecksSaved": "The integrity checks were saved."
   },
   "event": {
     "agent": {
