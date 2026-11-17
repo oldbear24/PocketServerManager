@@ -17,6 +17,7 @@ import (
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/audit"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
@@ -266,6 +267,34 @@ func TestDumpJobSnapshotDownloadsAsAFile(t *testing.T) {
 	}
 	if _, err := up.result(t); err != nil {
 		t.Errorf("the upload of a file: %v", err)
+	}
+}
+
+// TestThePanelsCopyDownloadsAsAFile (#32): the one file of a panel
+// snapshot, the panel's encrypted copy, downloads as it is, under its own
+// name, as panel recover takes it.
+func TestThePanelsCopyDownloadsAsAFile(t *testing.T) {
+	f := newDownloadFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityPanel)
+	f.job = f.jobFixture.job("panel (pb_data)", map[string]any{"source_kind": schema.SourcePanel})
+	id, url := f.link(map[string]any{"path": "/" + backup.PanelFileName, "kind": "file"})
+	if name := f.stored(schema.BackupRestores, id).GetString("download_name"); name != "pocketcloud-panel.pcpb" {
+		t.Errorf("the name: %s", name)
+	}
+	answer := f.browse(context.Background(), url)
+	command, up := f.started()
+	go func() {
+		_, _ = up.writer.Write([]byte("PCPB\x01"))
+		_ = up.writer.Close()
+	}()
+	response := f.response(answer)
+	got, _ := io.ReadAll(response.Body)
+	if string(got) != "PCPB\x01" || !strings.Contains(response.Header.Get("Content-Disposition"), `filename="pocketcloud-panel.pcpb"`) ||
+		command.GetBackupDump().GetPath() != "/pocketcloud-panel.pcpb" || command.GetBackupDump().GetJobTag() != "job:"+f.job.Id {
+		t.Errorf("the panel's copy: %v %q %v", response.Header, got, command)
+	}
+	if _, err := up.result(t); err != nil {
+		t.Errorf("the upload of the copy: %v", err)
 	}
 }
 
