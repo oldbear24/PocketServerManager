@@ -139,6 +139,14 @@ type Panel struct {
 	// server is back (#32); restoreRecount while a count of them is due.
 	restoreWatch   atomic.Bool
 	restoreRecount atomic.Bool
+	// recoveryPending is set while an evaluation of the recovery's alerts
+	// is due; recoveryEval holds one (#32).
+	recoveryPending atomic.Bool
+	recoveryEval    sync.Mutex
+	// kitAttempts limits the attempts at the recovery kit's routes, and
+	// kitSealing lets one argon2 run at a time (#32).
+	kitAttempts kitAttempts
+	kitSealing  chan struct{}
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -157,6 +165,8 @@ func New(app core.App, config *Config, ui fs.FS) *Panel {
 		Log:      slog.Default().With("component", "panel"),
 		Audit:    audit.New(app, schema.Audited),
 		Commands: commands.NewManager(app),
+
+		kitSealing: make(chan struct{}, 1),
 	}
 	p.SetEdgeImage(version.EdgeRef())
 	p.SetStarted(time.Now())
@@ -227,7 +237,7 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
-	p.watchRestore()
+	p.registerRecovery()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -288,6 +298,7 @@ func (p *Panel) Register() {
 		p.bindBackupJobRoutes(group)
 		p.bindBackupRestoreRoutes(group)
 		p.bindBackupCheckRoutes(group)
+		p.bindRecoveryRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		// restores whose end the panel missed while it was down are settled,
@@ -299,6 +310,9 @@ func (p *Panel) Register() {
 		if p.UI != nil {
 			bindUI(e, p.UI)
 		}
+
+		// the recovery's alerts, with the gateway started (#32)
+		p.evaluateRecoveryAlerts()
 
 		return e.Next()
 	})
