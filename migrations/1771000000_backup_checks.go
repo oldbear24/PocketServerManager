@@ -25,7 +25,7 @@ var targetCheckFields = []string{
 }
 
 // runRetryFields are the fields a run gains: its failure, and its retry.
-var runRetryFields = []string{"attempt", "retry_of", "retry_at", "retry_note", "failure", "lock"}
+var runRetryFields = []string{"attempt", "retry_of", "retry_at", "retry_end", "retry_note", "failure", "lock"}
 
 // upBackupChecks adds the integrity checks of the targets' repositories, and
 // what a failed run needs to be tried again (#31). Admins set when the
@@ -154,6 +154,10 @@ func upBackupChecks(app core.App) error {
 		&core.TextField{Name: "retry_of", Max: 15, Pattern: "^[a-z0-9]*$"},
 		// when the panel tries a failed run again; empty when it does not
 		&core.DateField{Name: "retry_at"},
+		// how the panel ended a planned retry without making it: the job's
+		// next scheduled run takes its place, or it gave the retry up;
+		// empty while one is planned, once it was made, or when none was
+		&core.SelectField{Name: "retry_end", MaxSelect: 1, Values: []string{schema.RetryNextRun, schema.RetryGivenUp}},
 		// why it waits, or why it is not tried again
 		&core.TextField{Name: "retry_note", Max: 500},
 		&core.SelectField{Name: "failure", MaxSelect: 1, Values: []string{

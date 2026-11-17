@@ -957,6 +957,7 @@ func backsUpTo(job, target *core.Record) bool {
 
 // settleRun ends a run that its command can no longer end.
 func (p *Panel) settleRun(run *core.Record, status, reason string) {
+	freed := ""
 	err := p.update(context.Background(), run, func(fresh *core.Record) error {
 		if s := fresh.GetString("status"); s != schema.RunQueued && s != schema.RunRunning {
 			return errUnchanged
@@ -964,11 +965,13 @@ func (p *Panel) settleRun(run *core.Record, status, reason string) {
 		fresh.Set("status", status)
 		fresh.Set("error", reason)
 		fresh.Set("finished_at", types.NowDateTime())
+		freed = freeRetryOf(fresh)
 		return nil
 	})
 	if err != nil {
 		p.Log.Error("failed to settle a backup run", "run", run.Id, "error", err)
 	}
+	p.retryNeverRan(freed)
 	p.noteJobRun(run.GetString("job"))
 }
 
@@ -1322,10 +1325,11 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		if !plan.at.IsZero() {
 			fields["retry_at"] = plan.at
 		}
+		fields["retry_end"] = plan.end
 		fields["retry_note"] = plan.note
 	}
 	// once: the run's command may be settled from two places
-	kept := false
+	kept, freed := false, ""
 	err = p.update(context.Background(), run, func(fresh *core.Record) error {
 		if s := fresh.GetString("status"); s != schema.RunQueued && s != schema.RunRunning {
 			return errUnchanged
@@ -1333,6 +1337,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		for name, value := range fields {
 			fresh.Set(name, value)
 		}
+		freed = freeRetryOf(fresh)
 		kept = true
 		return nil
 	})
@@ -1370,6 +1375,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 			}
 		}
 	}
+	p.retryNeverRan(freed)
 	p.noteJobRun(job.Id)
 }
 

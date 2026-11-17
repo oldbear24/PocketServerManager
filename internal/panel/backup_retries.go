@@ -65,6 +65,9 @@ var runBackoff = []time.Duration{5 * time.Minute, 30 * time.Minute, 2 * time.Hou
 // ran.
 const agentRestarted = "The agent restarted while running"
 
+// jobDisabledNote says that a disabled job's run is not tried again.
+const jobDisabledNote = "The job is disabled, so it is not tried again."
+
 var (
 	// errRetryTaken says the run is tried again already.
 	errRetryTaken = errors.New("it is being tried again already")
@@ -201,17 +204,23 @@ func holderNames(lock *backup.Lock, holder *core.Record) (label, server string) 
 }
 
 // retryPlan is the retry a failed run gets: when, and which attempt it is;
-// or why it gets none.
+// or why it gets none, and how its retry ended (schema.Retry*), when the run
+// would have been tried again.
 type retryPlan struct {
 	at      time.Time
 	attempt int
 	note    string
+	end     string
 }
 
 // planRetry plans the retry of a run that failed with a class: one that
 // started and may pass by itself, before its last attempt, unless the job's
-// next scheduled run comes first. A lock's retry waits until restic counts
-// the lock as stale, or follows its holder while it still runs.
+// next scheduled run comes first; never one of a job that is disabled, or
+// whose label is gone, which the scheduler would drop. A run its agent
+// stored but had not started yet, as it waited for a free worker, when the
+// agent restarted is interrupted too, and tried again: nothing of it ran. A
+// lock's retry waits until restic counts the lock as stale, or follows its
+// holder while it still runs.
 func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *backup.Lock, started bool, finished time.Time) retryPlan {
 	attempt = max(attempt, 1)
 	switch failure {
@@ -219,8 +228,17 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 	default:
 		return retryPlan{}
 	}
-	if !started || attempt >= maxRunAttempts {
+	if !started && failure != backup.FailureInterrupted {
 		return retryPlan{}
+	}
+	switch {
+	case attempt >= maxRunAttempts:
+		return retryPlan{end: schema.RetryGivenUp}
+	case !job.GetBool("enabled"):
+		// as a disabled job's run by hand
+		return retryPlan{note: jobDisabledNote, end: schema.RetryGivenUp}
+	case labelGone(job):
+		return retryPlan{note: labelGoneMessage, end: schema.RetryGivenUp}
 	}
 	at := finished.UTC().Add(runBackoff[attempt-1])
 	if failure == backup.FailureLocked {
@@ -232,7 +250,7 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 		}
 	}
 	if next, ok := nextRunOf(job, finished).(time.Time); ok && !next.After(at.Add(retryNudge)) {
-		return retryPlan{note: nextRunNote(next)}
+		return retryPlan{note: nextRunNote(next), end: schema.RetryNextRun}
 	}
 	return retryPlan{at: at, attempt: attempt + 1}
 }
@@ -269,27 +287,36 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 	if err != nil {
 		return
 	}
+	// a retry given up raises the run's alert again, critical, when nothing
+	// else settles it: the alerts of a job whose label went, or of a target
+	// taken out of it, were resolved, and a newer run's outcome is the
+	// alert's now
+	giveUp := func(end, note string, alert bool) {
+		if p.endRetry(run, end, note) && alert {
+			p.alertFailure(job, target, run, retryGivenUp(run, note), retryPlan{})
+		}
+	}
 	host, err := p.App.FindRecordById(schema.Hosts, job.GetString("host"))
 	if err != nil {
-		p.moveRetry(run, "", "The server of the job is gone.")
+		giveUp(schema.RetryGivenUp, "The server of the job is gone.", true)
 		return
 	}
-	drop := ""
 	switch {
 	case !job.GetBool("enabled"):
-		drop = "The job is disabled, so it is not tried again."
+		giveUp(schema.RetryGivenUp, jobDisabledNote, true)
+		return
 	case labelGone(job):
-		drop = labelGoneMessage
+		giveUp(schema.RetryGivenUp, labelGoneMessage, false)
+		return
 	case !backsUpTo(job, target):
-		drop = "The target is no longer one of the job's targets."
+		giveUp(schema.RetryGivenUp, "The target is no longer one of the job's targets.", false)
+		return
 	case newerRunIn(p.App, run):
-		drop = "A newer run of the job to the target took its place."
+		giveUp(schema.RetryGivenUp, "A newer run of the job to the target took its place.", false)
+		return
 	}
-	if next, ok := nextRunOf(job, now).(time.Time); drop == "" && ok && !next.After(now.Add(retryNudge)) {
-		drop = nextRunNote(next)
-	}
-	if drop != "" {
-		p.moveRetry(run, "", drop)
+	if next, ok := nextRunOf(job, now).(time.Time); ok && !next.After(now.Add(retryNudge)) {
+		giveUp(schema.RetryNextRun, nextRunNote(next), true)
 		return
 	}
 
@@ -306,13 +333,9 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 		// not an attempt: the holder ends first
 		p.moveRetry(run, now.Add(retryRearm), fmt.Sprintf("Waits for %s.", label))
 	case state == holderAlive:
-		if p.moveRetry(run, "", fmt.Sprintf("The repository stayed locked by %s for %d hours.", label, int(holderPatience.Hours()))) {
-			p.alertFailure(job, target, run, fmt.Sprintf("%s; the repository stayed locked by %s for %d hours", strings.TrimSuffix(run.GetString("error"), "."), label, int(holderPatience.Hours())), retryPlan{})
-		}
+		giveUp(schema.RetryGivenUp, fmt.Sprintf("The repository stayed locked by %s for %d hours.", label, int(holderPatience.Hours())), true)
 	case now.Sub(retryAt) > retryMissedAfter:
-		if p.moveRetry(run, "", "Its retry was missed while the panel was down.") {
-			p.alertFailure(job, target, run, strings.TrimSuffix(run.GetString("error"), ".")+"; its retry was missed while the panel was down", retryPlan{})
-		}
+		giveUp(schema.RetryGivenUp, "Its retry was missed while the panel was down.", true)
 	case p.runGoing(job, target) || p.offline(host) || p.restoreWriting(job) != nil:
 		p.moveRetry(run, maxTime(retryAt, now).Add(retryNudge), run.GetString("retry_note"))
 	default:
@@ -323,6 +346,16 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 	}
 }
 
+// retryGivenUp is the reason of a failed run's alert once its retry was
+// given up: its error, and why.
+func retryGivenUp(run *core.Record, note string) string {
+	note = strings.TrimSuffix(note, ".")
+	if note != "" {
+		note = strings.ToLower(note[:1]) + note[1:]
+	}
+	return strings.TrimSuffix(run.GetString("error"), ".") + "; " + note
+}
+
 // maxTime is the later of two moments.
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
@@ -331,16 +364,29 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-// moveRetry moves a run's planned retry, or gives it up with an empty at,
-// saying why. It tells whether it did: the retry may have been claimed or
-// given up meanwhile.
-func (p *Panel) moveRetry(run *core.Record, at any, note string) bool {
+// moveRetry moves a run's planned retry to another moment, saying why. It
+// tells whether it did: the retry may have been claimed or given up
+// meanwhile.
+func (p *Panel) moveRetry(run *core.Record, at time.Time, note string) bool {
+	return p.setRetry(run, at, "", note)
+}
+
+// endRetry gives up a run's planned retry without making it, saying why and
+// how it ended: schema.RetryNextRun when the job's next scheduled run takes
+// its place, schema.RetryGivenUp otherwise. It tells whether it did.
+func (p *Panel) endRetry(run *core.Record, end, note string) bool {
+	return p.setRetry(run, "", end, note)
+}
+
+// setRetry moves a run's planned retry, or with an empty at ends it.
+func (p *Panel) setRetry(run *core.Record, at any, end, note string) bool {
 	moved := false
 	err := p.update(context.Background(), run, func(fresh *core.Record) error {
 		if fresh.GetDateTime("retry_at").IsZero() || fresh.GetString("status") != schema.RunFailed {
 			return errUnchanged
 		}
 		fresh.Set("retry_at", at)
+		fresh.Set("retry_end", end)
 		fresh.Set("retry_note", cutText(note, 500))
 		moved = true
 		return nil
@@ -352,12 +398,59 @@ func (p *Panel) moveRetry(run *core.Record, at any, note string) bool {
 }
 
 // newerRunIn tells whether a job has a run to a target newer than a run, as
-// the app (a transaction's) sees it.
+// the app (a transaction's) sees it. A run that never ran does not take a
+// run's place: one skipped, as at the job's next slot while the run before
+// still waited on a lock, nor one cancelled before it started.
 func newerRunIn(app core.App, run *core.Record) bool {
 	newer, err := app.FindRecordsByFilter(schema.BackupRuns,
-		"job={:job} && target={:target} && (created>{:created} || (created={:created} && id>{:id}))", "", 1, 0,
-		dbx.Params{"job": run.GetString("job"), "target": run.GetString("target"), "created": run.GetDateTime("created").String(), "id": run.Id})
+		"job={:job} && target={:target} && (created>{:created} || (created={:created} && id>{:id}))"+
+			" && status!={:skipped} && (status!={:cancelled} || started_at!='')", "", 1, 0,
+		dbx.Params{"job": run.GetString("job"), "target": run.GetString("target"), "created": run.GetDateTime("created").String(), "id": run.Id,
+			"skipped": schema.RunSkipped, "cancelled": schema.RunCancelled})
 	return err != nil || len(newer) > 0
+}
+
+// retryNeverRanNote says on a retry that ended without having run that the
+// run it was to try again may be tried again.
+const retryNeverRanNote = "It never ran, so the run it was to try again may be tried again."
+
+// freeRetryOf frees the run that a retry ending without having run, skipped
+// or cancelled before it started, was to try again: it clears the retry's
+// retry_of, saying why, so that the route and the scheduler may try that
+// run again, which the unique retry_of would refuse for good. It returns the
+// run it freed, "" for none.
+func freeRetryOf(retry *core.Record) string {
+	prev := retry.GetString("retry_of")
+	status := retry.GetString("status")
+	neverRan := status == schema.RunSkipped || (status == schema.RunCancelled && retry.GetDateTime("started_at").IsZero())
+	if prev == "" || !neverRan {
+		return ""
+	}
+	retry.Set("retry_of", "")
+	retry.Set("retry_note", retryNeverRanNote)
+	return prev
+}
+
+// retryNeverRan raises again, critical, the alert of a run whose retry never
+// ran: the alert promised that retry, and no other is planned. A run that is
+// tried again meanwhile, or whose place a newer run took, is left alone.
+func (p *Panel) retryNeverRan(runID string) {
+	if runID == "" {
+		return
+	}
+	run, err := p.App.FindRecordById(schema.BackupRuns, runID)
+	if err != nil || run.GetString("status") != schema.RunFailed || !run.GetDateTime("retry_at").IsZero() || retriedIn(p.App, run.Id) || newerRunIn(p.App, run) {
+		return
+	}
+	job, err := p.App.FindRecordById(schema.BackupJobs, run.GetString("job"))
+	if err != nil {
+		return
+	}
+	target, err := p.App.FindRecordById(schema.BackupTargets, run.GetString("target"))
+	if err != nil {
+		return
+	}
+	p.alertFailure(job, target, run, retryGivenUp(run, "Its retry never ran."), retryPlan{})
 }
 
 // retriedIn tells whether a run is tried again by another, as the app (a
@@ -449,7 +542,7 @@ func (p *Panel) dropRetries(job, target *core.Record, note string) {
 		return
 	}
 	for _, run := range runs {
-		p.moveRetry(run, "", note)
+		p.endRetry(run, schema.RetryGivenUp, note)
 	}
 }
 
@@ -504,7 +597,12 @@ func (p *Panel) handleRetryRun(e *core.RequestEvent) error {
 		lock := runLock(run)
 		if state, holder := p.lockHolder(lock); state == holderAlive {
 			label, server := holderNames(lock, holder)
-			return conflict(fmt.Sprintf("The repository is locked by %s on %s, which is still running: PocketCloud retries once it ends.", label, server))
+			// only a planned retry follows the holder
+			then := "try again once it ends"
+			if !run.GetDateTime("retry_at").IsZero() {
+				then = "PocketCloud retries once it ends"
+			}
+			return conflict(fmt.Sprintf("The repository is locked by %s on %s, which is still running: %s.", label, server, then))
 		}
 		if stale := lock.StaleAt(); time.Now().Before(stale) {
 			planned, err := p.planRetryAt(run, stale)
@@ -536,7 +634,8 @@ func (p *Panel) handleRetryRun(e *core.RequestEvent) error {
 
 // planRetryAt plans a failed run's retry for a moment, as for when restic
 // counts its lock as stale; false when the run is tried again already, or no
-// longer the newest.
+// longer the newest. A job that is disabled, or whose label is gone, gets no
+// retry, which the scheduler would drop: the error says so.
 func (p *Panel) planRetryAt(run *core.Record, at time.Time) (bool, error) {
 	planned := false
 	err := p.App.RunInTransaction(func(tx core.App) error {
@@ -547,7 +646,18 @@ func (p *Panel) planRetryAt(run *core.Record, at time.Time) (bool, error) {
 		if fresh.GetString("status") != schema.RunFailed || retriedIn(tx, run.Id) || newerRunIn(tx, fresh) {
 			return nil
 		}
+		job, err := tx.FindRecordById(schema.BackupJobs, fresh.GetString("job"))
+		if err != nil {
+			return err
+		}
+		switch {
+		case labelGone(job):
+			return errors.New(labelGoneMessage)
+		case !job.GetBool("enabled"):
+			return fmt.Errorf("the job is disabled, so PocketCloud plans no retry of it: try again once restic counts the lock as stale, at %s UTC", at.UTC().Format("15:04"))
+		}
 		fresh.Set("retry_at", at.UTC())
+		fresh.Set("retry_end", "")
 		fresh.Set("retry_note", "Waits until restic counts the lock as stale.")
 		planned = true
 		return tx.Save(fresh)

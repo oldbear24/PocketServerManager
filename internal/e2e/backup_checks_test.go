@@ -957,6 +957,103 @@ func TestARetryOfAYoungLockWaitsUntilResticCountsItStale(t *testing.T) {
 	c.noRemoveAll()
 }
 
+// lockedWhileItsSlotIsSkipped starts a job's run by hand and holds its backup
+// while the scheduler's pass of the job's slot skips the slot, as the run
+// before it is still going; then lets the backup go, which finds the
+// repository locked, and is the run, failed, and the skipped one.
+func (c *checksHarness) lockedWhileItsSlotIsSkipped(jobID string, slot time.Time) (failed, skipped *core.Record) {
+	c.t.Helper()
+	entered, release := c.gateJobs(isBackupRun, nil)
+	status, out := c.send(http.MethodPost, "/api/pc/backup-jobs/"+jobID+"/run", c.operator, nil)
+	if status != http.StatusOK || len(out["runs"].([]any)) != 1 {
+		c.t.Fatalf("run now: %d %v", status, out)
+	}
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		c.t.Fatal("the backup did not start")
+	}
+	c.panel.RunDueBackups(slot)
+	runs := c.runs(jobID)
+	skipped = runs[len(runs)-1]
+	if skipped.GetString("status") != schema.RunSkipped || skipped.GetString("error") != "The run before it was still going." ||
+		!skipped.GetDateTime("scheduled_at").Time().Equal(slot) {
+		c.t.Fatalf("the slot while the run waits on the lock: %v", skipped.FieldsData())
+	}
+	release()
+	failed = c.runEnded(out["runs"].([]any)[0].(string))
+	if failed.GetString("status") != schema.RunFailed || failed.GetString("failure") != backup.FailureLocked {
+		c.t.Fatalf("the run the lock kept out: %v", failed.FieldsData())
+	}
+	return failed, skipped
+}
+
+// TestALockedRunKeepsItsRetryWhenItsSlotIsSkippedMeanwhile (#31, AC2): an
+// hourly job's slot comes while its run waits on a lock, and is skipped, as
+// the run before it is still going. The skipped run never ran, so it does
+// not take the place of the run the lock then kept out: the scheduler's
+// retry still goes, unlocking first, and so does Unlock and retry.
+func TestALockedRunKeepsItsRetryWhenItsSlotIsSkippedMeanwhile(t *testing.T) {
+	c := newChecksHarness(t, func(engine *fakedocker.Engine) {
+		addVolume(t, engine, "app_data")
+		addVolume(t, engine, "db_data")
+	})
+	slot := time.Now().UTC().Truncate(time.Minute)
+	earlier := slot.Add(-time.Minute)
+	// hourly, at a minute that has passed: the next run is close to an hour
+	// away, after the retries
+	photos := c.addJob(map[string]any{"name": "photos", "source_kind": "volume", "source": "app_data",
+		"schedule": fmt.Sprintf("%d * * * *", slot.Minute())})["id"].(string)
+	db := c.addJob(map[string]any{"name": "db", "source_kind": "volume", "source": "db_data",
+		"schedule": fmt.Sprintf("%d * * * *", earlier.Minute())})["id"].(string)
+	holder, err := c.app.FindFirstRecordByFilter(schema.Commands, "type='backup.init'", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failLocked(t, backup.JobHost(holder.Id), "40m")
+
+	// the scheduler's retry
+	run, skipped := c.lockedWhileItsSlotIsSkipped(photos, slot)
+	retryAt := run.GetDateTime("retry_at").Time()
+	if !near(retryAt, run.GetDateTime("finished_at").Time().Add(5*time.Minute)) {
+		t.Fatalf("the retry of the locked run: %v", run.FieldsData())
+	}
+	if alert := c.openAlert("backup_failed", photos+":"+c.disk.Id); alert == nil || alert.GetString("severity") != schema.SeverityWarning ||
+		!strings.Contains(alert.GetString("message"), "(attempt 2 of 4).") {
+		t.Errorf("the alert: %v", alert)
+	}
+	c.panel.RunDueBackups(retryAt.Add(time.Second))
+	runs := c.runs(photos)
+	if len(runs) != 3 || runs[1].Id != skipped.Id || runs[2].GetString("retry_of") != run.Id || runs[2].GetString("trigger") != schema.RunRetry {
+		t.Fatalf("the runs once the retry is due: %v %v", runs, c.fresh(run).FieldsData())
+	}
+	retry := c.runEnded(runs[2].Id)
+	if retry.GetString("status") != schema.RunSucceeded || payloadOf(t, c.command(retry.GetString("command")))["unlock"] != true ||
+		!unlockedThenBackedUp(t, c.restic) {
+		t.Errorf("the scheduler's retry: %v %v", retry.FieldsData(), resticCalls(t, c.restic))
+	}
+	if alert := c.openAlert("backup_failed", photos+":"+c.disk.Id); alert != nil {
+		t.Errorf("the retry left the alert: %v", alert.FieldsData())
+	}
+
+	// Unlock and retry
+	t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", "4")
+	run, _ = c.lockedWhileItsSlotIsSkipped(db, earlier)
+	status, out := c.retry(run.Id, c.operator)
+	if status != http.StatusOK || out["run"] == nil {
+		t.Fatalf("Unlock and retry after the skipped slot: %d %v", status, out)
+	}
+	retry = c.runEnded(out["run"].(string))
+	if retry.GetString("status") != schema.RunSucceeded || retry.GetString("retry_of") != run.Id || retry.GetInt("attempt") != 2 ||
+		payloadOf(t, c.command(retry.GetString("command")))["unlock"] != true || !unlockedThenBackedUp(t, c.restic) {
+		t.Errorf("Unlock and retry: %v %v", retry.FieldsData(), resticCalls(t, c.restic))
+	}
+	if alert := c.openAlert("backup_failed", db+":"+c.disk.Id); alert != nil {
+		t.Errorf("the retry left the alert: %v", alert.FieldsData())
+	}
+	c.noRemoveAll()
+}
+
 // TestAFailedRunIsTriedAgainWithABackoff (#31): a run restic failed is tried
 // again after 5 minutes, 30 minutes and 2 hours, 4 attempts in all, each by
 // one run however many passes of the scheduler and retries by hand meet it;

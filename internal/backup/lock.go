@@ -82,7 +82,10 @@ func CommandOfHost(host string) string {
 }
 
 var (
-	lockHolder  = regexp.MustCompile(`is already locked (exclusively )?by PID (\d+) on (\S+) by (.+?) \(UID \d+, GID \d+\)`)
+	// the user, and the host, may be empty: restic 0.17.3 leaves the user
+	// out when it cannot look it up, as for a uid with no passwd entry and
+	// no $USER ("on nas by  (UID 0, GID 0)")
+	lockHolder  = regexp.MustCompile(`is already locked (exclusively )?by PID (\d+) on (\S*) by (.*?) \(UID \d+, GID \d+\)`)
 	lockCreated = regexp.MustCompile(`^lock was created at \S+ \S+ \((.+) ago\)$`)
 	lockStorage = regexp.MustCompile(`^storage ID ([0-9a-f]{8})$`)
 )

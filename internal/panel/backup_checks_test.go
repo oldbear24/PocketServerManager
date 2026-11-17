@@ -703,6 +703,64 @@ func TestTheWatchdogSaysWhatNoCheckVerified(t *testing.T) {
 	}
 }
 
+// TestTheWatchdogGoesByTheLongestGap (#31): the watchdog's limit is twice the
+// longest gap of the schedule and a day, whatever the weekday it runs on: a
+// schedule of Saturdays and Sundays, checked on Sunday, is not unverified on
+// Wednesday, nor a schedule of weekdays, checked on Friday, on Monday before
+// its check; each is once two of its longest gaps and a day have passed.
+func TestTheWatchdogGoesByTheLongestGap(t *testing.T) {
+	f := newCheckFixture(t)
+	at := func(day int, hour, minute int) time.Time {
+		return time.Date(2026, time.November, day, hour, minute, 0, 0, time.UTC)
+	}
+	for _, test := range []struct {
+		schedule       string
+		checked, quiet time.Time
+		unverified     time.Time
+	}{
+		// Sunday the 15th; Wednesday the 18th; 6 days twice and one
+		{"0 5 * * 0,6", at(15, 5, 30), at(18, 5, 41), at(28, 5, 41)},
+		// Friday the 20th; Monday the 23rd at 05:41; 3 days twice and one
+		{"0 5 * * 1-5", at(20, 5, 30), at(23, 5, 41), at(27, 5, 41)},
+		// the weekly default: 15 days
+		{schema.DefaultCheckSchedule, at(1, 5, 30), at(16, 5, 29), at(16, 5, 41)},
+	} {
+		f.checkSettings(test.schedule, 20)
+		f.target.Load(map[string]any{"integrity_status": schema.CheckOK, "integrity_at": test.checked})
+		if err := f.app.Save(f.target); err != nil {
+			t.Fatal(err)
+		}
+		f.p.WatchChecks(test.quiet)
+		if a := f.openAlert(alertCheckUnverified, f.target.Id); a != nil {
+			t.Errorf("%s, checked %s, watched %s: %v", test.schedule, test.checked, test.quiet, a.GetString("message"))
+		}
+		f.p.WatchChecks(test.unverified)
+		if a := f.openAlert(alertCheckUnverified, f.target.Id); a == nil ||
+			a.GetString("message") != "No integrity check of b2 has completed since "+test.checked.Format("2006-01-02 15:04")+" UTC." {
+			t.Errorf("%s, checked %s, watched %s: %v", test.schedule, test.checked, test.unverified, a)
+		}
+		if err := events.ResolveAlert(f.app, alertCheckUnverified, f.target.Id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestANewTargetKnowsItsNextCheck (#31): a target has its next check as it
+// is added, before the scheduler's next pass; none while the checks are off.
+func TestANewTargetKnowsItsNextCheck(t *testing.T) {
+	f := newCheckFixture(t)
+	slot := parseCronRule(farSchedule()).next(time.Now())
+	added := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	if next := f.fresh(added).GetDateTime("next_check_at").Time(); !next.Equal(slot) {
+		t.Errorf("the next check of a new target: %s, not %s", next, slot)
+	}
+	f.checkSettings("", 20)
+	off := f.addTarget("off", backup.KindS3, f.host, backup.Config{Endpoint: "https://off.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	if next := f.fresh(off).GetDateTime("next_check_at"); !next.IsZero() {
+		t.Errorf("the next check of a target added while the checks are off: %s", next)
+	}
+}
+
 // TestOldChecksGo (#31): checks older than 180 days go, but each target's
 // newest, and its newest that completed.
 func TestOldChecksGo(t *testing.T) {
