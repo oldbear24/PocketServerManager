@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 	"github.com/pocketbase/pocketbase/tools/cron"
@@ -19,6 +21,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/events"
+	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/stacks"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
@@ -1372,6 +1375,83 @@ func TestABackupRunOfThePanelNamesItsCopy(t *testing.T) {
 	}
 	if a := f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id)); a == nil || !strings.Contains(a.GetString("message"), "cannot back up the panel yet") {
 		t.Errorf("its alert: %v", a)
+	}
+}
+
+// TestOnlyCarrierRunsFetchTheExport (#32): the panel's copy goes to the
+// carrier of a run that waits for it, and to nobody else: not to another
+// server, not for a run that ended, a job that is not the panel's or that
+// another server carries now, a command that was not delivered, ended or is
+// another server's, nor for an id that is not one of a run's copy.
+func TestOnlyCarrierRunsFetchTheExport(t *testing.T) {
+	f := newExportFixture(t)
+	other := testutil.NewHost(t, f.app, "node-2")
+	f.carry(other, "backup.run", backup.CapabilityPanel)
+	run := f.deliveredRun(f.target)
+	command := run.GetString("command")
+	id := backup.PanelExportID(run.Id)
+	set := func(collection, recordID, field, value string) {
+		t.Helper()
+		if _, err := f.app.DB().NewQuery("UPDATE {{" + collection + "}} SET [[" + field + "]] = {:value} WHERE id = {:id}").
+			Bind(dbx.Params{"value": value, "id": recordID}).Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(name, hostID, artifactID string) {
+		t.Helper()
+		artifact, err := f.p.fetchArtifact(hostID, artifactID)
+		if !errors.Is(err, gateway.ErrNoArtifact) {
+			if artifact != nil {
+				_ = artifact.Reader.Close()
+			}
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	refused("another server", other.Id, id)
+	refused("the run's id alone", f.host.Id, run.Id)
+	refused("an id that is not a run's", f.host.Id, backup.PanelExportPrefix+"../"+run.Id)
+	refused("a run that is not there", f.host.Id, backup.PanelExportID("aaaaaaaaaaaaaaa"))
+
+	set(schema.BackupRuns, run.Id, "status", schema.RunSucceeded)
+	refused("a run that ended", f.host.Id, id)
+	set(schema.BackupRuns, run.Id, "status", schema.RunRunning)
+
+	set(schema.BackupRuns, run.Id, "host", other.Id)
+	refused("a run of another server", f.host.Id, id)
+	set(schema.BackupRuns, run.Id, "host", f.host.Id)
+
+	set(schema.BackupJobs, f.job.Id, "host", other.Id)
+	refused("a job another server carries now", f.host.Id, id)
+	refused("its new carrier, for a run of the old one", other.Id, id)
+	set(schema.BackupJobs, f.job.Id, "host", f.host.Id)
+
+	set(schema.BackupJobs, f.job.Id, "source_kind", schema.SourceVolume)
+	refused("a job that is not the panel's", f.host.Id, id)
+	set(schema.BackupJobs, f.job.Id, "source_kind", schema.SourcePanel)
+
+	for _, status := range []string{schema.CommandQueued, schema.CommandSucceeded, schema.CommandFailed, schema.CommandCancelled} {
+		set(schema.Commands, command, "status", status)
+		refused("a command "+status, f.host.Id, id)
+	}
+	set(schema.Commands, command, "status", schema.CommandRunning)
+	set(schema.Commands, command, "host", other.Id)
+	refused("a command of another server", f.host.Id, id)
+	set(schema.Commands, command, "host", f.host.Id)
+	set(schema.BackupRuns, run.Id, "command", "")
+	refused("a run without its command", f.host.Id, id)
+	set(schema.BackupRuns, run.Id, "command", command)
+
+	// a volume's run has no copy
+	volume := f.jobFixture.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data", "targets": []string{f.target.Id}})
+	volumeRun := f.save(schema.BackupRuns, map[string]any{"job": volume.Id, "target": f.target.Id, "host": f.host.Id, "trigger": schema.RunManual,
+		"status": schema.RunRunning, "command": command})
+	refused("a volume's run", f.host.Id, backup.PanelExportID(volumeRun.Id))
+
+	// and the carrier gets it, while it runs
+	f.fetch(run)
+	if len(f.spool()) != 1 {
+		t.Errorf("the spool %v", f.spool())
 	}
 }
 

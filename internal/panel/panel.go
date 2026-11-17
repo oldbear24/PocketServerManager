@@ -47,7 +47,10 @@ type Panel struct {
 	// https is the panel's own HTTPS (#63)
 	https httpsState
 
-	Box       *secrets.Box
+	Box *secrets.Box
+	// masterKey is the master key the Box was made from: the keys of the
+	// panel's copy of itself derive from it (#32)
+	masterKey []byte
 	Audit     *audit.Writer
 	Authority *ca.Authority
 	// authority is the same CA, for the work that may start before the
@@ -92,6 +95,9 @@ type Panel struct {
 	// links, and those under way (#30)
 	downloadTickets downloadTickets
 	downloads       downloadSessions
+	// exports are the panel's encrypted copies of itself that its backup
+	// job's carrier fetches (#32)
+	exports panelExports
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
@@ -386,6 +392,7 @@ func (p *Panel) loadMasterKey() error {
 		return err
 	}
 	p.Box = box
+	p.masterKey = key
 
 	return nil
 }
