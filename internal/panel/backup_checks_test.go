@@ -745,6 +745,22 @@ func TestTheWatchdogGoesByTheLongestGap(t *testing.T) {
 	}
 }
 
+// TestANewTargetKnowsItsNextCheck (#31): a target has its next check as it
+// is added, before the scheduler's next pass; none while the checks are off.
+func TestANewTargetKnowsItsNextCheck(t *testing.T) {
+	f := newCheckFixture(t)
+	slot := parseCronRule(farSchedule()).next(time.Now())
+	added := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	if next := f.fresh(added).GetDateTime("next_check_at").Time(); !next.Equal(slot) {
+		t.Errorf("the next check of a new target: %s, not %s", next, slot)
+	}
+	f.checkSettings("", 20)
+	off := f.addTarget("off", backup.KindS3, f.host, backup.Config{Endpoint: "https://off.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	if next := f.fresh(off).GetDateTime("next_check_at"); !next.IsZero() {
+		t.Errorf("the next check of a target added while the checks are off: %s", next)
+	}
+}
+
 // TestOldChecksGo (#31): checks older than 180 days go, but each target's
 // newest, and its newest that completed.
 func TestOldChecksGo(t *testing.T) {

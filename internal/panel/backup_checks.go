@@ -109,6 +109,14 @@ func (p *Panel) registerBackupChecks() {
 		p.resolveCheckAlerts(e.App, e.Record.Id, alertCheckFailed, alertCheckUnverified)
 		return e.Next()
 	})
+	// a new target's next check is known as it is added, while restic
+	// checks it the first time, not only from the scheduler's next pass
+	p.App.OnRecordCreate(schema.BackupTargets).BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetDateTime("next_check_at").IsZero() {
+			e.Record.Set("next_check_at", nextCheckIn(e.App, time.Now()))
+		}
+		return e.Next()
+	})
 	// the record API holds the schedule and the groups to the rules of the
 	// route, which admins may bypass through it
 	p.App.OnRecordCreateRequest(schema.Settings).BindFunc(p.checkSettingsRequest)
@@ -125,15 +133,32 @@ func (p *Panel) bindBackupCheckRoutes(group *router.RouterGroup[*core.RequestEve
 // settings say nothing that runs, and in how many groups a check reads a
 // repository's data packs, 0 for the structure only.
 func (p *Panel) checkSettings() (schedule string, groups int) {
-	settings, err := p.settingsRecord()
-	if err != nil {
+	return checkSettingsIn(p.App)
+}
+
+// checkSettingsIn is checkSettings as the app (a transaction's) reads the
+// settings.
+func checkSettingsIn(app core.App) (schedule string, groups int) {
+	records, err := app.FindRecordsByFilter(schema.Settings, "", "-created", 1, 0)
+	if err != nil || len(records) == 0 {
 		return "", 0
 	}
+	settings := records[0]
 	schedule = stacks.NormalSchedule(settings.GetString("backup_check_schedule"))
 	if parseCronRule(schedule) == nil {
 		schedule = ""
 	}
 	return schedule, min(max(settings.GetInt("backup_check_groups"), 0), backup.MaxGroups)
+}
+
+// nextCheckIn is the next slot of the checks after now, as the app (a
+// transaction's) reads the settings; "" while the checks are off.
+func nextCheckIn(app core.App, now time.Time) any {
+	schedule, _ := checkSettingsIn(app)
+	if at := parseCronRule(schedule).next(now); !at.IsZero() {
+		return at
+	}
+	return ""
 }
 
 // checkScheduleText checks the schedule of the checks: cron in UTC that comes
@@ -358,11 +383,7 @@ func checkable(target *core.Record) bool {
 // refreshNextChecks sets each target's next check, as it is after now; none
 // while the checks are off.
 func (p *Panel) refreshNextChecks(now time.Time) {
-	schedule, _ := p.checkSettings()
-	var want any = ""
-	if at := parseCronRule(schedule).next(now); !at.IsZero() {
-		want = at
-	}
+	want := nextCheckIn(p.App, now)
 	targets, err := p.App.FindAllRecords(schema.BackupTargets)
 	if err != nil {
 		return
