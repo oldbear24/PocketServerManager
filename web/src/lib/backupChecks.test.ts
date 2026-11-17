@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import i18n from "../i18n";
 import {
+  checkFields,
   czechAt,
   formatCheckMoment,
   integritySummary,
@@ -229,5 +230,17 @@ describe("the checks' settings", () => {
       method: "PUT",
       body: { schedule: "", groups: 0 },
     });
+  });
+});
+
+describe("a check in a list", () => {
+  it("is read without its errors and its log, which can be long", () => {
+    const fields = checkFields.split(",");
+    expect(fields).not.toContain("errors");
+    expect(fields).not.toContain("log");
+    // what a line, the tile and the drawer's timeline show
+    for (const field of ["target", "status", "subset", "finished_at", "command", "errors_more"]) {
+      expect(fields).toContain(field);
+    }
   });
 });
