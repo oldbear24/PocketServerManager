@@ -51,6 +51,9 @@ type Options struct {
 	Parent      string
 	Correlation string
 	Timeout     time.Duration
+	// QueueTimeout is how long the command may wait to be delivered, as for
+	// its resource; zero is the panel's queue TTL.
+	QueueTimeout time.Duration
 }
 
 // Enricher completes a command right before delivery with values that must not
@@ -77,9 +80,16 @@ type Manager struct {
 
 	enrichers map[string]Enricher
 	finishers map[string][]func(*core.Record)
+	starters  map[string][]func(*core.Record)
 
 	outputMu sync.Mutex
 	outputs  map[string]*commandOutput
+
+	// ending holds a lock per command while it ends: its final answer may
+	// come twice at once, as over a stream that dropped and over the one
+	// that replaced it, or in its agent's list of finished commands, and a
+	// command ends once, its finishers run once
+	ending sync.Map
 
 	// ReapInterval overrides how often timeouts are checked, in tests.
 	ReapInterval time.Duration
@@ -99,6 +109,7 @@ func NewManager(app core.App) *Manager {
 		streams:      make(map[string]*Stream),
 		enrichers:    make(map[string]Enricher),
 		finishers:    make(map[string][]func(*core.Record)),
+		starters:     make(map[string][]func(*core.Record)),
 		outputs:      make(map[string]*commandOutput),
 		ReapInterval: reapInterval,
 	}
@@ -117,6 +128,13 @@ func (m *Manager) RegisterEnricher(commandType string, enricher Enricher) {
 // OnFinish registers a callback for when a command of a type reaches a final state.
 func (m *Manager) OnFinish(commandType string, callback func(*core.Record)) {
 	m.finishers[commandType] = append(m.finishers[commandType], callback)
+}
+
+// OnStart registers a callback for when an agent says it started a command of
+// a type: once, as the command goes from dispatched to running. A command that
+// ends before the agent says it started has no start, only its finish.
+func (m *Manager) OnStart(commandType string, callback func(*core.Record)) {
+	m.starters[commandType] = append(m.starters[commandType], callback)
 }
 
 // Register binds the queue to the app's hooks.
@@ -340,6 +358,9 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*core.Record, error
 	record.Set("correlation_id", opts.Correlation)
 	if opts.Timeout > 0 {
 		record.Set("timeout_s", int(opts.Timeout.Seconds()))
+	}
+	if opts.QueueTimeout > 0 {
+		record.Set("expires_at", time.Now().UTC().Add(opts.QueueTimeout))
 	}
 
 	if err := m.app.SaveWithContext(ctx, record); err != nil {
@@ -846,7 +867,8 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		return false, nil
 	}
 
-	if status == schema.CommandDispatched {
+	started := status == schema.CommandDispatched
+	if started {
 		record.Set("started_at", types.NowDateTime())
 	}
 	record.Set("status", newStatus)
@@ -854,7 +876,15 @@ func (m *Manager) Update(hostID string, update *agentv1.ReportCommandUpdateReque
 		record.Set("progress", progressOf(update.GetProgress()))
 	}
 
-	return false, m.app.Save(record)
+	if err := m.app.Save(record); err != nil {
+		return false, err
+	}
+	if started {
+		for _, callback := range m.starters[record.GetString("type")] {
+			callback(record)
+		}
+	}
+	return false, nil
 }
 
 func progressOf(progress *agentv1.CommandProgress) map[string]any {
@@ -865,8 +895,38 @@ func progressOf(progress *agentv1.CommandProgress) map[string]any {
 	}
 }
 
-// finish moves a command to a final state and stores its output.
+// finish moves a command to a final state and stores its output, unless it
+// ended already.
 func (m *Manager) finish(record *core.Record, status, message string, result map[string]any) {
+	if !m.end(record, status, message, result) {
+		return
+	}
+
+	for _, callback := range m.finishers[record.GetString("type")] {
+		callback(record)
+	}
+
+	m.finishParent(record)
+
+	// a finished command may unblock the next one of the same resource
+	m.Kick(record.GetString("host"))
+}
+
+// end saves a command's final state and its output, and tells whether it
+// did: a command another answer ended meanwhile is left as it ended.
+func (m *Manager) end(record *core.Record, status, message string, result map[string]any) bool {
+	lock, _ := m.ending.LoadOrStore(record.Id, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer func() {
+		mu.Unlock()
+		// a later answer finds the final state saved, and needs no lock
+		m.ending.CompareAndDelete(record.Id, mu)
+	}()
+	if fresh, err := m.app.FindRecordById(schema.Commands, record.Id); err == nil && isFinal(fresh.GetString("status")) {
+		return false
+	}
+
 	record.Set("status", status)
 	record.Set("finished_at", types.NowDateTime())
 	if message != "" {
@@ -890,17 +950,9 @@ func (m *Manager) finish(record *core.Record, status, message string, result map
 
 	if err := m.app.Save(record); err != nil {
 		m.Log.Error("failed to finish a command", "command", record.Id, "status", status, "error", err)
-		return
+		return false
 	}
-
-	for _, callback := range m.finishers[record.GetString("type")] {
-		callback(record)
-	}
-
-	m.finishParent(record)
-
-	// a finished command may unblock the next one of the same resource
-	m.Kick(record.GetString("host"))
+	return true
 }
 
 // finishParent settles a parent command once all of its children have finished.

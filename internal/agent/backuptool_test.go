@@ -15,7 +15,7 @@ import (
 func runBackupTool(t *testing.T, env map[string]string, args ...string) (backupInitResult, string, error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	err := BackupTool(context.Background(), args, env, &stdout, &stderr)
+	err := BackupTool(context.Background(), args, env, nil, &stdout, &stderr)
 	var result backupInitResult
 	if err == nil {
 		if decodeErr := json.Unmarshal(lastLine(stdout.Bytes()), &result); decodeErr != nil {

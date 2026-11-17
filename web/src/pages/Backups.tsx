@@ -1,5 +1,6 @@
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { RecordModel } from "pocketbase";
+import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { PageHead } from "../components/Layout";
@@ -16,6 +17,7 @@ import {
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import { runFields, runsSince, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import {
   anyCredential,
   backupsApi,
@@ -27,6 +29,7 @@ import {
   parseDays,
   requiredFields,
   sameHostKeys,
+  serverOption,
   targetConfig,
   targetCredentials,
   targetKept,
@@ -39,21 +42,72 @@ import {
   type TargetForm,
 } from "../lib/backups";
 import { formatRelative } from "../lib/format";
-import { useLiveList, useNow } from "../lib/realtime";
+import { useMounted } from "../lib/mounted";
+import { pb } from "../lib/pb";
+import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
 import type { Host } from "../lib/types";
+import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 
-/** Backups (#28): where they go, for now. Jobs, snapshots and restores come
- * with later issues. */
+/** Backups: the summary of the last 14 days, the jobs (#29) and the targets
+ * they go to (#28). Snapshots and restores come with later issues. */
 export function BackupsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const isAdmin = hasRole(user, "admin");
+  const canRun = hasRole(user, "operator");
+  const now = useNow(30_000);
   const targets = useLiveList<BackupTarget>("backup_targets", { sort: "name" });
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
+  const jobs = useLiveList<BackupJob>("backup_jobs", { sort: "name" });
+  const stacks = useLiveList<StackName & RecordModel>("stacks", {
+    sort: "name",
+    fields: "id,collectionId,collectionName,name,host",
+    perPage: 500,
+  });
+  // the runs of the last 14 days, and a day more for any time zone
+  const since = runsSince(now);
+  const runs = useLiveRecords<BackupRun>("backup_runs", {
+    filter: pb.filter("created >= {:since}", { since }),
+    fields: runFields,
+  });
+  // "new", or the id of the job being changed
+  const [dialog, setDialog] = useState<string | null>(null);
+  const edited = jobs.items.find((job) => job.id === dialog);
 
   return (
     <>
-      <PageHead title={t("nav.backups")} description={t("backups.lead")} />
+      <PageHead
+        title={t("nav.backups")}
+        description={t("backups.lead")}
+        actions={
+          isAdmin && (
+            <Button variant="primary" onClick={() => setDialog("new")}>
+              <Plus size={16} aria-hidden="true" /> {t("backups.job.new")}
+            </Button>
+          )
+        }
+      />
+      <BackupSummary
+        jobs={jobs.items}
+        runs={runs.items}
+        targets={targets.items}
+        hosts={hosts.items}
+        now={now}
+      />
+      <JobsCard
+        jobs={jobs.items}
+        runs={runs.items}
+        targets={targets.items}
+        hosts={hosts.items}
+        stacks={stacks.items}
+        loading={jobs.loading}
+        error={jobs.error || runs.error}
+        now={now}
+        canRun={canRun}
+        isAdmin={isAdmin}
+        onAdd={() => setDialog("new")}
+        onEdit={(job) => setDialog(job.id)}
+      />
       {targets.error ? (
         <Banner tone="err">{errorMessage(targets.error)}</Banner>
       ) : (
@@ -62,6 +116,16 @@ export function BackupsPage() {
           hosts={hosts.items}
           loading={targets.loading}
           isAdmin={isAdmin}
+        />
+      )}
+      {(dialog === "new" || edited) && (
+        <JobDialog
+          key={edited?.id ?? "new"}
+          job={edited ?? null}
+          targets={targets.items}
+          hosts={hosts.items}
+          stacks={stacks.items}
+          onClose={() => setDialog(null)}
         />
       )}
     </>
@@ -282,13 +346,6 @@ function TargetItem({
       )}
     </li>
   );
-}
-
-/** A server that cannot answer now, marked in a list to choose from. */
-function serverOption(host: Host, offline: string) {
-  return host.status === "online" || host.status === "degraded"
-    ? host.name
-    : `${host.name} (${offline})`;
 }
 
 /** The server whose agent runs restic for a target. */
@@ -530,18 +587,6 @@ function DaysField({
       <p className="muted small">{t("backups.hint.immutableDays")}</p>
     </Field>
   );
-}
-
-/** Whether the dialog is still on the page when a long request returns. */
-function useMounted() {
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  return mounted;
 }
 
 /** Adds a target: the panel checks it, then the agent of its server opens the

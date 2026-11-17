@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -260,5 +261,104 @@ func TestWaitReturnsTheExitCode(t *testing.T) {
 	}
 	if _, err := docker.Wait(context.Background(), "broken"); err == nil || !strings.Contains(err.Error(), "could not start") {
 		t.Errorf("an error: %v", err)
+	}
+}
+
+// TestAttachWritesAJobsInput (#29): what is written to the attached
+// connection before and after the job starts is its standard input, which
+// ends when the connection closes; once the job has exited, writes fail.
+func TestAttachWritesAJobsInput(t *testing.T) {
+	docker, engine := client(t)
+	ctx := context.Background()
+	engine.AddImage("agent", nil)
+	engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
+		if job.Stdin == nil {
+			return fakedocker.JobResult{Code: 1, Stderr: "no input"}
+		}
+		if job.Cmd[0] == "ignore" {
+			return fakedocker.JobResult{}
+		}
+		read, err := io.ReadAll(job.Stdin)
+		if err != nil {
+			return fakedocker.JobResult{Code: 1, Stderr: err.Error()}
+		}
+		return fakedocker.JobResult{Stdout: string(read)}
+	}
+	job := func(cmd string) string {
+		t.Helper()
+		id, err := docker.Create(ctx, "", map[string]any{
+			"Image": "agent", "Cmd": []string{cmd}, "OpenStdin": true, "StdinOnce": true, "AttachStdin": true,
+			"Labels": map[string]string{"pocketcloud.role": "job"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	id := job("read")
+	stdin, err := docker.Attach(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !engine.Called("POST /containers/" + id + "/attach?stdin=1&stream=1") {
+		t.Errorf("calls: %v", engine.Calls())
+	}
+	if _, err := io.WriteString(stdin, "before the start\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := docker.Start(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stdin, "after it\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := docker.Wait(ctx, id); err != nil || code != 0 {
+		t.Fatalf("the job: %d %v", code, err)
+	}
+	logs, err := docker.Logs(ctx, id, dockerapi.LogOptions{Tail: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	_ = dockerapi.ReadMultiplexed(logs, func(_ byte, data []byte) { out.Write(data) })
+	logs.Close()
+	if out.String() != "before the start\nafter it\n" {
+		t.Errorf("the job read %q", out.String())
+	}
+
+	// a job that exited reads no more
+	id = job("ignore")
+	stdin, err = docker.Attach(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if err := docker.Start(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docker.Wait(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := stdin.Write(make([]byte, 64<<10)); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("writes to a job that exited went on")
+		}
+	}
+
+	// a container without input refuses
+	plain, err := docker.Create(ctx, "", map[string]any{"Image": "agent", "Labels": map[string]string{"pocketcloud.role": "job"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docker.Attach(ctx, plain); err == nil {
+		t.Error("a container without OpenStdin was attached")
 	}
 }

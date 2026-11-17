@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/pocketbase/dbx"
 	validation "github.com/pocketbase/ozzo-validation/v4"
 	"github.com/pocketbase/pocketbase/core"
@@ -23,7 +24,8 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/stacks"
 )
 
-// A service's pocketcloud.domain label puts it on domains (#25). After every
+// A service's pocketcloud.domain label puts it on domains (#25), and its
+// pocketcloud.backup label backs it up (#29: see backup_labels.go). After every
 // deploy that succeeds, the panel makes the stack's label domains what the
 // deployed revision's labels say: a domain like any other, of the stack's
 // server, so its DNS records, its certificate and its route on the edge follow
@@ -44,6 +46,7 @@ func (p *Panel) registerLabels() {
 	// a stack that is gone leaves its label domains to be confirmed
 	p.App.OnRecordAfterDeleteSuccess(schema.Stacks).BindFunc(func(e *core.RecordEvent) error {
 		p.later.after(0, p.markOrphanedLabelDomains)
+		p.later.after(0, p.markOrphanedLabelJobs)
 		return e.Next()
 	})
 }
@@ -162,9 +165,9 @@ func (p *Panel) markOrphanedLabelDomains() {
 	}
 }
 
-// stackExposures reads the labels of a deployed revision, with the values its
-// deploy had: the stack's variables and secrets.
-func (p *Panel) stackExposures(stack, revision *core.Record) ([]stacks.Exposure, []labelProblem, error) {
+// deployedProject loads a deployed revision as its deploy did: with the
+// stack's variables and secrets. Its labels are read from there.
+func (p *Panel) deployedProject(stack, revision *core.Record) (*composetypes.Project, *yaml.Node, error) {
 	sealed, err := p.openStackSecrets(stack)
 	if err != nil {
 		return nil, nil, err
@@ -187,26 +190,32 @@ func (p *Panel) stackExposures(stack, revision *core.Record) ([]stacks.Exposure,
 	if err := yaml.Unmarshal([]byte(compose), &tree); err != nil {
 		return nil, nil, err
 	}
-	exposures, found := stacks.Exposures(project, &tree, nil)
+	return project, &tree, nil
+}
+
+// labelProblemsOf turns what is wrong with labels into the stack's problems.
+func labelProblemsOf(found []stacks.Problem) []labelProblem {
 	problems := make([]labelProblem, 0, len(found))
 	for _, problem := range found {
 		problems = append(problems, labelProblem{Line: problem.Line, Message: problem.Message})
 	}
-	return exposures, problems, nil
+	return problems
 }
 
-// syncStackLabels makes the label domains of a stack what its deployed
-// revision says.
+// syncStackLabels makes the label domains and the label backup jobs of a
+// stack what its deployed revision says.
 func (p *Panel) syncStackLabels(stack, revision *core.Record) {
 	lock := p.edgeLocks.of("labels:" + stack.Id)
 	lock.Lock()
 	defer lock.Unlock()
 
-	exposures, problems, err := p.stackExposures(stack, revision)
+	project, tree, err := p.deployedProject(stack, revision)
 	if err != nil {
 		p.setFields(stack, map[string]any{"label_problems": []labelProblem{{Message: "The labels could not be read: " + err.Error()}}, "labels_at": types.NowDateTime()})
 		return
 	}
+	exposures, found := stacks.Exposures(project, tree, nil)
+	problems := labelProblemsOf(found)
 
 	existing, err := p.App.FindRecordsByFilter(schema.Domains, "stack={:s} && origin={:label}", "", 0, 0,
 		dbx.Params{"s": stack.Id, "label": schema.OriginLabel})
@@ -253,6 +262,10 @@ func (p *Panel) syncStackLabels(stack, revision *core.Record) {
 			p.Log.Error("failed to mark a label domain", "domain", domain.Id, "error", err)
 		}
 	}
+
+	backups, found := stacks.BackupLabels(project, tree, nil)
+	problems = append(problems, labelProblemsOf(found)...)
+	problems = append(problems, p.syncBackupLabels(stack, backups)...)
 
 	slices.SortFunc(problems, func(a, b labelProblem) int { return strings.Compare(a.Message, b.Message) })
 	p.setFields(stack, map[string]any{"label_problems": problems, "labels_at": types.NowDateTime()})

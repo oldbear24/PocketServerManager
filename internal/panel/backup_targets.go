@@ -397,13 +397,29 @@ func (p *Panel) handleRefreshTarget(e *core.RequestEvent) error {
 }
 
 // handleRemoveTarget forgets a target. Its repository stays where it is, but
-// PocketCloud forgets its password with it.
+// PocketCloud forgets its password with it. A target that jobs back up to is
+// taken out of them first.
 func (p *Panel) handleRemoveTarget(e *core.RequestEvent) error {
 	target, err := e.App.FindRecordById(schema.BackupTargets, e.Request.PathValue("id"))
 	if err != nil {
 		return e.NotFoundError("The target does not exist.", err)
 	}
-	// backup jobs (#29) will be counted here: a target they use stays
+	// a target that jobs back up to stays: they would fail at every run
+	jobs, err := e.App.FindRecordsByFilter(schema.BackupJobs, "targets ~ {:target}", "name", 0, 0, dbx.Params{"target": target.Id})
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	if len(jobs) > 0 {
+		names := make([]string, 0, len(jobs))
+		for _, job := range jobs {
+			names = append(names, job.GetString("name"))
+		}
+		subject := "The jobs " + strings.Join(names, ", ") + " back"
+		if len(names) == 1 {
+			subject = "The job " + names[0] + " backs"
+		}
+		return e.Error(http.StatusConflict, subject+" up to this target: take it out of them first.", nil)
+	}
 	if err := e.App.DeleteWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), target); err != nil {
 		return e.BadRequestError("The target could not be removed: "+err.Error(), nil)
 	}
@@ -726,7 +742,8 @@ func targetFingerprint(target *core.Record) string {
 
 // enrichBackup completes a backup command with its target's repository as it
 // is delivered: its URL, the password, the storage's credentials and options,
-// an SFTP key and host key, a local target's directory.
+// an SFTP key and host key, a local target's directory. A backup.run goes to
+// its job's server, which need not be the one that checks the target.
 func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) error {
 	repo := backupRepository(command)
 	if repo == nil || repo.GetTargetId() == "" {
@@ -757,7 +774,12 @@ func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) erro
 		if err != nil {
 			return errors.New("the backup target is gone")
 		}
-		if target.GetString("host") != record.GetString("host") {
+		if run := command.GetBackupRun(); run != nil {
+			// a job's server backs it up, whichever server checks the target
+			if err := p.checkRunDelivery(record, run, target); err != nil {
+				return err
+			}
+		} else if target.GetString("host") != record.GetString("host") {
 			return errors.New("the backup target is reached from another server")
 		}
 		if secrets, err = p.targetSecretsOf(target); err != nil {

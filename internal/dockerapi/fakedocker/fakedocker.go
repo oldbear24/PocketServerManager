@@ -7,11 +7,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +45,13 @@ type Container struct {
 	// a job's end, and its exit code (see OnJob)
 	exited   chan struct{}
 	exitCode int
+	// stop is closed once a job is stopped (see Job.Stop)
+	stop chan struct{}
+	// the standard input of a container created with OpenStdin, which an
+	// attached client writes to
+	stdinR    *io.PipeReader
+	stdinW    *io.PipeWriter
+	stdinOnce bool
 }
 
 // Engine is the fake. All fields are guarded by mu; use the methods from tests.
@@ -82,6 +92,9 @@ type Engine struct {
 	OnJob func(job Job) JobResult
 	// APIVersion is the Engine API version the fake reports; empty is 1.47.
 	APIVersion string
+	// KernelVersion is the kernel release the fake's info reports; empty is
+	// 6.1.0-fake.
+	KernelVersion string
 	// VolumeRoot is where volumes say their directories are on the host.
 	VolumeRoot string
 }
@@ -97,6 +110,20 @@ type Job struct {
 	Host map[string]any
 	// Files are those copied into the container before it started.
 	Files map[string][]byte
+	// Stdin is what a client attached to a job created with OpenStdin
+	// writes, which ends when it leaves one created with StdinOnce; nil for
+	// a job without OpenStdin.
+	Stdin io.Reader
+	// Stop is closed when the job's container is stopped, as the Engine
+	// signals its process, and the stop waits for the job to end, up to its
+	// timeout, as the Engine's does. A job whose container is removed by
+	// force goes on to its end unseen, as one the Engine kills may have
+	// done its work.
+	Stop <-chan struct{}
+	// Stdout and Stderr reach the container's log line by line as OnJob
+	// writes them, as a running process's output does; JobResult's output
+	// follows what they took.
+	Stdout, Stderr io.Writer
 }
 
 // JobResult is how a job ended.
@@ -231,6 +258,7 @@ func (e *Engine) RemoveContainer(id string) {
 
 	if container := e.containers[id]; container != nil {
 		e.stopping(container)
+		closeStdin(container)
 	}
 	delete(e.containers, id)
 	e.removeFromNetworks(id)
@@ -412,8 +440,14 @@ func (e *Engine) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]string{"Version": "27.3.1", "ApiVersion": api, "Os": "linux", "Arch": "amd64"})
 	case path == "/info":
+		e.mu.Lock()
+		kernel := e.KernelVersion
+		e.mu.Unlock()
+		if kernel == "" {
+			kernel = "6.1.0-fake"
+		}
 		writeJSON(w, map[string]any{
-			"Name": "fake-host", "OperatingSystem": "Fake Linux 1.0", "KernelVersion": "6.1.0-fake",
+			"Name": "fake-host", "OperatingSystem": "Fake Linux 1.0", "KernelVersion": kernel,
 			"Architecture": "x86_64", "NCPU": 4, "MemTotal": 8 << 30, "ServerVersion": "27.3.1",
 		})
 	case path == "/containers/json":
@@ -511,7 +545,12 @@ func (e *Engine) createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	e.containers[id] = &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+	container := &Container{ID: id, Name: name, Image: image, Status: "created", Labels: labels, Config: config, Host: host}
+	if open, _ := body["OpenStdin"].(bool); open {
+		container.stdinR, container.stdinW = io.Pipe()
+		container.stdinOnce, _ = body["StdinOnce"].(bool)
+	}
+	e.containers[id] = container
 
 	// a container created on a network of its own starts out on it
 	if mode, _ := host["NetworkMode"].(string); mode != "" {
@@ -545,6 +584,7 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 			return
 		}
 		e.stopping(container)
+		closeStdin(container)
 		delete(e.containers, container.ID)
 		e.removeFromNetworks(container.ID)
 		e.broadcast("container", "destroy", container.ID, nil)
@@ -556,10 +596,17 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 	case action == "archive" && r.Method == http.MethodPut:
 		e.receiveArchive(w, r, container)
 
+	case action == "attach" && r.Method == http.MethodPost:
+		stdin, once := container.stdinW, container.stdinOnce
+		e.mu.Unlock()
+		attach(w, r, stdin, once)
+		e.mu.Lock()
+
 	case action == "start" && e.OnJob != nil && container.Labels["pocketcloud.role"] == "job":
 		container.Status = "running"
 		container.Started = time.Now().UTC()
 		container.exited = make(chan struct{})
+		container.stop = make(chan struct{})
 		if container.logs == nil {
 			container.logs = &logBuffer{}
 		}
@@ -585,6 +632,21 @@ func (e *Engine) containerRoute(w http.ResponseWriter, r *http.Request, rest str
 		w.WriteHeader(http.StatusNoContent)
 
 	case action == "stop":
+		if exited := container.exited; exited != nil && container.Status == "running" {
+			// a job's process gets the signal, and the time to end
+			stopJob(container)
+			grace := 10 * time.Second
+			if seconds, err := strconv.Atoi(r.URL.Query().Get("t")); err == nil && seconds > 0 {
+				grace = time.Duration(seconds) * time.Second
+			}
+			e.mu.Unlock()
+			select {
+			case <-exited:
+			case <-time.After(grace):
+			case <-r.Context().Done():
+			}
+			e.mu.Lock()
+		}
 		e.stopping(container)
 		container.Status = "exited"
 		e.broadcast("container", "die", container.ID, nil)
@@ -807,10 +869,22 @@ func (e *Engine) inspectVolume(w http.ResponseWriter, name string) {
 		writeError(w, http.StatusNotFound, "get "+name+": no such volume")
 		return
 	}
+	writeJSON(w, map[string]any{"Name": name, "Driver": "local", "Labels": labels, "Mountpoint": volumeDir(root, name)})
+}
+
+// VolumeDir is the directory a volume says it has on the host, under
+// VolumeRoot, as its inspect reports it.
+func (e *Engine) VolumeDir(name string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return volumeDir(e.VolumeRoot, name)
+}
+
+func volumeDir(root, name string) string {
 	if root == "" {
 		root = "/var/lib/docker/volumes"
 	}
-	writeJSON(w, map[string]any{"Name": name, "Driver": "local", "Labels": labels, "Mountpoint": root + "/" + name + "/_data"})
+	return root + "/" + name + "/_data"
 }
 
 // Fail makes requests whose "METHOD path" contains key fail with message, from
@@ -844,9 +918,26 @@ func omitEmptyMountFields(host map[string]any) {
 	}
 }
 
+// stopJob tells a job's process to stop, once. It is called with the engine
+// locked.
+func stopJob(c *Container) {
+	if c.stop == nil {
+		return
+	}
+	select {
+	case <-c.stop:
+	default:
+		close(c.stop)
+	}
+}
+
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
-	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files)}
+	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
+	if c.stdinR != nil {
+		job.Stdin = c.stdinR
+	}
+	job.Stdout, job.Stderr = &liveLog{logs: c.logs, stream: 1}, &liveLog{logs: c.logs, stream: 2}
 	if cmd, ok := c.Config["Cmd"].([]any); ok {
 		for _, arg := range cmd {
 			text, _ := arg.(string)
@@ -862,9 +953,50 @@ func jobOf(c *Container) Job {
 	return job
 }
 
+// liveLog writes a running job's output to its log, a line at a time.
+type liveLog struct {
+	logs    *logBuffer
+	stream  byte
+	mu      sync.Mutex
+	partial []byte
+}
+
+func (l *liveLog) Write(data []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.partial = append(l.partial, data...)
+	for {
+		end := strings.IndexByte(string(l.partial), '\n')
+		if end < 0 {
+			return len(data), nil
+		}
+		l.logs.add(l.stream, string(l.partial[:end]))
+		l.partial = l.partial[end+1:]
+	}
+}
+
+// flush writes an unfinished last line.
+func (l *liveLog) flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.partial) > 0 {
+		l.logs.add(l.stream, string(l.partial))
+		l.partial = nil
+	}
+}
+
 // runJob runs a job container's work and ends it.
 func (e *Engine) runJob(c *Container, job Job) {
 	result := e.OnJob(job)
+	for _, out := range []io.Writer{job.Stdout, job.Stderr} {
+		if live, ok := out.(*liveLog); ok {
+			live.flush()
+		}
+	}
+	if c.stdinR != nil {
+		// what is still written to it has nowhere to go
+		c.stdinR.CloseWithError(errors.New("the container has exited"))
+	}
 	for _, out := range []struct {
 		stream byte
 		text   string

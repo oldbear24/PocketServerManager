@@ -734,22 +734,47 @@ func (e *exitError) Error() string {
 // run creates a job container, lets prepare put files into it, runs it to its
 // end with its output going to stdout and stderr, and removes it.
 func (d dockerSites) run(ctx context.Context, config map[string]any, prepare func(id string) error, stdout, stderr io.Writer) error {
+	return d.runWith(ctx, config, jobHooks{prepare: prepare}, stdout, stderr)
+}
+
+// jobHooks are what the caller of a job does at its steps.
+type jobHooks struct {
+	// prepare runs before the job starts, such as to put files into it
+	prepare func(id string) error
+	// started runs once it has started, before its output is read
+	started func(id string)
+	// stopGrace, when set, is how long a job whose context ends has to stop
+	// on its own, after the Engine's SIGTERM, before it is removed: a
+	// removed job is killed at once
+	stopGrace time.Duration
+}
+
+// runWith runs a job like run, with hooks.
+func (d dockerSites) runWith(ctx context.Context, config map[string]any, hooks jobHooks, stdout, stderr io.Writer) error {
 	id, err := d.a.Docker.Create(ctx, "", config)
 	if err != nil {
 		return err
 	}
 	defer func() {
+		if hooks.stopGrace > 0 && ctx.Err() != nil {
+			stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), hooks.stopGrace+cleanupTimeout)
+			_ = d.a.Docker.Stop(stop, id, int(hooks.stopGrace/time.Second))
+			cancel()
+		}
 		remove, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		_ = d.a.Docker.Remove(remove, id, true, true)
 	}()
-	if prepare != nil {
-		if err := prepare(id); err != nil {
+	if hooks.prepare != nil {
+		if err := hooks.prepare(id); err != nil {
 			return err
 		}
 	}
 	if err := d.a.Docker.Start(ctx, id); err != nil {
 		return err
+	}
+	if hooks.started != nil {
+		hooks.started(id)
 	}
 	logs, err := d.a.Docker.Logs(ctx, id, dockerapi.LogOptions{Tail: -1, Follow: true})
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
@@ -20,7 +21,9 @@ import (
 // password and the storage's credentials to the command when it delivers it:
 // they go into the job's environment, an SFTP key and the server's pinned
 // host key into files copied in before it starts, and nowhere else on the
-// server. A local target's directory is the only thing the job mounts.
+// server. A local target's directory is the only thing of the server an init
+// job mounts; a backup run's job mounts, besides, what it backs up, read-only
+// (see backuprun.go).
 
 const (
 	// backupTargetLabel names the target of a backup job container.
@@ -31,10 +34,17 @@ const (
 	// check would fetch every snapshot's trees again.
 	resticCache    = "pocketcloud-restic-cache"
 	resticCacheDir = "/cache"
+	// backupStopGrace is how long a backup run's job that is cancelled, or
+	// a backup job left by the agent, has to stop before it is removed: the
+	// backup tool stops restic, which removes its locks; a job removed at
+	// once is killed, and its locks keep other backups and retentions
+	// waiting. A target's check takes no lock, and is removed at once.
+	backupStopGrace = 30 * time.Second
 )
 
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
+	a.Executor.Handle("backup.run", a.handleBackupRun)
 }
 
 // handleBackupInit opens a target's repository, or creates it, and says what
@@ -48,7 +58,7 @@ func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, 
 	if payload.GetUsage() {
 		args = append(args, "--usage")
 	}
-	out, err := a.backupJob(ctx, payload.GetRepository(), args, reporter)
+	out, err := a.backupJob(ctx, payload.GetRepository(), backupJobSpec{args: args}, reporter)
 	var refused *backupRefused
 	if errors.As(err, &refused) {
 		// the job ran and restic, or the tool, said no: the panel may forget
@@ -72,11 +82,39 @@ func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, 
 	return answer, nil
 }
 
-// backupJob runs the backup tool for a repository in a job container, and
-// returns the JSON it printed last.
-func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, args []string, log io.Writer) ([]byte, error) {
+// backupJobSpec is what a backup job does besides opening its repository.
+type backupJobSpec struct {
+	// args are the backup tool's op and its flags
+	args []string
+	// mounts are what of the server the job reads
+	mounts []map[string]any
+	// capabilities are those the job needs besides a local target's
+	capabilities []string
+	// feed, when set, writes the job's standard input once restic reads
+	// it, as the backup tool says (relayReady), and closes it; it stops when
+	// its context ends, and never starts for a job that ends first
+	feed func(ctx context.Context, stdin io.WriteCloser)
+	// notes are lines for the run's log, said before the job starts
+	notes []string
+	// stopGrace is how long the job has to stop when its command is
+	// cancelled, before it is removed (see backupStopGrace)
+	stopGrace time.Duration
+}
+
+// checkRepository checks that the panel completed a command's repository.
+func checkRepository(repo *agentv1.BackupRepository) error {
 	if repo.GetUrl() == "" || repo.GetPassword() == "" {
-		return nil, errors.New("the command has no repository or no password: the panel adds them when it delivers it")
+		return errors.New("the command has no repository or no password: the panel adds them when it delivers it")
+	}
+	return nil
+}
+
+// backupJob runs the backup tool for a repository in a job container, and
+// returns the JSON it printed last, also when it refused, as a backup that
+// saved a snapshot without some files says the snapshot.
+func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, job backupJobSpec, log io.Writer) ([]byte, error) {
+	if err := checkRepository(repo); err != nil {
+		return nil, err
 	}
 	secrets := backup.Secrets(repo.GetPassword(), repo.GetEnv(), repo.GetSshKey())
 
@@ -89,7 +127,7 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 	for _, name := range slices.Sorted(maps.Keys(repo.GetEnv())) {
 		env = append(env, name+"="+repo.GetEnv()[name])
 	}
-	cmd := append([]string{"backup-tool"}, args...)
+	cmd := append([]string{"backup-tool"}, job.args...)
 	cmd = append(cmd, "--cache", resticCacheDir)
 	for _, name := range slices.Sorted(maps.Keys(repo.GetOptions())) {
 		cmd = append(cmd, "-o", name+"="+repo.GetOptions()[name])
@@ -116,6 +154,12 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 		// network
 		capabilities = []string{"DAC_OVERRIDE", "FOWNER"}
 	}
+	mounts = append(mounts, job.mounts...)
+	for _, capability := range job.capabilities {
+		if !slices.Contains(capabilities, capability) {
+			capabilities = append(capabilities, capability)
+		}
+	}
 
 	config := map[string]any{
 		"Image":  self.Image,
@@ -131,36 +175,130 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, a
 			"LogConfig":   map[string]any{"Type": "json-file"},
 		},
 	}
+	if job.feed != nil {
+		// its input ends when the agent closes it
+		config["OpenStdin"] = true
+		config["StdinOnce"] = true
+		config["AttachStdin"] = true
+	}
+
+	var stdin io.WriteCloser
+	feedCtx, stopFeed := context.WithCancel(ctx)
+	defer stopFeed()
+	fed := make(chan struct{})
+	feeding := false
+	var stderr io.Writer = &redactingWriter{w: log, secrets: secrets}
+	// the dump starts once restic reads it: the tool says when, before any
+	// secret is taken out of what it says
+	ready := make(chan struct{})
+	if job.feed != nil {
+		stderr = &markWatcher{w: stderr, mark: relayReady, seen: ready}
+	}
+	hooks := jobHooks{
+		stopGrace: job.stopGrace,
+		prepare: func(id string) error {
+			// ssh reads the key and the pinned host key from files
+			for _, file := range []struct {
+				name    string
+				content string
+				mode    int64
+			}{
+				{backup.SSHKeyFile, repo.GetSshKey(), 0o600},
+				{backup.KnownHostsFile, repo.GetKnownHosts(), 0o644},
+			} {
+				if file.content == "" {
+					continue
+				}
+				dir, name := path.Split(file.name)
+				parent, sub := path.Split(path.Clean(dir))
+				if err := a.Docker.CopyFile(ctx, id, parent, path.Join(sub, name), []byte(file.content), file.mode); err != nil {
+					return fmt.Errorf("the job cannot get the SFTP key: %w", err)
+				}
+			}
+			if job.feed != nil {
+				// attached before it starts, so that nothing it reads is lost
+				attached, err := a.Docker.Attach(ctx, id)
+				if err != nil {
+					return fmt.Errorf("the job's input cannot be attached: %w", err)
+				}
+				stdin = attached
+			}
+			return nil
+		},
+		started: func(string) {
+			if stdin != nil {
+				feeding = true
+				go func() {
+					defer close(fed)
+					select {
+					case <-ready:
+						if feedCtx.Err() == nil {
+							job.feed(feedCtx, stdin)
+						}
+					case <-feedCtx.Done():
+						// the job ended before restic ran the relay, as
+						// when it never got the repository's lock: the
+						// dump never starts
+					}
+				}()
+			}
+		},
+	}
 	var stdout bytes.Buffer
-	err = dockerSites{a: a}.run(ctx, config, func(id string) error {
-		// ssh reads the key and the pinned host key from files
-		for _, file := range []struct {
-			name    string
-			content string
-			mode    int64
-		}{
-			{backup.SSHKeyFile, repo.GetSshKey(), 0o600},
-			{backup.KnownHostsFile, repo.GetKnownHosts(), 0o644},
-		} {
-			if file.content == "" {
-				continue
-			}
-			dir, name := path.Split(file.name)
-			parent, sub := path.Split(path.Clean(dir))
-			if err := a.Docker.CopyFile(ctx, id, parent, path.Join(sub, name), []byte(file.content), file.mode); err != nil {
-				return fmt.Errorf("the job cannot get the SFTP key: %w", err)
-			}
+	err = dockerSites{a: a}.runWith(ctx, config, hooks, &stdout, stderr)
+	if stdin != nil {
+		// what still feeds a job that ended stops
+		stopFeed()
+		_ = stdin.Close()
+		if feeding {
+			<-fed
 		}
-		return nil
-	}, &stdout, &redactingWriter{w: log, secrets: secrets})
+	}
+	out := lastLine(stdout.Bytes())
 	var exit *exitError
+	if errors.As(err, &exit) && exit.message == relayReady {
+		// the tool's own line, last as the job was killed, says nothing of why
+		exit.message = ""
+	}
 	if errors.As(err, &exit) && !exit.oom {
-		return nil, &backupRefused{backup.Redact(err.Error(), secrets...)}
+		return out, &backupRefused{backup.Redact(err.Error(), secrets...)}
 	}
 	if err != nil {
 		return nil, errors.New(backup.Redact(err.Error(), secrets...))
 	}
-	return lastLine(stdout.Bytes()), nil
+	return out, nil
+}
+
+// markWatcher passes on a job's output line by line, and closes seen when it
+// reads mark, a line of its own, which it keeps out of what it passes on.
+type markWatcher struct {
+	w       io.Writer
+	mark    string
+	seen    chan struct{}
+	partial []byte
+}
+
+func (m *markWatcher) Write(data []byte) (int, error) {
+	m.partial = append(m.partial, data...)
+	for {
+		end := bytes.IndexByte(m.partial, '\n')
+		if end < 0 {
+			return len(data), nil
+		}
+		line := m.partial[:end+1]
+		m.partial = m.partial[end+1:]
+		if string(bytes.TrimRight(line, "\r\n")) == m.mark {
+			select {
+			case <-m.seen:
+			default:
+				close(m.seen)
+			}
+			continue
+		}
+		if _, err := m.w.Write(line); err != nil {
+			return len(data), err
+		}
+	}
 }
 
 // backupRefused is what the backup tool said when it ended with an error: it
@@ -170,7 +308,8 @@ type backupRefused struct{ message string }
 func (b *backupRefused) Error() string { return b.message }
 
 // cleanupBackupJobs removes the job containers of backup commands the agent
-// was running when it stopped: the commands ended with it.
+// was running when it stopped: the commands ended with it. One still running
+// is stopped first, so that restic removes its locks.
 func (a *Agent) cleanupBackupJobs(ctx context.Context) {
 	containers, err := a.Docker.Containers(ctx)
 	if err != nil {
@@ -178,6 +317,13 @@ func (a *Agent) cleanupBackupJobs(ctx context.Context) {
 	}
 	for _, container := range containers {
 		if _, ok := container.Labels[backupTargetLabel]; ok && container.Labels["pocketcloud.role"] == "job" {
+			if container.State == "running" {
+				stop, cancel := context.WithTimeout(ctx, backupStopGrace+cleanupTimeout)
+				if err := a.Docker.Stop(stop, container.ID, int(backupStopGrace/time.Second)); err != nil {
+					a.Log.Warn("failed to stop a backup job container", "container", container.ID, "error", err)
+				}
+				cancel()
+			}
 			if err := a.Docker.Remove(ctx, container.ID, true, true); err != nil {
 				a.Log.Warn("failed to remove a backup job container", "container", container.ID, "error", err)
 			}

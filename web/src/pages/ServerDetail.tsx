@@ -18,6 +18,7 @@ import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import { ContainerStatePill, HostStatusPill } from "../components/status";
 import { UsageChart } from "../components/UsageChart";
+import { ServerJobsCard } from "./BackupJobs";
 import { EdgeRoutesCard, ProxyTab } from "./EdgeProxy";
 import {
   Banner,
@@ -144,11 +145,7 @@ export function ServerDetailPage() {
       {active === "containers" && <ContainersCard containers={containers.items} host={host} />}
       {active === "proxy" && <ProxyTab host={host} containers={containers.items} />}
       {active === "volumes" && <VolumesTab host={host} />}
-      {active === "backups" && (
-        <Card>
-          <EmptyState title={t("server.tab.backups")}>{t("server.backupsLater")}</EmptyState>
-        </Card>
-      )}
+      {active === "backups" && <ServerJobsCard host={host} />}
       {active === "agent" && <AgentTab host={host} />}
     </>
   );

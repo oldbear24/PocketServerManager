@@ -149,6 +149,12 @@
       "proxy": "Proxy & sites",
       "backups": "Backups"
     },
+    "backups": {
+      "title": "Backup jobs",
+      "open": "Manage on the Backups page",
+      "noneTitle": "No backup jobs on this server",
+      "noneText": "The jobs that back up this server's volumes, directories, stacks or databases appear here. Add one on the Backups page."
+    },
     "restartAgent": "Restart agent",
     "restartQueued": "The agent will restart.",
     "restartConfirm": "Restart the agent on {{name}}?",
@@ -256,7 +262,6 @@
     "newStack": "New stack",
     "edgeRoutes": "Edge proxy routes",
     "edgeRoutesNote": "Caddy run by the agent · certificates from the panel",
-    "backupsLater": "Backup jobs for this server arrive in milestone M4.",
     "openTerminal": "Terminal in {{name}}",
     "internalOnly": "internal network only",
     "restarts_one": "{{count}}× restarted",
@@ -1877,7 +1882,7 @@
     "stackCardNote": "commands on a schedule, in a service's container"
   },
   "backups": {
-    "lead": "restic on the agents · encrypted with a key kept in the panel",
+    "lead": "restic on the agents · encrypted with a key kept in the panel · the panel schedules, the agent runs",
     "targets": "Targets",
     "add": "Add target",
     "addTitle": "Add a backup target",
@@ -1977,6 +1982,201 @@
       "localPath": "A directory on that server; created if missing.",
       "repoPassword": "Leave it empty and PocketCloud makes a password, keeps it sealed and never shows it: the repository then opens only with this panel's database and master key. Set your own and keep a copy to be able to add the repository again elsewhere, or enter the password of a repository restic already has.",
       "immutableDays": "How long the bucket's Object Lock keeps objects, as set at the provider. Only a note: PocketCloud does not set the lock."
+    },
+    "summary": {
+      "label": "Backup summary",
+      "success": "Success over 14 days",
+      "successOf_one": "{{ok}} of {{count}} run",
+      "successOf_other": "{{ok}} of {{count}} runs",
+      "noRuns": "no runs yet",
+      "stored": "Stored",
+      "storedNote_one": "in {{count}} target",
+      "storedNote_other": "in {{count}} targets",
+      "notMeasured": "the targets are not measured yet",
+      "nextRun": "Next run",
+      "nothingScheduled": "no job is scheduled"
+    },
+    "strip": {
+      "legend": "What the colours of the 14 days mean",
+      "ok": "success",
+      "err": "error",
+      "warn": "skipped",
+      "off": "no run",
+      "count": {
+        "succeeded": "{{count}} succeeded",
+        "failed": "{{count}} failed",
+        "skipped": "{{count}} skipped"
+      },
+      "none": "no run",
+      "label": "Last 14 days: {{summary}}"
+    },
+    "source": {
+      "volume": "volume {{name}}",
+      "stack": "volumes of stack {{name}}",
+      "serviceVolumes": "volumes of service {{service}}: {{names}}",
+      "db_dump": "{{tool}} · {{stack}}/{{service}}"
+    },
+    "sourceKind": {
+      "volume": "Docker volume",
+      "path": "Directory on the server",
+      "stack": "Volumes of a stack",
+      "db_dump": "Database dump"
+    },
+    "sourceNote": {
+      "volume": "restic reads it in a job container that mounts it read-only.",
+      "path": "An absolute directory of the server, mounted read-only into the job container.",
+      "stack": "Every named volume of the stack, as it has them at each run.",
+      "db_dump": "The service's running container makes the dump with its own tools, and restic keeps it as one file of the snapshot."
+    },
+    "engineTool": {
+      "postgres": "pg_dump",
+      "mysql": "mysqldump",
+      "sqlite": "sqlite3 .dump"
+    },
+    "engineName": {
+      "postgres": "PostgreSQL (pg_dump)",
+      "mysql": "MySQL or MariaDB (mysqldump)",
+      "sqlite": "SQLite (sqlite3 .dump)"
+    },
+    "engineNote": {
+      "postgres": "pg_dump as POSTGRES_USER, of the database POSTGRES_DB, both from the container's environment.",
+      "mysql": "Every database, as root, with MARIADB_ROOT_PASSWORD or MYSQL_ROOT_PASSWORD from the container's environment.",
+      "sqlite": "sqlite3 .dump of a file in the container: the image needs sqlite3."
+    },
+    "runStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "succeeded": "OK",
+      "failed": "Error",
+      "skipped": "Skipped",
+      "cancelled": "Cancelled"
+    },
+    "runRetention": {
+      "deferredShort": "retention postponed",
+      "deferred": "retention postponed: the repository was busy",
+      "failed": "retention failed"
+    },
+    "keep": {
+      "last": "Last",
+      "hourly": "Hourly",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "yearly": "Yearly"
+    },
+    "retention": {
+      "last_one": "last {{count}}",
+      "last_other": "last {{count}}",
+      "all": "keeps every snapshot",
+      "title": "Snapshots kept: h hourly, d daily, w weekly, m monthly, y yearly"
+    },
+    "cron": {
+      "hourly": "hourly",
+      "hourlyAt": "hourly at :{{minute}}",
+      "daily": "daily {{time}}",
+      "weekly": {
+        "0": "Sundays {{time}}",
+        "1": "Mondays {{time}}",
+        "2": "Tuesdays {{time}}",
+        "3": "Wednesdays {{time}}",
+        "4": "Thursdays {{time}}",
+        "5": "Fridays {{time}}",
+        "6": "Saturdays {{time}}"
+      },
+      "minutes_one": "every minute",
+      "minutes_other": "every {{count}} min",
+      "hours_one": "every hour",
+      "hours_other": "every {{count}} h",
+      "monthly": "monthly, day {{day}}, {{time}}",
+      "utc": "{{cron}} UTC"
+    },
+    "job": {
+      "title": "Jobs",
+      "new": "New job",
+      "newTitle": "New backup job",
+      "editTitle": "Edit {{name}}",
+      "add": "Add job",
+      "added": "The job {{name}} was added.",
+      "saved": "The job {{name}} was saved.",
+      "removed": "The job {{name}} was removed.",
+      "noneTitle": "No backup jobs yet",
+      "noneText": "A job backs up a volume, a directory, a stack's volumes or a database dump to its targets on a schedule. The pocketcloud.backup label of a stack's service makes one too.",
+      "column": {
+        "job": "Job",
+        "where": "Where",
+        "schedule": "Schedule · retention",
+        "lastRun": "Last run",
+        "days": "14 days"
+      },
+      "fromLabel": "from label pocketcloud.backup",
+      "lastRunAt": "{{status}} · {{time}}",
+      "neverRun": "not run yet",
+      "bytesAdded": "+{{size}}",
+      "started_one": "{{name}} runs now, to {{count}} target.",
+      "started_other": "{{name}} runs now, to {{count}} targets.",
+      "labelRemoved": "Its pocketcloud.backup label is gone: the job no longer runs.",
+      "removeName": "Remove job {{name}}",
+      "editName": "Edit job {{name}}",
+      "runName": "Run {{name}} now",
+      "run": "Run",
+      "starting": "Starting…",
+      "cannotRun": "It has no target to back up to.",
+      "noTarget": "no target",
+      "paused": "paused",
+      "removeTitle": "Remove the job {{name}}?",
+      "removeText": "PocketCloud forgets the job and the record of its runs. Its snapshots stay in the targets' repositories, where no retention removes them any more.",
+      "source": "What to back up",
+      "labelNote": "The pocketcloud.backup label of the stack's service made this job: its source and server stay as the labels say. What the labels pocketcloud.backup.schedule, .target and .retention set, they set again at every deploy, and the panel refuses to change it here: change the label instead.",
+      "labelSets": {
+        "schedule": "Set by the label pocketcloud.backup.schedule; it changes in the Compose file.",
+        "targets": "Set by the label pocketcloud.backup.target; they change in the Compose file.",
+        "retention": "Set by the label pocketcloud.backup.retention; it changes in the Compose file."
+      },
+      "serverHint": "Its agent runs the backup, in a job container that mounts the data read-only.",
+      "volume": "Volume",
+      "volumeInvalid": "A Docker volume's name: letters, digits, _ . and -, starting with a letter or digit.",
+      "path": "Directory",
+      "pathInvalid": "An absolute directory such as /srv/data: not /, and not in /proc, /sys or /dev.",
+      "stack": "Stack",
+      "chooseStack": "Choose a stack",
+      "stackOption": "{{name}} · {{server}}",
+      "service": "Service",
+      "chooseService": "Choose a service",
+      "engine": "Database",
+      "chooseEngine": "Choose the database",
+      "sqlitePath": "Database file",
+      "sqliteInvalid": "The file's absolute path in the container, such as /data/db.sqlite3.",
+      "targets": "Where it goes",
+      "noTargets": "No targets yet: add one under Targets first.",
+      "localOnly": "a directory of {{server}}: only its jobs back up to it",
+      "noTargetChosen": "Without a target the job does not run.",
+      "schedule": "Schedule",
+      "mode": {
+        "hourly": "Every hour",
+        "daily": "Every day",
+        "weekly": "Every week",
+        "custom": "Own cron expression (UTC)…"
+      },
+      "minute": "Minute",
+      "weekday": "Day",
+      "day": {
+        "0": "Sunday",
+        "1": "Monday",
+        "2": "Tuesday",
+        "3": "Wednesday",
+        "4": "Thursday",
+        "5": "Friday",
+        "6": "Saturday"
+      },
+      "time": "Time",
+      "cron": "Cron expression (UTC)",
+      "cronHint": "Five fields in UTC: minute hour day month weekday.",
+      "cronReads": "In your time: {{text}}.",
+      "utcNote": "In your time zone, {{zone}}. The panel keeps it in UTC, as {{cron}}: when the clocks change for summer or winter time, it runs an hour earlier or later.",
+      "retention": "Snapshots to keep",
+      "retentionHint": "After each backup restic forgets the job's other snapshots: it keeps the last ones, and the newest of each of the last hours, days, weeks, months and years. Now: {{keeps}}.",
+      "retentionInvalid": "Whole numbers from 0 to 10000; empty keeps none of that kind.",
+      "enabled": "Enabled: it runs on its schedule"
     }
   }
 }

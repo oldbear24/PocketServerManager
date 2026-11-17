@@ -179,6 +179,8 @@ func Validate(ctx context.Context, name, compose, env string, secretKeys []strin
 	// a label that takes a secret is checked at the deploy
 	_, labelProblems := Exposures(project, &tree, placeholdersIn(&tree, unknown))
 	result.Warnings = append(result.Warnings, labelProblems...)
+	_, backupProblems := BackupLabels(project, &tree, placeholdersIn(&tree, unknown))
+	result.Warnings = append(result.Warnings, backupProblems...)
 
 	return result
 }

@@ -13,13 +13,13 @@ import { AddTargetDialog, BackupsPage, EditTargetDialog } from "./Backups";
 const now = Date.parse("2026-11-09T12:00:00Z");
 
 const live = vi.hoisted(() => ({ lists: {} as Record<string, unknown[]> }));
-vi.mock("../lib/realtime", () => ({
-  useLiveList: (collection: string) => {
+vi.mock("../lib/realtime", () => {
+  const list = (collection: string) => {
     const items = live.lists[collection] ?? [];
     return { items, loading: false, error: null, total: items.length, reload: () => {} };
-  },
-  useNow: () => now,
-}));
+  };
+  return { useLiveList: list, useLiveRecords: list, useNow: () => now };
+});
 
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
@@ -138,7 +138,9 @@ describe("the backup targets", () => {
 
     expect(screen.getByRole("heading", { name: "Backups" })).toBeInTheDocument();
     expect(
-      screen.getByText("restic on the agents · encrypted with a key kept in the panel"),
+      screen.getByText(
+        "restic on the agents · encrypted with a key kept in the panel · the panel schedules, the agent runs",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Targets" })).toBeInTheDocument();
 
@@ -205,7 +207,9 @@ describe("the backup targets", () => {
 
   it.each(["viewer", "operator"] as const)("shows no actions to a %s", (role) => {
     showPage(role);
-    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(
+      within(screen.getByRole("list", { name: "Targets" })).getAllByRole("listitem"),
+    ).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Add target" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Refresh / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Edit / })).not.toBeInTheDocument();

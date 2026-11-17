@@ -16,7 +16,7 @@ PocketCloud is a single Go binary built on [PocketBase](https://pocketbase.io) (
 - **PHP sites** – WordPress, Laravel or Nette in an isolated PHP-FPM container per site behind the same edge proxy; PHP 8.2–8.5, Composer builds, atomic releases, persistent data outside releases, cron, outgoing mail through a relay.
 - **Databases** – shared MariaDB and PostgreSQL servers per host, so apps don't each need their own instance; one database, one user and one private network per app, password rotation, Adminer on demand, per-database backups.
 - **Domains and TLS** – connect DNS providers (Cloudflare first); records and certificates (Let's Encrypt or ZeroSSL, HTTP-01 or DNS-01, wildcards) are created, renewed and pushed to the servers automatically. Containers get a domain through a `pocketcloud.domain` label.
-- **Backups** – restic jobs for volumes, folders and per-database dumps to S3/B2, SFTP or a backup server; retention, integrity checks, restore tests, and a backup of the panel itself.
+- **Backups** – restic jobs for volumes, folders, whole stacks and database dumps to S3/B2, SFTP, a rest-server or a local disk, on a schedule or a `pocketcloud.backup` label; retention, integrity checks, restore tests, and a backup of the panel itself.
 - **Overview and alerts** – what needs attention, the command queue, notifications via e-mail, ntfy, Gotify or webhooks.
 - **Diagnostics** – a PocketBase plugin with live gRPC connection health per agent, a message trace, agent self-checks, debug bundles and an optional Prometheus endpoint.
 - **Change audit** – every configuration change from the UI, the API or the PocketBase dashboard with author, source and field-level diff; append-only, hash-chained, exportable, with one-click revert.

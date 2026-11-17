@@ -4,8 +4,12 @@ package testutil
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -20,11 +24,19 @@ import (
 var MasterKey = []byte("0123456789abcdef0123456789abcdef")
 
 // NewApp returns a test app with a fresh data dir and every migration applied.
+// The data dir is a copy of one migrated once per test binary: PocketBase
+// clones the dir it is given and applies only the migrations it lacks, and
+// applying all of them for every test is slow under the race detector, whose
+// cost grows with each migration (#31's made every e2e test ~6 s slower).
 func NewApp(t testing.TB) *tests.TestApp {
 	t.Helper()
 
+	dir, err := migratedDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	app, err := tests.NewTestAppWithConfig(core.BaseAppConfig{
-		DataDir:       t.TempDir(),
+		DataDir:       dir,
 		EncryptionEnv: "pb_test_env",
 	})
 	if err != nil {
@@ -32,6 +44,50 @@ func NewApp(t testing.TB) *tests.TestApp {
 	}
 
 	return app
+}
+
+var migrated struct {
+	once sync.Once
+	dir  string
+	err  error
+}
+
+// migratedPrefix starts the name of a migrated data dir in the system's
+// temporary dir.
+const migratedPrefix = "pocketcloud-migrated-"
+
+// migratedKept is how long a migrated data dir is left for the test binary
+// that made it: nothing ends a test binary that could remove its own, so the
+// next one to make one removes those older than this.
+const migratedKept = time.Hour
+
+// migratedDataDir is a data dir with every migration applied, made on first
+// use, in the system's temporary dir.
+func migratedDataDir() (string, error) {
+	migrated.once.Do(func() {
+		removeOldMigrated(os.TempDir(), time.Now().Add(-migratedKept))
+		dir, err := os.MkdirTemp("", migratedPrefix)
+		if err != nil {
+			migrated.err = err
+			return
+		}
+		app := core.NewBaseApp(core.BaseAppConfig{DataDir: dir, EncryptionEnv: "pb_test_env"})
+		if err := app.Bootstrap(); err != nil {
+			migrated.err = err
+			return
+		}
+		if err := app.RunAllMigrations(); err != nil {
+			migrated.err = err
+			return
+		}
+		// closes the databases, so that what is copied is whole
+		if err := app.ClearBootstrap(); err != nil {
+			migrated.err = err
+			return
+		}
+		migrated.dir = dir
+	})
+	return migrated.dir, migrated.err
 }
 
 // NewUser creates a user with a role and returns it with an auth token.
@@ -160,4 +216,23 @@ func Do(t testing.TB, handler http.Handler, r Request) (int, string) {
 	handler.ServeHTTP(rec, req)
 
 	return rec.Code, rec.Body.String()
+}
+
+// removeOldMigrated removes the migrated data dirs in tmp last changed before
+// before: those of test binaries that ended long ago.
+func removeOldMigrated(tmp string, before time.Time) {
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), migratedPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(before) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
+	}
 }
