@@ -2563,7 +2563,7 @@
         "confirm": "kontroluje znovu se zamčeným repozitářem"
       },
       "checkNow": "Zkontrolovat teď",
-      "checkNowName": "Zkontrolovat integritu cíle {{name}} teď",
+      "checkNowName": "Zkontrolovat teď: integrita cíle {{name}}",
       "starting": "Spouštím…",
       "started": "Kontrola integrity cíle {{name}} je ve frontě.",
       "startFailed": "Kontrola integrity cíle {{name}} nezačala: {{error}}",
@@ -2572,7 +2572,7 @@
       "confirmTextStructure": "restic přes agenta serveru {{server}} zkontroluje strukturu repozitáře a nečte datové balíky. Kontrola nic nezamyká; jen když najde chyby, zkontroluje ho znovu se zamčeným repozitářem.",
       "confirm": "Zkontrolovat",
       "details": "Podrobnosti",
-      "detailsName": "Kontroly integrity cíle {{name}}",
+      "detailsName": "Podrobnosti kontrol integrity cíle {{name}}",
       "drawerTitle": "Integrita cíle {{name}}",
       "fact": {
         "next": "Příští kontrola",

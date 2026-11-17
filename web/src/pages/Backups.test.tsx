@@ -919,9 +919,9 @@ describe("a target's integrity", () => {
     ).toBeInTheDocument();
     // everyone reads the details; only an admin checks
     expect(
-      line.getByRole("button", { name: "Integrity checks of Backblaze B2" }),
+      line.getByRole("button", { name: "Details of the integrity checks of Backblaze B2" }),
     ).toBeInTheDocument();
-    expect(line.queryByRole("button", { name: /^Check the integrity/ })).not.toBeInTheDocument();
+    expect(line.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
   });
 
   it("is said in Czech, in local time", async () => {
@@ -1012,7 +1012,7 @@ describe("a target's integrity", () => {
     const started = vi.spyOn(backupsApi, "check").mockResolvedValue({ check: "c9", command: "x" });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Check the integrity of Backblaze B2 now" }),
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
     );
     const dialog = within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" }));
     expect(
@@ -1034,7 +1034,7 @@ describe("a target's integrity", () => {
       settings: [{ id: "s1", backup_check_schedule: "0 5 * * 0", backup_check_groups: 0 }],
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Check the integrity of Backblaze B2 now" }),
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
     );
     expect(
       within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" })).getByText(
@@ -1052,7 +1052,7 @@ describe("a target's integrity", () => {
       }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Check the integrity of Backblaze B2 now" }),
+      screen.getByRole("button", { name: "Check now: the integrity of Backblaze B2" }),
     );
     fireEvent.click(
       within(screen.getByRole("dialog", { name: "Check Backblaze B2 now?" })).getByRole("button", {
@@ -1084,7 +1084,7 @@ describe("a target's integrity", () => {
     );
 
     const button = (name: string) =>
-      screen.getByRole("button", { name: `Check the integrity of ${name} now` });
+      screen.getByRole("button", { name: `Check now: the integrity of ${name}` });
     expect(button("Pending")).toBeDisabled();
     expect(button("Pending")).toHaveAttribute("title", "Finish adding the target first.");
     expect(button("Offline")).toBeDisabled();
@@ -1131,7 +1131,9 @@ describe("a target's integrity", () => {
       },
     };
 
-    fireEvent.click(screen.getByRole("button", { name: "Integrity checks of Backblaze B2" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Details of the integrity checks of Backblaze B2" }),
+    );
     const details = drawer("Backblaze B2");
     // what comes next
     expect(details.getByText("Next check").nextElementSibling).toHaveTextContent("Sunday 06:00");
@@ -1174,7 +1176,7 @@ describe("a target's integrity", () => {
     expect(output).toHaveAttribute("data-command", "cmd2");
     expect(within(output).getByText("Integrity check of Backblaze B2")).toBeInTheDocument();
     // a viewer neither checks nor stops
-    expect(details.queryByRole("button", { name: /^Check the integrity/ })).not.toBeInTheDocument();
+    expect(details.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
   });
 
   it("shows another check when it is picked", () => {
@@ -1221,7 +1223,7 @@ describe("a target's integrity", () => {
       details.getByText("checking again with the repository locked · 80%"),
     ).toBeInTheDocument();
     // an operator may stop it, but only an admin checks
-    expect(details.queryByRole("button", { name: /^Check the integrity/ })).not.toBeInTheDocument();
+    expect(details.queryByRole("button", { name: /^Check now: / })).not.toBeInTheDocument();
     fireEvent.click(details.getByRole("button", { name: "Stop" }));
     const confirm = within(
       screen.getByRole("dialog", { name: "Stop the integrity check of Backblaze B2?" }),
@@ -1253,7 +1255,7 @@ describe("a target's integrity", () => {
     show("admin", [checked()], {}, "/backups?check=t1");
     expect(
       drawer("Backblaze B2").getByRole("button", {
-        name: "Check the integrity of Backblaze B2 now",
+        name: "Check now: the integrity of Backblaze B2",
       }),
     ).toBeEnabled();
   });

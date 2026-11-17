@@ -2431,7 +2431,7 @@
         "confirm": "checking again with the repository locked"
       },
       "checkNow": "Check now",
-      "checkNowName": "Check the integrity of {{name}} now",
+      "checkNowName": "Check now: the integrity of {{name}}",
       "starting": "Starting…",
       "started": "The integrity check of {{name}} is queued.",
       "startFailed": "The integrity check of {{name}} did not start: {{error}}",
@@ -2440,7 +2440,7 @@
       "confirmTextStructure": "restic checks the repository's structure through the agent of {{server}} and reads no data packs. The check locks nothing; only if it finds errors does it check again with the repository locked.",
       "confirm": "Check now",
       "details": "Details",
-      "detailsName": "Integrity checks of {{name}}",
+      "detailsName": "Details of the integrity checks of {{name}}",
       "drawerTitle": "Integrity of {{name}}",
       "fact": {
         "next": "Next check",
