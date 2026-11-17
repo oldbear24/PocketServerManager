@@ -95,6 +95,33 @@ func TestParseLockedWithoutTheTimeHasNone(t *testing.T) {
 	}
 }
 
+func TestParseLockedReadsAHolderWithoutAUser(t *testing.T) {
+	// restic run as a uid with no passwd entry and no $USER, as
+	// docker run --user 1000 restic/restic, names no user: its time and
+	// storage ID are read all the same
+	stderr := "unable to create lock in backend: repository is already locked exclusively by PID 1 on nas by  (UID 0, GID 0)\n" +
+		"lock was created at 2026-11-10 12:59:47 (12.040098552s ago)\n" +
+		"storage ID 957548b2\n" +
+		"the `unlock` command can be used to remove stale locks\n"
+	lock := ParseLocked(stderr, lockNow)
+	want := Lock{PID: 1, Host: "nas", User: "", Exclusive: true,
+		Created: lockNow.Add(-12040098552 * time.Nanosecond).UTC(), AgeS: 12, StorageID: "957548b2"}
+	if lock == nil || *lock != want {
+		t.Fatalf("lock = %+v, want %+v", lock, want)
+	}
+	if lock.StaleAt().IsZero() {
+		t.Error("a lock without a user has no time to be stale at")
+	}
+	// nor a host: the lock is read, and a run does not keep it
+	lock = ParseLocked(strings.Replace(stderr, "on nas by ", "on  by ", 1), lockNow)
+	if lock == nil || lock.Host != "" || lock.User != "" || lock.StorageID != "957548b2" || lock.AgeS != 12 {
+		t.Errorf("lock without a host = %+v", lock)
+	}
+	if line := ParseLockLine("repository is already locked by PID 9 on nas by  (UID 1000, GID 1000)"); line == nil || *line != (Lock{PID: 9, Host: "nas"}) {
+		t.Errorf("line = %+v", line)
+	}
+}
+
 func TestParseLockedReadsAHolderAheadOfTheReader(t *testing.T) {
 	// a holder whose clock is ahead: restic's "(… ago)" is negative
 	lock := ParseLocked("repository is already locked by PID 3 on nas by root (UID 0, GID 0)\nlock was created at 2026-11-10 13:05:00 (-4m30s ago)\n", lockNow)
