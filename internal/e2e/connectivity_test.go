@@ -560,7 +560,7 @@ func TestHealthOnlyAfterTheConnection(t *testing.T) {
 
 // TestStoppingAnAgentMarksTheHostOffline covers the offline detection of #11.
 func TestStoppingAnAgentMarksTheHostOffline(t *testing.T) {
-	h := newHarness(t, func(server *gateway.Server) { server.OfflineAfter = 300 * time.Millisecond })
+	h := newHarness(t, func(server *gateway.Server) { server.OfflineAfter = 300 * time.Millisecond; server.StartGrace = 0 })
 
 	running, host := h.enrolled("offline")
 

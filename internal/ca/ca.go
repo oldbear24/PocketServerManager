@@ -113,7 +113,7 @@ func OpenWith(app core.App, box *secrets.Box, serverNames []string, options Opti
 	var record *core.Record
 	switch {
 	case len(records) > 1:
-		return nil, refusal("The database holds two internal CAs: restore it whole, never merge.")
+		return nil, Refusal("The database holds two internal CAs: restore it whole, never merge.")
 	case len(records) == 1:
 		record = records[0]
 		if options.ExpectPin != "" {
@@ -713,12 +713,12 @@ func normalizeNames(names []string) []string {
 // have (#32).
 const EnvExpectPin = "POCKETCLOUD_EXPECT_CA_PIN"
 
-// refusal is a sentence that refuses to open the CA, as the panel prints it.
-type refusal string
+// Refusal is a sentence that refuses to open the CA, as the panel prints it.
+type Refusal string
 
-func (r refusal) Error() string { return string(r) }
+func (r Refusal) Error() string { return string(r) }
 
-func refusalf(format string, args ...any) error { return refusal(fmt.Sprintf(format, args...)) }
+func refusalf(format string, args ...any) error { return Refusal(fmt.Sprintf(format, args...)) }
 
 // pinOfRecord is the pin of an internal_ca record's root, read without its
 // keys.

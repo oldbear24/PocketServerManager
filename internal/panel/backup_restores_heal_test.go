@@ -105,6 +105,8 @@ func TestRestoresThePanelMissedAreSettledAtItsStart(t *testing.T) {
 	if err := p.loadMasterKey(); err != nil {
 		t.Fatal(err)
 	}
+	// the panel that was down had its CA (#32)
+	caOfAnEarlierStart(t, app)
 	f := &jobFixture{t: t, p: p, app: app, host: testutil.NewHost(t, app, "node-1")}
 	f.target = f.addTarget("b2", backup.KindS3, f.host, backup.Config{Endpoint: "https://s3.example.com", Bucket: "backups"},
 		backup.Credentials{AccessKeyID: "key-id", SecretAccessKey: "the-secret-key"})

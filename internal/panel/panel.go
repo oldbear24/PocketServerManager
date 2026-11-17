@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,11 @@ import (
 
 const eventRetention = 30 * 24 * time.Hour
 
+// offlineGrace is how long after its start the gateway marks no server
+// offline: agents back off for up to a minute, with jitter, while the panel
+// is down (#32).
+const offlineGrace = 90 * time.Second
+
 // Panel holds the components of a running panel.
 type Panel struct {
 	App    core.App
@@ -47,7 +53,14 @@ type Panel struct {
 	// https is the panel's own HTTPS (#63)
 	https httpsState
 
-	Box       *secrets.Box
+	Box *secrets.Box
+	// masterKey is the master key Box was made from, which the recovery
+	// kit holds (#32).
+	masterKey []byte
+	// serveLock is the data directory's serve lock, held while the panel
+	// serves (#32).
+	serveLock *os.File
+
 	Audit     *audit.Writer
 	Authority *ca.Authority
 	// authority is the same CA, for the work that may start before the
@@ -217,7 +230,15 @@ func (p *Panel) Register() {
 		// comes from the setup link, and a superuser from the command line.
 		e.InstallerFunc = nil
 
+		// one panel per pb_data (#32)
+		if err := p.takeServeLock(); err != nil {
+			return err
+		}
 		if err := p.loadMasterKey(); err != nil {
+			return err
+		}
+		// the key that sealed the database, before anything is written
+		if err := p.checkKeyID(); err != nil {
 			return err
 		}
 
@@ -292,6 +313,7 @@ func (p *Panel) Register() {
 				p.Log.Error("failed to close the metrics database", "error", err)
 			}
 		}
+		p.releaseServeLock()
 		return e.Next()
 	})
 
@@ -306,9 +328,15 @@ func (p *Panel) Register() {
 }
 
 // startGateway opens the internal CA and starts the gRPC gateway for agents.
+// The first start after `panel recover` finishes the restore before the
+// gateway listens, so nothing stale reaches a server (#32).
 func (p *Panel) startGateway() error {
-	authority, err := ca.Open(p.App, p.Box, p.serverNames())
+	authority, err := p.openAuthority()
 	if err != nil {
+		// a refusal says itself what is wrong
+		if refused := ca.Refusal(""); errors.As(err, &refused) {
+			return err
+		}
 		return fmt.Errorf("the internal CA: %w", err)
 	}
 	p.Authority = authority
@@ -335,6 +363,8 @@ func (p *Panel) startGateway() error {
 	p.Gateway.Fetch = p.fetchArtifact
 	// a download of a snapshot goes on to the browser as it arrives (#30)
 	p.Gateway.LiveArtifacts = map[string]gateway.LiveArtifactHandler{artifactBackupDownload: p.serveDownload}
+	// agents still backing off are not offline yet (#32)
+	p.Gateway.StartGrace = offlineGrace
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)
@@ -365,7 +395,7 @@ func (p *Panel) serverNames() []string {
 // loadMasterKey refuses to start without a master key: every secret stored by
 // the panel depends on it.
 func (p *Panel) loadMasterKey() error {
-	if p.Box != nil {
+	if p.Box != nil && p.masterKey != nil {
 		return nil
 	}
 
@@ -386,6 +416,7 @@ func (p *Panel) loadMasterKey() error {
 		return err
 	}
 	p.Box = box
+	p.masterKey = key
 
 	return nil
 }
