@@ -40,8 +40,8 @@ import (
 // scheduled check comes first. Errors that the second pass confirmed raise
 // the critical alert backup_check_failed; a check that could not tell, or did
 // not complete, raises the warning backup_check_unverified, as does a target
-// that no check has verified for twice the time between two checks and a
-// day. A check that found nothing resolves both.
+// that no check has verified for twice the longest time between two checks
+// and a day. A check that found nothing resolves both.
 
 const (
 	// checkQueue is how long a check may wait for its server, and for the
@@ -59,7 +59,7 @@ const (
 	// downloads bills.
 	minCheckGap = 23 * time.Hour
 	// checkGapSlots is how many slots of a schedule are looked at for the
-	// least time between two of them.
+	// least and the most time between two of them.
 	checkGapSlots = 14
 	// checkRetryBatch is how many due retries of checks a pass starts.
 	checkRetryBatch = 50
@@ -147,22 +147,38 @@ func checkScheduleText(schedule string, now time.Time) string {
 	if !stacks.ValidSchedule(schedule) || rule == nil {
 		return checkScheduleProblem
 	}
-	at := rule.next(now)
-	if at.IsZero() {
+	if rule.next(now).IsZero() {
 		return checkNeverProblem
 	}
 	// not only the next two: 0 0,23 * * * is 23 hours, then one
+	if least, _ := checkGaps(rule, now); least > 0 && least < minCheckGap {
+		return checkOftenProblem
+	}
+	return ""
+}
+
+// checkGaps are the least and the most time between two slots of a
+// schedule, over checkGapSlots slots from the first after now: an uneven
+// schedule, as 0 5 * * 0,6, has both a short gap and a long one. Both are
+// zero for a schedule with fewer than two slots within a year.
+func checkGaps(rule cronRule, now time.Time) (least, most time.Duration) {
+	at := rule.next(now)
+	if at.IsZero() {
+		return 0, 0
+	}
 	for range checkGapSlots {
 		next := rule.next(at)
 		if next.IsZero() {
 			break
 		}
-		if next.Sub(at) < minCheckGap {
-			return checkOftenProblem
+		gap := next.Sub(at)
+		if least == 0 || gap < least {
+			least = gap
 		}
+		most = max(most, gap)
 		at = next
 	}
-	return ""
+	return least, most
 }
 
 // checkGroupsText checks the groups of the checks: a whole number from 0 to
@@ -1041,21 +1057,21 @@ func checksBegan(app core.App) time.Time {
 }
 
 // WatchChecks raises backup_check_unverified for every target that no check
-// has verified for twice the time between two slots of the schedule and a
-// day, as when its checks never complete: since its newest check that
+// has verified for twice the longest time between two slots of the schedule
+// and a day, as when its checks never complete: since its newest check that
 // completed, or since it was added, or since the panel began to check, for a
-// target it had before. The panel calls it hourly; it does nothing while the
-// checks are off, and a target whose errors were confirmed has its alert
-// already.
+// target it had before. The longest gap, not the next one, so that the limit
+// does not depend on the weekday the watchdog runs: Saturdays and Sundays
+// are 6 days apart once a week. The panel calls it hourly; it does nothing
+// while the checks are off, and a target whose errors were confirmed has its
+// alert already.
 func (p *Panel) WatchChecks(now time.Time) {
 	schedule, _ := p.checkSettings()
-	rule := parseCronRule(schedule)
-	first := rule.next(now)
-	second := rule.next(first)
-	if first.IsZero() || second.IsZero() {
+	_, most := checkGaps(parseCronRule(schedule), now)
+	if most == 0 {
 		return
 	}
-	limit := 2*second.Sub(first) + 24*time.Hour
+	limit := 2*most + 24*time.Hour
 	targets, err := p.App.FindAllRecords(schema.BackupTargets)
 	if err != nil {
 		p.Log.Error("failed to read the backup targets", "error", err)
