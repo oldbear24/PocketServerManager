@@ -409,6 +409,11 @@ func (p *Panel) handleRemoveTarget(e *core.RequestEvent) error {
 	if p.restoreOpenFor("target={:target}", dbx.Params{"target": target.Id}) {
 		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
 	}
+	// a check of it reads it with its secrets, and its record goes with it
+	// (#31)
+	if checkOpenIn(e.App, target.Id) {
+		return e.Error(http.StatusConflict, "An integrity check of it is under way: stop it first, or wait.", nil)
+	}
 	// a target that jobs back up to stays: they would fail at every run
 	jobs, err := e.App.FindRecordsByFilter(schema.BackupJobs, "targets ~ {:target}", "name", 0, 0, dbx.Params{"target": target.Id})
 	if err != nil {

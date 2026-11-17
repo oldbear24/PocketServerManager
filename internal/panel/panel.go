@@ -119,6 +119,8 @@ type Panel struct {
 	// (#31): PocketBase's cron starts a pass every minute whether the one
 	// before has ended or not.
 	backupPass sync.Mutex
+	// checkPass holds a pass of the integrity checks' scheduler (#31).
+	checkPass sync.Mutex
 
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
@@ -206,6 +208,7 @@ func (p *Panel) Register() {
 	p.registerBackups()
 	p.registerBackupJobs()
 	p.registerBackupRestores()
+	p.registerBackupChecks()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -257,6 +260,7 @@ func (p *Panel) Register() {
 		p.bindBackupRoutes(group)
 		p.bindBackupJobRoutes(group)
 		p.bindBackupRestoreRoutes(group)
+		p.bindBackupCheckRoutes(group)
 		// setups of new sites that a restart interrupted go on
 		p.later.after(edgeSettle, p.resumeProvisions)
 		// restores whose end the panel missed while it was down are settled,
