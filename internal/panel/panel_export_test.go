@@ -472,7 +472,38 @@ func TestTheSpoolIsPrivateAndThePlainCopyGone(t *testing.T) {
 	if after := f.spool(); !slices.Equal(after, names) {
 		t.Errorf("the spool holds %v after a copy failed", after)
 	}
+
+	// a stored file that cannot be read fails the copy as it is written
+	if _, err := f.app.DB().NewQuery("UPDATE _pc_panel SET key_id = '' WHERE id = 1").Execute(); err != nil {
+		t.Fatal(err)
+	}
+	f.commandWithOutput(f.idle(), []byte("an output"))
+	before := openStored
+	openStored = func(path string) (storedSource, error) {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		// the part of the copy is there by now
+		if parts, _ := filepath.Glob(filepath.Join(spool, "*.pcpb.part")); len(parts) != 1 {
+			t.Errorf("the copy is written to %v", parts)
+		}
+		return brokenFile{file}, nil
+	}
+	t.Cleanup(func() { openStored = before })
+	_, err = f.p.fetchArtifact(f.host.Id, backup.PanelExportID(late.Id))
+	if err == nil || !strings.Contains(err.Error(), "the disk failed") {
+		t.Errorf("a file that cannot be read: %v", err)
+	}
+	if after := f.spool(); !slices.Equal(after, names) {
+		t.Errorf("the spool holds %v after a copy failed as it was written", after)
+	}
 }
+
+// brokenFile is a file whose reads fail.
+type brokenFile struct{ *os.File }
+
+func (brokenFile) ReadAt([]byte, int64) (int, error) { return 0, errors.New("the disk failed") }
 
 // TestADamagedCopyFailsWithItsSentence (#32): a copy of the database that
 // SQLite finds damaged is no backup.
@@ -498,8 +529,15 @@ func TestADamagedCopyFailsWithItsSentence(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readExportCopy(path); err == nil || !strings.HasPrefix(err.Error(), "the copy of the panel's database is damaged: ") {
+	if _, err := readExportCopy(path); err == nil || !strings.HasPrefix(err.Error(), "the copy of the panel's database is damaged: *** in database main ***") {
 		t.Errorf("a damaged copy: %v", err)
+	}
+	// SQLite does not even read it as a database
+	if err := os.WriteFile(path, bytes.Repeat([]byte("not a database "), 512), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readExportCopy(path); err == nil || !strings.HasPrefix(err.Error(), "the copy of the panel's database is damaged: file is not a database") {
+		t.Errorf("no database: %v", err)
 	}
 }
 
@@ -619,6 +657,10 @@ func TestTheSpoolIsSwept(t *testing.T) {
 	slices.Sort(want)
 	if got := f.spool(); !slices.Equal(got, want) {
 		t.Errorf("after the first sweep %v, not %v", got, want)
+	}
+	// and both still serve: the new one the runs of its minute
+	if copies := f.p.exports.jobs[f.job.Id]; len(copies) != 2 || copies[0] != young || copies[1] != old {
+		t.Errorf("%d copies kept", len(copies))
 	}
 
 	// later, the run ended: both copies and the young leftover go, the

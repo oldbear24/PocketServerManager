@@ -263,7 +263,6 @@ func (p *Panel) buildPanelExport(job, run *core.Record, base string) (_ *panelEx
 		}
 		if err != nil {
 			_ = os.Remove(part)
-			_ = os.Remove(final)
 		}
 	}()
 
@@ -573,9 +572,18 @@ func writeExport(final, part, plain string, master []byte, manifest panelbackup.
 	return counted.n, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
+// storedSource is a stored file as a copy reads it.
+type storedSource interface {
+	io.ReaderAt
+	io.Closer
+}
+
+// openStored opens a stored file for a copy; tests replace it.
+var openStored = func(path string) (storedSource, error) { return os.Open(path) }
+
 // writeStoredFile writes one stored file into a copy.
 func writeStoredFile(w *panelbackup.Writer, file storedFile) error {
-	src, err := os.Open(file.path)
+	src, err := openStored(file.path)
 	if err != nil {
 		return fmt.Errorf("the stored file %s: %w", file.name, err)
 	}
