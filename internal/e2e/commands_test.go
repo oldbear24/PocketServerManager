@@ -473,6 +473,13 @@ func TestThePanelRunsItsOwnSteps(t *testing.T) {
 		t.Errorf("a settled step was settled again: %v", err)
 	}
 
+	// the step's end moves the flow on in the background, as the panel's
+	// hook does: here to a site that is gone, which pauses it with a deadline
+	// of its own, so the deadline below is set once that is done
+	h.waitFor("the flow to move on from its settled step", func() bool {
+		return strings.Contains(string(mustJSON(h.command(parent.Id).Get("progress"))), "site.dns")
+	})
+
 	// a flow that waits moves its deadline; one past it times out
 	if err := h.panel.Commands.Report(parent.Id, map[string]any{"step": "site.create"}, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
