@@ -222,6 +222,11 @@ func TestEveryBackupJobIsNamedAfterItsCommand(t *testing.T) {
 		Path: "/volumes/app_data/a.txt", RestoreId: "r1", FileName: "a.txt", JobTag: testJobTag}), &Reporter{}); err != nil {
 		t.Fatal(err)
 	}
+	// both passes of a check that finds errors
+	t.Setenv("FAKE_RESTIC_CHECK", "errors")
+	if _, err := h.handleBackupCheck(ctx, commandOf("kcheck000000001", &agentv1.BackupCheck{Repository: h.repo, ReadDataSubset: "1/20"}), &Reporter{}); err == nil {
+		t.Fatal("a check of a damaged pack passed")
+	}
 
 	h.mu.Lock()
 	jobs := slices.Clone(h.jobs)
@@ -238,7 +243,7 @@ func TestEveryBackupJobIsNamedAfterItsCommand(t *testing.T) {
 			named = append(named, id)
 		}
 	}
-	if want := []string{"kinit0000000001", "krun00000000001", "klist0000000001", "kbrowse00000001", "kpreview0000001", "krestore0000001", "kdump0000000001"}; !slices.Equal(named, want) {
+	if want := []string{"kinit0000000001", "krun00000000001", "klist0000000001", "kbrowse00000001", "kpreview0000001", "krestore0000001", "kdump0000000001", "kcheck000000001", "kcheck000000001"}; !slices.Equal(named, want) {
 		t.Errorf("jobs named after their commands: %q, want %q", named, want)
 	}
 }

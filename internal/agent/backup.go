@@ -60,6 +60,7 @@ const (
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
 	a.Executor.Handle("backup.run", a.handleBackupRun)
+	a.Executor.Handle("backup.check", a.handleBackupCheck)
 	a.registerRestoreHandlers()
 }
 
