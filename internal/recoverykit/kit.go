@@ -203,7 +203,7 @@ func (h Header) check() error {
 	switch {
 	case !kitIDForm.MatchString(h.Kit):
 		return notAKit("its id %.40q is not KIT-XXXX-XXXX", h.Kit)
-	case h.Created.Unix() <= 0 || h.Created.Nanosecond() != 0:
+	case h.Created.Unix() <= 0:
 		return notAKit("it was made at %s", h.Created)
 	case !keyIDForm.MatchString(h.KeyID):
 		return notAKit("its key id %.40q is not 32 hex characters", h.KeyID)

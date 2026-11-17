@@ -183,6 +183,11 @@ func TestARoundTripOpensWhatWasSealed(t *testing.T) {
 	if _, err := Seal(headerOf(otherKey, "KIT-7Q2M-9XHC"), payloadOf(vectorKey), passphrase); err == nil {
 		t.Error("a header of another key was sealed")
 	}
+	large := payloadOf(vectorKey)
+	large.Env["POCKETCLOUD_PHP_IMAGE"] = strings.Repeat("x", MaxSize)
+	if _, err := Seal(headerOf(vectorKey, "KIT-7Q2M-9XHC"), large, passphrase); err == nil {
+		t.Error("a kit of more than 64 KiB was sealed")
+	}
 }
 
 // TestEveryHeaderLineIsSealed: changing any header line, to a value of its
@@ -237,35 +242,38 @@ func TestTheKitsFormIsStrict(t *testing.T) {
 		return strings.Join(f(slices.Clone(lines)), "\n")
 	}
 	for name, kit := range map[string]string{
-		"an unknown line":      edit(func(l []string) []string { return slices.Insert(l, begin+3, "Comment: hello") }),
-		"a line twice":         edit(func(l []string) []string { return slices.Insert(l, begin+3, l[begin+3]) }),
-		"two lines swapped":    edit(func(l []string) []string { l[begin+1], l[begin+2] = l[begin+2], l[begin+1]; return l }),
-		"a line missing":       edit(func(l []string) []string { return slices.Delete(l, begin+4, begin+5) }),
-		"a key in lower case":  edit(func(l []string) []string { l[begin+1] = strings.ToLower(l[begin+1][:3]) + l[begin+1][3:]; return l }),
-		"a space more":         edit(func(l []string) []string { l[begin+3] = strings.Replace(l[begin+3], ": ", ":  ", 1); return l }),
-		"a space at the end":   edit(func(l []string) []string { l[begin+6] += " "; return l }),
-		"no BEGIN":             strings.Replace(text, Begin, "-----BEGIN PGP MESSAGE-----", 1),
-		"no END":               strings.Replace(text, End, "", 1),
-		"more after END":       text + "Kit: KIT-0000-0000\n",
-		"another kit after it": text + text,
-		"no blank line":        edit(func(l []string) []string { return slices.Delete(l, begin+9, begin+10) }),
-		"no sealed part":       edit(func(l []string) []string { return append(l[:begin+10], End, "") }),
-		"no base64":            edit(func(l []string) []string { l[begin+10] = "!!" + l[begin+10][2:]; return l }),
-		"too short":            edit(func(l []string) []string { return append(l[:begin+10], "QUJD", End, "") }),
-		"a kit id of 0 and 1":  strings.Replace(text, "KIT-7Q2M-9XHC", "KIT-7Q2M-9XHI", 1),
-		"a kit id in lower":    strings.Replace(text, "KIT-7Q2M-9XHC", "KIT-7q2m-9xhc", 1),
-		"a time with a zone":   strings.Replace(text, "2026-11-17T10:02:00Z", "2026-11-17T11:02:00+01:00", 1),
-		"a time with nanos":    strings.Replace(text, "2026-11-17T10:02:00Z", "2026-11-17T10:02:00.5Z", 1),
-		"a key id in upper":    strings.Replace(text, secrets.KeyID(vectorKey), strings.ToUpper(secrets.KeyID(vectorKey)), 1),
-		"a short key id":       strings.Replace(text, secrets.KeyID(vectorKey), secrets.KeyID(vectorKey)[:30], 1),
-		"a pin of md5":         strings.Replace(text, "sha256:"+strings.Repeat("5d", 32), "md5:"+strings.Repeat("5d", 16), 1),
-		"an empty version":     strings.Replace(text, "Panel-Version: 0.32.0", "Panel-Version: ", 1),
-		"a KDF of scrypt":      strings.Replace(text, "argon2id t=3 m=65536 p=4", "scrypt N=32768 r=8 p=1", 1),
-		"a KDF with a zero":    strings.Replace(text, "argon2id t=3 m=65536 p=4", "argon2id t=03 m=65536 p=4", 1),
-		"too large":            text + strings.Repeat("\n", MaxSize),
-		"not UTF-8":            strings.Replace(text, "Panel: http", "Panel: \xffhttp", 1),
-		"nothing":              "",
-		"a PocketCloud backup": "PCPB\x01\x00\x00\x00",
+		"an unknown line":             edit(func(l []string) []string { return slices.Insert(l, begin+3, "Comment: hello") }),
+		"a line twice":                edit(func(l []string) []string { return slices.Insert(l, begin+3, l[begin+3]) }),
+		"two lines swapped":           edit(func(l []string) []string { l[begin+1], l[begin+2] = l[begin+2], l[begin+1]; return l }),
+		"a line missing":              edit(func(l []string) []string { return slices.Delete(l, begin+4, begin+5) }),
+		"a key in lower case":         edit(func(l []string) []string { l[begin+1] = strings.ToLower(l[begin+1][:3]) + l[begin+1][3:]; return l }),
+		"a space more":                edit(func(l []string) []string { l[begin+3] = strings.Replace(l[begin+3], ": ", ":  ", 1); return l }),
+		"a space at the end":          edit(func(l []string) []string { l[begin+6] += " "; return l }),
+		"no BEGIN":                    strings.Replace(text, Begin, "-----BEGIN PGP MESSAGE-----", 1),
+		"no END":                      strings.Replace(text, End, "", 1),
+		"more after END":              text + "Kit: KIT-0000-0000\n",
+		"another kit after it":        text + text,
+		"no blank line":               edit(func(l []string) []string { return slices.Delete(l, begin+9, begin+10) }),
+		"no sealed part":              edit(func(l []string) []string { return append(l[:begin+10], End, "") }),
+		"no base64":                   edit(func(l []string) []string { l[begin+10] = "!!" + l[begin+10][2:]; return l }),
+		"too short":                   edit(func(l []string) []string { return append(l[:begin+10], "QUJD", End, "") }),
+		"a kit id of 0 and 1":         strings.Replace(text, "KIT-7Q2M-9XHC", "KIT-7Q2M-9XHI", 1),
+		"a kit id in lower":           strings.Replace(text, "KIT-7Q2M-9XHC", "KIT-7q2m-9xhc", 1),
+		"a time with a zone":          strings.Replace(text, "2026-11-17T10:02:00Z", "2026-11-17T11:02:00+01:00", 1),
+		"a time with nanos":           strings.Replace(text, "2026-11-17T10:02:00Z", "2026-11-17T10:02:00.5Z", 1),
+		"a key id in upper":           strings.Replace(text, secrets.KeyID(vectorKey), strings.ToUpper(secrets.KeyID(vectorKey)), 1),
+		"a short key id":              strings.Replace(text, secrets.KeyID(vectorKey), secrets.KeyID(vectorKey)[:30], 1),
+		"a pin of md5":                strings.Replace(text, "sha256:"+strings.Repeat("5d", 32), "md5:"+strings.Repeat("5d", 16), 1),
+		"an empty version":            strings.Replace(text, "Panel-Version: 0.32.0", "Panel-Version: ", 1),
+		"a KDF of scrypt":             strings.Replace(text, "argon2id t=3 m=65536 p=4", "scrypt N=32768 r=8 p=1", 1),
+		"a KDF with a zero":           strings.Replace(text, "argon2id t=3 m=65536 p=4", "argon2id t=03 m=65536 p=4", 1),
+		"too large":                   text + strings.Repeat("\n", MaxSize),
+		"not UTF-8":                   strings.Replace(text, "This file", "\xffThis file", 1),
+		"another key's name":          strings.Replace(text, "\nPanel: ", "\nServer: ", 1),
+		"a line before the blank one": edit(func(l []string) []string { return slices.Insert(l, begin+9, "QUJD") }),
+		"made at 1970":                strings.Replace(text, "2026-11-17T10:02:00Z", "1970-01-01T00:00:00Z", 1),
+		"nothing":                     "",
+		"a PocketCloud backup":        "PCPB\x01\x00\x00\x00",
 	} {
 		if _, err := ParseHeader(kit); !errors.Is(err, ErrNotAKit) {
 			t.Errorf("%s: ParseHeader gives %v", name, err)
@@ -276,6 +284,29 @@ func TestTheKitsFormIsStrict(t *testing.T) {
 	}
 	if runs.Load() != 0 {
 		t.Errorf("argon2 ran %d times for kits that are none", runs.Load())
+	}
+
+	// nor does Seal write a header this package would not read
+	for name, change := range map[string]func(*Header){
+		"a kit id of its own":       func(h *Header) { h.Kit = "KIT-1" },
+		"made at 1970":              func(h *Header) { h.Created = time.Unix(0, 0) },
+		"an empty panel":            func(h *Header) { h.Panel = "" },
+		"a panel of 301 bytes":      func(h *Header) { h.Panel = "http://" + strings.Repeat("p", 294) },
+		"a panel not in UTF-8":      func(h *Header) { h.Panel = "http://\xff" },
+		"a version with a space":    func(h *Header) { h.PanelVersion = "0.32.0 " },
+		"an image of two lines":     func(h *Header) { h.AgentImage = "agent\nKit: KIT-0000-0000" },
+		"an image with a tab":       func(h *Header) { h.AgentImage = "agent\t1" },
+		"a key id in upper case":    func(h *Header) { h.KeyID = strings.ToUpper(h.KeyID) },
+		"a pin without its sha256:": func(h *Header) { h.CAPin = strings.Repeat("5d", 32) },
+	} {
+		h := headerOf(vectorKey, "KIT-7Q2M-9XHC")
+		change(&h)
+		if _, err := Seal(h, payloadOf(vectorKey), passphrase); !errors.Is(err, ErrNotAKit) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if runs.Load() != 0 {
+		t.Errorf("argon2 ran %d times for headers that are none", runs.Load())
 	}
 }
 
