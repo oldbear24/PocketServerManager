@@ -3587,3 +3587,32 @@ a.job-name {
   white-space: nowrap;
   overflow-wrap: normal;
 }
+
+/* Settings › Recovery kit (#32) */
+.recovery {
+  display: grid;
+  gap: 14px;
+}
+
+.recovery-section {
+  display: grid;
+  gap: 8px;
+}
+
+.recovery-section .drawer-heading {
+  margin-bottom: 0;
+}
+
+.recovery-addresses {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.recovery-generated {
+  display: grid;
+  gap: 6px;
+}
