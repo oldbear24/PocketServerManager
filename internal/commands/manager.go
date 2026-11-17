@@ -96,6 +96,12 @@ type Manager struct {
 	outputMu sync.Mutex
 	outputs  map[string]*commandOutput
 
+	// ending holds a lock per command while it ends: its final answer may
+	// come twice at once, as over a stream that dropped and over the one
+	// that replaced it, or in its agent's list of finished commands, and a
+	// command ends once, its finishers run once
+	ending sync.Map
+
 	// ReapInterval overrides how often timeouts are checked, in tests.
 	ReapInterval time.Duration
 }
@@ -970,8 +976,38 @@ func progressOf(progress *agentv1.CommandProgress) map[string]any {
 	return stored
 }
 
-// finish moves a command to a final state and stores its output.
+// finish moves a command to a final state and stores its output, unless it
+// ended already.
 func (m *Manager) finish(record *core.Record, status, message string, result map[string]any) {
+	if !m.end(record, status, message, result) {
+		return
+	}
+
+	for _, callback := range m.finishers[record.GetString("type")] {
+		callback(record)
+	}
+
+	m.finishParent(record)
+
+	// a finished command may unblock the next one of the same resource
+	m.Kick(record.GetString("host"))
+}
+
+// end saves a command's final state and its output, and tells whether it
+// did: a command another answer ended meanwhile is left as it ended.
+func (m *Manager) end(record *core.Record, status, message string, result map[string]any) bool {
+	lock, _ := m.ending.LoadOrStore(record.Id, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer func() {
+		mu.Unlock()
+		// a later answer finds the final state saved, and needs no lock
+		m.ending.CompareAndDelete(record.Id, mu)
+	}()
+	if fresh, err := m.app.FindRecordById(schema.Commands, record.Id); err == nil && isFinal(fresh.GetString("status")) {
+		return false
+	}
+
 	record.Set("status", status)
 	record.Set("finished_at", types.NowDateTime())
 	if message != "" {
@@ -995,17 +1031,9 @@ func (m *Manager) finish(record *core.Record, status, message string, result map
 
 	if err := m.app.Save(record); err != nil {
 		m.Log.Error("failed to finish a command", "command", record.Id, "status", status, "error", err)
-		return
+		return false
 	}
-
-	for _, callback := range m.finishers[record.GetString("type")] {
-		callback(record)
-	}
-
-	m.finishParent(record)
-
-	// a finished command may unblock the next one of the same resource
-	m.Kick(record.GetString("host"))
+	return true
 }
 
 // finishParent settles a parent command once all of its children have finished.

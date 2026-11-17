@@ -35,15 +35,18 @@ func attachOutput(w http.ResponseWriter, r *http.Request, out *output) {
 		return
 	}
 	defer conn.Close()
-	if _, err := fmt.Fprint(buffered, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"); err != nil {
-		return
-	}
-	if err := buffered.Flush(); err != nil {
-		return
-	}
 	client := &outputClient{w: conn, gone: make(chan struct{})}
-	if !out.attach(client) {
-		// the process has ended already
+	// the client is attached as the upgrade is answered, under the output's
+	// lock: a client that starts the container once it has the answer gets
+	// all it prints, and no frame goes out before the answer
+	attached, err := out.attachAnswering(client, func() error {
+		if _, err := fmt.Fprint(buffered, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"); err != nil {
+			return err
+		}
+		return buffered.Flush()
+	})
+	if err != nil || !attached {
+		// the connection failed, or the process has ended already
 		return
 	}
 	defer out.detach(client)
@@ -76,15 +79,19 @@ type outputClient struct {
 
 func newOutput() *output { return &output{ended: make(chan struct{})} }
 
-// attach adds a client, unless the output has ended.
-func (o *output) attach(client *outputClient) bool {
+// attachAnswering adds a client once answer, which answers it, succeeded,
+// unless the output has ended; nothing is written to the clients meanwhile.
+func (o *output) attachAnswering(client *outputClient, answer func() error) (bool, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.done {
-		return false
+		return false, nil
+	}
+	if err := answer(); err != nil {
+		return false, err
 	}
 	o.clients = append(o.clients, client)
-	return true
+	return true, nil
 }
 
 func (o *output) detach(client *outputClient) {
