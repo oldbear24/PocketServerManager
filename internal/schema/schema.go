@@ -46,7 +46,11 @@ const (
 	// BackupChecks are the integrity checks of a target's repository: when,
 	// what restic found, and the retries (#31). Restore tests (#53) are a
 	// kind of check.
-	BackupChecks   = "backup_checks"
+	BackupChecks = "backup_checks"
+	// RecoveryKits are the recovery kits the panel sealed, and who checked
+	// them (#32): never the kit itself, only its id, its key id and the
+	// digests of what it holds. Only panel routes write them.
+	RecoveryKits   = "recovery_kits"
 	DNSRecords     = "dns_records"
 	ACMEAccounts   = "acme_accounts"
 	Sites          = "sites"
@@ -89,6 +93,10 @@ const (
 	SourceStack = "stack"
 	// SourceDump is a database dump made in a stack's service container.
 	SourceDump = "db_dump"
+	// SourcePanel is the panel itself, its database and stored files,
+	// encrypted on the panel (#32). The job's server is the carrier, whose
+	// agent uploads the encrypted copy; at most one job has it.
+	SourcePanel = "panel"
 )
 
 // Database engines whose dumps a backup job makes (#29).
@@ -112,6 +120,10 @@ const (
 	// RunRetry is a run or a check the panel started again after one that
 	// failed (#31): its retry_of names the one before it.
 	RunRetry = "retry"
+	// RunChange is a run of the panel's backup job that the panel started
+	// 10 minutes after a server was enrolled or removed or a certificate
+	// revoked (#32), so that the backup knows it.
+	RunChange = "change"
 )
 
 // States of a backup run (#29).
@@ -246,6 +258,13 @@ const (
 	// DownloadFile is one file of the snapshot, as it is.
 	DownloadFile = "file"
 )
+
+// PanelTable is a plain table of one row, not a collection, so the API and the
+// dashboard do not see it, as audit.HeadTable is (#32). It travels inside
+// data.db with the panel's backup, and holds the id of the master key that
+// sealed the database (secrets.KeyID), the pin of its internal CA, and when
+// and from what the panel was last restored.
+const PanelTable = "_pc_panel"
 
 // Reserved names of collections that land with later features. They are listed
 // here so that nothing else takes them; see docs/data-model.md for their fields.
@@ -496,6 +515,8 @@ var Audited = []AuditedCollection{
 		"cert_serial", "cert_prev_serial", "cert_expires_at", "hostname",
 		"edge_digest", "edge_revision", "edge_applied_digest", "edge_applied_revision",
 		"edge_running", "edge_error", "edge_requests_per_s", "edge_caddy_version",
+		// the address its agent dials, as its stream said (#32)
+		"panel_address",
 	}},
 	{Name: Stacks, Label: "name", Host: "host", Revision: "current_revision", Ignore: []string{"status", "current_revision", "deployed_revision", "deployed_at", "label_problems", "labels_at"}},
 	{Name: Settings, Label: "public_url"},

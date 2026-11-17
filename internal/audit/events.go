@@ -34,6 +34,17 @@ const (
 	// ActionBackupDownload records a download of a snapshot someone
 	// redeemed: the data leaves PocketCloud (#30).
 	ActionBackupDownload = "backup_download"
+	// ActionRecoveryKitExported records a recovery kit an admin downloaded:
+	// the master key left the panel, sealed with a passphrase (#32). Its
+	// details name the kit, the key id, the panel's job, its targets and
+	// the addresses, never the kit, its passphrase or a secret.
+	ActionRecoveryKitExported = "recovery_kit_exported"
+	// ActionRecoveryKitChecked records a kit an admin uploaded back and the
+	// panel opened with its passphrase (#32).
+	ActionRecoveryKitChecked = "recovery_kit_checked"
+	// ActionPanelRestored records the first start of a panel restored from
+	// a backup (#32): where its log resumes, what the backup did not know.
+	ActionPanelRestored = "panel_restored"
 )
 
 var sensitiveSetting = regexp.MustCompile(`(?i)password|secret|token|key`)
