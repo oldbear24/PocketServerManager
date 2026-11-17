@@ -400,6 +400,10 @@ func TestTheTrailerListsEverySegment(t *testing.T) {
 			raw, _ := json.Marshal(trailer{Segments: e})
 			return raw
 		}, "the trailer lists segment 2"},
+		"one fewer": {func(e []TrailerEntry) []byte {
+			raw, _ := json.Marshal(trailer{Segments: e[:1]})
+			return raw
+		}, "the trailer lists 1 segments, the backup holds 2"},
 		"one more": {func(e []TrailerEntry) []byte {
 			raw, _ := json.Marshal(trailer{Segments: append(slices.Clone(e), e[1])})
 			return raw
