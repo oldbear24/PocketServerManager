@@ -921,6 +921,60 @@ func TestDumpStreamsStdoutUnbuffered(t *testing.T) {
 	}
 }
 
+// TestADumpWithoutALockNeverUnlocks (#32): the panel's recovery dumps with
+// --no-lock, which restic takes no lock for, so that it writes nothing to
+// the repository and reads a local one bound read-only; another restic's
+// lock keeps it out no more than a read-only repository does, and it never
+// runs restic unlock. A dump that locks one bound read-only fails, as
+// restic does, and --no-lock is a dump's alone.
+func TestADumpWithoutALockNeverUnlocks(t *testing.T) {
+	env, root := backupRepository(t)
+	source := t.TempDir()
+	writeFiles(t, source, map[string]string{"pocketcloud-panel.pcpb": "PCPB copy"})
+	id := snapshotOf(t, env, "/volumes/app", source)
+	args := []string{"dump", "--no-lock", "--snapshot", id, "--path", "/volumes/app/pocketcloud-panel.pcpb", "--expect-tag", "job:aaaaaaaaaaaaaaa"}
+
+	t.Setenv("FAKE_RESTIC_LOCKED_DUMP", "5")
+	out, log, err := runTool(t, env, nil, args...)
+	if err != nil || out != "PCPB copy" {
+		t.Fatalf("the dump: %q %v\n%s", out, err, log)
+	}
+	calls := fakerestic.Calls(t, root)
+	if !strings.Contains(calls, " --no-lock dump --archive tar "+id+" /volumes/app/pocketcloud-panel.pcpb\n") || strings.Contains(calls, "--retry-lock 5m dump") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+	if fakerestic.Unlocks(t, root) != 0 || strings.Contains(log, "removing the locks") {
+		t.Errorf("%d unlocks: %s", fakerestic.Unlocks(t, root), log)
+	}
+
+	// a local repository bound read-only
+	local := t.TempDir()
+	localEnv := map[string]string{"RESTIC_REPOSITORY": local, "RESTIC_PASSWORD": "pw-local"}
+	if _, _, err := runBackupTool(t, localEnv, "init"); err != nil {
+		t.Fatal(err)
+	}
+	localID := snapshotOf(t, localEnv, "/volumes/app", source)
+	localEnv["FAKE_RESTIC_READONLY"] = local
+	t.Setenv("FAKE_RESTIC_LOCKED_DUMP", "")
+	localArgs := []string{"dump", "--no-lock", "--snapshot", localID, "--path", "/volumes/app/pocketcloud-panel.pcpb"}
+	if out, log, err := runTool(t, localEnv, nil, localArgs...); err != nil || out != "PCPB copy" {
+		t.Errorf("a read-only repository without a lock: %q %v\n%s", out, err, log)
+	}
+	if _, _, err := runTool(t, localEnv, nil, slices.Delete(slices.Clone(localArgs), 1, 2)...); err == nil || !strings.Contains(err.Error(), "read-only file system") {
+		t.Errorf("a read-only repository with a lock: %v", err)
+	}
+
+	for _, op := range [][]string{
+		{"snapshots", "--no-lock", "--tag", "pocketcloud"},
+		{"backup", "--no-lock", "--host", "nas", "--path", source},
+		{"restore", "--no-lock", "--snapshot", id, "--root", "/volumes/app=/restore/0"},
+	} {
+		if _, _, err := runTool(t, env, nil, op...); err == nil || err.Error() != "--no-lock is a dump's, not the "+op[0]+" op's" {
+			t.Errorf("%s: %v", op[0], err)
+		}
+	}
+}
+
 // TestTheRestoreOpChecksItsFlags (#30): the restore names its snapshot in
 // full, each root once, at most 32 of them and 100 picks, each clean.
 func TestTheRestoreOpChecksItsFlags(t *testing.T) {

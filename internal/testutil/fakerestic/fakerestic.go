@@ -101,7 +101,10 @@ const Wrong = "wrong"
 // tar ID PATH writes a folder as a tar of what it holds, named by their
 // paths without the leading slash, and a file as it is; with
 // FAKE_RESTIC_DUMP_FAIL=N it writes N bytes, then fails, and
-// FAKE_RESTIC_SLOW_MS waits that long before each 64 KiB.
+// FAKE_RESTIC_SLOW_MS waits that long before each 64 KiB. A dump that locks
+// a local repository RunJobs mounted read-only fails as a check's does; one
+// with --no-lock takes no lock (#32): neither that nor
+// FAKE_RESTIC_LOCKED_DUMP keeps it out.
 const script = `#!/bin/sh
 root="${FAKE_RESTIC_ROOT:?}"
 { echo "restic $*"; env | grep -E '^(RESTIC|AWS)_' | sort; echo; } >> "$root/calls"
@@ -781,7 +784,13 @@ dump)
 		esac
 	done
 	open_repo
-	locked "$FAKE_RESTIC_LOCKED_DUMP" dump
+	if [ -z "$nolock" ]; then
+		if readonly_target "$repo"; then
+			echo "unable to create lock in backend: open $repo/locks/$(hexid lock $$)-tmp-1: read-only file system" >&2
+			exit 1
+		fi
+		locked "$FAKE_RESTIC_LOCKED_DUMP" dump
+	fi
 	snap=$(snapshot_dir "$1") || exit 1
 	p=$2
 	at="$snap/files$p"
