@@ -135,6 +135,11 @@ type Panel struct {
 	// checkPass holds a pass of the integrity checks' scheduler (#31).
 	checkPass sync.Mutex
 
+	// restoreWatch is set from a restored panel's first start until every
+	// server is back (#32); restoreRecount while a count of them is due.
+	restoreWatch   atomic.Bool
+	restoreRecount atomic.Bool
+
 	// setupToken allows creating the first admin account; empty once one exists.
 	setupToken string
 
@@ -222,6 +227,7 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
+	p.watchRestore()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -368,6 +374,12 @@ func (p *Panel) startGateway() error {
 
 	for _, observe := range p.Observers {
 		observe(p.Gateway)
+	}
+
+	// the first start after `panel recover`, before anything reaches a
+	// server (#32)
+	if err := p.finishRestore(); err != nil {
+		return err
 	}
 
 	if p.Config.GRPCAddr == "" {
