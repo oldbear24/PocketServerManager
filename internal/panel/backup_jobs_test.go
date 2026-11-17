@@ -1374,3 +1374,68 @@ func TestABackupRunOfThePanelNamesItsCopy(t *testing.T) {
 		t.Errorf("its alert: %v", a)
 	}
 }
+
+// TestTheCarrierCannotBeRemoved (#32): the server that carries the panel's
+// job is not removed, which would remove the job and its history with it,
+// until the job has another carrier; the server of any other job is.
+func TestTheCarrierCannotBeRemoved(t *testing.T) {
+	f := newJobFixture(t)
+	carrier, next, plain := testutil.NewHost(t, f.app, "vm"), testutil.NewHost(t, f.app, "node-b"), testutil.NewHost(t, f.app, "node-c")
+	f.carry(carrier, "backup.run", backup.CapabilityPanel)
+	f.carry(next, "backup.run", backup.CapabilityPanel)
+	job := f.job("panel (pb_data)", map[string]any{"host": carrier.Id, "source_kind": schema.SourcePanel})
+	run := f.save(schema.BackupRuns, map[string]any{"job": job.Id, "target": f.target.Id, "host": carrier.Id, "trigger": schema.RunSchedule, "status": schema.RunSucceeded})
+	f.job("data", map[string]any{"host": plain.Id, "source_kind": schema.SourceVolume, "source": "app_data"})
+
+	if status, out := f.send(http.MethodDelete, "/api/collections/hosts/records/"+carrier.Id, f.admin, nil); status != http.StatusBadRequest ||
+		out["message"] != "The server vm uploads the panel's backup: choose another server for that job first." {
+		t.Errorf("remove the carrier: %d %v", status, out)
+	}
+	if _, err := f.app.FindRecordById(schema.Hosts, carrier.Id); err != nil {
+		t.Errorf("the carrier went: %v", err)
+	}
+	if _, err := f.app.FindRecordById(schema.BackupRuns, run.Id); err != nil {
+		t.Errorf("the panel's history went: %v", err)
+	}
+	// a server of another job goes, with its job
+	if status, out := f.send(http.MethodDelete, "/api/collections/hosts/records/"+plain.Id, f.admin, nil); status != http.StatusNoContent {
+		t.Errorf("remove a server of another job: %d %v", status, out)
+	}
+
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"host": next.Id}); status != http.StatusOK {
+		t.Fatalf("another carrier: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodDelete, "/api/collections/hosts/records/"+carrier.Id, f.admin, nil); status != http.StatusNoContent {
+		t.Errorf("remove the old carrier: %d %v", status, out)
+	}
+	if f.fresh(job).GetString("host") != next.Id {
+		t.Error("the panel's job lost its carrier")
+	}
+}
+
+// TestOriginalRestoreOfThePanelIsRefused (#32): the panel's copy goes back
+// into no running panel: a restore to its original location is refused with
+// the way the panel is restored, while a restore to a folder is not.
+func TestOriginalRestoreOfThePanelIsRefused(t *testing.T) {
+	f := newJobFixture(t)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	f.carry(f.host, "backup.run", backup.CapabilityPanel)
+	job := f.job("panel (pb_data)", map[string]any{"source_kind": schema.SourcePanel})
+	stream := f.agent(f.host)
+	for _, token := range []string{operator, f.admin} {
+		status, out := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restores", token,
+			map[string]any{"target": f.target.Id, "snapshot": snapshotID, "mode": "original"})
+		if status != http.StatusBadRequest ||
+			out["message"] != "The panel is restored on a machine of its own, with its recovery kit: see docs/disaster-recovery.md. Download the encrypted copy, or restore it to a folder." {
+			t.Errorf("to its original location: %d %v", status, out)
+		}
+	}
+	status, out := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restores", f.admin,
+		map[string]any{"target": f.target.Id, "snapshot": snapshotID, "mode": "path", "host": f.host.Id, "path": "/srv/restored"})
+	if status != http.StatusAccepted {
+		t.Fatalf("to a folder: %d %v", status, out)
+	}
+	if preview := f.received(stream).GetBackupRestore(); preview.GetJobTag() != "job:"+job.Id || len(preview.GetOriginal()) != 0 {
+		t.Errorf("its preview: %v", preview)
+	}
+}
