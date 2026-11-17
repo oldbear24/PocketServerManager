@@ -728,6 +728,17 @@ func (p *Panel) offline(host *core.Record) bool {
 // pass read every job at its start: a target taken out of it meanwhile gets
 // no run.
 func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
+	p.startJobRuns(job, schema.RunSchedule, minute)
+}
+
+// startJobRuns starts a job's runs of a minute by a trigger, the schedule's
+// or a change's (#32), as runOnSchedule says. Only a run of the schedule is
+// of its minute (scheduled_at).
+func (p *Panel) startJobRuns(job *core.Record, trigger string, minute time.Time) {
+	scheduledAt := time.Time{}
+	if trigger == schema.RunSchedule {
+		scheduledAt = minute
+	}
 	job, err := p.App.FindRecordById(schema.BackupJobs, job.Id)
 	if err != nil {
 		return
@@ -742,13 +753,13 @@ func (p *Panel) runOnSchedule(job *core.Record, minute time.Time) {
 	for _, target := range p.jobTargets(job) {
 		switch {
 		case offline:
-			p.skipRun(job, target, host, minute, fmt.Sprintf("The server %s was offline at %s UTC.", host.GetString("name"), minute.Format("15:04")), true)
+			p.skipRun(job, target, host, trigger, scheduledAt, fmt.Sprintf("The server %s was offline at %s UTC.", host.GetString("name"), minute.Format("15:04")), true)
 		case restoring:
-			p.skipRun(job, target, host, minute, fmt.Sprintf("A restore into its data is under way on %s.", host.GetString("name")), false)
+			p.skipRun(job, target, host, trigger, scheduledAt, fmt.Sprintf("A restore into its data is under way on %s.", host.GetString("name")), false)
 		case p.runGoing(job, target):
-			p.skipRun(job, target, host, minute, "The run before it was still going.", false)
+			p.skipRun(job, target, host, trigger, scheduledAt, "The run before it was still going.", false)
 		default:
-			if _, err := p.startRun(context.Background(), job, target, host, schema.RunSchedule, minute, commands.Options{Requester: "schedule"}); err != nil {
+			if _, err := p.startRun(context.Background(), job, target, host, trigger, scheduledAt, commands.Options{Requester: trigger}); err != nil {
 				p.Log.Error("failed to start a backup run", "job", job.Id, "target", target.Id, "error", err)
 			}
 		}
@@ -875,18 +886,22 @@ func (p *Panel) newRunRecord(job, target, host *core.Record, trigger string, sch
 	return run, nil
 }
 
-// skipRun keeps a run that did not start, and says so in the events; an
-// offline server raises an alert too.
-func (p *Panel) skipRun(job, target, host *core.Record, minute time.Time, reason string, alert bool) {
+// skipRun keeps a run of a trigger that did not start, and says so in the
+// events; an offline server raises an alert too. A run of the schedule is
+// of its minute (scheduledAt).
+func (p *Panel) skipRun(job, target, host *core.Record, trigger string, scheduledAt time.Time, reason string, alert bool) {
 	collection, err := p.App.FindCachedCollectionByNameOrId(schema.BackupRuns)
 	if err != nil {
 		return
 	}
 	run := core.NewRecord(collection)
 	run.Load(map[string]any{
-		"job": job.Id, "target": target.Id, "host": host.Id, "trigger": schema.RunSchedule, "status": schema.RunSkipped,
-		"scheduled_at": minute, "finished_at": types.NowDateTime(), "error": reason,
+		"job": job.Id, "target": target.Id, "host": host.Id, "trigger": trigger, "status": schema.RunSkipped,
+		"finished_at": types.NowDateTime(), "error": reason,
 	})
+	if !scheduledAt.IsZero() {
+		run.Set("scheduled_at", scheduledAt)
+	}
 	if err := p.App.Save(run); err != nil {
 		p.Log.Error("failed to keep a skipped backup run", "job", job.Id, "error", err)
 		return

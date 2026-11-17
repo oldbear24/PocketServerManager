@@ -98,6 +98,8 @@ type Panel struct {
 	// exports are the panel's encrypted copies of itself that its backup
 	// job's carrier fetches (#32)
 	exports panelExports
+	// changes is the panel's backup after a change of its servers (#32)
+	changes changeBackups
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
@@ -217,6 +219,7 @@ func (p *Panel) Register() {
 	p.registerBackupChecks()
 	// before the gateway starts, which serves the copies
 	p.registerPanelExports()
+	p.registerChangeBackups()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
