@@ -352,11 +352,15 @@ func (p *Panel) moveRetry(run *core.Record, at any, note string) bool {
 }
 
 // newerRunIn tells whether a job has a run to a target newer than a run, as
-// the app (a transaction's) sees it.
+// the app (a transaction's) sees it. A run that never ran does not take a
+// run's place: one skipped, as at the job's next slot while the run before
+// still waited on a lock, nor one cancelled before it started.
 func newerRunIn(app core.App, run *core.Record) bool {
 	newer, err := app.FindRecordsByFilter(schema.BackupRuns,
-		"job={:job} && target={:target} && (created>{:created} || (created={:created} && id>{:id}))", "", 1, 0,
-		dbx.Params{"job": run.GetString("job"), "target": run.GetString("target"), "created": run.GetDateTime("created").String(), "id": run.Id})
+		"job={:job} && target={:target} && (created>{:created} || (created={:created} && id>{:id}))"+
+			" && status!={:skipped} && (status!={:cancelled} || started_at!='')", "", 1, 0,
+		dbx.Params{"job": run.GetString("job"), "target": run.GetString("target"), "created": run.GetDateTime("created").String(), "id": run.Id,
+			"skipped": schema.RunSkipped, "cancelled": schema.RunCancelled})
 	return err != nil || len(newer) > 0
 }
 
