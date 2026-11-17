@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -50,12 +52,21 @@ var migrated struct {
 	err  error
 }
 
+// migratedPrefix starts the name of a migrated data dir in the system's
+// temporary dir.
+const migratedPrefix = "pocketcloud-migrated-"
+
+// migratedKept is how long a migrated data dir is left for the test binary
+// that made it: nothing ends a test binary that could remove its own, so the
+// next one to make one removes those older than this.
+const migratedKept = time.Hour
+
 // migratedDataDir is a data dir with every migration applied, made on first
-// use. It is left in the system's temporary dir, as nothing ends a test binary
-// that could remove it.
+// use, in the system's temporary dir.
 func migratedDataDir() (string, error) {
 	migrated.once.Do(func() {
-		dir, err := os.MkdirTemp("", "pocketcloud-migrated-")
+		removeOldMigrated(os.TempDir(), time.Now().Add(-migratedKept))
+		dir, err := os.MkdirTemp("", migratedPrefix)
 		if err != nil {
 			migrated.err = err
 			return
@@ -205,4 +216,23 @@ func Do(t testing.TB, handler http.Handler, r Request) (int, string) {
 	handler.ServeHTTP(rec, req)
 
 	return rec.Code, rec.Body.String()
+}
+
+// removeOldMigrated removes the migrated data dirs in tmp last changed before
+// before: those of test binaries that ended long ago.
+func removeOldMigrated(tmp string, before time.Time) {
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), migratedPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(before) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
+	}
 }
