@@ -215,6 +215,8 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
+	// before the gateway starts, which serves the copies
+	p.registerPanelExports()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a

@@ -39,7 +39,8 @@ import (
 // master key. The plain copy of the database is removed at once. Only the
 // run's carrier gets the copy, and the runs of one minute, one per target,
 // share it: a copy serves for 15 minutes, and a run that fetched one gets
-// the same again, as when its download resumes.
+// the same again, as when its download resumes. The spool is swept at start
+// and hourly.
 
 const (
 	// exportSpool is the spool of the copies, in the data dir: not
@@ -588,6 +589,67 @@ type byteCounter struct{ n int64 }
 func (c *byteCounter) Write(p []byte) (int, error) {
 	c.n += int64(len(p))
 	return len(p), nil
+}
+
+// sweepPanelExports removes from the spool what no run fetches any more: a
+// copy older than 15 minutes that no run that is still going fetched, and
+// what a build left that is not one under way, as the plain copy of a build
+// that a stopped panel did not finish.
+func (p *Panel) sweepPanelExports(now time.Time) {
+	spool := filepath.Join(p.App.DataDir(), exportSpool)
+	entries, err := os.ReadDir(spool)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			p.Log.Error("failed to read the spool of the panel's copies", "error", err)
+		}
+		return
+	}
+	going, err := p.goingPanelRuns()
+	if err != nil {
+		p.Log.Error("failed to read the runs of the panel's backup", "error", err)
+		return
+	}
+	x := &p.exports
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	kept := map[string]bool{}
+	for job, copies := range x.jobs {
+		x.jobs[job] = slices.DeleteFunc(copies, func(export *panelExport) bool {
+			if now.Sub(export.built) < exportReuse || fetchedByAny(export, going) {
+				kept[export.path] = true
+				return false
+			}
+			return true
+		})
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(spool, name)
+		base, _, _ := strings.Cut(name, ".")
+		if !entry.Type().IsRegular() || kept[path] || x.building[base] {
+			continue
+		}
+		if strings.HasSuffix(name, ".pcpb") {
+			// a copy of a panel before this one started
+			info, err := entry.Info()
+			if err != nil || now.Sub(info.ModTime()) < exportReuse {
+				continue
+			}
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.Log.Error("failed to remove a copy of the panel", "file", name, "error", err)
+		}
+	}
+}
+
+// registerPanelExports sweeps the spool as the panel starts, before its
+// gateway serves a copy, and hourly.
+func (p *Panel) registerPanelExports() {
+	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
+		p.sweepPanelExports(time.Now())
+		return e.Next()
+	})
+	p.App.Cron().MustAdd("pocketcloud_panel_exports", "13 * * * *", func() { p.sweepPanelExports(time.Now()) })
 }
 
 // bytesText says a number of bytes as people read it.

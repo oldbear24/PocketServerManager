@@ -565,3 +565,85 @@ func TestTheRunsOfAMinuteShareOneExport(t *testing.T) {
 		t.Errorf("the copy a running run fetched: %v", err)
 	}
 }
+
+// TestTheSpoolIsSwept (#32): the sweep removes the copies older than 15
+// minutes that no run still going fetched, the copies of a panel that
+// stopped once they are as old, and at once what a build left that is not
+// under way, as a plain copy; it keeps the rest.
+func TestTheSpoolIsSwept(t *testing.T) {
+	f := newExportFixture(t)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.job.Set("targets", []string{f.target.Id, nas.Id})
+	if err := f.app.Save(f.job); err != nil {
+		t.Fatal(err)
+	}
+	going := f.deliveredRun(f.target)
+	f.fetch(going)
+	f.p.exports.jobs[f.job.Id][0].built = time.Now().Add(-exportReuse)
+	ended := f.deliveredRun(nas)
+	f.fetch(ended)
+	f.endRun(ended, map[string]any{"status": schema.CommandSucceeded, "result": map[string]any{"snapshot_id": "4f1c2d3e"}})
+	copies := f.p.exports.jobs[f.job.Id]
+	if len(copies) != 2 {
+		t.Fatalf("%d copies", len(copies))
+	}
+	young, old := copies[0], copies[1]
+
+	spool := filepath.Join(f.app.DataDir(), exportSpool)
+	now := time.Now()
+	leftover := map[string]time.Time{
+		"aaaaaaaaaaaaaaa-old.pcpb":          now.Add(-time.Hour),
+		"aaaaaaaaaaaaaaa-young.pcpb":        now.Add(-time.Minute),
+		"aaaaaaaaaaaaaaa-plain.db":          now.Add(-time.Minute),
+		"aaaaaaaaaaaaaaa-plain.db-wal":      now.Add(-time.Minute),
+		"aaaaaaaaaaaaaaa-part.pcpb.part":    now.Add(-time.Minute),
+		f.job.Id + "-building.db":           now.Add(-time.Hour),
+		f.job.Id + "-building.pcpb.part":    now.Add(-time.Hour),
+		"aaaaaaaaaaaaaaa-unfinished.pcpb.x": now.Add(-time.Minute),
+	}
+	for name, at := range leftover {
+		path := filepath.Join(spool, name)
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.p.exports.mark(f.job.Id+"-building", true)
+
+	// within 15 minutes of the new copy, and the old one fetched by a run
+	// still going: only the leftovers go
+	f.p.sweepPanelExports(now)
+	want := []string{filepath.Base(old.path), filepath.Base(young.path), "aaaaaaaaaaaaaaa-young.pcpb", f.job.Id + "-building.db", f.job.Id + "-building.pcpb.part"}
+	slices.Sort(want)
+	if got := f.spool(); !slices.Equal(got, want) {
+		t.Errorf("after the first sweep %v, not %v", got, want)
+	}
+
+	// later, the run ended: both copies and the young leftover go, the
+	// build under way stays
+	f.endRun(going, map[string]any{"status": schema.CommandSucceeded, "result": map[string]any{"snapshot_id": "4f1c2d3e"}})
+	f.p.sweepPanelExports(now.Add(exportReuse))
+	want = []string{f.job.Id + "-building.db", f.job.Id + "-building.pcpb.part"}
+	if got := f.spool(); !slices.Equal(got, want) || len(f.p.exports.jobs[f.job.Id]) != 0 {
+		t.Errorf("after the second sweep %v, not %v; %d copies kept", got, want, len(f.p.exports.jobs[f.job.Id]))
+	}
+	f.p.exports.mark(f.job.Id+"-building", false)
+	f.p.sweepPanelExports(now.Add(exportReuse))
+	if got := f.spool(); len(got) != 0 {
+		t.Errorf("after the build ended %v", got)
+	}
+
+	// as the panel starts again: its serve hooks run once more, and the
+	// gateway they start replaces the first
+	if err := os.WriteFile(filepath.Join(spool, "bbbbbbbbbbbbbbb-crashed.db"), []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := f.p.Gateway
+	testutil.Handler(t, f.app)
+	first.Stop()
+	if got := f.spool(); len(got) != 0 {
+		t.Errorf("at start %v", got)
+	}
+}
