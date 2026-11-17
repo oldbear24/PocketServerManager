@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
 	"github.com/oldbear24/PocketServerManager/internal/updater"
 	"github.com/oldbear24/PocketServerManager/internal/version"
@@ -102,6 +103,10 @@ type Agent struct {
 	// restore looks whether the containers stayed up: 10 seconds unless set.
 	// Tests, which wait for each restore, shorten it.
 	RestoreVerifyWait time.Duration
+	// PanelFetchWaits, when set, are the waits before each resume of a
+	// fetch of the panel's copy that broke off, one per resume: 2, 5 and
+	// 10 seconds unless set (#32). Tests shorten them.
+	PanelFetchWaits []time.Duration
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64
@@ -287,14 +292,9 @@ func (a *Agent) session(parent context.Context) error {
 
 	self := a.ownContainerID(ctx)
 
-	capabilities := a.Executor.Capabilities()
-	if a.Config.HostShell {
-		capabilities = append(capabilities, capabilityHostShell)
-	}
-
 	stream, err := client.SubscribeCommands(ctx, &agentv1.SubscribeCommandsRequest{
 		AgentVersion:     version.Version,
-		Capabilities:     capabilities,
+		Capabilities:     a.capabilities(),
 		RecentlyFinished: a.store.recentlyFinished(),
 		ImageDigest:      a.ownImageDigest(ctx),
 		ContainerId:      self,
@@ -353,6 +353,19 @@ func (a *Agent) session(parent context.Context) error {
 	}
 
 	return err
+}
+
+// capabilities are what the agent tells the panel it can do: the command
+// types it runs, and pseudo-capabilities next to them. Capabilities gate
+// command types only, so a field of a command an older agent would refuse
+// is said this way: backup.run.panel, a backup run of the panel's copy
+// (#32), always; host_shell only when this server opted in.
+func (a *Agent) capabilities() []string {
+	capabilities := append(a.Executor.Capabilities(), backup.CapabilityPanel)
+	if a.Config.HostShell {
+		capabilities = append(capabilities, capabilityHostShell)
+	}
+	return capabilities
 }
 
 func (a *Agent) receiveLoop(stream agentv1.AgentService_SubscribeCommandsClient) error {

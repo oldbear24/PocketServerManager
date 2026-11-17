@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
 )
 
@@ -336,6 +338,27 @@ func TestALogLevelAlwaysFallsBack(t *testing.T) {
 	for seconds, want := range cases {
 		if got := logLevelDuration(seconds); got != want {
 			t.Errorf("logLevelDuration(%d) = %s, want %s", seconds, got, want)
+		}
+	}
+}
+
+// TestThePanelsBackupIsAlwaysAdvertised (#32): an agent always says it can
+// carry the panel's backup, backup.run.panel, next to the command types it
+// runs, as capabilities gate command types only and an older agent would
+// refuse a run's panel_export; host_shell stays the server's opt-in.
+func TestThePanelsBackupIsAlwaysAdvertised(t *testing.T) {
+	for _, shell := range []bool{false, true} {
+		a, err := New(Config{StateDir: t.TempDir(), HostShell: shell}, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		capabilities := a.capabilities()
+		if !slices.Contains(capabilities, backup.CapabilityPanel) || !slices.Contains(capabilities, "backup.run") ||
+			slices.Contains(capabilities, capabilityHostShell) != shell {
+			t.Errorf("with the host shell %v: %q", shell, capabilities)
+		}
+		if slices.Contains(a.Executor.Capabilities(), backup.CapabilityPanel) {
+			t.Errorf("the executor runs commands of the type %s", backup.CapabilityPanel)
 		}
 	}
 }

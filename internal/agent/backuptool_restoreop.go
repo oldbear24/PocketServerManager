@@ -763,8 +763,10 @@ func (c *countingWriter) Write(data []byte) (int, error) {
 }
 
 // dump writes a path of the snapshot to w: a folder as a tar, a file as it
-// is, once the snapshot is known to be the job's.
-func (r restic) dump(ctx context.Context, id, p, tag string, w io.Writer) error {
+// is, once the snapshot is known to be the job's. noLock takes no lock, and
+// so never unlocks: the panel's recovery reads a repository it writes
+// nothing to, a local one bound read-only (#32).
+func (r restic) dump(ctx context.Context, id, p, tag string, noLock bool, w io.Writer) error {
 	if !snapshotID.MatchString(id) {
 		return fmt.Errorf("a snapshot is named by its full id, not %q", id)
 	}
@@ -782,8 +784,11 @@ func (r restic) dump(ctx context.Context, id, p, tag string, w io.Writer) error 
 	}
 	out := &countingWriter{w: w}
 	args := []string{"--retry-lock", restoreRetryLock, "dump", "--archive", "tar", id, p}
+	if noLock {
+		args = []string{"--no-lock", "dump", "--archive", "tar", id, p}
+	}
 	code, said, err := r.to(ctx, out, args...)
-	if err == nil && code == resticLocked && out.n == 0 {
+	if err == nil && code == resticLocked && out.n == 0 && !noLock {
 		r.unlock(ctx, lockedRetry)
 		code, said, err = r.to(ctx, out, args...)
 	}

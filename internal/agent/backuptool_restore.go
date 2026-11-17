@@ -46,7 +46,9 @@ import (
 //	           to --sample paths of each kind, and writes nothing.
 //	dump       write --path of --snapshot to the standard output, a folder as
 //	           a tar and a file as it is, once the snapshot is known to have
-//	           --expect-tag.
+//	           --expect-tag. --no-lock takes no lock, and so needs no unlock:
+//	           the panel's recovery (#32) writes nothing to the repository,
+//	           and binds a local one read-only.
 
 const (
 	// minResticMajor and minResticMinor are the first restic whose restore,

@@ -192,6 +192,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	wait := flags.Bool("wait", false, "wait for the agent's go before the restore writes")
 	sample := flags.Int("sample", defaultSample, "how many paths of each kind a preview says")
 	expectTag := flags.String("expect-tag", "", "the job's tag, which the snapshot must have")
+	noLock := flags.Bool("no-lock", false, "a dump that takes no lock, of a repository it writes nothing to (#32)")
 	dir := flags.String("dir", "", "the folder of the snapshot to list")
 	offset := flags.Int("offset", 0, "how many entries of the folder to skip")
 	limit := flags.Int("limit", 0, "how many entries or snapshots to say")
@@ -201,6 +202,11 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	pass := flags.String("pass", "", "the pass of a check: free, without a lock, or confirm, with the exclusive lock")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
+	}
+	if *noLock && op != "dump" {
+		// an op that writes, or the others' own --no-lock, is never
+		// changed by it
+		return fmt.Errorf("--no-lock is a dump's, not the %s op's", op)
 	}
 	if op == "relay" {
 		// restic runs it, with the job's environment, which it needs none of
@@ -295,7 +301,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 		if len(paths) != 1 {
 			return errors.New("a dump writes one --path of the snapshot")
 		}
-		return r.dump(ctx, *snapshot, paths[0], *expectTag, stdout)
+		return r.dump(ctx, *snapshot, paths[0], *expectTag, *noLock, stdout)
 	case "check":
 		// the pass is said however it ended, as the agent reads it
 		result, err := r.check(ctx, *subset, *pass)
