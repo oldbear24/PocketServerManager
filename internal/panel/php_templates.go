@@ -652,11 +652,12 @@ func (p *Panel) lookAtHealth(siteID, deploymentID string, started time.Time) boo
 	if time.Since(started) < p.provision.checkFor {
 		return true
 	}
-	p.setFields(deployment, map[string]any{"health": health})
+	// the event first, so that whoever sees the failed health sees it too
 	label := fmt.Sprintf("%s #%d", site.GetString("name"), deployment.GetInt("number"))
 	events.Log(p.App, site.GetString("host"), "site.unhealthy", schema.SeverityWarning,
 		fmt.Sprintf("Since release %s went live the site does not answer as it should: %s Roll it back on the site's page.", label, health["error"]),
 		map[string]any{"site": site.Id, "deployment": deployment.Id})
+	p.setFields(deployment, map[string]any{"health": health})
 	return false
 }
 
