@@ -944,3 +944,50 @@ func TestACheckGetsItsTargetsSecretsOnItsServerOnly(t *testing.T) {
 		t.Errorf("on another server: %v %v", delivered, err)
 	}
 }
+
+// TestAChecksEndThePanelMissedIsKept (#31): a check whose command ended
+// without its finisher, as when the panel stopped in between, is kept from its
+// command at the scheduler's next pass; one whose command is gone did not
+// complete, and is tried again as such a check is.
+func TestAChecksEndThePanelMissedIsKept(t *testing.T) {
+	f := newCheckFixture(t)
+	row, command := f.startedCheck(f.target, schema.RunSchedule)
+	f.closeCommand(command, schema.CommandDispatched)
+	f.closeCommand(command, schema.CommandRunning)
+	ended := f.fresh(command)
+	ended.Load(map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime().Add(-time.Minute), "finished_at": types.NowDateTime(),
+		"result": answer(t, backup.CheckResult{Status: backup.CheckStatusOK, Subset: "1/20"})})
+	if err := f.app.Save(ended); err != nil {
+		t.Fatal(err)
+	}
+	if f.fresh(row).GetString("status") != schema.CheckQueued {
+		t.Fatal("the check was kept without the panel")
+	}
+	f.p.RunDueChecks(time.Now())
+	if kept := f.fresh(row); kept.GetString("status") != schema.CheckOK {
+		t.Errorf("a check whose command ended: %v", kept.FieldsData())
+	}
+	if target := f.fresh(f.target); target.GetString("integrity_status") != schema.CheckOK || target.GetInt("integrity_group") != 2 {
+		t.Errorf("the target: %v", target.FieldsData())
+	}
+
+	row, command = f.startedCheck(f.target, schema.RunSchedule)
+	if err := f.app.Delete(f.fresh(command)); err != nil {
+		t.Fatal(err)
+	}
+	f.p.RunDueChecks(time.Now())
+	lost := f.fresh(row)
+	if lost.GetString("status") != schema.CheckError || lost.GetString("error") != "The check ended without the panel recording how." ||
+		lost.GetDateTime("retry_at").IsZero() || lost.GetDateTime("finished_at").IsZero() {
+		t.Errorf("a check whose command is gone: %v", lost.FieldsData())
+	}
+	if a := f.openAlert(alertCheckUnverified, f.target.Id); a == nil ||
+		!strings.HasPrefix(a.GetString("message"), "The integrity check of b2 did not complete: The check ended without the panel recording how.") {
+		t.Errorf("its alert: %v", a)
+	}
+	// once
+	f.p.RunDueChecks(time.Now())
+	if found := f.eventsOf("backup.check_unverified"); len(found) != 1 {
+		t.Errorf("%d events", len(found))
+	}
+}

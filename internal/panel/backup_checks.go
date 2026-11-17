@@ -306,6 +306,7 @@ func toAny(values []string) []any {
 func (p *Panel) RunDueChecks(now time.Time) {
 	p.checkPass.Lock()
 	defer p.checkPass.Unlock()
+	p.settleChecks()
 	minute := now.UTC().Truncate(time.Minute)
 	schedule, _ := p.checkSettings()
 	if schedule == "" {
@@ -716,6 +717,59 @@ func (p *Panel) backupCheckFinished(command *core.Record) {
 		return
 	}
 	p.checkEnded(target, row, false)
+}
+
+// settleChecks heals the checks the panel lost track of, as its scheduler
+// passes: one whose command ended without its finisher, as when the panel
+// stopped in between, is kept from its command; one whose command is gone
+// did not complete.
+func (p *Panel) settleChecks() {
+	open, err := p.App.FindRecordsByFilter(schema.BackupChecks, "status={:queued} || status={:running}", "created,id", 0, 0,
+		dbx.Params{"queued": schema.CheckQueued, "running": schema.CheckRunning})
+	if err != nil {
+		p.Log.Error("failed to read the integrity checks", "error", err)
+		return
+	}
+	for _, row := range open {
+		command, err := p.App.FindRecordById(schema.Commands, row.GetString("command"))
+		switch {
+		case err != nil:
+			p.lostCheck(row)
+		case commandFinal(command):
+			p.backupCheckFinished(command)
+		}
+	}
+}
+
+// lostCheck ends a check whose command is gone: it did not complete, and is
+// tried again as such a check is.
+func (p *Panel) lostCheck(row *core.Record) {
+	target, err := p.App.FindRecordById(schema.BackupTargets, row.GetString("target"))
+	if err != nil {
+		return
+	}
+	schedule, _ := p.checkSettings()
+	now := time.Now().UTC()
+	kept := false
+	err = p.update(context.Background(), row, func(fresh *core.Record) error {
+		if s := fresh.GetString("status"); s != schema.CheckQueued && s != schema.CheckRunning {
+			return errUnchanged
+		}
+		fresh.Set("status", schema.CheckError)
+		fresh.Set("error", "The check ended without the panel recording how.")
+		fresh.Set("finished_at", now)
+		if retry := checkRetryAt(fresh, now, schedule); !retry.IsZero() {
+			fresh.Set("retry_at", retry)
+		}
+		kept = true
+		return nil
+	})
+	if err != nil {
+		p.Log.Error("failed to keep an integrity check", "check", row.Id, "error", err)
+	}
+	if kept {
+		p.checkEnded(target, row, false)
+	}
 }
 
 // checkResultFields sets what the agent found on a check's fields, redacted,
