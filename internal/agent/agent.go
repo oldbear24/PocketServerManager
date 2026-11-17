@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi"
 	"github.com/oldbear24/PocketServerManager/internal/updater"
 	"github.com/oldbear24/PocketServerManager/internal/version"
@@ -287,14 +288,9 @@ func (a *Agent) session(parent context.Context) error {
 
 	self := a.ownContainerID(ctx)
 
-	capabilities := a.Executor.Capabilities()
-	if a.Config.HostShell {
-		capabilities = append(capabilities, capabilityHostShell)
-	}
-
 	stream, err := client.SubscribeCommands(ctx, &agentv1.SubscribeCommandsRequest{
 		AgentVersion:     version.Version,
-		Capabilities:     capabilities,
+		Capabilities:     a.capabilities(),
 		RecentlyFinished: a.store.recentlyFinished(),
 		ImageDigest:      a.ownImageDigest(ctx),
 		ContainerId:      self,
@@ -353,6 +349,19 @@ func (a *Agent) session(parent context.Context) error {
 	}
 
 	return err
+}
+
+// capabilities are what the agent tells the panel it can do: the command
+// types it runs, and pseudo-capabilities next to them. Capabilities gate
+// command types only, so a field of a command an older agent would refuse
+// is said this way: backup.run.panel, a backup run of the panel's copy
+// (#32), always; host_shell only when this server opted in.
+func (a *Agent) capabilities() []string {
+	capabilities := append(a.Executor.Capabilities(), backup.CapabilityPanel)
+	if a.Config.HostShell {
+		capabilities = append(capabilities, capabilityHostShell)
+	}
+	return capabilities
 }
 
 func (a *Agent) receiveLoop(stream agentv1.AgentService_SubscribeCommandsClient) error {
