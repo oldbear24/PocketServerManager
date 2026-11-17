@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { pb } from "./pb";
@@ -81,6 +83,40 @@ describe("the commands of a panel's restore", () => {
       address: "",
     });
     expect(fallback.start).toContain("-p 9443:9443");
+  });
+
+  it("are the guide's, word for word", () => {
+    const values = {
+      snapshot: "4f1c2d3e",
+      target: "panel-sftp",
+      agentImage: "ghcr.io/oldbear24/pocketcloud-agent:0.32.0",
+      panelImage: "ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+      address: "192.0.2.2:19443",
+    };
+    // the drawer's lines, each command on one line as the guide writes it
+    const drawer = new Set(
+      Object.values(recoveryCommands(values)).flatMap((block) =>
+        block.replace(/ \\\n\s*/g, " ").split("\n"),
+      ),
+    );
+    // the guide's commands of its restore, with its placeholders filled in
+    const guide = readFileSync("../docs/disaster-recovery.md", "utf8");
+    const restore = guide.slice(
+      guide.indexOf("## Restore on a new machine"),
+      guide.indexOf("## Rolling a running panel back"),
+    );
+    const commands = [...restore.matchAll(/```sh\n([\s\S]*?)```/g)]
+      .flatMap((block) => block[1].trim().split("\n"))
+      .map((line) =>
+        line
+          .trim()
+          .replaceAll("<target>", values.target)
+          .replaceAll("<id|latest>", values.snapshot)
+          .replaceAll("<agent image>", values.agentImage)
+          .replaceAll("<panel image>", values.panelImage)
+          .replaceAll("<dial port>", "19443"),
+      );
+    expect(new Set(commands)).toEqual(drawer);
   });
 });
 
