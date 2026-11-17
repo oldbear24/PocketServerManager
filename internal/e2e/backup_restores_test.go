@@ -392,8 +392,10 @@ func (s *secondServer) ranJobs() []fakedocker.Job {
 }
 
 // enrolledOn starts an agent of a server named name on an engine of its
-// own, with its own HostRoot, and waits until it is connected.
-func (h *harness) enrolledOn(name string, prepare func(engine *fakedocker.Engine)) *secondServer {
+// own, with its own HostRoot, and waits until it is connected. The agent's
+// preparations run before it starts, as one that drops a handler to be an
+// older agent (#31).
+func (h *harness) enrolledOn(name string, prepare func(engine *fakedocker.Engine), agentPrepare ...func(*agent.Agent)) *secondServer {
 	h.t.Helper()
 	s := &secondServer{engine: fakedocker.New(h.t), root: fakeHostRoot(h.t)}
 	s.engine.AddImage("sha256:"+strings.Repeat("a", 64), nil)
@@ -413,7 +415,7 @@ func (h *harness) enrolledOn(name string, prepare func(engine *fakedocker.Engine
 	config := h.agentConfig(name, h.token(name, schema.HostRoleDocker))
 	config.DockerHost = s.engine.Host()
 	config.HostRoot = s.root
-	s.agent = h.start(config, quickRestores)
+	s.agent = h.start(config, append([]func(*agent.Agent){quickRestores}, agentPrepare...)...)
 	h.waitFor("the agent of "+name+" to connect", func() bool {
 		found, err := h.app.FindFirstRecordByData(schema.Hosts, "name", name)
 		if err != nil || !found.GetBool("stream_open") {
