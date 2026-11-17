@@ -350,6 +350,35 @@ describe("a run tried again", () => {
     });
   });
 
+  it("counts a failure whose retry never ran: skipped, or cancelled before it started", () => {
+    // the retry waited its whole time in the queue, as its server stayed away
+    const skipped = run("2026-11-09 03:35:00.000Z", "skipped", {
+      id: "r2",
+      trigger: "retry",
+      attempt: 2,
+      retry_of: "r1",
+    });
+    expect([...supersededRuns([first, skipped])]).toEqual([]);
+    expect(runStrip([first, skipped], now, "UTC")[13]).toMatchObject({
+      failed: 1,
+      skipped: 1,
+      state: "err",
+    });
+    expect(successRate([first, skipped], now, "UTC")).toEqual({ succeeded: 0, total: 2 });
+    // its agent stopped while it waited for a worker
+    const cancelled = { ...skipped, status: "cancelled" as const };
+    expect(runStrip([first, cancelled], now, "UTC")[13]).toMatchObject({
+      failed: 1,
+      skipped: 0,
+      state: "err",
+    });
+    expect(successRate([first, cancelled], now, "UTC")).toEqual({ succeeded: 0, total: 1 });
+    // a retry that started, then was stopped, stands for it and counts for neither
+    const stopped = { ...cancelled, started_at: "2026-11-09 03:35:01.000Z" };
+    expect(runStrip([first, stopped], now, "UTC")[13].state).toBe("off");
+    expect(successRate([first, stopped], now, "UTC")).toEqual({ succeeded: 0, total: 0 });
+  });
+
   it("is read with its retry fields, still without its log", () => {
     const fields = runFields.split(",");
     for (const field of [

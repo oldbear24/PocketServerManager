@@ -480,12 +480,28 @@ export type StripDay = {
 };
 
 type CountedRun = Pick<BackupRun, "created" | "status"> &
-  Partial<Pick<BackupRun, "id" | "trigger" | "retry_of">>;
+  Partial<Pick<BackupRun, "id" | "trigger" | "retry_of" | "started_at">>;
+
+/** Whether a run never ran: skipped, or cancelled before it started. Such a
+ * run takes no failed run's place, as the panel's retries have it. */
+export function neverRan(
+  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "started_at">>,
+): boolean {
+  return run.status === "skipped" || (run.status === "cancelled" && !run.started_at);
+}
 
 /** The failed runs that a loaded run tries again: their retry stands for
- * them, so only a chain's last attempt counts. */
-export function supersededRuns(runs: Pick<BackupRun, "retry_of">[]): Set<string> {
-  return new Set(runs.map((run) => run.retry_of ?? "").filter(Boolean));
+ * them, so only a chain's last attempt counts. A retry that never ran stands
+ * for none. */
+export function supersededRuns(
+  runs: (Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "retry_of" | "started_at">>)[],
+): Set<string> {
+  return new Set(
+    runs
+      .filter((run) => !neverRan(run))
+      .map((run) => run.retry_of ?? "")
+      .filter(Boolean),
+  );
 }
 
 /** The runs of the last `count` days, by the local day they were created on,
@@ -631,14 +647,6 @@ export function resticLine(error: string): string {
   return shortError(error)
     .replace(/^fatal:\s*/i, "")
     .replace(/^unable to create lock in backend:\s*/i, "");
-}
-
-/** Whether a run never ran: skipped, or cancelled before it started. Such a
- * run takes no failed run's place, as the panel's retries have it. */
-export function neverRan(
-  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "started_at">>,
-): boolean {
-  return run.status === "skipped" || (run.status === "cancelled" && !run.started_at);
 }
 
 type IssueRun = Pick<BackupRun, "id" | "job" | "target" | "status" | "created"> &
