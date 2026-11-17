@@ -4814,7 +4814,11 @@ type BackupRun struct {
 	Retention *BackupRetention `protobuf:"bytes,11,opt,name=retention,proto3" json:"retention,omitempty"`
 	// unlock runs `restic unlock` before the backup (#31): a retry of a run
 	// that found the repository locked. restic removes only stale locks; never --remove-all.
-	Unlock        bool `protobuf:"varint,12,opt,name=unlock,proto3" json:"unlock,omitempty"`
+	Unlock bool `protobuf:"varint,12,opt,name=unlock,proto3" json:"unlock,omitempty"`
+	// panel_export names the panel's encrypted copy of itself (#32), which the
+	// agent fetches with FetchArtifact on a connection of its own and backs up as
+	// stdin_file_name through the relay: no mount, no exec. Not a secret.
+	PanelExport   string `protobuf:"bytes,13,opt,name=panel_export,json=panelExport,proto3" json:"panel_export,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4931,6 +4935,13 @@ func (x *BackupRun) GetUnlock() bool {
 		return x.Unlock
 	}
 	return false
+}
+
+func (x *BackupRun) GetPanelExport() string {
+	if x != nil {
+		return x.PanelExport
+	}
+	return ""
 }
 
 // BackupRetention is how many snapshots of a job a repository keeps, as
@@ -6586,7 +6597,7 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"repository\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05usage\x18\x03 \x01(\bR\x05usage\x12\x16\n" +
-	"\x06change\x18\x04 \x01(\bR\x06change\"\x98\x04\n" +
+	"\x06change\x18\x04 \x01(\bR\x06change\"\xbb\x04\n" +
 	"\tBackupRun\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12F\n" +
 	"\n" +
@@ -6602,7 +6613,8 @@ const file_pocketcloud_agent_v1_commands_proto_rawDesc = "" +
 	"\thost_name\x18\n" +
 	" \x01(\tR\bhostName\x12C\n" +
 	"\tretention\x18\v \x01(\v2%.pocketcloud.agent.v1.BackupRetentionR\tretention\x12\x16\n" +
-	"\x06unlock\x18\f \x01(\bR\x06unlock\x1a6\n" +
+	"\x06unlock\x18\f \x01(\bR\x06unlock\x12!\n" +
+	"\fpanel_export\x18\r \x01(\tR\vpanelExport\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9d\x01\n" +

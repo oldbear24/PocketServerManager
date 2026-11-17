@@ -835,6 +835,10 @@ message BackupRun {
   // unlock runs `restic unlock` before the backup (#31): a retry of a run
   // that found the repository locked. restic removes only stale locks; never --remove-all.
   bool unlock = 12;
+  // panel_export names the panel's encrypted copy of itself (#32), which the
+  // agent fetches with FetchArtifact on a connection of its own and backs up as
+  // stdin_file_name through the relay: no mount, no exec. Not a secret.
+  string panel_export = 13;
 }
 
 // BackupRetention is how many snapshots of a job a repository keeps, as
