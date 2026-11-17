@@ -220,6 +220,7 @@ func (p *Panel) Register() {
 	// before the gateway starts, which serves the copies
 	p.registerPanelExports()
 	p.registerChangeBackups()
+	p.registerPocketBaseBackups()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
