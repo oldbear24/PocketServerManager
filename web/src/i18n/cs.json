@@ -2625,6 +2625,57 @@
       "restic": "restic selhal",
       "interrupted": "přerušeno",
       "timeout": "nedoběhla včas"
+    },
+    "failure": {
+      "label": "Problémy se zálohami",
+      "title": "{{job}} @ {{server}} selhala v {{time}}",
+      "titleVe": "{{job}} @ {{server}} selhala ve {{time}}",
+      "titleDay": "{{job}} @ {{server}} selhala ({{when}})",
+      "target": "do cíle {{target}}",
+      "attempt": "pokus {{attempt}} z {{max}}",
+      "retryAt": "další pokus: {{time}}",
+      "waitsHolder": "zopakuje se, až skončí",
+      "retrying": "Zkouší se znovu…",
+      "nextRun": "znovu to zkusí další plánovaný běh: {{time}}",
+      "noMore": "další automatické pokusy nebudou",
+      "notRetried": "neopakuje se automaticky: samo to nezmizí",
+      "invalidLock": "Repozitář blokuje nečitelný soubor zámku a restic unlock ho nechá být: až repozitář nebude používat žádný restic, smažte ten soubor zámku z úložiště a pak to zkuste znovu.",
+      "holderCommand": "Zámek drží příkaz „{{label}}“ na serveru {{server}}, který ještě běží.",
+      "holderEnded": "Zámek zůstal po příkazu „{{label}}“ na serveru {{server}}, který už skončil.",
+      "holderOther": "Zámek drží restic na {{host}} (PID {{pid}}), který PocketCloud nespouští; naposledy obnoven: {{time}}.",
+      "staleAt": "Pokud už neběží, restic jeho zámek považuje za opuštěný od {{time}}.",
+      "unlockRetry": "Odemknout a zopakovat",
+      "retry": "Zopakovat teď",
+      "showLog": "Zobrazit log",
+      "heldTitle": "Zámek drží restic, který ještě běží: PocketCloud zálohu zopakuje, až skončí.",
+      "more_one": "Zobrazit {{count}} další problém",
+      "more_few": "Zobrazit {{count}} další problémy",
+      "more_many": "Zobrazit {{count}} dalšího problému",
+      "more_other": "Zobrazit {{count}} dalších problémů",
+      "fewer": "Zobrazit méně",
+      "integrity": "Kontrola integrity cíle {{target}} našla chyby",
+      "integrityDetails": "Zobrazit podrobnosti",
+      "logTitle": "Log zálohy {{job}} → {{target}}",
+      "started": "Úloha {{job}} běží znovu do cíle {{target}}.",
+      "scheduled": "Úloha {{job}} se zopakuje, až restic zámek uzná za opuštěný: {{time}}.",
+      "retryFailed": "Opakování nezačalo: {{error}}"
+    },
+    "unlock": {
+      "title": "Odemknout {{target}} a zopakovat {{job}}?",
+      "text": "restic unlock odstraní jen zámky, které už žádný restic nedrží: ty, které nikdo 30 minut neobnovil. Zámek běžícího resticu zůstane, ať tato stránka ukazuje cokoli. Pak se {{job}} spustí znovu; u zámku mladšího 30 minut PocketCloud počká, až zastará.",
+      "fact": {
+        "holder": "Drží",
+        "host": "Počítač",
+        "pid": "PID",
+        "refreshed": "Naposledy obnoven",
+        "kind": "Zámek"
+      },
+      "exclusive": "výhradní",
+      "shared": "sdílený",
+      "confirm": "Odemknout a zopakovat",
+      "confirmLater": "Naplánovat na {{time}}",
+      "busy": "Odemykám…",
+      "agentNote": "restic unlock a pak zálohu spustí agent serveru {{server}}."
     }
   }
 }

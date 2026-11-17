@@ -4,6 +4,7 @@ import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 
+import { CommandOutput } from "../components/CommandOutput";
 import { PageHead } from "../components/Layout";
 import { useToast } from "../components/toast";
 import {
@@ -63,6 +64,7 @@ import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
 import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
 import type { Alert, Host } from "../lib/types";
+import { FailureBanners } from "./BackupFailures";
 import { IntegrityDrawer, IntegrityLine, openCheckOf } from "./BackupIntegrity";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
@@ -154,6 +156,8 @@ export function BackupsPage() {
   const restoring = params.get("restore") ?? "";
   // the target whose integrity checks are shown: ?check=<target>
   const checked = targets.items.find((target) => target.id === params.get("check")) ?? null;
+  // the output shown under the problems: a run's log, ?output=<command>
+  const output = params.get("output") ?? "";
 
   const pick = (values: Record<string, string>) =>
     setParams(
@@ -202,6 +206,27 @@ export function BackupsPage() {
         openChecks={openChecks.items}
         now={now}
       />
+      <FailureBanners
+        jobs={jobs.items}
+        runs={runs.items}
+        targets={targets.items}
+        hosts={hosts.items}
+        now={now}
+        canRun={canRun}
+        onShowLog={(command) => pick({ output: command })}
+        onDetails={(target) => pick({ check: target.id })}
+      />
+      {output && (
+        <CommandOutput
+          key={output}
+          commandId={output}
+          title={outputTitle(t, output, runs.items, jobs.items, targets.items, [
+            ...openChecks.items,
+            ...lastChecks.items,
+          ])}
+          onClose={() => pick({ output: "" })}
+        />
+      )}
       <JobsCard
         jobs={jobs.items}
         runs={runs.items}
@@ -305,6 +330,31 @@ export function BackupsPage() {
       )}
     </>
   );
+}
+
+/** What a command's output is the log of: a run of a job to a target, or a
+ * target's integrity check. */
+function outputTitle(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  command: string,
+  runs: BackupRun[],
+  jobs: BackupJob[],
+  targets: BackupTarget[],
+  checks: BackupCheck[],
+): string {
+  const name = (id: string) => targets.find((target) => target.id === id)?.name ?? "–";
+  const run = runs.find((item) => item.command === command);
+  if (run) {
+    return t("backups.failure.logTitle", {
+      job: jobs.find((job) => job.id === run.job)?.name ?? "–",
+      target: name(run.target),
+    });
+  }
+  const check = checks.find((item) => item.command === command);
+  if (check) {
+    return t("backups.integrity.logTitle", { name: name(check.target) });
+  }
+  return t("command.output");
 }
 
 /** The targets as the design lists them: name and usage, where it is, a bar

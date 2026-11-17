@@ -1096,6 +1096,13 @@ code,
   color: var(--issue-title);
 }
 
+/* the problems of the backups, under their summary (#31) */
+.failure-banners {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 /* Toasts */
 .toasts {
   position: fixed;

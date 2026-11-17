@@ -2487,6 +2487,55 @@
       "restic": "restic failed",
       "interrupted": "interrupted",
       "timeout": "did not finish in time"
+    },
+    "failure": {
+      "label": "Backup problems",
+      "title": "{{job}} @ {{server}} failed at {{time}}",
+      "titleVe": "{{job}} @ {{server}} failed at {{time}}",
+      "titleDay": "{{job}} @ {{server}} failed {{when}}",
+      "target": "to {{target}}",
+      "attempt": "attempt {{attempt}} of {{max}}",
+      "retryAt": "next try: {{time}}",
+      "waitsHolder": "retries when it ends",
+      "retrying": "Trying again…",
+      "nextRun": "the next scheduled run tries again: {{time}}",
+      "noMore": "no more automatic retries",
+      "notRetried": "not retried automatically: it does not go away by itself",
+      "invalidLock": "An unreadable lock file blocks the repository, and restic unlock leaves it: once no restic uses the repository, delete that lock file from the storage, then retry.",
+      "holderCommand": "Held by “{{label}}” on {{server}}, which is still running.",
+      "holderEnded": "Left by “{{label}}” on {{server}}, which has ended.",
+      "holderOther": "Held by restic on {{host}} (PID {{pid}}), which PocketCloud does not run; last refreshed: {{time}}.",
+      "staleAt": "If it is gone, restic counts its lock as stale from {{time}}.",
+      "unlockRetry": "Unlock and retry",
+      "retry": "Retry now",
+      "showLog": "Show log",
+      "heldTitle": "A restic that is still running holds the lock: PocketCloud retries once it ends.",
+      "more_one": "Show {{count}} more problem",
+      "more_other": "Show {{count}} more problems",
+      "fewer": "Show fewer",
+      "integrity": "The integrity check of {{target}} found errors",
+      "integrityDetails": "Show details",
+      "logTitle": "Log of {{job}} → {{target}}",
+      "started": "{{job}} runs again to {{target}}.",
+      "scheduled": "{{job}} is tried again once restic counts the lock as stale: {{time}}.",
+      "retryFailed": "The retry did not start: {{error}}"
+    },
+    "unlock": {
+      "title": "Unlock {{target}} and retry {{job}}?",
+      "text": "restic unlock removes only locks no restic holds any more: those nobody refreshed for 30 minutes. A running restic's lock stays, whatever this page shows. Then {{job}} runs again; for a lock younger than 30 minutes, PocketCloud waits until it is stale.",
+      "fact": {
+        "holder": "Held by",
+        "host": "Host",
+        "pid": "PID",
+        "refreshed": "Last refreshed",
+        "kind": "Lock"
+      },
+      "exclusive": "exclusive",
+      "shared": "shared",
+      "confirm": "Unlock and retry",
+      "confirmLater": "Schedule for {{time}}",
+      "busy": "Unlocking…",
+      "agentNote": "The agent of {{server}} runs restic unlock, then the backup."
     }
   }
 }
