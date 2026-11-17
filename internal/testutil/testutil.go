@@ -4,7 +4,9 @@ package testutil
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/apis"
@@ -20,11 +22,19 @@ import (
 var MasterKey = []byte("0123456789abcdef0123456789abcdef")
 
 // NewApp returns a test app with a fresh data dir and every migration applied.
+// The data dir is a copy of one migrated once per test binary: PocketBase
+// clones the dir it is given and applies only the migrations it lacks, and
+// applying all of them for every test is slow under the race detector, whose
+// cost grows with each migration (#31's made every e2e test ~6 s slower).
 func NewApp(t testing.TB) *tests.TestApp {
 	t.Helper()
 
+	dir, err := migratedDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	app, err := tests.NewTestAppWithConfig(core.BaseAppConfig{
-		DataDir:       t.TempDir(),
+		DataDir:       dir,
 		EncryptionEnv: "pb_test_env",
 	})
 	if err != nil {
@@ -32,6 +42,41 @@ func NewApp(t testing.TB) *tests.TestApp {
 	}
 
 	return app
+}
+
+var migrated struct {
+	once sync.Once
+	dir  string
+	err  error
+}
+
+// migratedDataDir is a data dir with every migration applied, made on first
+// use. It is left in the system's temporary dir, as nothing ends a test binary
+// that could remove it.
+func migratedDataDir() (string, error) {
+	migrated.once.Do(func() {
+		dir, err := os.MkdirTemp("", "pocketcloud-migrated-")
+		if err != nil {
+			migrated.err = err
+			return
+		}
+		app := core.NewBaseApp(core.BaseAppConfig{DataDir: dir, EncryptionEnv: "pb_test_env"})
+		if err := app.Bootstrap(); err != nil {
+			migrated.err = err
+			return
+		}
+		if err := app.RunAllMigrations(); err != nil {
+			migrated.err = err
+			return
+		}
+		// closes the databases, so that what is copied is whole
+		if err := app.ClearBootstrap(); err != nil {
+			migrated.err = err
+			return
+		}
+		migrated.dir = dir
+	})
+	return migrated.dir, migrated.err
 }
 
 // NewUser creates a user with a role and returns it with an auth token.
