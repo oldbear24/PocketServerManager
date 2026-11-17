@@ -92,6 +92,9 @@ export type BackupRun = RecordModel & {
   retry_at?: string;
   /** why a retry waits, or was dropped, as the panel says it */
   retry_note?: string;
+  /** how a planned retry ended without being made; "" while one is planned,
+   * once it was made, or when none was */
+  retry_end?: RetryEnd | "";
   /** why it failed */
   failure?: RunFailure | "";
   /** the lock that kept it out of the repository */
@@ -110,6 +113,13 @@ export type RunFailure =
   | "restic"
   | "interrupted"
   | "timeout";
+
+/** How the panel ended a planned retry without making it (#31): the job's
+ * next scheduled run takes its place, or it gave the retry up (the job was
+ * disabled, its label went, the target left it, a holder kept the lock 12
+ * hours, the retry was missed while the panel was down, a newer run took its
+ * place, or the attempts ran out). */
+export type RetryEnd = "next_run" | "given_up";
 
 /** The failures the panel tries again by itself, as they may pass. */
 export const retryableFailures: RunFailure[] = ["locked", "restic", "interrupted"];
@@ -143,7 +153,7 @@ export type RunRetention = "applied" | "deferred" | "failed" | "";
 
 /** What the Jobs and Snapshots cards read of a run: never its log, which can be long. */
 export const runFields =
-  "id,collectionId,collectionName,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,bytes_added,total_bytes,snapshot_id,retention,error,command,attempt,retry_of,retry_at,retry_note,failure,lock";
+  "id,collectionId,collectionName,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,bytes_added,total_bytes,snapshot_id,retention,error,command,attempt,retry_of,retry_at,retry_note,retry_end,failure,lock";
 
 /** A new job, as the panel takes it: only the fields of its source kind. */
 export type NewBackupJob = {
@@ -738,8 +748,12 @@ export type RunIssue = {
   held: boolean;
 };
 
+/** A run's banner, from what the panel planned: the retry at `retry_at`, the
+ * job's next scheduled run in its place (`retry_end` next_run, while the job
+ * still runs), or none any more (`retry_end` given_up, or none was planned),
+ * which is red, as the alert is critical then. */
 export function runIssue(
-  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "failure" | "retry_at" | "attempt">>,
+  run: Pick<BackupRun, "status"> & Partial<Pick<BackupRun, "failure" | "retry_at" | "retry_end">>,
   holder: HolderState,
   job: Pick<BackupJob, "enabled" | "label_removed" | "next_run_at">,
 ): RunIssue {
@@ -759,7 +773,7 @@ export function runIssue(
   } else if (parseDate(run.retry_at ?? "")) {
     state = alive ? "waitsHolder" : "retryAt";
   } else if (
-    (run.attempt || 1) < maxAttempts &&
+    run.retry_end === "next_run" &&
     job.enabled &&
     !job.label_removed &&
     parseDate(job.next_run_at)
@@ -767,11 +781,12 @@ export function runIssue(
     // the panel dropped the retry: the job's next run comes sooner
     state = "nextRun";
   } else {
+    // given up, as when a holder kept the lock 12 hours, or none was planned
     state = "noMore";
   }
   const planned = state === "waitsHolder" || state === "retryAt" || state === "nextRun";
   return {
-    tone: alive || planned ? "warn" : "err",
+    tone: planned ? "warn" : "err",
     state,
     action: locked ? "unlock" : "retry",
     held: alive,

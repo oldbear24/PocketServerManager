@@ -531,6 +531,8 @@ describe("the failed backups", () => {
         created: "2026-11-09 01:00:00.000Z",
         finished_at: "2026-11-09 01:00:05.000Z",
         error: "The agent restarted while running the backup.",
+        retry_end: "next_run",
+        retry_note: "The next scheduled run at 13:00 UTC takes its place.",
       }),
     ]);
     const planned = banner("photos @ nas failed at 03:00");
@@ -546,6 +548,30 @@ describe("the failed backups", () => {
       ),
     ).toBeInTheDocument();
     expect(dropped.getByRole("button", { name: "Retry now" })).toBeInTheDocument();
+  });
+
+  it("says in red that no more retries come once the panel gave the retry up", () => {
+    // the check holding the lock still runs after 12 hours
+    show(
+      "operator",
+      [
+        run("r1", {
+          retry_end: "given_up",
+          retry_note: "The repository stayed locked by Check the integrity of b2 for 12 hours.",
+        }),
+      ],
+      {},
+      { k3j9x2m4q8w1z7v: running },
+    );
+    const failed = banner("photos @ nas failed at 03:00");
+    expect(failed.getByRole("heading", { level: 2 }).closest(".issue-banner")).toHaveClass("err");
+    expect(
+      failed.getByText("Held by “Check the integrity of b2” on pve-01, which is still running."),
+    ).toBeInTheDocument();
+    expect(failed.getByText("attempt 1 of 4 · no more automatic retries")).toBeInTheDocument();
+    const unlock = failed.getByRole("button", { name: "Unlock and retry" });
+    expect(unlock).toBeDisabled();
+    expect(unlock).toHaveClass("critical");
   });
 
   it("offers nothing for an unreadable lock, which a person removes", () => {

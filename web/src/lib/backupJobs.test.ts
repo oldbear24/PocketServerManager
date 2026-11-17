@@ -388,6 +388,7 @@ describe("a run tried again", () => {
       "retry_of",
       "retry_at",
       "retry_note",
+      "retry_end",
       "failure",
       "lock",
     ]) {
@@ -530,8 +531,9 @@ describe("what a failed run's banner says", () => {
       expect(
         runIssue({ status: "failed", failure: "locked", retry_at: planned }, holder, job),
       ).toEqual({ tone: "warn", state: "retryAt", action: "unlock", held: false });
+      // the last attempt, which plans none
       expect(
-        runIssue({ status: "failed", failure: "locked", retry_at: "", attempt: 4 }, holder, job),
+        runIssue({ status: "failed", failure: "locked", retry_at: "", retry_end: "" }, holder, job),
       ).toEqual({ tone: "err", state: "noMore", action: "unlock", held: false });
     }
   });
@@ -547,17 +549,54 @@ describe("what a failed run's banner says", () => {
     }
   });
 
-  it("says the next scheduled run takes a dropped retry's place, else no more retries", () => {
-    const dropped = { status: "failed" as const, failure: "restic" as const, retry_at: "" };
+  it("says the next scheduled run takes a dropped retry's place, while the job runs", () => {
+    const dropped = {
+      status: "failed" as const,
+      failure: "restic" as const,
+      retry_at: "",
+      retry_end: "next_run" as const,
+    };
     expect(runIssue(dropped, "unknown", job)).toEqual({
       tone: "warn",
       state: "nextRun",
       action: "retry",
       held: false,
     });
-    expect(runIssue({ ...dropped, attempt: 4 }, "unknown", job).state).toBe("noMore");
+    // a job that no longer runs has no next run to take its place
     expect(runIssue(dropped, "unknown", { ...job, enabled: false }).state).toBe("noMore");
+    expect(runIssue(dropped, "unknown", { ...job, label_removed: true }).state).toBe("noMore");
     expect(runIssue(dropped, "unknown", { ...job, next_run_at: "" }).state).toBe("noMore");
+  });
+
+  it("says in red that no more retries come once the panel gave one up, or planned none", () => {
+    // as when a holder kept the lock 12 hours, or the retry was missed while
+    // the panel was down: the job's next run still comes, but in no retry's place
+    const givenUp = {
+      status: "failed" as const,
+      failure: "restic" as const,
+      retry_at: "",
+      retry_end: "given_up" as const,
+    };
+    expect(runIssue(givenUp, "unknown", job)).toEqual({
+      tone: "err",
+      state: "noMore",
+      action: "retry",
+      held: false,
+    });
+    // none planned, as the attempts were over
+    expect(runIssue({ ...givenUp, retry_end: "" }, "unknown", job)).toEqual({
+      tone: "err",
+      state: "noMore",
+      action: "retry",
+      held: false,
+    });
+    // a holder that still runs holds the button back, and no retry follows it
+    expect(runIssue({ ...givenUp, failure: "locked" }, "alive", job)).toEqual({
+      tone: "err",
+      state: "noMore",
+      action: "unlock",
+      held: true,
+    });
   });
 
   it("says a failure that does not pass by itself is not retried", () => {
