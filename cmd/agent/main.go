@@ -11,6 +11,8 @@
 //	pocketcloud-agent backup-tool   run restic for a backup command, in its job container
 //	pocketcloud-agent panel-recovery targets|snapshots|fetch
 //	                                take the panel's copy out of its backup, with the recovery kit
+//	pocketcloud-agent repoint --panel HOST:PORT [--check]
+//	                                dial a panel at another address from now on, once it knows this server
 package main
 
 import (
@@ -58,8 +60,10 @@ func main() {
 		err = agent.BackupTool(ctx, os.Args[2:], agent.BackupToolEnv(os.Environ()), os.Stdin, os.Stdout, os.Stderr)
 	case "panel-recovery":
 		err = panelRecovery(ctx, config, os.Args[2:])
+	case "repoint":
+		err = agent.Repoint(ctx, config, os.Args[2:], os.Stdout)
 	default:
-		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics, version or panel-recovery", command)
+		err = fmt.Errorf("unknown command %q: use run, enroll, healthcheck, diagnostics, version, panel-recovery or repoint", command)
 	}
 
 	// the backup tool's relay ends with a dump's own exit code, having said why

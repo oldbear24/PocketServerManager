@@ -160,8 +160,8 @@ func TestADumpGoesThroughTheBinarysRelay(t *testing.T) {
 
 // TestThePanelsRecoveryCommandsReachTheAgent (#32): the binary runs
 // panel-recovery with the kit's passphrase from the environment, as docker
-// exec -e gives it, and asks no terminal it does not have; each refusal
-// is said and ends with exit code 1.
+// exec -e gives it, asks no terminal it does not have, and runs repoint;
+// each refusal is said and ends with exit code 1.
 func TestThePanelsRecoveryCommandsReachTheAgent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the agent")
@@ -211,6 +211,9 @@ func TestThePanelsRecoveryCommandsReachTheAgent(t *testing.T) {
 	if _, stderr, code := run([]string{"POCKETCLOUD_KIT_PASSPHRASE=another passphrase"}, "panel-recovery", "targets", "--kit", kit); code != 1 ||
 		stderr != "error: the passphrase does not open this kit, or the kit was changed\n" {
 		t.Errorf("a wrong passphrase: %d %q", code, stderr)
+	}
+	if _, stderr, code := run(nil, "repoint", "--panel", "panel.example.com:9443"); code != 1 || !strings.Contains(stderr, "has not enrolled") {
+		t.Errorf("repoint: %d %q", code, stderr)
 	}
 	if entries, _ := os.ReadDir(state); len(entries) != 0 {
 		t.Errorf("the state directory holds %d entries", len(entries))
