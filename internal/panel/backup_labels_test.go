@@ -115,6 +115,12 @@ func TestAJobOfARemovedStackStopsUntilItIsChanged(t *testing.T) {
 	if job, _ := f.app.FindRecordById(schema.BackupJobs, volume.Id); !job.GetBool("enabled") || job.GetString("problem") != "" {
 		t.Errorf("a job of a volume: %v", job)
 	}
+	// the removal's own pass runs in the background, and may log a job's
+	// event just after this one found the job disabled
+	f.eventually("an event for each job", func() bool {
+		events, err := f.app.FindRecordsByFilter(schema.Events, "kind='backup.job_disabled'", "", 0, 0)
+		return err == nil && len(events) == 2
+	})
 	events, err := f.app.FindRecordsByFilter(schema.Events, "kind='backup.job_disabled'", "", 0, 0)
 	if err != nil || len(events) != 2 || !strings.Contains(events[0].GetString("message"), "its stack was removed") {
 		t.Errorf("events: %v %v", events, err)
