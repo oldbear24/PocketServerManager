@@ -106,6 +106,9 @@ type Engine struct {
 type Job struct {
 	Name   string
 	Labels map[string]string
+	// Hostname is the container's hostname, as its create config set it;
+	// empty for the Engine's own, the container's short id (#31).
+	Hostname string
 	// Cmd and Env are the container's command and environment.
 	Cmd []string
 	Env []string
@@ -990,6 +993,7 @@ func stopJob(c *Container) {
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
 	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
+	job.Hostname, _ = c.Config["Hostname"].(string)
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR
 	}

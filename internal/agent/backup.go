@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +25,10 @@ import (
 // host key into files copied in before it starts, and nowhere else on the
 // server. A local target's directory is the only thing of the server an init
 // job mounts; a backup run's job mounts, besides, what it backs up, read-only
-// (see backuprun.go).
+// (see backuprun.go), and the first pass of an integrity check mounts it
+// read-only (see backupcheck.go). Every job's hostname names its command,
+// pc-<command id>, so that a lock restic leaves says which command holds it
+// (#31).
 
 const (
 	// backupTargetLabel names the target of a backup job container.
@@ -39,8 +43,15 @@ const (
 	// a backup job left by the agent, has to stop before it is removed: the
 	// backup tool stops restic, which removes its locks; a job removed at
 	// once is killed, and its locks keep other backups and retentions
-	// waiting. A target's check takes no lock, and is removed at once.
+	// waiting. A target's connection check (#28's init) takes no lock, and
+	// is removed at once; an integrity check's second pass holds restic's
+	// exclusive lock, which a killed one leaves for 30 minutes (#31).
 	backupStopGrace = 30 * time.Second
+	// maxLockClockSkew is how far the server's clock may be off the panel's
+	// before the backup tool removes no lock (#31): restic judges a lock's
+	// age by the clock of the server it runs on, and one whose clock is far
+	// ahead takes a live lock for a stale one.
+	maxLockClockSkew = 5 * time.Minute
 	// imageVolume is the VOLUME of the agent's image (images/agent/
 	// Dockerfile), the agent's state, which a job covers (#30).
 	imageVolume = "/var/lib/pocketcloud"
@@ -49,6 +60,7 @@ const (
 func (a *Agent) registerBackupHandlers() {
 	a.Executor.Handle("backup.init", a.handleBackupInit)
 	a.Executor.Handle("backup.run", a.handleBackupRun)
+	a.Executor.Handle("backup.check", a.handleBackupCheck)
 	a.registerRestoreHandlers()
 }
 
@@ -63,7 +75,7 @@ func (a *Agent) handleBackupInit(ctx context.Context, command *agentv1.Command, 
 	if payload.GetUsage() {
 		args = append(args, "--usage")
 	}
-	out, err := a.backupJob(ctx, payload.GetRepository(), backupJobSpec{args: args}, reporter)
+	out, err := a.backupJob(ctx, payload.GetRepository(), backupJobSpec{args: args, labels: commandLabels(command)}, reporter)
 	var refused *backupRefused
 	if errors.As(err, &refused) {
 		// the job ran and restic, or the tool, said no: the panel may forget
@@ -120,8 +132,23 @@ type backupJobSpec struct {
 	attachOutput io.Writer
 	// logConfig is the job's log driver and its options; json-file when nil
 	logConfig map[string]any
-	// labels are added to the job's own, such as the command it runs
+	// labels are added to the job's own, such as the command it runs, which
+	// names the job's hostname too (see backup.JobHost)
 	labels map[string]string
+	// repoReadOnly binds a local target's directory read-only, with no
+	// capability but DAC_OVERRIDE: the first pass of an integrity check
+	// reads the repository without a lock and writes nothing (#31)
+	repoReadOnly bool
+}
+
+// clockSkewed says how far the server's clock is off the panel's, as the last
+// heartbeat measured it, and whether that is more than maxLockClockSkew.
+func (a *Agent) clockSkewed() (time.Duration, bool) {
+	skew := time.Duration(a.lastSkew.Load()) * time.Microsecond
+	if skew < 0 {
+		skew = -skew
+	}
+	return skew, skew > maxLockClockSkew
 }
 
 // checkRepository checks that the panel completed a command's repository.
@@ -159,6 +186,10 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 	for _, name := range slices.Sorted(maps.Keys(repo.GetOptions())) {
 		cmd = append(cmd, "-o", name+"="+repo.GetOptions()[name])
 	}
+	if skew, off := a.clockSkewed(); off {
+		// the tool's unlocks remove nothing, and say why (#31)
+		cmd = append(cmd, "--no-unlock="+strconv.Itoa(int(skew.Round(time.Minute)/time.Minute)))
+	}
 
 	// a remote repository is reached over the network; a local one is a
 	// directory of the server, which the job alone mounts
@@ -170,15 +201,22 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 			return nil, err
 		}
 		network = "none"
-		mounts = append(mounts, map[string]any{
+		bind := map[string]any{
 			"Type": "bind", "Source": dir, "Target": backup.LocalMount,
 			"BindOptions": map[string]any{"CreateMountpoint": true},
-		})
+		}
 		cmd = append(cmd, "--local", backup.LocalMount)
 		// root of the job may use the directory whoever owns it, such as a
 		// disk mounted for a user: the job reaches nothing but it and has no
 		// network
 		capabilities = []string{"DAC_OVERRIDE", "FOWNER"}
+		if job.repoReadOnly {
+			// it reads the directory whoever owns it, and writes nothing,
+			// not even the directory where it is gone
+			bind = map[string]any{"Type": "bind", "Source": dir, "Target": backup.LocalMount, "ReadOnly": true}
+			capabilities = []string{"DAC_OVERRIDE"}
+		}
+		mounts = append(mounts, bind)
 	}
 	mounts = append(mounts, job.mounts...)
 	// the agent's image declares its state folder a VOLUME, of which the
@@ -218,6 +256,13 @@ func (a *Agent) backupJob(ctx context.Context, repo *agentv1.BackupRepository, j
 			"SecurityOpt": []string{"no-new-privileges"},
 			"LogConfig":   logConfig,
 		},
+	}
+	if command := labels["pocketcloud.command"]; command != "" {
+		// restic names a lock's holder by its hostname: the job's names
+		// its command, and no two jobs that run at once share it, so that
+		// restic's rule for a lock of its own host, whose PID is gone, never
+		// meets another job's PID (#31)
+		config["Hostname"] = backup.JobHost(command)
 	}
 	if job.feed != nil {
 		// its input ends when the agent closes it

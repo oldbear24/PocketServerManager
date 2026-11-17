@@ -578,7 +578,7 @@ func (r restic) runRoot(ctx context.Context, request restoreRequest, plan restor
 		if code == resticLocked && run.lines == 0 && attempt == 0 {
 			// a lock that no restic refreshes, of a job that was killed,
 			// keeps the restore out until restic unlock removes it
-			r.unlock(ctx)
+			r.unlock(ctx, lockedRetry)
 			continue
 		}
 		return run, nil
@@ -784,7 +784,7 @@ func (r restic) dump(ctx context.Context, id, p, tag string, w io.Writer) error 
 	args := []string{"--retry-lock", restoreRetryLock, "dump", "--archive", "tar", id, p}
 	code, said, err := r.to(ctx, out, args...)
 	if err == nil && code == resticLocked && out.n == 0 {
-		r.unlock(ctx)
+		r.unlock(ctx, lockedRetry)
 		code, said, err = r.to(ctx, out, args...)
 	}
 	if err != nil {

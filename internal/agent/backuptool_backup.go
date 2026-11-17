@@ -32,6 +32,9 @@ type backupRun struct {
 	stdinName string
 	relay     string
 	keep      []keepOption
+	// unlock runs restic unlock first: the retry of a run that found the
+	// repository locked (#31)
+	unlock bool
 }
 
 // keepOption is one of restic's --keep-* options.
@@ -125,8 +128,14 @@ func (s *resticSummary) result() backupRunResult {
 
 // backup backs up a run's directories or dump, and applies its retention.
 // The result of a snapshot that lacks files it could not read comes with
-// the error.
+// the error; a backup that saved nothing once restic ran fails with a
+// resticError, which says why.
 func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*backupRunResult, error) {
+	if run.unlock {
+		// plain restic unlock: it removes only the locks no restic holds
+		// any more, never a live one, and never one it cannot read
+		r.unlock(ctx, "Removing the locks no restic holds any more before the retry")
+	}
 	// --quiet: no progress, and the summary still; one --tag with commas
 	// gives the snapshot every tag
 	args := []string{"backup", "--json", "--quiet", "--retry-lock", retryLock, "--host", run.host}
@@ -155,7 +164,7 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	if err == nil && code == resticLocked && (dump == nil || !dump.connected()) {
 		// a lock that no restic refreshes, of a job that was killed, keeps
 		// every other out until restic unlock removes it
-		r.unlock(ctx)
+		r.unlock(ctx, lockedRetry)
 		out, code, said, err = r.run(ctx, args...)
 	}
 	if err != nil {
@@ -164,7 +173,7 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	if dump != nil && code != 0 {
 		// the dump's own words say why, before restic's that it failed
 		if failure := dump.failure(); failure != "" {
-			return nil, errors.New(backup.Redact(failure, r.secrets...))
+			return nil, &resticError{code: code, failure: backup.FailureSource, message: backup.Redact(failure, r.secrets...)}
 		}
 	}
 	summary := summaryOf(out)
@@ -173,9 +182,10 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 		result := summary.result()
 		return &result, fmt.Errorf("restic saved the snapshot %.8s, but could not read everything: %s", summary.SnapshotID, said)
 	case code != 0:
-		return nil, repositoryError(code, said)
+		return nil, r.failure(code, said)
 	case summary == nil:
-		return nil, fmt.Errorf("restic saved no snapshot and said: %s", strings.TrimSpace(backup.Redact(string(out), r.secrets...)))
+		return nil, &resticError{failure: backup.FailureRestic,
+			message: fmt.Sprintf("restic saved no snapshot and said: %s", strings.TrimSpace(backup.Redact(string(out), r.secrets...)))}
 	}
 	result := summary.result()
 	fmt.Fprintf(r.log, "Saved the snapshot %.8s: %d new and %d changed files, %s added, %s in all\n",
@@ -198,6 +208,49 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	return &result, nil
 }
 
+// resticError is a backup that saved nothing once restic ran (#31): its
+// error is restic's words, as it was before, and it says the failure's class,
+// restic's exit code and the lock that kept it out, for the panel's retries.
+type resticError struct {
+	code    int
+	failure string
+	message string
+	lock    *backup.Lock
+}
+
+func (e *resticError) Error() string { return e.message }
+
+// result is what the backup op says of it, as its last line.
+func (e *resticError) result() backup.RunFailure {
+	return backup.RunFailure{Failure: e.failure, ResticCode: e.code, Lock: e.lock}
+}
+
+// failure is the resticError of restic's exit code and what it said: worded
+// as repositoryError words it, classed by the code and the words, with the
+// lock of a repository that stayed locked.
+func (r restic) failure(code int, said string) *resticError {
+	failed := &resticError{code: code, failure: backup.FailureRestic, message: repositoryError(code, said).Error()}
+	switch {
+	case code == resticLocked:
+		failed.failure = backup.FailureLocked
+		if r.seen != nil {
+			failed.lock = r.seen.lock
+		}
+	case code == 1 && strings.Contains(said, "invalid lock file"):
+		// restic unlock leaves a lock file it cannot read
+		failed.failure = backup.FailureLockInvalid
+	case code == resticNoRepository, code == 1 && strings.Contains(said, "bucket does not exist"):
+		failed.failure = backup.FailureRepository
+	case code == resticWrongPassword:
+		failed.failure = backup.FailurePassword
+	}
+	return failed
+}
+
+// lockedRetry is what the log says as an op that found the repository
+// locked runs restic unlock, before it tries once more.
+const lockedRetry = "The repository is locked: removing the locks no restic holds any more, and trying once more"
+
 // lockedError is restic that could not lock the repository, once more after
 // restic unlock.
 type lockedError struct{ said string }
@@ -219,7 +272,7 @@ func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (i
 	fmt.Fprintf(r.log, "Applying the retention: keep %s\n", strings.Join(policy, ", "))
 	out, code, said, err := r.run(ctx, args...)
 	if err == nil && code == resticLocked {
-		r.unlock(ctx)
+		r.unlock(ctx, lockedRetry)
 		out, code, said, err = r.run(ctx, args...)
 	}
 	if err != nil {

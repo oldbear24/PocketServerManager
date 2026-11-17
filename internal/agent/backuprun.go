@@ -71,6 +71,11 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 	if err != nil {
 		return nil, err
 	}
+	job.labels = commandLabels(command)
+	if payload.GetUnlock() {
+		// the retry of a run that found the repository locked (#31)
+		job.args = append(job.args, "--unlock")
+	}
 	// what it reads, which no restore writes while it runs (#30)
 	release, err := a.claims.claim(false, backupClaimKeys(job))
 	if err != nil {
@@ -88,6 +93,9 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 	saved := len(out) > 0 && json.Unmarshal(out, &result) == nil && result.SnapshotID != ""
 	if saved {
 		maps.Copy(answer, result.answer())
+	} else {
+		// why restic saved nothing, which the panel's retries go by (#31)
+		maps.Copy(answer, runFailureAnswer(out))
 	}
 	var refused *backupRefused
 	switch {
@@ -97,7 +105,11 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 		answer["refused"] = true
 		return answer, err
 	case err != nil:
-		return answer, missingDirectory(err)
+		if dir, missing := missingDirectoryOf(err); missing {
+			answer["failure"] = backup.FailureSource
+			return answer, missingDirectoryError(dir)
+		}
+		return answer, err
 	case !saved:
 		return answer, fmt.Errorf("the backup tool said: %s", out)
 	}
@@ -107,17 +119,51 @@ func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, r
 // missingDirectory words the Engine's refusal to mount a directory of the
 // server that is not there, which the agent cannot see itself.
 func missingDirectory(err error) error {
+	if dir, missing := missingDirectoryOf(err); missing {
+		return missingDirectoryError(dir)
+	}
+	return err
+}
+
+// missingDirectoryOf is the directory of the server the Engine refused to
+// mount as it is not there, if err is that refusal.
+func missingDirectoryOf(err error) (string, bool) {
 	const missing = "bind source path does not exist: "
 	message := err.Error()
 	at := strings.Index(message, missing)
 	if at < 0 {
-		return err
+		return "", false
 	}
 	dir := message[at+len(missing):]
 	if end := strings.LastIndex(dir, " (HTTP "); end >= 0 {
 		dir = dir[:end]
 	}
+	return dir, true
+}
+
+func missingDirectoryError(dir string) error {
 	return fmt.Errorf("the directory %s does not exist on this server", dir)
+}
+
+// runFailureAnswer is what a run's answer says of why restic saved nothing,
+// from the backup op's last line: the failure's class, restic's exit code and
+// the lock, each left out when the op did not say it.
+func runFailureAnswer(out []byte) map[string]any {
+	var failure backup.RunFailure
+	if len(out) == 0 || json.Unmarshal(out, &failure) != nil || failure.Failure == "" {
+		return nil
+	}
+	answer := map[string]any{"failure": failure.Failure}
+	if failure.ResticCode != 0 {
+		answer["restic_code"] = int64(failure.ResticCode)
+	}
+	if failure.Lock != nil {
+		var lock map[string]any
+		if raw, err := json.Marshal(failure.Lock); err == nil && json.Unmarshal(raw, &lock) == nil {
+			answer["lock"] = lock
+		}
+	}
+	return answer
 }
 
 // answer is a run's result for the panel.

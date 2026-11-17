@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
+	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
 // TestToolMarksKeepTheToolsLinesOutOfTheLog (#30): the backup tool's marks
@@ -159,5 +161,181 @@ func TestAnAttachedJobStreamsItsOutputAndKeepsNoLog(t *testing.T) {
 	}
 	if !stopped {
 		t.Errorf("the job was not stopped with its grace: %q", engine.Calls())
+	}
+}
+
+// commandOf is a command of id with payload, of the type the payload is.
+func commandOf(id string, payload any) *agentv1.Command {
+	c := &agentv1.Command{Id: id}
+	switch p := payload.(type) {
+	case *agentv1.BackupInit:
+		c.Type, c.Payload = "backup.init", &agentv1.Command_BackupInit{BackupInit: p}
+	case *agentv1.BackupRun:
+		c.Type, c.Payload = "backup.run", &agentv1.Command_BackupRun{BackupRun: p}
+	case *agentv1.BackupSnapshots:
+		c.Type, c.Payload = "backup.snapshots", &agentv1.Command_BackupSnapshots{BackupSnapshots: p}
+	case *agentv1.BackupBrowse:
+		c.Type, c.Payload = "backup.browse", &agentv1.Command_BackupBrowse{BackupBrowse: p}
+	case *agentv1.BackupRestore:
+		c.Type, c.Payload = "backup.restore", &agentv1.Command_BackupRestore{BackupRestore: p}
+	case *agentv1.BackupDump:
+		c.Type, c.Payload = "backup.dump", &agentv1.Command_BackupDump{BackupDump: p}
+	case *agentv1.BackupCheck:
+		c.Type, c.Payload = "backup.check", &agentv1.Command_BackupCheck{BackupCheck: p}
+	}
+	return c
+}
+
+// TestEveryBackupJobIsNamedAfterItsCommand (#31): restic names a lock's
+// holder by its hostname, so every backup job's is pc-<its command's id>,
+// beside the command's label, and a lock says which command holds it; a job
+// that runs for no command keeps the Engine's own hostname.
+func TestEveryBackupJobIsNamedAfterItsCommand(t *testing.T) {
+	h := newRestoreHarness(t)
+	livePanel(t, h.Agent)
+	h.volume(t, "app_data", map[string]string{"a.txt": "a"})
+	ctx := context.Background()
+	if _, err := h.handleBackupInit(ctx, commandOf("kinit0000000001", &agentv1.BackupInit{Repository: h.repo}), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.handleBackupRun(ctx, commandOf("krun00000000001", &agentv1.BackupRun{
+		Repository: h.repo, Volumes: []string{"app_data"}, Tags: []string{"pocketcloud", testJobTag}, HostName: "nas"}), &Reporter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := result["snapshot_id"].(string)
+	if _, err := h.handleBackupSnapshots(ctx, commandOf("klist0000000001", &agentv1.BackupSnapshots{Repository: h.repo}), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.handleBackupBrowse(ctx, commandOf("kbrowse00000001", &agentv1.BackupBrowse{Repository: h.repo, SnapshotId: snapshot, Path: "/"}), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	preview := h.payload(snapshot, "app_data")
+	preview.DryRun, preview.Overwrite, preview.Replace = true, false, false
+	if _, err := h.restore(ctx, "kpreview0000001", preview); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.restore(ctx, "krestore0000001", h.payload(snapshot, "app_data")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.handleBackupDump(ctx, commandOf("kdump0000000001", &agentv1.BackupDump{Repository: h.repo, SnapshotId: snapshot,
+		Path: "/volumes/app_data/a.txt", RestoreId: "r1", FileName: "a.txt", JobTag: testJobTag}), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	// both passes of a check that finds errors
+	t.Setenv("FAKE_RESTIC_CHECK", "errors")
+	if _, err := h.handleBackupCheck(ctx, commandOf("kcheck000000001", &agentv1.BackupCheck{Repository: h.repo, ReadDataSubset: "1/20"}), &Reporter{}); err == nil {
+		t.Fatal("a check of a damaged pack passed")
+	}
+
+	h.mu.Lock()
+	jobs := slices.Clone(h.jobs)
+	h.mu.Unlock()
+	var named []string
+	for _, job := range jobs {
+		id := job.Labels["pocketcloud.command"]
+		switch {
+		case id == "" && job.Hostname != "":
+			t.Errorf("a job for no command has the hostname %q", job.Hostname)
+		case id != "" && job.Hostname != "pc-"+id:
+			t.Errorf("the job of %s (%q) has the hostname %q", id, job.Cmd, job.Hostname)
+		case id != "":
+			named = append(named, id)
+		}
+	}
+	if want := []string{"kinit0000000001", "krun00000000001", "klist0000000001", "kbrowse00000001", "kpreview0000001", "krestore0000001", "kdump0000000001", "kcheck000000001", "kcheck000000001"}; !slices.Equal(named, want) {
+		t.Errorf("jobs named after their commands: %q, want %q", named, want)
+	}
+}
+
+// TestAServerWhoseClockIsOffUnlocksNothing (#31): while the server's clock
+// is more than 5 minutes off the panel's, ahead or behind, every backup tool
+// call says by how many minutes, and the tool's unlocks remove nothing; a
+// run that finds the repository locked tries once more all the same.
+func TestAServerWhoseClockIsOffUnlocksNothing(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	r.volume(t, "data", map[string]string{"a": "1"})
+	for i, c := range []struct {
+		skew time.Duration
+		flag string
+	}{
+		{6*time.Minute + 20*time.Second, "--no-unlock=6"},
+		{-(7*time.Minute + 40*time.Second), "--no-unlock=8"},
+		{5 * time.Minute, ""},
+		{-5 * time.Minute, ""},
+		{0, ""},
+	} {
+		r.lastSkew.Store(c.skew.Microseconds())
+		// the first try of each run finds the repository locked
+		t.Setenv("FAKE_RESTIC_LOCKED_BACKUP", strconv.Itoa(i+1))
+		result, err := r.handleBackupRun(context.Background(), runCommand(&agentv1.BackupRun{
+			Repository: repo, Volumes: []string{"data"}, Tags: []string{"pocketcloud", "job:j1"}, HostName: "nas",
+		}), &Reporter{})
+		job := r.lastJob(t)
+		var flags []string
+		for _, arg := range job.Cmd {
+			if strings.HasPrefix(arg, "--no-unlock") {
+				flags = append(flags, arg)
+			}
+		}
+		log, _ := result["log"].(string)
+		switch {
+		case c.flag == "" && len(flags) > 0, c.flag != "" && !slices.Equal(flags, []string{c.flag}):
+			t.Errorf("a clock off by %v: %q", c.skew, job.Cmd)
+		case c.flag != "" && !strings.Contains(log, "so no lock is removed\n"):
+			t.Errorf("a clock off by %v: the log\n%s", c.skew, log)
+		case c.flag == "" && strings.Contains(log, "so no lock is removed"):
+			t.Errorf("a clock off by %v removed no lock:\n%s", c.skew, log)
+		case err != nil:
+			t.Errorf("a clock off by %v: %v", c.skew, err)
+		}
+	}
+	if unlocks := fakerestic.Unlocks(t, r.root); unlocks != 3 {
+		t.Errorf("restic unlock ran %d times, for the 3 runs whose server's clock was right", unlocks)
+	}
+}
+
+// TestARepositoryBoundReadOnlyIsReadOnly (#31): a job that only reads a
+// local target's repository, as the first pass of an integrity check,
+// binds it read-only, without making the directory where it is gone, and
+// with no capability but DAC_OVERRIDE, which reads it whoever owns it; any
+// other binds it writable, with FOWNER besides, as restic writes its locks
+// there.
+func TestARepositoryBoundReadOnlyIsReadOnly(t *testing.T) {
+	a, engine, _ := backupAgent(t)
+	var job fakedocker.Job
+	engine.OnJob = func(j fakedocker.Job) fakedocker.JobResult {
+		job = j
+		return fakedocker.JobResult{Stdout: "{}\n"}
+	}
+	repo := &agentv1.BackupRepository{TargetId: "t1", Url: "/repo", Password: "p", Mount: "/srv/backups"}
+	for _, readOnly := range []bool{true, false} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := a.backupJob(ctx, repo, backupJobSpec{args: []string{"check"}, noCache: true, repoReadOnly: readOnly}, io.Discard)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bind := mountsOf(job)["/repo"]
+		capabilities := anyStrings(job.Host["CapAdd"])
+		switch {
+		case readOnly && (bind["ReadOnly"] != true || bind["BindOptions"] != nil || !slices.Equal(capabilities, []string{"DAC_OVERRIDE"})):
+			t.Errorf("read-only: %v, may %q", bind, capabilities)
+		case !readOnly && (bind["ReadOnly"] == true || bind["BindOptions"] == nil || !slices.Equal(capabilities, []string{"DAC_OVERRIDE", "FOWNER"})):
+			t.Errorf("writable: %v, may %q", bind, capabilities)
+		}
+		if bind["Source"] != "/srv/backups" || job.Host["NetworkMode"] != "none" {
+			t.Errorf("the repository's mount: %v, network %v", bind, job.Host["NetworkMode"])
+		}
+	}
+
+	// a remote repository has no mount and no capability either way
+	remote := &agentv1.BackupRepository{TargetId: "t2", Url: "s3:http://minio:9000/b", Password: "p"}
+	if _, err := a.backupJob(context.Background(), remote, backupJobSpec{args: []string{"check"}, noCache: true, repoReadOnly: true}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if mountsOf(job)["/repo"] != nil || job.Host["CapAdd"] != nil || job.Host["NetworkMode"] != "bridge" {
+		t.Errorf("a remote repository's job: %v", job.Host)
 	}
 }

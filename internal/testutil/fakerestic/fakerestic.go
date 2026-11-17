@@ -49,16 +49,38 @@ const Wrong = "wrong"
 // --keep-X N keeps the newest N snapshots of a group, as --keep-last does:
 // together they keep as many as the largest. A forgotten snapshot moves to
 // the repository's forgotten directory. FAKE_RESTIC_FORGET_FAIL makes forget
-// fail with its text.
+// fail with its text, and FAKE_RESTIC_BACKUP_FAIL backup, with exit code 1
+// and nothing saved (#31).
 //
 // The fake holds no locks. FAKE_RESTIC_LOCKED_BACKUP=N makes the first N
 // backups of the test, and FAKE_RESTIC_LOCKED_FORGET=N the first N forgets,
 // find the repository locked by another restic: they fail with exit code 11
-// and restic's words, "unable to create lock in backend: repository is
-// already locked ...", as restic does once --retry-lock has passed. unlock
-// removes nothing and says nothing, as restic with no stale lock; Unlocks
-// counts its calls. FAKE_RESTIC_LOCKED_RESTORE and FAKE_RESTIC_LOCKED_DUMP
-// do the same for restore and dump (#30).
+// and restic's four lines, "unable to create lock in backend: repository is
+// already locked ... by PID 1 on other-server by root (UID 0, GID 0)", "lock
+// was created at … (5m0.12s ago)", "storage ID …" and the unlock hint, as
+// restic does once --retry-lock has passed; FAKE_RESTIC_LOCK_HOST,
+// FAKE_RESTIC_LOCK_PID and FAKE_RESTIC_LOCK_AGE (a Go duration) name another
+// holder (#31). unlock removes nothing and says nothing, as restic with no
+// stale lock; Unlocks counts its calls. FAKE_RESTIC_LOCKED_RESTORE and
+// FAKE_RESTIC_LOCKED_DUMP do the same for restore and dump (#30), and
+// FAKE_RESTIC_LOCKED_CHECK for a check that locks (#31): one without
+// --no-lock, whose exclusive lock any other keeps out.
+//
+// check (#31) prints restic 0.17.3's lines (see the agent's
+// testdata/restic-0.17.3): "using temporary cache in DIR" under --cache-dir,
+// "create exclusive lock for repository" without --no-lock, its phases, the
+// counters' last lines (and their first ones too when RESTIC_PROGRESS_FPS is
+// set), and with --read-data-subset=n/t the group it reads of twice as many
+// packs as the repository has snapshots, pack k in group k%t+1 for k from 0;
+// FAKE_RESTIC_SLOW_MS waits that long before each pack. FAKE_RESTIC_CHECK
+// finds errors: errors, a damaged pack, with restic's repair hints;
+// errors_free, the download errors of a prune that ran meanwhile, only with
+// --no-lock, as restic's exclusive lock keeps a prune out; index, a damaged
+// index file; tree, a damaged tree. Each ends with "Fatal: repository
+// contains errors" and exit code 1. A check that locks a local repository
+// RunJobs mounted read-only fails as restic does, "unable to create lock in
+// backend: … read-only file system", exit code 1; one with --no-lock reads it
+// and writes nothing.
 //
 // For restores (#30), shaped after what restic 0.17.3 prints (see the
 // agent's testdata/restic-0.17.3): version says 0.17.3, or
@@ -83,10 +105,14 @@ const Wrong = "wrong"
 const script = `#!/bin/sh
 root="${FAKE_RESTIC_ROOT:?}"
 { echo "restic $*"; env | grep -E '^(RESTIC|AWS)_' | sort; echo; } >> "$root/calls"
+nolock=
+cachedir=
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--no-cache|--no-lock|--cleanup-cache) shift;;
-	-o|--cache-dir|--retry-lock) shift 2;;
+	--no-cache|--cleanup-cache) shift;;
+	--no-lock) nolock=1; shift;;
+	--cache-dir) cachedir=$2; shift 2;;
+	-o|--retry-lock) shift 2;;
 	*) break;;
 	esac
 done
@@ -107,8 +133,9 @@ case "$RESTIC_REPOSITORY" in
 *) repo="$root/repos/$(printf %s "$RESTIC_REPOSITORY" | tr -c 'A-Za-z0-9' '_')";;
 esac
 
-# open_repo: the repository is there, and the password is its own
-open_repo() {
+# opened: the repository is there, and the password is its own; nothing is
+# written
+opened() {
 	# a bucket named nobucket is not there until init makes it, as MinIO says
 	case "$RESTIC_REPOSITORY" in
 	*/nobucket*)
@@ -126,6 +153,11 @@ open_repo() {
 		echo "Fatal: wrong password or no key found" >&2
 		exit 12
 	fi
+}
+
+# open_repo: the repository is opened, for a command that writes it
+open_repo() {
+	opened
 	mkdir -p "$repo/snapshots" "$repo/forgotten" "$repo/aborted"
 }
 
@@ -167,14 +199,16 @@ MOUNTS
 }
 
 # locked: the first $1 calls of the command $2 find the repository locked by
-# another restic, which holds the lock $3 (exclusively, or "")
+# another restic, which holds the lock $3 (exclusively, or ""); $4, when
+# given, is what restic says on its standard output as it waits
 locked() {
 	[ "${1:-0}" -gt 0 ] 2>/dev/null || return 0
 	count=$(cat "$root/locked-$2" 2>/dev/null || echo 0)
 	[ "$count" -lt "$1" ] || return 0
 	echo $((count + 1)) > "$root/locked-$2"
-	echo "unable to create lock in backend: repository is already locked ${3:+$3 }by PID 1 on other-server by root (UID 0, GID 0)" >&2
-	echo "lock was created at 2026-11-09 03:00:00 (5m0.12s ago)" >&2
+	[ -n "$4" ] && echo "$4"
+	echo "unable to create lock in backend: repository is already locked ${3:+$3 }by PID ${FAKE_RESTIC_LOCK_PID:-1} on ${FAKE_RESTIC_LOCK_HOST:-other-server} by root (UID 0, GID 0)" >&2
+	echo "lock was created at 2026-11-09 03:00:00 (${FAKE_RESTIC_LOCK_AGE:-5m0.12s} ago)" >&2
 	echo "storage ID 4f2a9c1e" >&2
 	echo "the ` + "\\`unlock\\`" + ` command can be used to remove stale locks" >&2
 	exit 11
@@ -232,6 +266,27 @@ slow() {
 	return 0
 }
 
+# hexid: a full id made of what follows
+hexid() {
+	printf '%s' "$*" | sha256sum | cut -c1-64
+}
+
+# counter: restic's counter of $1 done of $2 in the unit $3
+counter() {
+	if [ "$2" -gt 0 ]; then
+		printf '[0:00] %s%%  %d / %d %s\n' "$(awk "BEGIN{printf \"%.2f\", 100*$1/$2}")" "$1" "$2" "$3"
+	else
+		printf '[0:00]          %d %s\n' "$1" "$3"
+	fi
+}
+
+# damaged: restic's hint after a damage it names no repair of
+damaged() {
+	echo >&2
+	echo "The repository is damaged and must be repaired. Please follow the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html ." >&2
+	echo >&2
+}
+
 case "$1" in
 cat)
 	open_repo
@@ -277,6 +332,10 @@ backup)
 	open_repo
 	# what keeps a backup out is a forget's or a prune's exclusive lock
 	locked "$FAKE_RESTIC_LOCKED_BACKUP" backup exclusively
+	if [ -n "$FAKE_RESTIC_BACKUP_FAIL" ]; then
+		echo "Fatal: $FAKE_RESTIC_BACKUP_FAIL" >&2
+		exit 1
+	fi
 	last=$(snapshots | tail -n 1)
 	n=$(expr "${last:-0}" + 1)
 	while ! mkdir "$repo/snapshots/$(printf %08d "$n")" 2>/dev/null; do n=$(expr "$n" + 1); done
@@ -621,6 +680,92 @@ PICKED
 		echo "Fatal: There were $errors errors" >&2
 		exit 1
 	fi;;
+check)
+	shift
+	subset=
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--read-data-subset=*) subset=${1#--read-data-subset=}; shift;;
+		*) echo "Fatal: the fake restic knows no check flag $1" >&2; exit 1;;
+		esac
+	done
+	[ -n "$cachedir" ] && echo "using temporary cache in $cachedir/restic-check-cache-$$"
+	opened
+	if [ -z "$nolock" ]; then
+		echo "create exclusive lock for repository"
+		if readonly_target "$repo"; then
+			echo "unable to create lock in backend: open $repo/locks/$(hexid lock $$)-tmp-1: read-only file system" >&2
+			exit 1
+		fi
+		locked "$FAKE_RESTIC_LOCKED_CHECK" check exclusively "repo already locked, waiting up to 30m0s for the lock"
+	fi
+	found=$FAKE_RESTIC_CHECK
+	if [ "$found" = errors_free ]; then
+		[ -n "$nolock" ] || found=
+	fi
+	echo "load indexes"
+	if [ "$found" = index ]; then
+		echo "error: error loading index $(hexid index "$repo"): LoadRaw(<index/$(hexid index "$repo" | cut -c1-10)>): invalid data returned" >&2
+		echo >&2
+		echo "The repository index is damaged and must be repaired. You must run \` + "`" + `restic repair index' to correct this." >&2
+		echo >&2
+		echo "Fatal: repository contains errors" >&2
+		exit 1
+	fi
+	echo "check all packs"
+	echo "check snapshots, trees and blobs"
+	count=0
+	[ -d "$repo/snapshots" ] && count=$(snapshots | wc -l)
+	[ -n "$RESTIC_PROGRESS_FPS" ] && [ "$count" -gt 0 ] && counter 0 "$count" snapshots
+	counter "$count" "$count" snapshots
+	pack=$(hexid pack "$repo")
+	if [ "$found" = tree ]; then
+		tree=$(hexid tree "$repo" | cut -c1-8)
+		echo "error for tree $tree:" >&2
+		echo "  decrypting blob <tree/$tree> from $(echo "$pack" | cut -c1-8) failed: ciphertext verification failed" >&2
+	fi
+	if [ -n "$subset" ]; then
+		group=${subset%/*}
+		groups=${subset#*/}
+		total=$((2 * count))
+		read=0
+		k=0
+		while [ "$k" -lt "$total" ]; do
+			[ $((k % groups + 1)) -eq "$group" ] && read=$((read + 1))
+			k=$((k + 1))
+		done
+		echo "read group #$group of $read data packs (out of total $total packs in $groups groups)"
+		i=0
+		while [ "$i" -lt "$read" ]; do
+			slow
+			i=$((i + 1))
+			[ -n "$RESTIC_PROGRESS_FPS" ] && [ "$i" -lt "$read" ] && counter "$i" "$read" packs
+		done
+		counter "$read" "$read" packs
+	fi
+	case "$found" in
+	errors)
+		blob=$(hexid blob "$repo")
+		echo "pack $pack contains 1 errors: [blob $blob: decrypting blob <data/$(echo "$blob" | cut -c1-8)> from $(echo "$pack" | cut -c1-8) failed: ciphertext verification failed]" >&2
+		echo >&2
+		echo "The repository contains damaged pack files. These damaged files must be removed to repair the repository. This can be done using the following commands. Please read the troubleshooting guide at https://restic.readthedocs.io/en/stable/077_troubleshooting.html first." >&2
+		echo >&2
+		echo "restic repair packs $pack" >&2
+		echo "restic repair snapshots --forget" >&2
+		echo >&2
+		echo "Damaged pack files can be caused by backend problems, hardware problems or bugs in restic. Please open an issue at https://github.com/restic/restic/issues/new/choose for further troubleshooting!" >&2;;
+	errors_free)
+		at="$RESTIC_REPOSITORY/data/$(echo "$pack" | cut -c1-2)/$pack"
+		echo "Load(<data/$(echo "$pack" | cut -c1-10)>, 508971, 0) failed: open $at: no such file or directory" >&2
+		echo "download error: open $at: no such file or directory" >&2
+		damaged;;
+	tree) damaged;;
+	*)
+		echo "no errors were found"
+		exit 0;;
+	esac
+	echo "Fatal: repository contains errors" >&2
+	exit 1;;
 dump)
 	shift
 	while [ $# -gt 0 ]; do
@@ -869,7 +1014,9 @@ type Tool func(ctx context.Context, args []string, env map[string]string, stdin 
 // only for a restore that is not a dry run, and read-only otherwise, where
 // restic cannot write it; the tool and restic find each where it is, and an
 // empty directory of its own for one the job does not mount. A dump's
-// output reaches the job's standard output as the tool writes it.
+// output reaches the job's standard output as the tool writes it. A local
+// target's directory bound read-only, as a check's first pass binds it
+// (#31), cannot be locked.
 func RunJobs(engine *fakedocker.Engine, tool Tool) {
 	RunJobsWith(engine, tool, Options{})
 }
@@ -926,6 +1073,10 @@ func RunJobsWith(engine *fakedocker.Engine, tool Tool, options Options) {
 					if err := os.MkdirAll(source, 0o755); err != nil { //nolint:gosec // as the Engine makes it
 						return fakedocker.JobResult{Code: 125, Stderr: err.Error()}
 					}
+				}
+				// a check's first pass binds it read-only (#31)
+				if mount["ReadOnly"] == true {
+					readOnly = append(readOnly, source)
 				}
 				for i, arg := range args {
 					if arg == backup.LocalMount {

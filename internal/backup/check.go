@@ -161,7 +161,8 @@ type CheckResult struct {
 	// (out of total T packs …)".
 	PacksRead  int64 `json:"packs_read"`
 	PacksTotal int64 `json:"packs_total"`
-	// Errors are pass 2's when it ran to its end, else pass 1's.
+	// Errors are pass 2's when it confirmed them (failed), else pass 1's:
+	// an unconfirmed check says what pass 1 found, as does a suspect one.
 	Errors     []CheckError `json:"errors"`
 	ErrorsMore int          `json:"errors_more"`
 	Repair     CheckRepair  `json:"repair"`

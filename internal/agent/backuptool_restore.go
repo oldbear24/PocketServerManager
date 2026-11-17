@@ -155,6 +155,9 @@ func (r restic) stream(ctx context.Context, options streamOptions, args ...strin
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
 		said := r.said([]byte(tail.String()))
+		if exit.ExitCode() == resticLocked {
+			r.sawLocked(tail.String())
+		}
 		if line := lockLine([]byte(tail.String())); exit.ExitCode() == resticLocked && line != "" {
 			said = backup.Redact(line, r.secrets...)
 		}
@@ -224,23 +227,32 @@ func (l *lineWriter) Write(data []byte) (int, error) {
 // checkVersion refuses a restic older than the one whose restore, ls and
 // dump the tool reads.
 func (r restic) checkVersion(ctx context.Context) error {
-	out, code, said, err := r.run(ctx, "version")
+	major, minor, version, err := r.version(ctx)
 	if err != nil {
 		return err
 	}
+	if major < minResticMajor || major == minResticMajor && minor < minResticMinor {
+		return fmt.Errorf("restic %s is too old to restore: the agent's image needs restic %d.%d or later", version, minResticMajor, minResticMinor)
+	}
+	return nil
+}
+
+// version is restic's version, such as 0.17.3, and its major and minor.
+func (r restic) version(ctx context.Context) (int, int, string, error) {
+	out, code, said, err := r.run(ctx, "version")
+	if err != nil {
+		return 0, 0, "", err
+	}
 	if code != 0 {
-		return fmt.Errorf("restic's version cannot be read: %s", said)
+		return 0, 0, "", fmt.Errorf("restic's version cannot be read: %s", said)
 	}
 	found := resticVersion.FindStringSubmatch(string(out))
 	if found == nil {
-		return fmt.Errorf("restic's version cannot be read: %s", strings.TrimSpace(string(out)))
+		return 0, 0, "", fmt.Errorf("restic's version cannot be read: %s", strings.TrimSpace(string(out)))
 	}
 	major, _ := strconv.Atoi(found[1])
 	minor, _ := strconv.Atoi(found[2])
-	if major < minResticMajor || major == minResticMajor && minor < minResticMinor {
-		return fmt.Errorf("restic %s.%s.%s is too old to restore: the agent's image needs restic %d.%d or later", found[1], found[2], found[3], minResticMajor, minResticMinor)
-	}
-	return nil
+	return major, minor, found[1] + "." + found[2] + "." + found[3], nil
 }
 
 // resticSnapshot is a snapshot as restic snapshots --json says it.
