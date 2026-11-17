@@ -592,6 +592,306 @@ This section is the contract that the agent, the panel and the web UI of #31 cod
 
   Events: `backup.check_started` (info), `backup.check_ok` (info), `backup.check_failed` (critical), `backup.check_unverified` (warning), `backup.check_skipped` (info), and a warning `backup.failed` while a run's retry is planned. Each check rule is raised in a transaction that reads the target again, with `host` the target's server.
 
+### Panel backup and disaster recovery (#32)
+
+This section is the contract that the agent, the panel, the web UI and the guide of #32 code against: the names, the command and its relay, the two file formats, the records, the start checks, the REST API, the command lines and their sentences, the alerts, the audit and the UI's strings. The formats are internal/panelbackup (PCPB1) and internal/recoverykit (PCKIT1), each pinned by a frozen vector in its testdata; the names are in internal/backup/panel.go, internal/schema and internal/audit. No secret is ever in a stored payload, a log, a result, an event or the audit: the enricher adds a target's secrets to the command only as it delivers it, as for every backup command.
+
+- **What it does.** The panel backs itself up as a backup job whose `source_kind` is `panel` and whose `host` is the **carrier**, a server whose agent uploads the copy; every other path of a job (schedule, catch-up, retries, alerts, retention, listings, downloads, checks) is the one of #29 to #31. For each run the panel builds a consistent copy (`VACUUM INTO` and the stored files the database names), encrypts it on the panel (PCPB1) with keys derived from the master key, and offers it to the run's carrier as a `FetchArtifact`; the carrier streams it through the relay into `restic backup --stdin`, so neither the carrier nor the repository sees it unencrypted. An admin downloads a **recovery kit** (PCKIT1), the master key and what reaches and opens the panel's backup, sealed with a passphrase, and checks it by uploading it back. On a new machine `pocketcloud-agent panel-recovery fetch` takes the copy out of the repository in the agent's own hardened job container, and `panel recover` checks it with the kit's key and puts `pb_data` and the key file in place, before PocketBase opens anything. The CA is the backup's, so the servers reconnect with their own certificates to the same address.
+- **Names.**
+
+  | Name | Value | What |
+  |---|---|---|
+  | `backup.CapabilityPanel` | `backup.run.panel` | an agent that can carry the panel's backup; always advertised by a #32 agent |
+  | `backup.PanelExportPrefix`, `backup.PanelExportID(run)`, `backup.PanelExportRun(id)` | `panel-export:` + the run's id | the artifact id of a run's copy; `PanelExportRun` takes only `^panel-export:[a-z0-9]{15}$` |
+  | `backup.PanelFileName` | `pocketcloud-panel.pcpb` | the one file of a panel snapshot, `/pocketcloud-panel.pcpb` |
+  | `backup.PanelTag` | `pocketcloud-panel` | a panel snapshot's tag, next to `pocketcloud` and `job:<id>` |
+  | `backup.PanelHostName` | `panel` | restic's `--host` of every panel snapshot, whatever the carrier |
+  | `backup.RelayRetry` | `75` (EX_TEMPFAIL) | a relay exit code the agent classes `interrupted`, which the panel retries |
+  | `backup.AlertRecoveryKit`, `AlertPanelBackup`, `AlertPanelRestored`, `PanelAlertTarget` | `recovery_kit`, `panel_backup`, `panel_restored`, `panel` | the three alert rules and their target |
+  | `schema.SourcePanel`, `schema.RunChange` | `panel`, `change` | the source kind, and the trigger of a run 10 minutes after a change of the servers |
+  | `schema.RecoveryKits`, `schema.PanelTable` | `recovery_kits`, `_pc_panel` | the collection of sealed kits, and the panel's plain table |
+  | `audit.ActionRecoveryKitExported`, `ActionRecoveryKitChecked`, `ActionPanelRestored` | `recovery_kit_exported`, `recovery_kit_checked`, `panel_restored` | security entries |
+  | `secrets.KeyID(master)` | 32 hex: the first half of `DeriveKey(master, "pocketcloud key id v1")` | names a master key; the key 00 01 … 1f has the id `17ac82d879a43a9e72720c907de8857d` |
+  | `secrets.WriteKey(path, key)` | 64 hex and a newline, `O_EXCL`, 0600 | writes a kit's key; the same key there already is nil, another key or no key `secrets.ErrKeyExists` |
+
+- **Command.** A panel run is a `backup.run` whose `BackupRun.panel_export` (field 13) names the copy; it mounts nothing and execs nothing. The agent counts it in its exactly-one rule: "a backup run backs up volumes, directories, a dump or the panel: exactly one of them".
+
+  ```jsonc
+  {"run_id": "<run>", "repository": {"target_id": "<target>", "url": "<url>"},   // secrets added at delivery
+   "stdin_file_name": "pocketcloud-panel.pcpb", "host_name": "panel",
+   "tags": ["pocketcloud", "job:<job>", "pocketcloud-panel"],
+   "retention": {"daily": 14, "weekly": 8, "monthly": 12},
+   "panel_export": "panel-export:<run>"}
+  ```
+
+  The agent fetches the copy on a connection of its own (`FetchArtifact{artifact_id, offset}`; the first chunk carries `total_bytes` and `sha256`), writes it into the relay's frames and ends the stream with an exit frame; it resumes from the offset it has after `Unavailable`, `DeadlineExceeded`, `Internal`, a reset or an early EOF, waiting 2 s, 5 s and 10 s, three times at most. Nothing is spooled on the server.
+
+  | Outcome | Exit frame |
+  |---|---|
+  | size and digest match | `0` |
+  | resumes used up | `75` "the panel's copy broke off after X of Y: <grpc message>" |
+  | size or digest differ | `75` "the panel's copy arrived damaged: X bytes, sha256 …" |
+  | `PermissionDenied`, `FailedPrecondition`, `NotFound`, `Unimplemented` | `1` "the panel no longer offers this copy: …" |
+  | writing to the relay fails | none: restic says why |
+
+  A relay that ended `75` is the run's failure class `interrupted` (retried after 5 m, 30 m and 2 h), any other `source`. The panel gives the copy only to the run's carrier: the run exists, is queued or running and its `host` is the caller; its job's `source_kind` is `panel` and its `host` the caller; its command's host is the caller and it is dispatched or running. Otherwise `gateway.ErrNoArtifact` (`PermissionDenied`). A builder's error is `Internal` with its sentence, such as "PocketBase is making or restoring a backup: the run is tried again." or "The panel has no room to prepare its backup: X free, about Y needed."
+- **PCPB1, the panel's copy** (internal/panelbackup). A plaintext header, then segments: the manifest, the database, the stored files in byte order of their paths (each once), the trailer. Integers are big endian.
+
+  | Bytes | Header field (48 bytes) |
+  |---|---|
+  | 0–3 | `PCPB` |
+  | 4 | version `0x01` |
+  | 5–7 | zero |
+  | 8–23 | key id: `secrets.KeyID` of the master key, as 16 bytes |
+  | 24–39 | export id, 16 random bytes |
+  | 40–47 | made at, Unix seconds, int64 (> 0) |
+
+  The header is 4 + 1 + 3 + 16 + 16 + 8 = **48** bytes (design B's 44 was wrong). A segment is `kind` u8 (1 manifest, 2 database, 3 stored file, 0xFF trailer), `flags` u8 (bit 0: flate, BestSpeed, the database only; no other bit), `name_len` u16, `name`, `salt` [32], `stored_len` u64, then its chunks: its fixed fields take 1 + 1 + 2 + 32 + 8 = **44** bytes besides the name. The stored bytes (the database deflated, everything else as it is) are cut into chunks of 64 KiB, the last shorter, at least one (an empty segment has one empty chunk); each is sealed with AES-256-GCM, so it takes 16 bytes more. Chunk i's nonce is i as 11 bytes and then `0x01` for the last chunk, `0x00` for the others (STREAM): a cut, a moved chunk or one from another segment fails. The additional data is `"PCPB1 segment"` ‖ kind ‖ flags ‖ name_len ‖ name ‖ stored_len, and for the trailer the 48 header bytes after it. Keys: `K_pb = secrets.DeriveKey(master, "pocketcloud panel backup v1")`; a segment's key is `HKDF-SHA256(K_pb, salt, "pcpb1 segment key", 32)`, so every key seals one plaintext. The salt is random for the manifest, the database and the trailer; a stored file's is `HMAC-SHA256(HKDF-SHA256(K_pb, nil, "pcpb1 file id", 32), name ‖ 0x00 ‖ SHA-256(content))`, so a file that did not change encrypts to the same bytes in every export (restic deduplicates it across 14d 8w 12m), and nobody without the master key confirms a guess of a file. The trailer is JSON `{"segments":[{"kind":1,"name":"manifest.json","stored_len":N,"sha256":"<hex of the segment's bytes: its fields and sealed chunks>"},…]}`, every segment before it in its order.
+
+  Names: `manifest.json`, `data.db`, `trailer`, and stored files `storage/<collection id>/<record id>/<file>`, matching `^storage/[A-Za-z0-9_]{1,100}/[a-z0-9]{15}/[^/\\\x00]{1,255}$` (PocketBase's collection ids are `\w{1,100}`, the panel's `pbc_` and digits; record ids the default 15 `[a-z0-9]`), in UTF-8, no control character, the file neither `.` nor `..` (`panelbackup.ValidFileName`). Thumbnails (`thumbs_*/`) cannot be named. A reader checks, before it reads or allocates what the fields announce: name_len 1..1024, the kind and name of each place, files in strictly increasing order, the flags, `stored_len` ≤ 64 GiB (the manifest ≤ 1 MiB, the trailer ≤ 256 MiB), at most 1,000,000 segments; the database ≤ 64 GiB once inflated, and nothing after its flate stream. It gives out no byte of a chunk that did not open; a stored file's content must give its salt again; the manifest's `format`, `version`, `export_id`, `key_id` and `created_at` must be the header's, and its `files` and `bytes` what the export holds; the trailer must list every segment and nothing must follow it. A cut export is incomplete.
+
+  ```json
+  {"format":"pocketcloud-panel-backup","version":1,"export_id":"<32 hex>","created_at":"2026-11-17T04:00:00Z",
+   "panel_version":"0.32.0","migration":"1772000000_panel_recovery.go","key_id":"<32 hex>","ca_pin":"sha256:<64 hex>",
+   "audit":{"seq":3812,"hash":"<hex>"},"agents_dial":[{"address":"192.0.2.2:9443","servers":2}],"hosts":3,
+   "job":"<job>","run":"<run>","storage":"local","files":1284,"bytes":327155712,"missing":[],
+   "left_out":["auxiliary.db","metrics.db","diagnostic_bundles"]}
+  ```
+
+  `files` counts the stored files, `bytes` the database's and their bytes before compression; `storage` is `s3` when PocketBase keeps files in S3, and the export then holds none. Go API: `NewWriter(w, master, created)`, then `Manifest(m)` (it sets `format`, `version`, `export_id`, `key_id`, `created_at`), `Database(src io.ReaderAt, size)`, `File(name, src, size)` per file, `Close()` (the trailer; it checks the manifest's counts). The writer reads each source twice and fails the export if it changed in between. `ReadHeader(r)` reads the header without a key; `NewReader(r, master)` refuses another key by its id (`*KeyError`, `ErrOtherKey`) before decrypting anything and reads the manifest; `Next()` gives the database (inflated) and each stored file as an `*Entry`, then `io.EOF` once the trailer vouched for all; `Verify(r, master)` reads it all, `Extract(r, master, dir)` writes `dir/data.db` and `dir/storage/…` (files 0600, directories 0700, through `os.Root`, never overwriting; on an error the caller removes `dir`). Errors: `ErrNotAnExport`, `ErrVersion`, `ErrOtherKey`, and `*DamagedError{Segment, Reason, Incomplete}` (`ErrDamaged`, and `ErrIncomplete` when cut), segments numbered from 1, the manifest's.
+- **PCKIT1, the recovery kit** (internal/recoverykit). UTF-8 text, `pocketcloud-recovery-kit-<yyyymmdd>-<kit id>.pckit` (`recoverykit.FileName`), at most 64 KiB:
+
+  ```
+  This file restores a PocketCloud panel: docs/disaster-recovery.md. It is sealed with a passphrase.
+  Keep it off the panel's machine, apart from its passphrase and from the backups.
+  -----BEGIN POCKETCLOUD RECOVERY KIT-----
+  Kit: KIT-7Q2M-9XHC
+  Created: 2026-11-17T10:02:00Z
+  Panel: http://192.0.2.2:8090
+  Key-Id: <32 hex>
+  CA-Pin: sha256:<64 hex>
+  Panel-Version: 0.32.0
+  Agent-Image: <version.AgentRef()>
+  KDF: argon2id t=3 m=65536 p=4
+
+  <base64 in lines of 64: salt[16] | nonce[12] | ciphertext and tag>
+  -----END POCKETCLOUD RECOVERY KIT-----
+  ```
+
+  The preamble is ignored, CRLF is read as LF, and only blank lines may follow END. The eight header lines are exactly these keys in this order, `Key: value`: the kit id is `KIT-` and 40 random bits in Crockford's base32 (`recoverykit.NewKitID`); `Created` RFC 3339 in UTC, to the second; `Key-Id` 32 lowercase hex; `CA-Pin` `sha256:` and 64 lowercase hex; `Panel`, `Panel-Version`, `Agent-Image` one line of 1 to 300 bytes without surrounding space; `KDF` exactly `argon2id t=T m=M p=P` with 3 ≤ T ≤ 10, 65536 ≤ M ≤ 1048576 (KiB), 1 ≤ P ≤ 16, checked before argon2 runs. The key is `argon2id(NFC(passphrase), salt, T, M, P, 32)`; the payload is sealed with AES-256-GCM whose additional data is the eight header lines each ended by a line feed; a passphrase is at least 12 characters and at most 1024 bytes, counted in NFC. The payload, decoded strictly (no unknown field, one value), repeats the header's values and holds the key the header names:
+
+  ```json
+  {"format":"pocketcloud-recovery-kit","version":1,"kit_id":"KIT-7Q2M-9XHC","created_at":"2026-11-17T10:02:00Z",
+   "created_by":"admin@example.com","panel":"http://192.0.2.2:8090","key_id":"<32 hex>","master_key":"<64 hex>",
+   "ca_pin":"sha256:<64 hex>","panel_version":"0.32.0","agent_image":"<image>",
+   "env":{"POCKETCLOUD_PUBLIC_URL":"…","POCKETCLOUD_GRPC_ADDR":"…","POCKETCLOUD_GRPC_PUBLIC_ADDR":"…",
+          "POCKETCLOUD_PHP_IMAGE":"…","POCKETCLOUD_HTTPS_ADDR":"…","POCKETCLOUD_HTTPS_CHALLENGE":"…"},
+   "agents_dial":[{"address":"192.0.2.2:9443","servers":2,"ip":true}],
+   "job":{"id":"<job>","name":"panel (pb_data)"},
+   "targets":[{"id":"<target>","name":"panel-sftp","kind":"sftp","server":"",
+               "repository":{"url":"…","password":"…","env":{},"options":{},"ssh_key":"…","known_hosts":"…","mount":""}}]}
+  ```
+
+  `job` is `null` without a panel job (the kit then holds the master key alone); `env` is the effective `Config`, never `POCKETCLOUD_METRICS_TOKEN`; `repository` is exactly what `enrichBackup` delivers (`targetSecretsOf` and `backup.Locate`); `server` is a local target's server name. Digests, one per section, are the first 32 hex of `HMAC-SHA256(DeriveKey(master, "pocketcloud recovery kit digest v1"), section ‖ 0x00 ‖ RFC 8785 JSON)`: `key` the key id; `address` `{"agents_dial": sorted addresses, "env": env}`; `job` `{"id", "targets": sorted target ids}` or `null`; `targets` `{<id>: {"kind", "repository"}}`. Dial counts, names and who made the kit change none. A kit's own payload gives its digests, the panel's state as a payload its current ones; `recoverykit.Changed(kit, current)` names the sections that differ, in the order key, address, job, targets. Go API: `Seal(Header, Payload, passphrase) (string, error)`, `ParseHeader(text)`, `Open(text, passphrase) (Header, Payload, error)`, `Digests(Payload) (map[string]string, error)`, `Changed`, `Passphrase` (NFC and the length rules), `NewKitID`, `FileName`; errors `ErrNotAKit`, `ErrPassphrase`, `ErrShortPassphrase`, `ErrLongPassphrase`.
+- **Records** (migration `1772000000_panel_recovery.go`; see docs/data-model.md).
+  - `backup_jobs.source_kind` takes `panel`; the unique index `idx_backup_jobs_panel` on `source_kind` where it is `panel` keeps one panel job. Its `host` is the carrier; `source`, `stack`, `service` and `engine` are empty.
+  - `backup_runs.trigger` takes `schedule`, `manual`, `retry`, `change`. Checks' triggers stay the three of #31.
+  - `hosts.panel_address` (text, ≤ 300): the gRPC `:authority` of the agent's stream, the address it dials. Not audited.
+  - `recovery_kits`, read by admins, written only by the panel's routes: `kit_id` (text, required, ≤ 20, unique index `idx_recovery_kits_kit_id`), `key_id` (≤ 32), `digests` (JSON ≤ 4 KiB, the four sections), `created_by` (≤ 255), `verified_at`, `verified_by` (≤ 255), `created`, `updated`. Never the kit or its passphrase. The panel keeps the newest 20.
+  - `_pc_panel`, a plain table of one row (not a collection: the API and the dashboard do not see it; it travels in data.db): `id` 1, `key_id`, `ca_pin`, `restored_at` (text, `''`), `restored_from` (JSON text, `'{}'`).
+  - Reverting the migration removes the panel's job with its runs and restores, turns the other `change` runs into `manual` ones, and removes the values, the index, the field, the collection and the table.
+- **Start of the panel.** In this order: the serve lock `flock(<data dir>/.pc_serve.lock)`, held for the process's life; the master key; the key id against `_pc_panel.key_id`; `Audit.SealHead`; the CA through `ca.OpenWith(…, ca.Options{MayCreate, ExpectPin})` with `MayCreate` only while `_pc_panel.ca_pin` is empty and no host and no revoked certificate exist; an empty `key_id` and `ca_pin` are then filled in; `finishRestore` when `.pc_restored.json` exists; `Gateway.StartGrace = 90 s` (no `agent_offline` before it); the gateway. `POCKETCLOUD_EXPECT_CA_PIN` / `--expect-ca-pin` names the pin the database must have.
+
+  | Refusal | Sentence |
+  |---|---|
+  | the serve lock is held | "Another panel serves <dir>: two panels on one pb_data would both command the servers." |
+  | another key | "This master key (id X) did not seal this database (id Y): start the panel with the key file of its recovery kit." |
+  | two CA records | "The database holds two internal CAs: restore it whole, never merge." |
+  | no CA, a pin expected | "This database has no internal CA, but POCKETCLOUD_EXPECT_CA_PIN expects <pin>: restore the panel's backup into it first." |
+  | no CA, it had servers or a CA | "This database had servers or a CA (pin X) but holds no internal CA: it is damaged or not this panel's. Restore it from a backup: a new CA would make every server enroll again." |
+  | another CA than expected | "POCKETCLOUD_EXPECT_CA_PIN is A, but this database's CA is B: this is not the panel your servers trust." |
+  | data of a newer panel (restore marker kept) | "The data comes from a newer panel (%s): start that version or a newer one." |
+
+  The first start after `panel recover` cancels every queued command ("The panel was restored from a backup made {T}: what was queued then is not sent. Queue it again if it is still wanted."), sets every host `offline` and `stream_open=false` without events, rotates the auth, password reset, email change, verification and file token secrets of `users` and `_superusers`, sets `_pc_panel.restored_at` and `restored_from`, writes the sealed `panel_restored` entry (actor `panel recover`, source command; label the export's time in UTC; details: the marker, `entries_after_lost: true`, `sessions_ended: true`, `queued_cancelled: N`), raises `panel_restored`, logs "the panel was restored from a backup" and removes the marker. A second start with the same `export_id` only removes the marker. PocketBase's own restore is refused (route `POST /api/backups/{key}/restore` 403, and `OnBackupRestore`): "Restore the panel with `panel recover`, which checks the master key first: see docs/disaster-recovery.md."; its backups leave out `metrics.db`, `metrics.db-wal`, `metrics.db-shm`, `.pc_panel_exports`, `.pc_serve.lock` and `.pc_restored.json`.
+- **Jobs.** The job's sentences: "The agent of %s cannot back up the panel yet: update it." (400), "The panel has its backup job already." (409), "The server %s uploads the panel's backup: choose another server for that job first." (400, removing the carrier), "The panel is restored on a machine of its own, with its recovery kit: see docs/disaster-recovery.md. Download the encrypted copy, or restore it to a folder." (400, an original restore); the source message ends "…, a database dump or the panel.". A download through #30 of path `/pocketcloud-panel.pcpb`, kind `file`, is a valid input of `panel recover`. A `change` run starts 10 minutes after a host is enrolled or removed or a certificate revoked (debounced; re-armed while a panel run is queued or running, and no sooner than 30 minutes after the last `change` run started).
+- **REST API** (signed in, admins only; errors are sentences; request bodies are never logged).
+
+  | Route | Body | Responses |
+  |---|---|---|
+  | `GET /api/pc/recovery` | — | 200, below |
+  | `POST /api/pc/recovery/kit` | `{"passphrase","password"}` | 400 "Your password is not right." / "The passphrase needs at least 12 characters." / "The passphrase is at most 1024 bytes." / "The passphrase cannot be your sign-in password."; 409 "The secrets of the target %s cannot be opened: …"; 429 "Too many attempts: try again in %d minutes."; 503 "Another recovery kit is being sealed: try again in a moment."; 200 `{"kit_id","file_name","content"}` with `Cache-Control: no-store` |
+  | `POST /api/pc/recovery/kit/check` | `{"kit","passphrase"}`, ≤ 64 KiB | 400 "This is no PocketCloud recovery kit." / "The passphrase does not open this kit, or the kit was changed."; 409 "This kit holds another master key (id X): it is not this panel's."; 429 as above; 200 `{"kit_id","current":bool,"reasons":[],"status"}` |
+
+  ```jsonc
+  // GET /api/pc/recovery
+  {"key_id": "<32 hex>", "ca_pin": "sha256:<64 hex>",
+   "kit": {"status": "never|unverified|stale|saved", "reasons": ["targets"],   // sections, in their order
+           "kit_id": "KIT-7Q2M-9XHC", "created": "<date>", "created_by": "admin@example.com",
+           "verified_at": "<date>", "verified_by": "admin@example.com"},
+   "addresses": [{"address": "192.0.2.2:9443", "servers": 2, "ip": true}],   // from hosts.panel_address
+   "unreported": 0,                                                          // hosts without one yet
+   "start_env": {"POCKETCLOUD_PUBLIC_URL": "…", "POCKETCLOUD_EXPECT_CA_PIN": "sha256:…"},
+   "panel_job": {"id": "<job>", "name": "panel (pb_data)", "enabled": true, "carrier": "<host>",
+                 "carrier_name": "vm", "targets": ["panel-sftp"], "last_success_at": "<date>"} | null,
+   "restored": {"at": "<date>", "from": "<date>", "snapshot": "<id>", "back": 2, "total": 3} | null}
+  ```
+
+  Kit status: `never` (no kit), `unverified` (the newest kit's digests are current but no check opened it), `stale` (they differ; `reasons` names the sections), `saved` (the newest checked kit's digests are current). Downloading needs the sign-in password (`ValidatePassword`) and at most one argon2 at a time; 5 attempts per 15 minutes per user, shared by both POST routes. A download saves a `recovery_kits` row and writes `recovery_kit_exported` (label the kit id; details `{key_id, job, targets: [names], addresses}`); a current check sets `verified_at` and `verified_by` (creating the row if it is missing), writes `recovery_kit_checked` and resolves `recovery_kit`. A check compares the kit's key with the panel's in constant time.
+- **`panel recover`**, caught in `main()` before PocketBase bootstraps (so pb_data is never opened):
+
+  ```
+  panel recover --kit FILE --from FILE.pcpb [--dir DIR] [--master-key-file PATH] [--passphrase-file F] [--replace] [--env-out FILE] [--dry-run]
+  ```
+
+  `--dir` defaults to `$POCKETCLOUD_DATA_DIR` or `pb_data`, `--master-key-file` to `$POCKETCLOUD_MASTER_KEY_FILE` or `master.key`; the passphrase comes from `--passphrase-file`, `POCKETCLOUD_KIT_PASSPHRASE`, or a prompt without echo. Nothing is written before the key file: it takes the serve lock, opens the kit, compares the export's key id with the kit's, decrypts into `<dir>.restore-<random>` on the same filesystem checking every chunk and path, checks the manifest's key id and pin against the kit's, runs `PRAGMA integrity_check`, requires every `_migrations` file to be known, exactly one `internal_ca` row whose `root_key` opens with the kit's key and whose pin is the manifest's, and `_pc_panel.key_id` the kit's. Exit 0 on success, 1 on any refusal, with nothing written.
+
+  | Refusal | Sentence |
+  |---|---|
+  | a panel serves the directory | "A panel is serving <dir>: stop it first." |
+  | the export's key | "This backup was sealed with another master key (id X) than the kit's (id Y): use the kit of the panel that made it." |
+  | a damaged export | "The backup is damaged or incomplete at segment N." |
+  | a newer panel's data | "The backup comes from a newer panel (migration X): recover with panel V or newer." |
+  | another key file | "<file> holds another master key: it opens nothing of this backup. Move it away and run recover again." |
+  | a read-only key file | "The master key cannot be written to <file>: mount it writable for recover." |
+  | a directory in use | "<dir> already holds a panel (it may have started with a CA of its own): run again with --replace to keep it as <dir>.replaced-<UTC>." |
+
+  With `--replace` the old directory becomes `<dir>.replaced-<UTC>`: nothing is ever deleted. `--dry-run` prints the summary and writes nothing. `--env-out` writes the kit's `env` and `POCKETCLOUD_EXPECT_CA_PIN=<pin>` as a `docker --env-file`. The marker `<dir>/.pc_restored.json` holds `{export_id, export_created, panel_version_export, migration, audit_seq, audit_hash, snapshot, snapshot_time, target, kit_id, recovered_at, tool_version}`. On success:
+
+  ```
+  Opened the recovery kit KIT-7Q2M-9XHC of http://192.0.2.2:8090, made 2026-11-17 10:02 UTC by admin@example.com.
+  The backup was made 2026-11-17 04:00 UTC by panel 0.32.0: 3 servers, audit log up to entry 3812, CA sha256:5d1e….
+  Checked it: every part opens with the kit's key, data.db passes SQLite's integrity check, and its CA opens with the kit's key.
+  Wrote the master key to /run/secrets/pocketcloud-master-key.
+  Restored /data/pb_data: data.db and 1284 stored files, 312 MB; what was there is in /data/pb_data.replaced-20261117T101500Z.
+  Servers dial 192.0.2.2:9443 (an IP address: this machine must take it over). Start the panel there with /work/panel.env.
+  Before the first start, run: panel audit verify. Nothing done after 2026-11-17 04:00 UTC is in this backup: servers enrolled since must enroll again.
+  ```
+
+  `panel audit verify` is the step before the first start, with the key mounted read-only. `panel keygen` is never run during a recovery: it bootstraps an empty pb_data, and a later serve would make a new CA.
+- **`pocketcloud-agent panel-recovery targets|snapshots|fetch`** `--kit FILE|-` (stdin, ≤ 64 KiB) `[--passphrase-file F]` `[--target NAME]` (default: the kit's first remote target, a local one only if it is the only one) and for `fetch` `[--snapshot ID|latest] [--out FILE|-] [--no-verify]`. It runs restic only in the agent's own job container (`backupJob`: CapDrop ALL, no-new-privileges, the read-only tmpfs, `--no-lock`, a local `/repo` read-only with network none, hostname `pc-` and 15 characters), opens no command store, and leaves no output file on a failure. `fetch` runs `dump --no-lock --snapshot <id> --path /pocketcloud-panel.pcpb --expect-tag job:<id>` and verifies the stream with `panelbackup.Verify` and the kit's key as it writes it (O_EXCL, 0600). On stderr:
+
+  ```
+  Kit KIT-7Q2M-9XHC of http://192.0.2.2:8090 (key 9f2c41d0…). Target panel-sftp (sftp): newest panel snapshot 4f1c2d3e from 2026-11-17 04:00 UTC.
+  Fetched it: 312 MB, sha256 ab12…; every part opens with the kit's key (export 2026-11-17 04:00 UTC, panel 0.32.0, 3 servers).
+  ```
+
+  Errors (exit 1): "the passphrase does not open this kit, or the kit was changed"; "no panel snapshot of job:<id> on panel-minio"; "the copy does not open with the kit's key: it belongs to another panel"; restic's own lines with secrets masked; and the warning "the target disk is a directory of node-b: run this there".
+- **`pocketcloud-agent repoint --panel HOST:PORT [--check]`** dials with the stored identity and the pinned roots, makes one `Heartbeat`, and only then rewrites `identity.json`'s `panel` (never the key or the certificates). "The panel at X holds this server's CA (sha256:…) and knows it as vm. This server now dials X: restart the agent (docker restart pocketcloud-agent)."; refusals, nothing changed: "The panel at X does not hold this server's CA: nothing was changed." / "The panel at X does not know this server: nothing was changed."
+- **Alerts and events.** Target `panel`, no host, like `audit_integrity`.
+
+  | Rule | Severity | Open while | Resolved by |
+  |---|---|---|---|
+  | `recovery_kit` | warning, critical after 7 days open | a host exists and the kit's status is not `saved` | a current kit checked |
+  | `panel_backup` | warning | a host exists and there is no panel job, it is disabled, it has no targets, or its last success is older than 48 h (for a job older than 48 h) | the cause gone |
+  | `panel_restored` | warning | after a restored panel's first start: "The panel was restored from a backup made {T}: {back} of {total} servers are back." | every host connected after `restored_at`, or removed |
+
+  They are evaluated after the gateway starts, by the cron `pocketcloud_recovery` (`19 * * * *`), 5 s after saves of `backup_jobs`, `backup_targets` and `recovery_kits`, after a host is created or removed or its `panel_address` changes, and for `panel_restored` on host updates while it is open. The export spool `<data dir>/.pc_panel_exports/` (0700, files 0600) is swept at start and by `pocketcloud_panel_exports` (`13 * * * *`).
+- **UI strings.** Every key is in web/src/i18n/en.json and cs.json; the Czech says "ty", as cs.json does. Plural keys have `_one`/`_other` in English and `_one`/`_few`/`_many`/`_other` in Czech. The `alert.*`, `audit.*` and `backups.source*.*` keys are looked up by value, so no literal-key test finds them.
+
+  | Key | en | cs |
+  |---|---|---|
+  | `alert.recovery_kit` | The panel's recovery kit is not saved | Záchranná sada panelu není uložená |
+  | `alert.panel_backup` | The panel itself is not backed up | Samotný panel se nezálohuje |
+  | `alert.panel_restored` | The panel was restored from a backup: servers are reconnecting | Panel byl obnoven ze zálohy: servery se znovu připojují |
+  | `audit.actionName.recovery_kit_exported` | Recovery kit downloaded | Záchranná sada stažena |
+  | `audit.actionName.recovery_kit_checked` | Recovery kit checked | Záchranná sada ověřena |
+  | `audit.actionName.panel_restored` | Panel restored | Panel obnoven |
+  | `audit.verb.recovery_kit_exported` | downloaded the recovery kit | stáhl(a) záchrannou sadu |
+  | `audit.verb.recovery_kit_checked` | checked the recovery kit | ověřil(a) záchrannou sadu |
+  | `audit.verb.panel_restored` | restored the panel from the backup of | obnovil(a) panel ze zálohy z |
+  | `backups.sourceKind.panel` | The panel itself (pb_data) | Samotný panel (pb_data) |
+  | `backups.sourceNote.panel` | The panel copies its database and stored files and encrypts them with a key derived from the master key. The chosen server's agent backs them up with restic and never sees them unencrypted. | Panel zkopíruje svou databázi a uložené soubory a zašifruje je klíčem odvozeným z hlavního klíče. Agent zvoleného serveru je zálohuje resticem a nezašifrované je nikdy neuvidí. |
+  | `backups.source.panel` | PocketBase · SQLite copy, encrypted | PocketBase · kopie SQLite, šifrovaná |
+  | `backups.job.panelHost` | panel | panel |
+  | `backups.job.via` | via {{server}} | přes {{server}} |
+  | `backups.job.carrier` | Server that uploads it | Server, který ji nahrává |
+  | `backups.job.carrierHint` | Its agent fetches the panel's encrypted copy and backs it up with restic in a job container. Choose a server other than the panel's own machine. | Jeho agent si stáhne šifrovanou kopii panelu a zálohuje ji resticem v kontejneru úlohy. Vyber jiný server než stroj, na kterém běží panel. |
+  | `backups.job.carrierOld` | {{name}}'s agent cannot back up the panel yet: update it. | Agent serveru {{name}} zatím neumí zálohovat panel: aktualizuj ho. |
+  | `backups.job.carrierNone` | No server's agent can back up the panel yet: update the agents. | Agent žádného serveru zatím neumí zálohovat panel: aktualizuj agenty. |
+  | `backups.job.panelExists` | The panel has its backup job already. | Panel už svou úlohu zálohy má. |
+  | `backups.job.panelLocal` | {{target}} is a directory of {{server}}: if that is the panel's machine, one failure takes the panel and its backup. | {{target}} je složka serveru {{server}}: pokud je to stroj panelu, jedna havárie vezme panel i jeho zálohu. |
+  | `backups.panel.dialogTitle` | Back up the panel | Záloha panelu |
+  | `backups.panel.editTitle` | Panel backup | Záloha panelu |
+  | `backups.panel.what` | The panel's database and stored files, encrypted on the panel into one file: only the master key opens it. Request logs, metrics and diagnostic bundles are left out. | Databáze panelu a jeho uložené soubory, zašifrované v panelu do jednoho souboru: otevře je jen hlavní klíč. Logy požadavků, metriky a diagnostické balíčky se vynechávají. |
+  | `backups.panel.missingTitle` | The panel itself is not backed up | Samotný panel se nezálohuje |
+  | `backups.panel.missingText` | Losing the panel's machine would mean enrolling every server again. Back it up every day to a target off that machine. | Ztráta stroje panelu by znamenala znovu připojit všechny servery. Zálohuj ho každý den do cíle mimo tento stroj. |
+  | `backups.panel.setUp` | Back up the panel | Zálohovat panel |
+  | `backups.panel.kitTitle` | The recovery kit is not saved | Záchranná sada není uložená |
+  | `backups.panel.kitText` | The panel's backups open only with the master key, which the kit holds. | Zálohy panelu otevře jen hlavní klíč, který je v sadě. |
+  | `backups.panel.kitAction` | Open the recovery kit | Otevřít záchrannou sadu |
+  | `backups.restore.panelNoOriginal` | The panel is restored on a machine of its own, with its recovery kit: see the steps. | Panel se obnovuje na vlastním stroji se záchrannou sadou: viz postup. |
+  | `backups.restore.panel.title` | Restore the panel | Obnova panelu |
+  | `backups.restore.panel.text` | A panel is not restored from inside itself. Start a new one from a snapshot and the recovery kit where the servers dial it ({{address}}): they reconnect with their own certificates. | Panel se neobnovuje sám ze sebe. Spusť nový ze snapshotu a záchranné sady tam, kam se servery připojují ({{address}}): připojí se zpět se svými certifikáty. |
+  | `backups.restore.panel.step1` | 1 · Fetch the snapshot, on a server with an agent | 1 · Stáhni snapshot na serveru s agentem |
+  | `backups.restore.panel.step2` | 2 · Restore it into the new panel's volumes | 2 · Obnov ho do svazků nového panelu |
+  | `backups.restore.panel.step3` | 3 · Check it and start the panel at the same address | 3 · Ověř ho a spusť panel na stejné adrese |
+  | `backups.restore.panel.step4` | 4 · In Settings › Recovery kit, watch the servers come back | 4 · V Nastavení › Záchranná sada sleduj, jak se servery vracejí |
+  | `backups.restore.panel.download` | Download the encrypted copy | Stáhnout šifrovanou kopii |
+  | `backups.restore.panel.guide` | Recovery guide: docs/disaster-recovery.md | Návod k obnově: docs/disaster-recovery.md |
+
+  `settings.recovery.*`, a new object:
+
+  | Key | en | cs |
+  |---|---|---|
+  | `title` | Recovery kit | Záchranná sada |
+  | `note` | the master key and what opens the panel's backup | hlavní klíč a to, co otevře zálohu panelu |
+  | `lead` | Losing this machine must not mean enrolling every server again. The kit holds the master key, on which every stored secret and the servers' CA depend, and what reaches and opens the panel's backup, sealed with a passphrase. | Ztráta tohoto stroje nesmí znamenat znovu připojit každý server. Sada obsahuje hlavní klíč, na kterém závisí všechna uložená tajemství i CA serverů, a to, co zálohu panelu najde a otevře, zapečetěné heslem. |
+  | `keyId` | Master key | Hlavní klíč |
+  | `status` | Kit | Sada |
+  | `statusSaved` | Saved: checked {{time}} by {{name}} | Uložená: ověřil(a) {{name}} {{time}} |
+  | `statusUnverified` | Downloaded {{time}}, not checked yet | Stažená {{time}}, zatím neověřená |
+  | `statusStale` | Out of date: {{reasons}} | Zastaralá: {{reasons}} |
+  | `statusNever` | Never downloaded | Ještě nebyla stažena |
+  | `reason.key` | the master key changed | změnil se hlavní klíč |
+  | `reason.address` | the panel's addresses changed | změnily se adresy panelu |
+  | `reason.job` | the panel's backup job changed | změnila se úloha zálohy panelu |
+  | `reason.targets` | a target of the panel's backup changed | změnil se cíl zálohy panelu |
+  | `neverText` | Download the kit, keep it off this machine, then check it here. | Stáhni sadu, ulož ji mimo tento stroj a pak ji tu ověř. |
+  | `unverifiedText` | Check the kit you saved: until a check opens it, PocketCloud keeps reminding you. | Ověř sadu, kterou sis uložil(a): dokud ji ověření neotevře, PocketCloud ti to bude připomínat. |
+  | `staleText` | Download a new kit and check it: the old one would not restore the panel as it is now. | Stáhni novou sadu a ověř ji: stará by neobnovila panel takový, jaký je teď. |
+  | `download` | Download a recovery kit… | Stáhnout záchrannou sadu… |
+  | `check` | Check a saved kit… | Ověřit uloženou sadu… |
+  | `guide` | Recovery guide: docs/disaster-recovery.md | Návod k obnově: docs/disaster-recovery.md |
+  | `downloadTitle` | Download a recovery kit | Stažení záchranné sady |
+  | `downloadText` | The kit holds the master key and the credentials and passwords of the panel's backup targets: with the kit and its passphrase anyone reads every secret of this panel. Keep it off this machine, apart from its passphrase and from the backups, such as in a password manager. | Sada obsahuje hlavní klíč a přístupové údaje a hesla cílů zálohy panelu: kdo má sadu i její heslo, přečte každé tajemství tohoto panelu. Ulož ji mimo tento stroj, odděleně od jejího hesla i od záloh, třeba ve správci hesel. |
+  | `passphrase` | Passphrase | Heslo sady |
+  | `passphraseAgain` | Passphrase again | Heslo sady znovu |
+  | `passphraseHint` | Without it nobody opens the kit, PocketCloud included: it is kept nowhere. | Bez něj sadu neotevře nikdo, ani PocketCloud: nikde se neukládá. |
+  | `passphraseMismatch` | The passphrases differ. | Hesla se liší. |
+  | `generate` | Generate one | Vygenerovat |
+  | `generated` | Write this passphrase down now: it is kept nowhere and never shown again. | Toto heslo si hned zapiš: nikde se neukládá a už se nikdy nezobrazí. |
+  | `password` | Your sign-in password | Tvoje přihlašovací heslo |
+  | `passwordNote` | The master key leaves the panel only once you confirm it is you. | Hlavní klíč opustí panel, až potvrdíš, že jsi to ty. |
+  | `apart` | I keep the kit and its passphrase apart, off this machine and away from the backups. | Sadu a její heslo uložím odděleně, mimo tento stroj a mimo zálohy. |
+  | `noJob` | The panel has no backup job yet: this kit holds the master key alone. | Panel zatím nemá úlohu zálohy: tato sada obsahuje jen hlavní klíč. |
+  | `downloadAction` | Download | Stáhnout |
+  | `sealing` | Sealing the kit… | Pečetím sadu… |
+  | `downloaded` | The kit {{id}} was downloaded. Check it now: the reminder stays until a check opens it. | Sada {{id}} je stažená. Hned ji ověř: upozornění zůstane, dokud ji ověření neotevře. |
+  | `checkTitle` | Check a saved kit | Ověření uložené sady |
+  | `checkText` | Choose the kit where you keep it and type its passphrase: the panel opens it as a recovery would and keeps nothing of it. | Vyber sadu tam, kde ji máš uloženou, a zadej její heslo: panel ji otevře stejně jako obnova a nic z ní si nenechá. |
+  | `kitFile` | Kit file (.pckit) | Soubor sady (.pckit) |
+  | `checkAction` | Check | Ověřit |
+  | `checking` | Opening the kit… | Otevírám sadu… |
+  | `checkedCurrent` | The kit {{id}} opens and is current: it is saved. | Sada {{id}} se otevřela a je aktuální: je uložená. |
+  | `checkedStale` | The kit {{id}} opens, but it is out of date: {{reasons}}. Download a new one. | Sada {{id}} se otevřela, ale je zastaralá: {{reasons}}. Stáhni novou. |
+  | `agents` | Servers dial the panel at | Servery se k panelu připojují na |
+  | `ipWarning` | {{address}} is an IP address: a new panel machine must take it over, or each of its servers needs pocketcloud-agent repoint. | {{address}} je IP adresa: nový stroj panelu ji musí převzít, jinak bude na každém jejím serveru potřeba pocketcloud-agent repoint. |
+  | `startWith` | Start a restored panel with | Obnovený panel spusť s |
+  | `caPin` | CA pin | Otisk CA |
+  | `panelJob` | Panel backup | Záloha panelu |
+  | `panelJobNone` | Not set up: the kit holds the master key only. | Není nastavená: sada obsahuje jen hlavní klíč. |
+  | `panelJobLast` | Last succeeded {{time}} · via {{server}} | Naposledy úspěšná {{time}} · přes {{server}} |
+  | `panelJobNever` | Not succeeded yet | Zatím neproběhla úspěšně |
+  | `addJob` | Back up the panel | Zálohovat panel |
+  | `restoredTitle` | Restored from a backup | Obnoveno ze zálohy |
+  | `restored` | Restored {{time}} from a backup made {{from}}. | Obnoveno {{time}} ze zálohy pořízené {{from}}. |
+  | `restoredBack` | Servers back: {{back}} of {{total}}. | Servery zpět: {{back}} z {{total}}. |
+  | `passphraseShort` | _one "At least {{count}} character." · _other "At least {{count}} characters." | _one "Aspoň {{count}} znak." · _few "Aspoň {{count}} znaky." · _many "Aspoň {{count}} znaku." · _other "Aspoň {{count}} znaků." |
+  | `agentsAt` | _one "{{address}} · {{count}} server" · _other "{{address}} · {{count}} servers" | _one "{{address}} · {{count}} server" · _few "{{address}} · {{count}} servery" · _many "{{address}} · {{count}} serveru" · _other "{{address}} · {{count}} serverů" |
+  | `unreported` | _one "{{count}} server has not said yet which address it dials." · _other "{{count}} servers have not said yet which address they dial." | _one "{{count}} server zatím neřekl, na jakou adresu se připojuje." · _few "{{count}} servery zatím neřekly, na jakou adresu se připojují." · _many "{{count}} serveru zatím neřeklo, na jakou adresu se připojuje." · _other "{{count}} serverů zatím neřeklo, na jakou adresu se připojují." |
+
+  The web's types gain `SourceKind` `"panel"`, `BackupRun.trigger` `"change"` and `Host.panel_address`; `alertLink` sends `recovery_kit` and `panel_restored` to `/settings#recovery-kit` and `panel_backup` to `/backups?setup=panel`, which `backupAlertRules` lists.
+
 ## Diagnostics
 
 Detailed diagnostics live in a separate PocketBase plugin, `plugins/diagnostics`, registered the same way as PocketBase's own plugins (`diagnostics.MustRegister(app, diagnostics.Config{…})`). When it is disabled it adds no overhead.
