@@ -1233,3 +1233,144 @@ func TestOldRunsGo(t *testing.T) {
 		}
 	}
 }
+
+// carry gives a server's agent the capabilities it says it has, as the
+// gateway keeps them.
+func (f *jobFixture) carry(host *core.Record, capabilities ...string) {
+	f.t.Helper()
+	host.Set("capabilities", capabilities)
+	if err := f.app.Save(host); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestAPanelJobIsCheckedAsItIsSaved (#32): the panel's job is carried by a
+// server whose agent says it can carry it, and backs up nothing of that
+// server; the panel has one such job; a local target is still only its own
+// server's.
+func TestAPanelJobIsCheckedAsItIsSaved(t *testing.T) {
+	f := newJobFixture(t)
+	old := testutil.NewHost(t, f.app, "node-old")
+	f.carry(old, "backup.run", "host_shell")
+	f.carry(f.host, "backup.run", backup.CapabilityPanel)
+	disk := f.addTarget("disk", backup.KindLocal, old, backup.Config{Path: "/srv/restic"}, backup.Credentials{})
+	panel := map[string]any{"name": "panel (pb_data)", "host": f.host.Id, "source_kind": schema.SourcePanel, "targets": []string{f.target.Id},
+		"source": "app_data", "stack": "shop12345678901", "service": "db", "engine": "postgres", "schedule": "0 4 * * *",
+		"retention": map[string]any{"daily": 14, "weekly": 8, "monthly": 12}}
+	with := func(changes map[string]any) map[string]any {
+		body := map[string]any{}
+		for key, value := range panel {
+			body[key] = value
+		}
+		for key, value := range changes {
+			body[key] = value
+		}
+		return body
+	}
+
+	for _, test := range []struct {
+		name    string
+		changes map[string]any
+		want    string
+	}{
+		{"an old agent", map[string]any{"host": old.Id}, "The agent of node-old cannot back up the panel yet: update it."},
+		{"a server that never connected", map[string]any{"host": testutil.NewHost(t, f.app, "node-new").Id}, "The agent of node-new cannot back up the panel yet: update it."},
+		{"no server", map[string]any{"host": ""}, "Choose the server whose data the job backs up."},
+		// a local target is still a directory of its own server
+		{"a local target of another server", map[string]any{"targets": []string{disk.Id}}, localElsewhere(disk)},
+		{"an unknown kind", map[string]any{"source_kind": "everything"}, "Choose what the job backs up: a volume, a directory, a stack, a database dump or the panel."},
+	} {
+		if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, with(test.changes)); status != http.StatusBadRequest || out["message"] != test.want {
+			t.Errorf("%s: %d %v", test.name, status, out)
+		}
+	}
+
+	status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, panel)
+	if status != http.StatusCreated || out["source_kind"] != schema.SourcePanel || out["host"] != f.host.Id || out["source"] != "" ||
+		out["stack"] != "" || out["service"] != "" || out["engine"] != "" || out["schedule"] != "0 4 * * *" {
+		t.Fatalf("add the panel's job: %d %v", status, out)
+	}
+	id := out["id"].(string)
+
+	// one panel job: neither a second, nor another job turned into one
+	if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, with(map[string]any{"name": "panel again"})); status != http.StatusConflict ||
+		out["message"] != "The panel has its backup job already." {
+		t.Errorf("a second panel job: %d %v", status, out)
+	}
+	volume := f.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+volume.Id, f.admin, map[string]any{"source_kind": schema.SourcePanel}); status != http.StatusConflict ||
+		out["message"] != "The panel has its backup job already." {
+		t.Errorf("another job made the panel's: %d %v", status, out)
+	}
+	// the index says so too, whatever saves it
+	twice := core.NewRecord(volume.Collection())
+	twice.Load(map[string]any{"name": "panel twice", "host": f.host.Id, "source_kind": schema.SourcePanel, "schedule": "0 4 * * *", "origin": schema.JobManual})
+	if err := f.app.Save(twice); err == nil {
+		t.Error("the index let a second panel job in")
+	}
+
+	// the panel's job itself changes as any other
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, f.admin, map[string]any{"schedule": "30 2 * * *", "source_kind": schema.SourcePanel}); status != http.StatusOK ||
+		out["schedule"] != "30 2 * * *" {
+		t.Errorf("change the panel's job: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, f.admin, map[string]any{"host": old.Id}); status != http.StatusBadRequest ||
+		out["message"] != "The agent of node-old cannot back up the panel yet: update it." {
+		t.Errorf("an old agent as its carrier: %d %v", status, out)
+	}
+	f.carry(old, "backup.run", backup.CapabilityPanel)
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, f.admin, map[string]any{"host": old.Id, "targets": []string{disk.Id}}); status != http.StatusOK ||
+		out["host"] != old.Id {
+		t.Errorf("a carrier with its own disk: %d %v", status, out)
+	}
+	// and once it is no longer the panel's, another may be
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+id, f.admin, map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"}); status != http.StatusOK {
+		t.Fatalf("the panel's job made a volume's: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, with(map[string]any{"name": "panel"})); status != http.StatusCreated {
+		t.Errorf("a panel job again: %d %v", status, out)
+	}
+}
+
+// TestABackupRunOfThePanelNamesItsCopy (#32): the command of a panel run names
+// the panel's copy of the run, which the carrier fetches, the one file of the
+// snapshot, the host name "panel" whatever server carries it, and the panel's
+// tag, never a secret; a carrier whose agent can no longer carry it fails the
+// run with an alert.
+func TestABackupRunOfThePanelNamesItsCopy(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityPanel)
+	job := f.job("panel (pb_data)", map[string]any{"source_kind": schema.SourcePanel, "retention": stacks.Retention{Daily: 14, Weekly: 8, Monthly: 12}})
+	run := f.run(job)
+	payload, err := f.p.backupRun(job, f.target, f.host, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.GetPanelExport() != "panel-export:"+run.Id || payload.GetStdinFileName() != "pocketcloud-panel.pcpb" || payload.GetHostName() != "panel" ||
+		strings.Join(payload.GetTags(), ",") != "pocketcloud,job:"+job.Id+",pocketcloud-panel" || len(payload.GetVolumes()) != 0 || len(payload.GetPaths()) != 0 ||
+		payload.GetStdinContainer() != "" || len(payload.GetStdinCommand()) != 0 || payload.GetRunId() != run.Id ||
+		payload.GetRetention().GetDaily() != 14 || payload.GetRetention().GetWeekly() != 8 || payload.GetRetention().GetMonthly() != 12 {
+		t.Errorf("the panel's run: %v", payload)
+	}
+	if id, ok := backup.PanelExportRun(payload.GetPanelExport()); !ok || id != run.Id {
+		t.Errorf("its copy's id %q", payload.GetPanelExport())
+	}
+	stored, err := commands.PayloadJSON(&agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: payload}})
+	if err != nil || strings.Contains(string(stored), "the-secret-key") || strings.Contains(string(stored), "repo-password") {
+		t.Errorf("the stored payload: %s %v", stored, err)
+	}
+
+	// an agent that went back to a version without it
+	f.carry(f.host, "backup.run")
+	started, err := f.p.startRun(t.Context(), job, f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started = f.fresh(started); started.GetString("status") != schema.RunFailed || started.GetString("command") != "" ||
+		started.GetString("error") != "The agent of node-1 cannot back up the panel yet: update it." {
+		t.Errorf("a carrier that cannot: %v", started.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id)); a == nil || !strings.Contains(a.GetString("message"), "cannot back up the panel yet") {
+		t.Errorf("its alert: %v", a)
+	}
+}

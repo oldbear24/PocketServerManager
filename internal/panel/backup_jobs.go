@@ -231,6 +231,9 @@ func (p *Panel) handleAddJob(e *core.RequestEvent) error {
 	job.Set("enabled", true)
 	job.Set("retention", stacks.Retention{})
 	body.apply(job)
+	if p.panelJobTaken(job) {
+		return e.Error(http.StatusConflict, panelJobExists, nil)
+	}
 	if problem := p.checkJob(job, body); problem != "" {
 		return e.BadRequestError(problem, nil)
 	}
@@ -261,6 +264,9 @@ func (p *Panel) handleChangeJob(e *core.RequestEvent) error {
 	}
 	draft := job.Fresh()
 	body.apply(draft)
+	if p.panelJobTaken(draft) {
+		return e.Error(http.StatusConflict, panelJobExists, nil)
+	}
 	if problem := p.checkJob(draft, body); problem != "" {
 		return e.BadRequestError(problem, nil)
 	}
@@ -417,8 +423,12 @@ func (p *Panel) checkJob(job *core.Record, body jobBody) string {
 			return problem
 		}
 	}
-	if _, err := p.App.FindRecordById(schema.Hosts, job.GetString("host")); err != nil {
+	host, err := p.App.FindRecordById(schema.Hosts, job.GetString("host"))
+	if err != nil {
 		return "Choose the server whose data the job backs up."
+	}
+	if job.GetString("source_kind") == schema.SourcePanel && !carriesPanel(host) {
+		return fmt.Sprintf("The agent of %s cannot back up the panel yet: update it.", host.GetString("name"))
 	}
 
 	targets := job.GetStringSlice("targets")
@@ -497,10 +507,40 @@ func (p *Panel) checkSource(job *core.Record, body jobBody) string {
 		default:
 			return "Choose the database: PostgreSQL, MySQL or MariaDB, or SQLite."
 		}
+	case schema.SourcePanel:
+		// the panel's own copy: its server is the carrier, whose agent
+		// uploads it, and nothing of that server is backed up
+		job.Set("source", "")
+		job.Set("stack", "")
+		job.Set("service", "")
+		job.Set("engine", "")
 	default:
-		return "Choose what the job backs up: a volume, a directory, a stack or a database dump."
+		return "Choose what the job backs up: a volume, a directory, a stack, a database dump or the panel."
 	}
 	return ""
+}
+
+// panelJobExists says that the panel has its one backup job already.
+const panelJobExists = "The panel has its backup job already."
+
+// panelJobTaken tells whether a job would be a second job of the panel: the
+// panel has one backup job at most, as the index idx_backup_jobs_panel
+// keeps it.
+func (p *Panel) panelJobTaken(job *core.Record) bool {
+	if job.GetString("source_kind") != schema.SourcePanel {
+		return false
+	}
+	others, err := p.App.FindRecordsByFilter(schema.BackupJobs, "source_kind={:panel} && id!={:self}", "", 1, 0,
+		dbx.Params{"panel": schema.SourcePanel, "self": job.Id})
+	return err == nil && len(others) > 0
+}
+
+// carriesPanel tells whether a server's agent can carry the panel's backup:
+// it says so with the pseudo-capability backup.run.panel. An older agent
+// would refuse the panel's copy as a second thing to back up, and a server
+// whose agent never connected has said nothing yet.
+func carriesPanel(host *core.Record) bool {
+	return slices.Contains(host.GetStringSlice("capabilities"), backup.CapabilityPanel)
 }
 
 // jobDirectories are the directories of a backup's job container, from its
@@ -1025,6 +1065,18 @@ func (p *Panel) backupRun(job, target, host *core.Record, run *core.Record) (*ag
 		if err := p.dumpOf(job, payload); err != nil {
 			return nil, err
 		}
+	case schema.SourcePanel:
+		// the agent fetches the panel's encrypted copy, which the panel
+		// builds as the run asks for it, and backs it up as one file; every
+		// snapshot of the panel has the host name "panel", whatever server
+		// carried it, so that a change of carrier does not split them
+		if !carriesPanel(host) {
+			return nil, fmt.Errorf("the agent of %s cannot back up the panel yet: update it", host.GetString("name"))
+		}
+		payload.PanelExport = backup.PanelExportID(run.Id)
+		payload.StdinFileName = backup.PanelFileName
+		payload.HostName = backup.PanelHostName
+		payload.Tags = append(payload.Tags, backup.PanelTag)
 	default:
 		return nil, errors.New("the job backs up nothing")
 	}
