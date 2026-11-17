@@ -31,6 +31,7 @@ Every action becomes a record in the `commands` collection – the command histo
 - [docs/architecture.md](docs/architecture.md) – components, enrollment, gRPC API, command lifecycle, Compose stacks, logs and terminal, metrics, sites/DNS/TLS flow, PHP sites, database servers, backups, diagnostics, change audit, security model
 - [docs/data-model.md](docs/data-model.md) – PocketBase collections, those built and those planned
 - [docs/migration-from-coolify.md](docs/migration-from-coolify.md) – how a Coolify installation moves to PocketCloud, by hand or with the importer
+- [docs/disaster-recovery.md](docs/disaster-recovery.md) – the panel's own backup and recovery kit, and bringing the panel back on a new machine without enrolling the servers again
 
 ## Design
 
@@ -62,6 +63,8 @@ bin/panel serve --dir dev-data/pb_data --master-key-file dev-data/master.key \
   --http 127.0.0.1:8090 --public-url http://127.0.0.1:8090 --grpc-addr 127.0.0.1:9443
 ```
 
+`keygen` is not a backup of the key: the recovery kit is (Settings › Recovery kit, see [docs/disaster-recovery.md](docs/disaster-recovery.md)). Never run `keygen` to bring a panel back: a new key opens nothing of the old one.
+
 The panel opens no browser by itself. On the first start its log prints a link with a one-time token: open it to create the first administrator. The panel listens on port 8090 for the UI and the API, and on port 9443 for agents. PocketBase's dashboard is at `/_/`; it needs a superuser, which you create with `bin/panel superuser upsert EMAIL PASSWORD`.
 
 | Flag | Environment variable | Default | Purpose |
@@ -73,6 +76,7 @@ The panel opens no browser by itself. On the first start its log prints a link w
 | `--grpc-public-addr` | `POCKETCLOUD_GRPC_PUBLIC_ADDR` | public URL's host + gRPC port | What agents dial |
 | `--https-addr` | `POCKETCLOUD_HTTPS_ADDR` | – | Serve the UI and the API over HTTPS here, with a certificate for the public URL's name from the ACME accounts; `--http` then answers HTTP-01 and redirects |
 | `--https-challenge` | `POCKETCLOUD_HTTPS_CHALLENGE` | `auto` | How the CA checks the panel's name: `auto`, `http-01` or `dns-01` |
+| `--expect-ca-pin` | `POCKETCLOUD_EXPECT_CA_PIN` | – | The pin (`sha256:…`) the internal CA must have: a start on empty or other volumes fails instead of making a new CA |
 | | `POCKETCLOUD_DIAGNOSTICS` | on | `0` turns the diagnostics plugin off |
 | | `POCKETCLOUD_METRICS_TOKEN` | – | Enables the Prometheus endpoint `/metrics` with this bearer token |
 
@@ -83,9 +87,12 @@ Behind a reverse proxy the panel speaks plain HTTP, as above. Without one it can
 ```sh
 docker run -d --name pocketcloud-panel -p 80:8090 -p 443:8443 -p 9443:9443 \
   -e POCKETCLOUD_HTTPS_ADDR=0.0.0.0:8443 -e POCKETCLOUD_PUBLIC_URL=https://panel.example.com \
+  -e POCKETCLOUD_EXPECT_CA_PIN=sha256:… \
   -v pocketcloud:/data -v /srv/master.key:/run/secrets/pocketcloud-master-key:ro \
   ghcr.io/oldbear24/pocketcloud-panel
 ```
+
+Leave `POCKETCLOUD_EXPECT_CA_PIN` out on the very first start, which makes the internal CA; from then on give it the pin that Settings › Recovery kit shows, so that a start on empty or other volumes fails instead of making a CA no server trusts. Back the panel up and keep its recovery kit as [docs/disaster-recovery.md](docs/disaster-recovery.md) says.
 
 Port 80 must reach the panel's `--http` address for HTTP-01, or the name's zone must be in a connected DNS provider for `--https-challenge dns-01`. The certificate's state and errors are on Domains & TLS, marked *The panel*. Agents are not affected: the gRPC gateway on 9443 keeps the internal CA ([ADR 0007](docs/adr/0007-the-gateway-keeps-the-internal-ca.md)). The install command (`curl https://panel.example.com/api/pc/install.sh`) works once the certificate is issued.
 
