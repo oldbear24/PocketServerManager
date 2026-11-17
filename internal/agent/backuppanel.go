@@ -48,7 +48,7 @@ func (a *Agent) panelFetchWaits() []time.Duration {
 func (a *Agent) feedPanelExport(ctx context.Context, stdin io.WriteCloser, id string, secrets []string) {
 	defer stdin.Close()
 	frames := backup.NewFrameWriter(stdin)
-	code, message, ok := a.fetchPanelExport(ctx, id, frames)
+	code, message, ok := a.fetchPanelExport(ctx, id, frames, secrets)
 	if ok {
 		_ = frames.End(code, backup.Redact(message, secrets...))
 	}
@@ -77,8 +77,9 @@ type exportFetch struct {
 }
 
 // fetchPanelExport writes the panel's copy id to w, and says the relay's
-// exit code and its last words; false when writing to w failed.
-func (a *Agent) fetchPanelExport(ctx context.Context, id string, w io.Writer) (int, string, bool) {
+// exit code and its last words; false when writing to w failed. What it logs
+// has the secrets taken out.
+func (a *Agent) fetchPanelExport(ctx context.Context, id string, w io.Writer, secrets []string) (int, string, bool) {
 	client, closeClient, err := a.liveClient(ctx)
 	if err != nil {
 		return backup.RelayRetry, "the agent cannot reach the panel for its copy: " + err.Error(), true
@@ -119,7 +120,7 @@ func (a *Agent) fetchPanelExport(ctx context.Context, id string, w io.Writer) (i
 		if resumes == len(waits) {
 			return backup.RelayRetry, f.brokeOff(said), true
 		}
-		a.Log.Warn("the panel's copy broke off: resuming", "copy", id, "after", f.received, "of", f.total, "error", said)
+		a.Log.Warn("the panel's copy broke off: resuming", "copy", id, "after", f.received, "of", f.total, "error", backup.Redact(said, secrets...))
 		select {
 		case <-ctx.Done():
 			return 1, "the fetch of the panel's copy was stopped: " + ctx.Err().Error(), true

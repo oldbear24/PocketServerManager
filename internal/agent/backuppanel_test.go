@@ -308,12 +308,19 @@ func TestWhatTheFeedSaysKeepsNoSecret(t *testing.T) {
 	if got.end == nil || got.end.Message != "the panel no longer offers this copy: denied for *** and ***" {
 		t.Errorf("%+v", got.end)
 	}
+	// the resumes the agent logs, too
+	var log bytes.Buffer
+	a.Log = slog.New(slog.NewTextHandler(&log, nil))
 	for range 4 {
 		server.Break(fakefetch.Fault{After: 5, Code: codes.Unavailable, Message: "reset by minio-secret"})
 	}
 	got = feed(t, a, context.Background(), &fedInput{}, "repo-password-1", "minio-secret")
 	if got.end == nil || strings.Contains(got.end.Message, "minio-secret") || !strings.HasSuffix(got.end.Message, "reset by ***") {
 		t.Errorf("%+v", got.end)
+	}
+	if strings.Count(log.String(), "the panel's copy broke off: resuming") != 3 || strings.Contains(log.String(), "minio-secret") ||
+		!strings.Contains(log.String(), "reset by ***") {
+		t.Errorf("the log:\n%s", log.String())
 	}
 }
 
