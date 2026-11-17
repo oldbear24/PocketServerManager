@@ -2657,6 +2657,7 @@
       "retry": "Zopakovat teď",
       "showLog": "Zobrazit log",
       "heldTitle": "Zámek drží restic, který ještě běží: PocketCloud zálohu zopakuje, až skončí.",
+      "heldTitleManual": "Zámek drží restic, který ještě běží: zkuste to znovu, až skončí.",
       "more_one": "Zobrazit {{count}} další problém",
       "more_few": "Zobrazit {{count}} další problémy",
       "more_many": "Zobrazit {{count}} dalšího problému",

@@ -283,6 +283,10 @@ function RunBanner({
   };
 
   const variant = issue.tone === "warn" ? "warning" : "critical";
+  // only a planned retry follows the holder; else the operator tries again
+  const heldTitle = parseDate(failed.retry_at ?? "")
+    ? t("backups.failure.heldTitle")
+    : t("backups.failure.heldTitleManual");
   return (
     <>
       <IssueBanner
@@ -298,7 +302,7 @@ function RunBanner({
               <Button
                 variant={variant}
                 disabled={issue.held || busy}
-                title={issue.held ? t("backups.failure.heldTitle") : undefined}
+                title={issue.held ? heldTitle : undefined}
                 onClick={() => setUnlocking(true)}
               >
                 {t("backups.failure.unlockRetry")}

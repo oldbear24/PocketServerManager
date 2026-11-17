@@ -574,6 +574,28 @@ describe("the failed backups", () => {
     expect(unlock).toHaveClass("critical");
   });
 
+  it("promises no retry on the held button when none is planned", async () => {
+    // the last attempt failed while the check holding the lock still runs
+    show("operator", [run("r1", { attempt: 4 })], {}, { k3j9x2m4q8w1z7v: running });
+    const held = () =>
+      screen
+        .getByRole("region", { name: /^photos @ nas / })
+        .querySelector("button[disabled]") as HTMLElement;
+    expect(held()).toHaveAttribute(
+      "title",
+      "A restic that is still running holds the lock: try again once it ends.",
+    );
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    show("operator", [run("r1", { attempt: 4 })], {}, { k3j9x2m4q8w1z7v: running });
+    expect(held()).toHaveAccessibleName("Odemknout a zopakovat");
+    expect(held()).toHaveAttribute(
+      "title",
+      "Zámek drží restic, který ještě běží: zkuste to znovu, až skončí.",
+    );
+  });
+
   it("offers nothing for an unreadable lock, which a person removes", () => {
     show("operator", [
       run("r1", {

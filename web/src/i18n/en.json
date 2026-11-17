@@ -2519,6 +2519,7 @@
       "retry": "Retry now",
       "showLog": "Show log",
       "heldTitle": "A restic that is still running holds the lock: PocketCloud retries once it ends.",
+      "heldTitleManual": "A restic that is still running holds the lock: try again once it ends.",
       "more_one": "Show {{count}} more problem",
       "more_other": "Show {{count}} more problems",
       "fewer": "Show fewer",
