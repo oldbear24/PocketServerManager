@@ -1,10 +1,87 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { pb } from "./pb";
-import { generatePassphrase, passphraseLength, recoveryApi } from "./recovery";
+import {
+  dialAddress,
+  generatePassphrase,
+  panelImage,
+  passphraseLength,
+  recoveryApi,
+  recoveryCommands,
+  shellWord,
+} from "./recovery";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("the commands of a panel's restore", () => {
+  it("name the panel's image beside the agent's, by the version", () => {
+    expect(panelImage("ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c", "0.32.0")).toBe(
+      "ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+    );
+    expect(panelImage("localhost:5000/pocketcloud-agent:dev", "dev")).toBe(
+      "localhost:5000/pocketcloud-panel:latest",
+    );
+    expect(panelImage("pocketcloud-agent", "0.32.0")).toBe("pocketcloud-panel:0.32.0");
+    expect(panelImage("", "")).toBe("ghcr.io/oldbear24/pocketcloud-panel:latest");
+  });
+
+  it("take the address most servers dial, else the panel's own", () => {
+    expect(
+      dialAddress(
+        [
+          { panel_address: "panel.example.com:9443" },
+          { panel_address: "192.0.2.2:9443" },
+          { panel_address: "192.0.2.2:9443" },
+          {},
+        ],
+        "localhost:9443",
+      ),
+    ).toBe("192.0.2.2:9443");
+    expect(dialAddress([{ panel_address: "" }, {}], "panel.example.com:9443")).toBe(
+      "panel.example.com:9443",
+    );
+  });
+
+  it("quote what a shell would split", () => {
+    expect(shellWord("panel-sftp")).toBe("panel-sftp");
+    expect(shellWord("ghcr.io/x/pocketcloud-agent@sha256:5f1c")).toBe(
+      "ghcr.io/x/pocketcloud-agent@sha256:5f1c",
+    );
+    expect(shellWord("Backblaze B2")).toBe("'Backblaze B2'");
+    expect(shellWord("it's; rm -rf /")).toBe(`'it'\\''s; rm -rf /'`);
+    expect(shellWord("$(id)")).toBe("'$(id)'");
+    expect(shellWord("")).toBe("''");
+  });
+
+  it("publish the port the servers dial, and read the passphrase without an echo", () => {
+    const commands = recoveryCommands({
+      snapshot: "latest",
+      target: "Backblaze B2",
+      agentImage: "ghcr.io/oldbear24/pocketcloud-agent:0.32.0",
+      panelImage: "ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+      address: "[2001:db8::2]:19443",
+    });
+    expect(commands.start).toContain("-p 19443:9443");
+    expect(commands.fetch).toContain("--target 'Backblaze B2' --snapshot latest");
+    expect(commands.fetch.split("\n")[0]).toBe(
+      "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
+    );
+    expect(commands.launcher).toContain("-v /var/run/docker.sock:/var/run/docker.sock");
+    // the key is written by recover, and only read once the panel runs
+    expect(commands.restore).toContain("-v pocketcloud-secrets:/run/secrets ");
+    expect(commands.start).not.toMatch(/pocketcloud-secrets:\/run\/secrets(?!:ro)/);
+    // an address without a port: the gateway's own
+    const fallback = recoveryCommands({
+      snapshot: "",
+      target: "",
+      agentImage: "",
+      panelImage: "",
+      address: "",
+    });
+    expect(fallback.start).toContain("-p 9443:9443");
+  });
 });
 
 describe("a generated passphrase", () => {

@@ -3616,3 +3616,35 @@ a.job-name {
   display: grid;
   gap: 6px;
 }
+
+/* the steps of a panel's restore, in the restore drawer (#32) */
+.panel-recovery {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.panel-recovery .drawer-heading {
+  margin-bottom: 0;
+}
+
+.panel-recovery-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.panel-recovery-steps li {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.panel-recovery-steps h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}

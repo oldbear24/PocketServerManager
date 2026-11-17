@@ -98,6 +98,93 @@ function fill(bytes: Uint8Array) {
   crypto.getRandomValues(bytes);
 }
 
+/** The one file of a panel snapshot, which `panel recover` takes (#32). */
+export const panelFileName = "pocketcloud-panel.pcpb";
+
+/** A word as a shell takes it: as it is when it is plain, else in single
+ * quotes. */
+export function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The panel's image of this release, beside the agent's: the agent's
+ * repository with pocketcloud-panel for its name, tagged with the version,
+ * or latest for a development build. */
+export function panelImage(agentImage: string, version: string): string {
+  const repository = /^(.*\/)?pocketcloud-agent(?=[:@]|$)/.exec(agentImage);
+  const base = repository
+    ? `${repository[1] ?? ""}pocketcloud-panel`
+    : "ghcr.io/oldbear24/pocketcloud-panel";
+  const tag = version && version !== "dev" ? version : "latest";
+  return `${base}:${tag}`;
+}
+
+/** The address most servers dial the panel at, as their streams said it;
+ * else the panel's own idea of it. */
+export function dialAddress(hosts: { panel_address?: string }[], fallback: string): string {
+  const counts = new Map<string, number>();
+  for (const host of hosts) {
+    if (host.panel_address) {
+      counts.set(host.panel_address, (counts.get(host.panel_address) ?? 0) + 1);
+    }
+  }
+  let best = "";
+  for (const [address, count] of counts) {
+    if (best === "" || count > (counts.get(best) ?? 0)) {
+      best = address;
+    }
+  }
+  return best || fallback;
+}
+
+/** The port of an address such as 192.0.2.2:9443 or [2001:db8::2]:9443. */
+function portOf(address: string): string {
+  return /:(\d{1,5})$/.exec(address)?.[1] ?? "9443";
+}
+
+/** The commands of a panel's restore on a new machine, as the guide gives
+ * them: fetch the snapshot with an agent (on a server, or through the
+ * agent's image on the new machine), restore it into the new panel's
+ * volumes, then check it and start the panel where the servers dial it.
+ * The kit's passphrase is read without an echo, never written down. */
+export function recoveryCommands(values: {
+  /** a snapshot's short id, or latest */
+  snapshot: string;
+  target: string;
+  agentImage: string;
+  panelImage: string;
+  address: string;
+}): { fetch: string; launcher: string; restore: string; start: string } {
+  const passphrase = "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE";
+  const fetch = `panel-recovery fetch --kit - --target ${shellWord(values.target)} --snapshot ${shellWord(values.snapshot)} --out -`;
+  const files = `< kit.pckit > ${panelFileName}`;
+  const image = shellWord(values.panelImage);
+  const volumes = "-v pocketcloud:/data -v pocketcloud-secrets:/run/secrets";
+  return {
+    fetch: [
+      passphrase,
+      "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
+      `  pocketcloud-agent ${fetch} \\`,
+      `  ${files}`,
+    ].join("\n"),
+    launcher: [
+      passphrase,
+      "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE -v /var/run/docker.sock:/var/run/docker.sock \\",
+      `  ${shellWord(values.agentImage)} ${fetch} \\`,
+      `  ${files}`,
+    ].join("\n"),
+    restore: [
+      `docker run --rm -it ${volumes} -v "$PWD":/work \\`,
+      `  ${image} recover --kit /work/kit.pckit --from /work/${panelFileName} --env-out /work/panel.env`,
+    ].join("\n"),
+    start: [
+      `docker run --rm ${volumes}:ro ${image} audit verify`,
+      "docker run -d --name pocketcloud-panel --restart unless-stopped --env-file panel.env \\",
+      `  -p 8090:8090 -p ${portOf(values.address)}:9443 ${volumes}:ro ${image}`,
+    ].join("\n"),
+  };
+}
+
 export const recoveryApi = {
   getRecovery: () => pb.send<RecoveryState>("/api/pc/recovery", {}),
 

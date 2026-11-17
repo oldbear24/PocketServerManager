@@ -57,9 +57,11 @@ import type { BackupTarget } from "../lib/backups";
 import { formatBytes, formatDateTime, formatNumber, parseDate } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { useLiveRecord, useNow } from "../lib/realtime";
+import { panelFileName } from "../lib/recovery";
 import type { Command, Host } from "../lib/types";
 import { describeSource, type StackName } from "./BackupJobs";
 import { ServerField } from "./Backups";
+import { PanelRecoverySteps } from "./PanelRecoverySteps";
 
 /** A page of a snapshot's folder. */
 const pageSize = 200;
@@ -189,6 +191,8 @@ export function RestoreDrawer({
   );
   const snapshot = listing.data?.snapshots.find((item) => item.id === snapshotId) ?? null;
   const modes = job ? modesFor(target, job, user?.role) : null;
+  // the panel's own backup restores nowhere here: the drawer gives its steps
+  const panelJob = job?.source_kind === "panel";
   const chosen: RestoreMode | "" =
     mode !== "" && modes && !modes[mode].disabled
       ? mode
@@ -502,7 +506,26 @@ export function RestoreDrawer({
             }
           />
         )}
-        {job && target && snapshot && modes && (
+        {panelJob && job && modes && (
+          // the panel is restored on a machine of its own (#32): no modes,
+          // but the steps, filled from what is picked
+          <>
+            {target && snapshot && (
+              <RestoreFacts
+                job={job}
+                target={target}
+                snapshot={snapshot}
+                record={record}
+                hosts={hosts}
+                now={now}
+                brief={!record}
+              />
+            )}
+            <p className="muted">{modeNote("original", modes.original.reason)}</p>
+            <PanelRecoverySteps target={target} snapshot={snapshot} hosts={hosts} />
+          </>
+        )}
+        {!panelJob && job && target && snapshot && modes && (
           <>
             <RestoreFacts
               job={job}
@@ -660,7 +683,24 @@ export function RestoreDrawer({
         {error && <Banner tone="err">{error}</Banner>}
       </>
     );
-    if (chosen === "download") {
+    if (panelJob) {
+      // an admin downloads the encrypted copy, a valid input of panel recover
+      actions = (
+        <>
+          {cancel}
+          {modes?.download.disabled === false && (
+            <Button
+              variant="primary"
+              disabled={!target || !snapshot || busy}
+              onClick={() => void download(`/${panelFileName}`, "file")}
+            >
+              <Download size={15} aria-hidden="true" />
+              {t("backups.restore.panel.download")}
+            </Button>
+          )}
+        </>
+      );
+    } else if (chosen === "download") {
       actions = (
         <>
           {cancel}
@@ -726,6 +766,9 @@ export function RestoreDrawer({
   );
 
   function modeNote(item: RestoreMode, reason: string | undefined): string {
+    if (reason === "panel") {
+      return t("backups.restore.panelNoOriginal");
+    }
     if (reason === "dump") {
       return t("backups.restore.dumpNoOriginal");
     }
