@@ -47,7 +47,10 @@ type Panel struct {
 	// https is the panel's own HTTPS (#63)
 	https httpsState
 
-	Box       *secrets.Box
+	Box *secrets.Box
+	// masterKey is the master key the Box was made from: the keys of the
+	// panel's copy of itself derive from it (#32)
+	masterKey []byte
 	Audit     *audit.Writer
 	Authority *ca.Authority
 	// authority is the same CA, for the work that may start before the
@@ -92,6 +95,11 @@ type Panel struct {
 	// links, and those under way (#30)
 	downloadTickets downloadTickets
 	downloads       downloadSessions
+	// exports are the panel's encrypted copies of itself that its backup
+	// job's carrier fetches (#32)
+	exports panelExports
+	// changes is the panel's backup after a change of its servers (#32)
+	changes changeBackups
 
 	auditKeyOnce sync.Once
 	auditKey     []byte
@@ -209,6 +217,10 @@ func (p *Panel) Register() {
 	p.registerBackupJobs()
 	p.registerBackupRestores()
 	p.registerBackupChecks()
+	// the panel's backup of itself (#32)
+	p.registerPanelExports()
+	p.registerChangeBackups()
+	p.registerPocketBaseBackups()
 
 	p.App.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		// PocketBase's default installer opens the machine's default browser with a
@@ -225,6 +237,10 @@ func (p *Panel) Register() {
 		if err := p.Audit.SealHead(); err != nil {
 			return fmt.Errorf("sealing the audit log: %w", err)
 		}
+
+		// what a panel that stopped left in the spool of its copies, before
+		// the gateway serves one (#32)
+		p.sweepPanelExports(time.Now())
 
 		if err := p.startGateway(); err != nil {
 			return err
@@ -386,6 +402,7 @@ func (p *Panel) loadMasterKey() error {
 		return err
 	}
 	p.Box = box
+	p.masterKey = key
 
 	return nil
 }

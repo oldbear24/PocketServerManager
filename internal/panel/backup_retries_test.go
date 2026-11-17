@@ -1221,3 +1221,55 @@ func TestWhatDidNotFailIsNotTriedAgain(t *testing.T) {
 		t.Errorf("its alert: %v", a)
 	}
 }
+
+// TestAPanelRunWhoseCopyBrokeOffIsTriedAgain (#32): a run of the panel's job
+// whose relay ended 75, because the panel's copy broke off or came damaged,
+// is the agent's interrupted, and is tried again 5 minutes later with a copy
+// of its own; one whose copy the panel no longer offered is the source's,
+// and is not.
+func TestAPanelRunWhoseCopyBrokeOffIsTriedAgain(t *testing.T) {
+	f, _, _ := newRetryFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityPanel)
+	job := f.job("panel (pb_data)", map[string]any{"source_kind": schema.SourcePanel})
+	key := alertKey(job.Id, f.target.Id)
+
+	// what the agent answers when the relay ended 75
+	broke := f.failRun(job, "the panel's copy broke off after 1.0 MiB of 2.0 MiB: the panel stopped answering",
+		map[string]any{"failure": backup.FailureInterrupted, "restic_code": 1})
+	retryAt := broke.GetDateTime("retry_at").Time()
+	if broke.GetString("failure") != backup.FailureInterrupted || !near(retryAt, broke.GetDateTime("finished_at").Time().Add(5*time.Minute)) {
+		t.Fatalf("a copy that broke off: %v", broke.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, key); a == nil || a.GetString("severity") != schema.SeverityWarning ||
+		!strings.Contains(a.GetString("message"), "PocketCloud tries again at") {
+		t.Errorf("its alert: %v", a)
+	}
+	f.p.RunDueBackups(retryAt.Add(time.Minute))
+	runs := f.runsOf(job)
+	if len(runs) != 2 || runs[1].GetString("trigger") != schema.RunRetry || runs[1].GetString("retry_of") != broke.Id {
+		t.Fatalf("%d runs once the retry is due", len(runs))
+	}
+	retry := runs[1]
+	if payload := f.payloadOf(retry.GetString("command")); payload["panel_export"] != backup.PanelExportID(retry.Id) ||
+		payload["host_name"] != backup.PanelHostName || payload["stdin_file_name"] != backup.PanelFileName {
+		t.Errorf("the retry's command: %v", payload)
+	}
+
+	// the copy came damaged: interrupted too
+	damaged := f.endRun(retry, map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime(),
+		"error":  "the panel's copy arrived damaged: 2097152 bytes, sha256 ab12…",
+		"result": map[string]any{"failure": backup.FailureInterrupted}})
+	if damaged.GetString("failure") != backup.FailureInterrupted || damaged.GetDateTime("retry_at").IsZero() {
+		t.Errorf("a copy that came damaged: %v", damaged.FieldsData())
+	}
+
+	// the panel no longer offers the copy: the source failed, for good
+	gone := f.failRun(job, "the panel no longer offers this copy: the artifact does not belong to a command of this host",
+		map[string]any{"failure": backup.FailureSource, "restic_code": 1})
+	if gone.GetString("failure") != backup.FailureSource || !gone.GetDateTime("retry_at").IsZero() || gone.GetString("retry_end") != "" {
+		t.Errorf("a copy the panel no longer offers: %v", gone.FieldsData())
+	}
+	if a := f.openAlert(alertBackupFailed, key); a == nil || a.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("its alert: %v", a)
+	}
+}

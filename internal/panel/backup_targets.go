@@ -446,6 +446,16 @@ func (p *Panel) keepTargetsServer(e *core.RecordRequestEvent) error {
 	if p.restoreOpenFor("host={:host} || target.host={:host} || job.host={:host}", dbx.Params{"host": e.Record.Id}) {
 		return e.Error(http.StatusConflict, restoreUnderWayMessage, nil)
 	}
+	// the panel's job would go with its carrier, and its history with it
+	// (#32): it moves to another server first
+	carried, err := e.App.FindRecordsByFilter(schema.BackupJobs, "source_kind={:panel} && host={:host}", "", 1, 0,
+		dbx.Params{"panel": schema.SourcePanel, "host": e.Record.Id})
+	if err != nil {
+		return e.InternalServerError("", err)
+	}
+	if len(carried) > 0 {
+		return e.BadRequestError(fmt.Sprintf("The server %s uploads the panel's backup: choose another server for that job first.", e.Record.GetString("name")), nil)
+	}
 	targets, err := e.App.FindRecordsByFilter(schema.BackupTargets, "host={:host}", "name", 0, 0, dbx.Params{"host": e.Record.Id})
 	if err != nil || len(targets) == 0 {
 		return e.Next()

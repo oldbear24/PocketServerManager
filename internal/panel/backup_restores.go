@@ -232,6 +232,12 @@ func checkIncludes(include []string) string {
 // server, and the job's data as it is now, a volume, a stack's volumes or a
 // directory, with the Compose project whose containers use it.
 func (p *Panel) originalPlan(job, target *core.Record, body restoreBody) (restorePlan, *targetProblem) {
+	if job.GetString("source_kind") == schema.SourcePanel {
+		// a panel does not restore itself from inside: the copy is checked
+		// with the recovery kit's key, and the new panel starts on it (#32)
+		return restorePlan{}, &targetProblem{http.StatusBadRequest,
+			"The panel is restored on a machine of its own, with its recovery kit: see docs/disaster-recovery.md. Download the encrypted copy, or restore it to a folder."}
+	}
 	if job.GetString("source_kind") == schema.SourceDump {
 		return restorePlan{}, &targetProblem{http.StatusBadRequest,
 			"A database dump goes back into its database with the database's own restore: restore it to a folder, or download it."}

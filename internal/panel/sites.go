@@ -28,6 +28,7 @@ import (
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/audit"
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/edge"
 	"github.com/oldbear24/PocketServerManager/internal/events"
@@ -900,6 +901,14 @@ func (p *Panel) removeSiteFiles(site *core.Record) {
 // fetchArtifact opens a site's upload for the agent of the server that builds
 // it.
 func (p *Panel) fetchArtifact(hostID, id string) (*gateway.Artifact, error) {
+	// the panel's copy of itself, for its backup job's carrier (#32)
+	if _, ok := strings.CutPrefix(id, backup.PanelExportPrefix); ok {
+		run, ok := backup.PanelExportRun(id)
+		if !ok {
+			return nil, gateway.ErrNoArtifact
+		}
+		return p.fetchPanelExport(hostID, run)
+	}
 	deployment, err := p.App.FindRecordById(schema.Deployments, id)
 	if err != nil || deployment.GetString("upload") == "" {
 		return nil, gateway.ErrNoArtifact
