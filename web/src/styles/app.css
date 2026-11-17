@@ -3149,6 +3149,7 @@ td .row-actions {
 }
 
 .run-detail,
+.run-retry,
 .run-retention {
   max-width: 170px;
   font-size: 12px;
@@ -3156,6 +3157,11 @@ td .row-actions {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* a failed run the panel tries again (#31): a warning until none is left */
+.run-retry {
+  color: var(--warn-text);
 }
 
 /* a backup that kept every snapshot: put off is no error, a failure is */
@@ -3202,6 +3208,7 @@ td .row-actions {
 }
 
 .server-jobs .run-detail,
+.server-jobs .run-retry,
 .server-jobs .run-retention {
   max-width: min(260px, 32vw);
 }

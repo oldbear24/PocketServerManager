@@ -562,6 +562,93 @@ describe("the jobs", () => {
     expect(vw.queryByText("+84 MB")).not.toBeInTheDocument();
   });
 
+  it("says why a run failed in a word, and when the panel tries it again", async () => {
+    const lockedRun = run("r5", {
+      job: "j2",
+      target: "t3",
+      status: "failed",
+      created: "2026-11-09 02:00:00.000Z",
+      finished_at: "2026-11-09 02:00:05.000Z",
+      error: locked,
+      failure: "locked",
+      attempt: 1,
+      retry_at: "2026-11-09 02:35:00.000Z",
+      retry_note: "Waits until restic counts the lock as stale.",
+    });
+    const timedOut = run("r9", {
+      job: "j3",
+      target: "t3",
+      status: "failed",
+      created: "2026-11-09 00:30:00.000Z",
+      finished_at: "2026-11-09 06:30:00.000Z",
+      error: "The command did not finish in 6 hours.",
+      failure: "timeout",
+      attempt: 4,
+    });
+    showPage("viewer", { backup_runs: [lockedRun, timedOut] });
+
+    const photosRow = row("photos");
+    expect(photosRow.getByText("Error · 03:00")).toHaveClass("err");
+    // the design's "repo zamčené", restic's words on hover
+    expect(photosRow.getByText("repository locked")).toHaveAttribute("title", locked);
+    const retry = photosRow.getByText("retry 2/4: 03:35");
+    expect(retry).toHaveClass("run-retry");
+    expect(retry).toHaveAttribute("title", "Waits until restic counts the lock as stale.");
+
+    // none left: no retry is said
+    const umamiRow = row("umami-db");
+    expect(umamiRow.getByText("did not finish in time")).toBeInTheDocument();
+    expect(umamiRow.queryByText(/^retry /)).not.toBeInTheDocument();
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    showPage("viewer", { backup_runs: [lockedRun] });
+    expect(row("photos").getByText("Chyba · 03:00")).toBeInTheDocument();
+    expect(row("photos").getByText("repo zamčené")).toBeInTheDocument();
+    expect(row("photos").getByText("pokus 2/4: 03:35")).toBeInTheDocument();
+    await i18n.changeLanguage("en");
+  });
+
+  it("counts only the last attempt of a run tried again, and says it succeeded as a retry", () => {
+    showPage("viewer", {
+      backup_runs: [
+        run("r5", {
+          job: "j2",
+          target: "t3",
+          status: "failed",
+          created: "2026-11-09 02:00:00.000Z",
+          finished_at: "2026-11-09 02:00:05.000Z",
+          error: locked,
+          failure: "locked",
+        }),
+        run("r8", {
+          job: "j2",
+          target: "t3",
+          trigger: "retry",
+          attempt: 2,
+          retry_of: "r5",
+          created: "2026-11-09 02:40:00.000Z",
+          finished_at: "2026-11-09 02:41:00.000Z",
+          bytes_added: 3e6,
+        }),
+        run("r6", { job: "j2", target: "t3", created: "2026-11-08 02:00:00.000Z" }),
+      ],
+    });
+
+    // the day succeeded: its failure was tried again
+    const strip = row("photos").getByRole("img");
+    expect(strip).toHaveAccessibleName("Last 14 days: 2 succeeded, 1 after a retry");
+    const days = [...strip.querySelectorAll("span")];
+    expect(days.map((day) => day.className).slice(-2)).toEqual(["ok", "ok"]);
+    expect(days[13].getAttribute("title")).toMatch(/: 1 succeeded, 1 after a retry$/);
+    expect(row("photos").getByText("OK · 03:41")).toBeInTheDocument();
+
+    // and so did every run that counts
+    const success = tile("Success over 14 days");
+    expect(success.getByText("100%")).toBeInTheDocument();
+    expect(success.getByText("2 of 2 runs")).toBeInTheDocument();
+  });
+
   it("says when a backup's retention was put off or failed", () => {
     showPage("viewer", {
       backup_runs: [

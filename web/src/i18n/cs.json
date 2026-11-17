@@ -2129,7 +2129,8 @@
       "count": {
         "succeeded": "úspěšně {{count}}",
         "failed": "s chybou {{count}}",
-        "skipped": "přeskočeno {{count}}"
+        "skipped": "přeskočeno {{count}}",
+        "retried": "po opakování {{count}}"
       },
       "none": "bez běhu",
       "label": "Posledních 14 dní: {{summary}}"
@@ -2310,7 +2311,8 @@
       "retentionInvalid": "Celá čísla od 0 do 10000; prázdné pole nedrží nic toho druhu.",
       "enabled": "Zapnuto: běží podle plánu",
       "pickHint": "klikni na název pro snapshoty",
-      "showSnapshots": "Zobrazit snapshoty úlohy {{name}}"
+      "showSnapshots": "Zobrazit snapshoty úlohy {{name}}",
+      "retrying": "pokus {{attempt}}/{{max}}: {{time}}"
     },
     "snapshot": {
       "today": "dnes {{time}}",
@@ -2612,6 +2614,17 @@
         "agent": "Agent serveru {{server}} zatím kontroly neumí: aktualizujte ho.",
         "pending": "Nejdřív dokončete přidání cíle."
       }
+    },
+    "runFailure": {
+      "locked": "repo zamčené",
+      "lock_invalid": "nečitelný zámek",
+      "repository": "repozitář chybí",
+      "password": "nesprávné heslo",
+      "partial": "některé soubory nepřečteny",
+      "source": "zdroj selhal",
+      "restic": "restic selhal",
+      "interrupted": "přerušeno",
+      "timeout": "nedoběhla včas"
     }
   }
 }

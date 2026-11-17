@@ -34,6 +34,7 @@ import {
   guessEngine,
   jobsApi,
   lastRun,
+  maxAttempts,
   nextJob,
   parseKeep,
   parseTime,
@@ -200,8 +201,13 @@ function StripLegend() {
   );
 }
 
-function daySummary(day: Pick<StripDay, "succeeded" | "failed" | "skipped">, t: Translate) {
-  const parts = (["succeeded", "failed", "skipped"] as const)
+/** A day's runs in words; of those that succeeded, how many did as a retry
+ * of a run that failed, which the strip no longer counts. */
+function daySummary(
+  day: Pick<StripDay, "succeeded" | "failed" | "skipped" | "retried">,
+  t: Translate,
+) {
+  const parts = (["succeeded", "retried", "failed", "skipped"] as const)
     .filter((status) => day[status] > 0)
     .map((status) => t(`backups.strip.count.${status}`, { count: day[status] }));
   return parts.length > 0 ? parts.join(", ") : t("backups.strip.none");
@@ -218,8 +224,9 @@ function DayStrip({ days }: { days: StripDay[] }) {
       succeeded: sum.succeeded + day.succeeded,
       failed: sum.failed + day.failed,
       skipped: sum.skipped + day.skipped,
+      retried: sum.retried + day.retried,
     }),
-    { succeeded: 0, failed: 0, skipped: 0 },
+    { succeeded: 0, failed: 0, skipped: 0, retried: 0 },
   );
   return (
     <div
@@ -285,7 +292,8 @@ export function describeSource(job: BackupJob, stacks: StackName[], t: Translate
   return job.origin === "label" ? `${text} · ${t("backups.job.fromLabel")}` : text;
 }
 
-/** How the job's last runs went: the newest per target, the worst first. */
+/** How the job's last runs went: the newest per target, the worst first;
+ * of a failed run, why in a word (#31), and when it is tried again. */
 function LastRun({
   job,
   runs,
@@ -321,7 +329,10 @@ function LastRun({
       ? t("backups.job.bytesAdded", {
           size: run.bytes_added > 0 ? formatBytes(run.bytes_added) : `${formatNumber(0)} B`,
         })
-      : [target?.name, shortError(run.error)].filter(Boolean).join(": ");
+      : [target?.name, failureWord(run, t) || shortError(run.error)].filter(Boolean).join(": ");
+  // the panel tries it again by itself, or once restic counts its lock as stale
+  const retryAt = run.status === "failed" ? (run.retry_at ?? "") : "";
+  const attempt = (run.attempt || 1) + 1;
   // the backup is there, but restic did not forget the old snapshots
   const retention =
     run.status === "succeeded" && (run.retention === "deferred" || run.retention === "failed")
@@ -340,6 +351,15 @@ function LastRun({
           {detail}
         </div>
       )}
+      {retryAt && (
+        <div className="run-retry" title={run.retry_note || undefined}>
+          {t("backups.job.retrying", {
+            attempt,
+            max: Math.max(maxAttempts, attempt),
+            time: formatMoment(retryAt, now),
+          })}
+        </div>
+      )}
       {retention && (
         <div
           className={`run-retention ${retention}`}
@@ -352,6 +372,12 @@ function LastRun({
       )}
     </>
   );
+}
+
+/** Why a run failed in a word, as the agent or the panel classed it: "repo
+ * zamčené"; "" for a run of an older panel, which says it only in its error. */
+function failureWord(run: Pick<BackupRun, "status" | "failure">, t: Translate): string {
+  return run.status === "failed" && run.failure ? t(`backups.runFailure.${run.failure}`) : "";
 }
 
 /** The jobs as the design lists them, with what each backs up, where to,
