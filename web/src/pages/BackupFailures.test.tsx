@@ -531,6 +531,8 @@ describe("the failed backups", () => {
         created: "2026-11-09 01:00:00.000Z",
         finished_at: "2026-11-09 01:00:05.000Z",
         error: "The agent restarted while running the backup.",
+        retry_end: "next_run",
+        retry_note: "The next scheduled run at 13:00 UTC takes its place.",
       }),
     ]);
     const planned = banner("photos @ nas failed at 03:00");
@@ -546,6 +548,52 @@ describe("the failed backups", () => {
       ),
     ).toBeInTheDocument();
     expect(dropped.getByRole("button", { name: "Retry now" })).toBeInTheDocument();
+  });
+
+  it("says in red that no more retries come once the panel gave the retry up", () => {
+    // the check holding the lock still runs after 12 hours
+    show(
+      "operator",
+      [
+        run("r1", {
+          retry_end: "given_up",
+          retry_note: "The repository stayed locked by Check the integrity of b2 for 12 hours.",
+        }),
+      ],
+      {},
+      { k3j9x2m4q8w1z7v: running },
+    );
+    const failed = banner("photos @ nas failed at 03:00");
+    expect(failed.getByRole("heading", { level: 2 }).closest(".issue-banner")).toHaveClass("err");
+    expect(
+      failed.getByText("Held by “Check the integrity of b2” on pve-01, which is still running."),
+    ).toBeInTheDocument();
+    expect(failed.getByText("attempt 1 of 4 · no more automatic retries")).toBeInTheDocument();
+    const unlock = failed.getByRole("button", { name: "Unlock and retry" });
+    expect(unlock).toBeDisabled();
+    expect(unlock).toHaveClass("critical");
+  });
+
+  it("promises no retry on the held button when none is planned", async () => {
+    // the last attempt failed while the check holding the lock still runs
+    show("operator", [run("r1", { attempt: 4 })], {}, { k3j9x2m4q8w1z7v: running });
+    const held = () =>
+      screen
+        .getByRole("region", { name: /^photos @ nas / })
+        .querySelector("button[disabled]") as HTMLElement;
+    expect(held()).toHaveAttribute(
+      "title",
+      "A restic that is still running holds the lock: try again once it ends.",
+    );
+    cleanup();
+
+    await i18n.changeLanguage("cs");
+    show("operator", [run("r1", { attempt: 4 })], {}, { k3j9x2m4q8w1z7v: running });
+    expect(held()).toHaveAccessibleName("Odemknout a zopakovat");
+    expect(held()).toHaveAttribute(
+      "title",
+      "Zámek drží restic, který ještě běží: zkuste to znovu, až skončí.",
+    );
   });
 
   it("offers nothing for an unreadable lock, which a person removes", () => {
@@ -594,6 +642,45 @@ describe("the failed backups", () => {
       "data-command",
       "cmd-r2",
     );
+  });
+
+  it("keeps a failure and its Unlock and retry when the next slot skipped while it waited", () => {
+    // the hourly 01:00 run waited on the lock past 02:00, whose run skipped,
+    // and failed at 02:00:30: 03:00 in Prague
+    show(
+      "operator",
+      [
+        run("r1", {
+          job: "j1",
+          target: "t1",
+          created: "2026-11-09 01:00:00.000Z",
+          scheduled_at: "2026-11-09 01:00:00.000Z",
+          started_at: "2026-11-09 01:00:01.000Z",
+          finished_at: "2026-11-09 02:00:30.000Z",
+          retry_at: "2026-11-09 02:35:00.000Z",
+        }),
+        run("r2", {
+          job: "j1",
+          target: "t1",
+          status: "skipped",
+          created: "2026-11-09 02:00:00.000Z",
+          scheduled_at: "2026-11-09 02:00:00.000Z",
+          started_at: "",
+          finished_at: "",
+          error: "The run before it was still going.",
+          failure: "",
+          lock: null,
+          command: "",
+        }),
+      ],
+      {},
+      { k3j9x2m4q8w1z7v: ended },
+    );
+    const failed = banner("vaultwarden @ nas failed at 03:00");
+    expect(
+      failed.getByText("to Backblaze B2 · attempt 1 of 4 · next try: 03:35"),
+    ).toBeInTheDocument();
+    expect(failed.getByRole("button", { name: "Unlock and retry" })).toBeEnabled();
   });
 
   it("leaves once a run succeeds", () => {

@@ -17,6 +17,7 @@ import {
 import { api, errorMessage } from "../lib/api";
 import {
   checkFields,
+  checkRetryAt,
   formatCheckMoment,
   nextGroup,
   parseSubset,
@@ -203,6 +204,7 @@ export function IntegrityLine({
   const progress = status === "running" ? checkProgress(command, t) : null;
 
   const attempt = target.last_check_status;
+  const retryAt = checkRetryAt(last);
   const meta = [
     progress?.text,
     target.integrity_at &&
@@ -218,6 +220,7 @@ export function IntegrityLine({
         when: formatCheckMoment(last?.finished_at || last?.created || "", now),
         reason: target.last_check_error || t(`backups.integrity.status.${attempt}`),
       }),
+    retryAt && t("backups.integrity.retryAt", { time: formatCheckMoment(retryAt, now) }),
   ].filter(Boolean);
   const errors = target.integrity_status === "failed" ? firstLines(target.integrity_error, 3) : "";
 
@@ -477,6 +480,8 @@ function CheckFindings({
   const notes = check.notes ?? [];
   const when = formatCheckMoment(check.finished_at || check.started_at || check.created, now);
   const ended = check.status !== "queued" && check.status !== "running";
+  // the panel tries an error, a suspect or a skipped check again, but not always
+  const retryAt = checkRetryAt(check);
 
   return (
     <section className="check-findings" aria-label={t("backups.integrity.showCheck", { when })}>
@@ -508,9 +513,20 @@ function CheckFindings({
       {check.status === "ok" && !check.unconfirmed && <p>{t("backups.integrity.noErrors")}</p>}
       {check.status === "ok" && check.unconfirmed && <p>{t("backups.integrity.unconfirmedOk")}</p>}
       {check.status === "failed" && check.confirmed && <p>{t("backups.integrity.confirmed")}</p>}
-      {check.status === "suspect" && <p>{t("backups.integrity.suspect")}</p>}
+      {check.status === "suspect" && (
+        <p>
+          {retryAt
+            ? `${t("backups.integrity.suspect")} ${t("backups.integrity.triesAgain")}`
+            : t("backups.integrity.suspect")}
+        </p>
+      )}
       {check.error && (check.status !== "failed" || errors.length === 0) && (
         <pre className="backup-target-error failed">{check.error}</pre>
+      )}
+      {retryAt && (
+        <p className="muted small">
+          {t("backups.integrity.retryAt", { time: formatCheckMoment(retryAt, now) })}
+        </p>
       )}
 
       {repair && (repair.index || packs.length > 0 || repair.snapshots || repair.other) && (

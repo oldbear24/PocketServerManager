@@ -72,6 +72,17 @@ export type BackupCheck = RecordModel & {
 export const checkFields =
   "id,collectionId,collectionName,created,updated,target,host,kind,trigger,status,scheduled_at,started_at,finished_at,duration_ms,subset,packs_read,packs_total,confirmed,unconfirmed,errors_more,repair,notes,lock,error,command,attempt,retry_of,retry_at";
 
+/** When the panel tries a check again: the retry_at of one that ended error,
+ * suspect, or skipped while its server was away; "" when no retry is planned,
+ * as for a check by hand, the last attempt, or when the next slot comes
+ * first. */
+export function checkRetryAt(check: Pick<BackupCheck, "status" | "retry_at"> | null): string {
+  if (!check || !["error", "suspect", "skipped"].includes(check.status)) {
+    return "";
+  }
+  return parseDate(check.retry_at) ? check.retry_at : "";
+}
+
 /** The integrity checks that are queued or running. */
 export const openChecksFilter = "kind = 'integrity' && (status = 'queued' || status = 'running')";
 
