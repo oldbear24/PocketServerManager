@@ -533,7 +533,8 @@ func TestADirectoryIsBackedUpAtItsOwnPath(t *testing.T) {
 
 // TestAFailedBackupAlertsWithResticsError (#29): a run that fails raises an
 // alert of its job and target with restic's error; the next run that
-// succeeds resolves it.
+// succeeds resolves it. restic's failure may pass by itself, so the run is
+// tried again, and the alert is a warning that says when (#31).
 func TestAFailedBackupAlertsWithResticsError(t *testing.T) {
 	j := newJobsHarness(t, func(engine *fakedocker.Engine) { addVolume(t, engine, "app_data") })
 	id := j.addJob(map[string]any{"name": "app", "source_kind": "volume", "source": "app_data"})["id"].(string)
@@ -542,12 +543,14 @@ func TestAFailedBackupAlertsWithResticsError(t *testing.T) {
 	words := "Fatal: unable to save snapshot: write /repo/data/4f: no space left on device\n"
 	j.fail.Store(&words)
 	run := j.runNow(id)[0]
-	if run.GetString("status") != schema.RunFailed || !strings.Contains(run.GetString("error"), "no space left on device") {
+	if run.GetString("status") != schema.RunFailed || !strings.Contains(run.GetString("error"), "no space left on device") ||
+		run.GetString("failure") != "restic" || run.GetDateTime("retry_at").IsZero() {
 		t.Errorf("the run: %v", run.FieldsData())
 	}
 	alert := j.openAlerts("backup_failed")[key]
-	if alert == nil || alert.GetString("severity") != schema.SeverityCritical || alert.GetString("host") != j.host.Id ||
-		!strings.HasPrefix(alert.GetString("message"), "Backup app → disk failed: ") || !strings.Contains(alert.GetString("message"), "no space left on device") {
+	if alert == nil || alert.GetString("severity") != schema.SeverityWarning || alert.GetString("host") != j.host.Id ||
+		!strings.HasPrefix(alert.GetString("message"), "Backup app → disk failed: ") || !strings.Contains(alert.GetString("message"), "no space left on device") ||
+		!strings.HasSuffix(alert.GetString("message"), "(attempt 2 of 4).") {
 		t.Fatalf("the alert: %v", alert)
 	}
 	if j.job(id).GetString("last_status") != schema.RunFailed {
