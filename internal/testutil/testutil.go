@@ -46,6 +46,24 @@ func NewApp(t testing.TB) *tests.TestApp {
 	return app
 }
 
+// NewAppFrom returns a test app whose data dir is a copy of dir, as a panel
+// restored into dir starts on it (#32): every file of dir is copied, its
+// hidden ones too, and the migrations the copy lacks are applied. dir itself
+// is left as it is.
+func NewAppFrom(t testing.TB, dir string) *tests.TestApp {
+	t.Helper()
+
+	app, err := tests.NewTestAppWithConfig(core.BaseAppConfig{
+		DataDir:       dir,
+		EncryptionEnv: "pb_test_env",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return app
+}
+
 var migrated struct {
 	once sync.Once
 	dir  string

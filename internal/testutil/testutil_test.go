@@ -43,3 +43,37 @@ func TestOnlyOldMigratedDataDirsAreRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestAnAppFromADataDirStartsOnACopyOfIt (#32): a restored pb_data, the
+// hidden files next to its database included, is copied, and the original
+// is left as it was.
+func TestAnAppFromADataDirStartsOnACopyOfIt(t *testing.T) {
+	first := NewApp(t)
+	defer first.Cleanup()
+	if _, err := first.DB().NewQuery("CREATE TABLE kept (word TEXT); INSERT INTO kept VALUES ('restored')").Execute(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := first.DB().NewQuery("VACUUM INTO {:path}").Bind(map[string]any{"path": filepath.Join(dir, "data.db")}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".pc_restored.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewAppFrom(t, dir)
+	defer app.Cleanup()
+	if app.DataDir() == dir {
+		t.Fatal("the app runs on the original")
+	}
+	var word string
+	if err := app.DB().NewQuery("SELECT word FROM kept").Row(&word); err != nil || word != "restored" {
+		t.Fatalf("the copy holds %q: %v", word, err)
+	}
+	if _, err := os.Stat(filepath.Join(app.DataDir(), ".pc_restored.json")); err != nil {
+		t.Errorf("the hidden file was not copied: %v", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
+		t.Errorf("the original changed: %v, %v", entries, err)
+	}
+}
