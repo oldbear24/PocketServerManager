@@ -167,6 +167,7 @@ func (p *Panel) bindBackupJobRoutes(group *router.RouterGroup[*core.RequestEvent
 	group.PATCH("/backup-jobs/{id}", p.handleChangeJob).BindFunc(admins)
 	group.DELETE("/backup-jobs/{id}", p.handleRemoveJob).BindFunc(admins)
 	group.POST("/backup-jobs/{id}/run", p.handleRunJob).BindFunc(operators)
+	group.POST("/backup-runs/{id}/retry", p.handleRetryRun).BindFunc(operators)
 }
 
 // jobBody is a job as the routes take it. Pointers are what a change may
@@ -347,7 +348,8 @@ func (p *Panel) handleRemoveJob(e *core.RequestEvent) error {
 }
 
 // handleRunJob backs a job up now, to each of its targets whose run before is
-// not still going.
+// not still going. A run it starts takes the place of the planned retries of
+// the job's runs to its target.
 func (p *Panel) handleRunJob(e *core.RequestEvent) error {
 	job, err := e.App.FindRecordById(schema.BackupJobs, e.Request.PathValue("id"))
 	if err != nil {
@@ -383,6 +385,7 @@ func (p *Panel) handleRunJob(e *core.RequestEvent) error {
 			p.Log.Error("failed to start a backup run", "job", job.Id, "target", target.Id, "error", err)
 			continue
 		}
+		p.dropRetries(job, target, "A run started by hand took its place.")
 		runs = append(runs, run.Id)
 	}
 	if len(runs) == 0 {
@@ -597,8 +600,11 @@ func nextRunOf(job *core.Record, now time.Time) any {
 // RunDueBackups starts the enabled jobs whose schedule says now, in UTC,
 // with a run per target: the panel calls it every minute. Its first pass
 // after the panel started also catches up the minutes the panel missed (see
-// CatchUpBackups). Then each job's next run is set.
+// CatchUpBackups). Then the failed runs whose retry is due are tried again
+// (#31), and each job's next run is set. One pass runs at a time.
 func (p *Panel) RunDueBackups(now time.Time) {
+	p.backupPass.Lock()
+	defer p.backupPass.Unlock()
 	minute := now.UTC().Truncate(time.Minute)
 	moment := cron.NewMoment(minute)
 	if p.backupCatchUp.CompareAndSwap(true, false) {
@@ -615,6 +621,7 @@ func (p *Panel) RunDueBackups(now time.Time) {
 		}
 		p.runOnSchedule(job, minute)
 	}
+	p.retryDueRuns(now)
 	p.refreshNextRuns(now)
 }
 
@@ -624,6 +631,8 @@ func (p *Panel) RunDueBackups(now time.Time) {
 // it instead. The scheduler's first pass after the panel starts does it;
 // then each job's next run is set.
 func (p *Panel) CatchUpBackups(now time.Time) {
+	p.backupPass.Lock()
+	defer p.backupPass.Unlock()
 	p.catchUpBackups(now.UTC().Truncate(time.Minute))
 	p.refreshNextRuns(now)
 }
@@ -778,14 +787,43 @@ func (p *Panel) runGoing(job, target *core.Record) bool {
 	return going
 }
 
-// startRun makes a run of a job to a target and queues its command. A run
-// whose command cannot be made fails at once.
+// startRun makes a run of a job to a target and queues its command, in one
+// transaction (see queueRunIn). A run whose command cannot be made fails at
+// once.
 func (p *Panel) startRun(ctx context.Context, job, target, host *core.Record, trigger string, scheduledAt time.Time, options commands.Options) (*core.Record, error) {
+	run, err := p.newRunRecord(job, target, host, trigger, scheduledAt)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := p.backupRun(job, target, host, run)
+	if err == nil {
+		err = p.App.RunInTransaction(func(tx core.App) error {
+			return p.queueRunIn(ctx, tx, run, payload, job, target, host, options)
+		})
+		if err == nil {
+			p.noteJobRun(job.Id)
+			return run, nil
+		}
+		// nothing of it was saved
+		run.MarkAsNew()
+		run.Set("command", "")
+	}
+	if saveErr := p.App.Save(run); saveErr != nil {
+		return nil, saveErr
+	}
+	p.runFailed(run, job, target, sentence(err))
+	return run, nil
+}
+
+// newRunRecord is a new queued run of a job to a target, with its id, not
+// saved yet.
+func (p *Panel) newRunRecord(job, target, host *core.Record, trigger string, scheduledAt time.Time) (*core.Record, error) {
 	collection, err := p.App.FindCachedCollectionByNameOrId(schema.BackupRuns)
 	if err != nil {
 		return nil, err
 	}
 	run := core.NewRecord(collection)
+	run.Id = core.GenerateDefaultRandomId()
 	run.Set("job", job.Id)
 	run.Set("target", target.Id)
 	run.Set("host", host.Id)
@@ -794,25 +832,6 @@ func (p *Panel) startRun(ctx context.Context, job, target, host *core.Record, tr
 	if !scheduledAt.IsZero() {
 		run.Set("scheduled_at", scheduledAt)
 	}
-	if err := p.App.Save(run); err != nil {
-		return nil, err
-	}
-	payload, err := p.backupRun(job, target, host, run)
-	if err != nil {
-		p.runFailed(run, job, target, sentence(err))
-		return run, nil
-	}
-	options.Host = host.Id
-	options.Label = backupLabel(job, target)
-	options.Command = &agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: payload}}
-	options.QueueTimeout = backupRunQueue
-	command, err := p.Commands.Create(ctx, options)
-	if err != nil {
-		p.runFailed(run, job, target, sentence(err))
-		return run, nil
-	}
-	p.setFields(run, map[string]any{"command": command.Id})
-	p.noteJobRun(job.Id)
 	return run, nil
 }
 
@@ -877,22 +896,30 @@ func cancelledByItsTime(command *core.Record, finished types.DateTime) bool {
 // runFailed fails a run that could not start, and alerts.
 func (p *Panel) runFailed(run, job, target *core.Record, reason string) {
 	p.setFields(run, map[string]any{"status": schema.RunFailed, "error": cutText(reason, 4096), "finished_at": types.NowDateTime()})
-	p.alertFailure(job, target, run, reason)
+	p.alertFailure(job, target, run, reason, retryPlan{})
 	p.noteJobRun(job.Id)
 }
 
-// alertFailure raises the alert of a failed run, and logs it.
-func (p *Panel) alertFailure(job, target, run *core.Record, reason string) {
-	message := cutText(fmt.Sprintf("%s failed: %s", backupLabel(job, target), sentenceText(reason)), 2048)
-	events.Log(p.App, job.GetString("host"), "backup.failed", schema.SeverityCritical, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
-	p.raiseJobAlert(alertBackupFailed, job, target, schema.SeverityCritical, message)
+// alertFailure raises the alert of a failed run, and logs it: a warning that
+// says when PocketCloud tries again while a retry is planned (#31), critical
+// once none is.
+func (p *Panel) alertFailure(job, target, run *core.Record, reason string, plan retryPlan) {
+	severity, retry := schema.SeverityCritical, ""
+	if !plan.at.IsZero() {
+		severity = schema.SeverityWarning
+		retry = fmt.Sprintf(" PocketCloud tries again at %s UTC (attempt %d of %d).", plan.at.UTC().Format("15:04"), plan.attempt, maxRunAttempts)
+	}
+	message := cutText(fmt.Sprintf("%s failed: %s", backupLabel(job, target), sentenceText(reason)), 2048-len(retry)) + retry
+	events.Log(p.App, job.GetString("host"), "backup.failed", severity, message, map[string]any{"job": job.Id, "target": target.Id, "run": run.Id})
+	p.raiseJobAlert(alertBackupFailed, job, target, severity, message)
 }
 
 // raiseJobAlert raises an alert of a job to a target. A job no longer alerts
 // about a target it does not back up to, nor once its label is gone: their
 // alerts were resolved as the job changed (see resolveBackupAlerts). It reads
 // the job as it is now, in the transaction that raises the alert: a change of
-// the job saved meanwhile is seen, or resolves the alert after it.
+// the job saved meanwhile is seen, or resolves the alert after it. An open
+// critical alert stays critical: a warning updates its message only.
 func (p *Panel) raiseJobAlert(rule string, job, target *core.Record, severity, message string) {
 	err := p.App.RunInTransaction(func(tx core.App) error {
 		fresh, err := tx.FindRecordById(schema.BackupJobs, job.Id)
@@ -900,11 +927,26 @@ func (p *Panel) raiseJobAlert(rule string, job, target *core.Record, severity, m
 			// a job removed meanwhile alerts about nothing
 			return nil //nolint:nilerr // nothing to raise
 		}
-		return events.RaiseAlert(tx, rule, alertKey(job.Id, target.Id), fresh.GetString("host"), severity, message)
+		key := alertKey(job.Id, target.Id)
+		return events.RaiseAlert(tx, rule, key, fresh.GetString("host"), keptSeverity(tx, rule, key, severity), message)
 	})
 	if err != nil {
 		p.Log.Error("failed to raise an alert", "rule", rule, "error", err)
 	}
+}
+
+// keptSeverity is the severity an alert is raised with: an open critical
+// alert of the rule and key is never lowered.
+func keptSeverity(app core.App, rule, key, severity string) string {
+	if severity == schema.SeverityCritical {
+		return severity
+	}
+	open, err := app.FindRecordsByFilter(schema.Alerts, "rule={:rule} && target={:key} && status!={:resolved} && severity={:critical}", "", 1, 0,
+		dbx.Params{"rule": rule, "key": key, "resolved": schema.AlertResolved, "critical": schema.SeverityCritical})
+	if err == nil && len(open) > 0 {
+		return schema.SeverityCritical
+	}
+	return severity
 }
 
 // backsUpTo tells whether a job still backs up to a target: the target is one
@@ -1167,13 +1209,19 @@ type backupRunResult struct {
 	// the repository to itself, even after it removed stale locks and tried
 	// again: the next run tries again.
 	RetentionDeferred string `json:"retention_deferred"`
+	// Failure, ResticCode and Lock say why a run failed, when restic saved
+	// nothing (#31; backup.RunFailure).
+	Failure    string       `json:"failure"`
+	ResticCode float64      `json:"restic_code"`
+	Lock       *backup.Lock `json:"lock"`
 }
 
 // backupRunFinished keeps how a run went, and alerts: a failure with
 // restic's error, a run that never started, a retention that failed after a
 // backup that did not, or that the repository being busy postponed for
 // retentionPatience; a run that succeeds resolves its job's alerts to its
-// target, its retention's once it is applied.
+// target, its retention's once it is applied. A failed run keeps why it
+// failed, the lock that kept it out, and its retry, if it gets one (#31).
 func (p *Panel) backupRunFinished(command *core.Record) {
 	run, err := p.runOfCommand(command)
 	if err != nil {
@@ -1260,6 +1308,22 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	if status == schema.RunSucceeded {
 		fields["error"] = ""
 	}
+	plan := retryPlan{}
+	if status == schema.RunFailed {
+		failure, lock := runFailure(command, result, !started.IsZero())
+		lock = p.describeLock(lock)
+		plan = p.planRetry(job, run.GetInt("attempt"), failure, lock, !started.IsZero(), finished.Time())
+		fields["failure"] = failure
+		fields["lock"] = nil
+		if lock != nil {
+			fields["lock"] = lock
+		}
+		fields["retry_at"] = ""
+		if !plan.at.IsZero() {
+			fields["retry_at"] = plan.at
+		}
+		fields["retry_note"] = plan.note
+	}
 	// once: the run's command may be settled from two places
 	kept := false
 	err = p.update(context.Background(), run, func(fresh *core.Record) error {
@@ -1283,7 +1347,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	host := job.GetString("host")
 	switch status {
 	case schema.RunFailed:
-		p.alertFailure(job, target, run, message)
+		p.alertFailure(job, target, run, message, plan)
 	case schema.RunSkipped:
 		p.noteSkip(job, target, run, message, true)
 	case schema.RunSucceeded:

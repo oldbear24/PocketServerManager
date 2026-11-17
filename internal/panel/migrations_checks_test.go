@@ -13,9 +13,6 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
 
-// checksMigration is the file of the migration that adds backup_checks.
-const checksMigration = "1771000000_backup_checks.go"
-
 // checkFieldTypes checks that a collection has exactly the fields want, of
 // their types, besides id, created and updated, or, with only, that it has
 // these among others.
