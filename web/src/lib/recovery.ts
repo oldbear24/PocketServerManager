@@ -146,7 +146,8 @@ function portOf(address: string): string {
  * them: fetch the snapshot with an agent (on a server, or through the
  * agent's image on the new machine), restore it into the new panel's
  * volumes, then check it and start the panel where the servers dial it.
- * The kit's passphrase is read without an echo, never written down. */
+ * The kit's passphrase is read without an echo, never written down. Lines
+ * are short, as a drawer on a phone shows them. */
 export function recoveryCommands(values: {
   /** a snapshot's short id, or latest */
   snapshot: string;
@@ -156,31 +157,40 @@ export function recoveryCommands(values: {
   address: string;
 }): { fetch: string; launcher: string; restore: string; start: string } {
   const passphrase = "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE";
-  const fetch = `panel-recovery fetch --kit - --target ${shellWord(values.target)} --snapshot ${shellWord(values.snapshot)} --out -`;
-  const files = `< kit.pckit > ${panelFileName}`;
+  const fetch = [
+    "panel-recovery fetch --kit - \\",
+    `  --target ${shellWord(values.target)} --snapshot ${shellWord(values.snapshot)} --out - \\`,
+    `  < kit.pckit > ${panelFileName}`,
+  ];
   const image = shellWord(values.panelImage);
-  const volumes = "-v pocketcloud:/data -v pocketcloud-secrets:/run/secrets";
   return {
     fetch: [
       passphrase,
       "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
-      `  pocketcloud-agent ${fetch} \\`,
-      `  ${files}`,
+      `  pocketcloud-agent ${fetch.join("\n")}`,
     ].join("\n"),
     launcher: [
       passphrase,
-      "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE -v /var/run/docker.sock:/var/run/docker.sock \\",
-      `  ${shellWord(values.agentImage)} ${fetch} \\`,
-      `  ${files}`,
+      "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE \\",
+      "  -v /var/run/docker.sock:/var/run/docker.sock \\",
+      `  ${shellWord(values.agentImage)} \\`,
+      `  ${fetch.join("\n")}`,
     ].join("\n"),
     restore: [
-      `docker run --rm -it ${volumes} -v "$PWD":/work \\`,
-      `  ${image} recover --kit /work/kit.pckit --from /work/${panelFileName} --env-out /work/panel.env`,
+      "docker run --rm -it -v pocketcloud:/data \\",
+      '  -v pocketcloud-secrets:/run/secrets -v "$PWD":/work \\',
+      `  ${image} recover \\`,
+      `  --kit /work/kit.pckit --from /work/${panelFileName} \\`,
+      "  --env-out /work/panel.env",
     ].join("\n"),
     start: [
-      `docker run --rm ${volumes}:ro ${image} audit verify`,
-      "docker run -d --name pocketcloud-panel --restart unless-stopped --env-file panel.env \\",
-      `  -p 8090:8090 -p ${portOf(values.address)}:9443 ${volumes}:ro ${image}`,
+      "docker run --rm -v pocketcloud:/data \\",
+      "  -v pocketcloud-secrets:/run/secrets:ro \\",
+      `  ${image} audit verify`,
+      "docker run -d --name pocketcloud-panel --restart unless-stopped \\",
+      `  --env-file panel.env -p 8090:8090 -p ${portOf(values.address)}:9443 \\`,
+      "  -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets:ro \\",
+      `  ${image}`,
     ].join("\n"),
   };
 }

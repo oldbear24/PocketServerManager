@@ -3588,14 +3588,17 @@ a.job-name {
   overflow-wrap: normal;
 }
 
-/* Settings › Recovery kit (#32) */
+/* Settings › Recovery kit (#32); a code block in it scrolls in its column
+   rather than widen it */
 .recovery {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
 .recovery-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -3614,14 +3617,37 @@ a.job-name {
 
 .recovery-generated {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+}
+
+/* a generated passphrase is written down: all of it in sight, never under
+   the copy button, broken at its dashes on a phone */
+.recovery-generated .code-block pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding-right: 128px;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+/* a kit's status can be a sentence: it wraps, its dot by the first line */
+.recovery .facts .pill {
+  white-space: normal;
+  align-items: flex-start;
+  border-radius: 10px;
+}
+
+.recovery .facts .pill .dot {
+  flex: none;
+  margin-top: 0.55em;
 }
 
 /* the steps of a panel's restore, in the restore drawer (#32) */
 .panel-recovery {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  min-width: 0;
 }
 
 .panel-recovery .drawer-heading {
@@ -3633,14 +3659,14 @@ a.job-name {
   margin: 0;
   padding: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
-  min-width: 0;
 }
 
 .panel-recovery-steps li {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  min-width: 0;
 }
 
 .panel-recovery-steps h4 {

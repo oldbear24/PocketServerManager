@@ -169,6 +169,19 @@ describe("the recovery kit's state", () => {
     );
   });
 
+  it("says it is loading, and offers nothing yet", () => {
+    vi.spyOn(recoveryApi, "getRecovery").mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <RecoveryCard />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(card().getByText("Loading…")).toBeInTheDocument();
+    expect(card().queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("shows the panel's sentence when the state cannot be read", async () => {
     show(failure(403, "Only admins can do this."));
     expect(await card().findByRole("alert")).toHaveTextContent("Only admins can do this.");

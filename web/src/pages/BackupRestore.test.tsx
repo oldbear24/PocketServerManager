@@ -1174,7 +1174,8 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
         [
           "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
           "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
-          "  pocketcloud-agent panel-recovery fetch --kit - --target backup-node --snapshot 3f9a1c2e --out - \\",
+          "  pocketcloud-agent panel-recovery fetch --kit - \\",
+          "  --target backup-node --snapshot 3f9a1c2e --out - \\",
           "  < kit.pckit > pocketcloud-panel.pcpb",
         ].join("\n"),
       ),
@@ -1182,16 +1183,27 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
     expect(
       drawer().getByRole("region", { name: "Or on the new machine, through the agent's image:" })
         .textContent,
-    ).toContain(
-      "  ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c panel-recovery fetch --kit - --target backup-node --snapshot 3f9a1c2e --out - \\",
+    ).toBe(
+      [
+        "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
+        "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE \\",
+        "  -v /var/run/docker.sock:/var/run/docker.sock \\",
+        "  ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c \\",
+        "  panel-recovery fetch --kit - \\",
+        "  --target backup-node --snapshot 3f9a1c2e --out - \\",
+        "  < kit.pckit > pocketcloud-panel.pcpb",
+      ].join("\n"),
     );
     expect(
       drawer().getByRole("region", { name: "2 · Restore it into the new panel's volumes" })
         .textContent,
     ).toBe(
       [
-        'docker run --rm -it -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets -v "$PWD":/work \\',
-        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0 recover --kit /work/kit.pckit --from /work/pocketcloud-panel.pcpb --env-out /work/panel.env",
+        "docker run --rm -it -v pocketcloud:/data \\",
+        '  -v pocketcloud-secrets:/run/secrets -v "$PWD":/work \\',
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0 recover \\",
+        "  --kit /work/kit.pckit --from /work/pocketcloud-panel.pcpb \\",
+        "  --env-out /work/panel.env",
       ].join("\n"),
     );
     expect(
@@ -1200,9 +1212,13 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
       }).textContent,
     ).toBe(
       [
-        "docker run --rm -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets:ro ghcr.io/oldbear24/pocketcloud-panel:0.32.0 audit verify",
-        "docker run -d --name pocketcloud-panel --restart unless-stopped --env-file panel.env \\",
-        "  -p 8090:8090 -p 9443:9443 -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets:ro ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+        "docker run --rm -v pocketcloud:/data \\",
+        "  -v pocketcloud-secrets:/run/secrets:ro \\",
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0 audit verify",
+        "docker run -d --name pocketcloud-panel --restart unless-stopped \\",
+        "  --env-file panel.env -p 8090:8090 -p 9443:9443 \\",
+        "  -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets:ro \\",
+        "  ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
       ].join("\n"),
     );
     expect(
