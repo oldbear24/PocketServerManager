@@ -422,7 +422,8 @@ const retryNeverRanNote = "It never ran, so the run it was to try again may be t
 func freeRetryOf(retry *core.Record) string {
 	prev := retry.GetString("retry_of")
 	status := retry.GetString("status")
-	if prev == "" || status != schema.RunSkipped && (status != schema.RunCancelled || !retry.GetDateTime("started_at").IsZero()) {
+	neverRan := status == schema.RunSkipped || (status == schema.RunCancelled && retry.GetDateTime("started_at").IsZero())
+	if prev == "" || !neverRan {
 		return ""
 	}
 	retry.Set("retry_of", "")
@@ -430,8 +431,8 @@ func freeRetryOf(retry *core.Record) string {
 	return prev
 }
 
-// retryNeverRan raises the alert of a run whose retry never ran again,
-// critical: it promised that retry, and no other is planned. A run that is
+// retryNeverRan raises again, critical, the alert of a run whose retry never
+// ran: the alert promised that retry, and no other is planned. A run that is
 // tried again meanwhile, or whose place a newer run took, is left alone.
 func (p *Panel) retryNeverRan(runID string) {
 	if runID == "" {
