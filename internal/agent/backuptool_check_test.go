@@ -371,6 +371,13 @@ func TestACheckKeepsTwentyErrorsWithoutSecrets(t *testing.T) {
 		!strings.HasPrefix(pass.Errors[0].Text, "error for tree 0011aabb: éé") || pass.Errors[0].ID != "0011aabb" {
 		t.Errorf("a long error: %+v", pass.Errors)
 	}
+	// and so is one long line
+	replayRestic(t, resticcapture.Run{Stderr: "error: " + strings.Repeat("x", 700) + "\nFatal: repository contains errors\n", Exit: 1})
+	pass, _, _, _ = toolCheck(t, checkEnv, "--subset", "", "--pass", "free")
+	if len(pass.Errors) != 1 || utf8.RuneCountInString(pass.Errors[0].Text) != backup.MaxCheckErrorText || pass.Errors[0].Kind != "other" ||
+		!strings.HasPrefix(pass.Errors[0].Text, "error: xx") {
+		t.Errorf("a long line: %+v", pass.Errors)
+	}
 
 	// what an error outcome says, too
 	replayRestic(t, resticcapture.Run{Stderr: "Fatal: unable to open repository at s3:http://minio:9000/backups: Access Denied for key " + checkEnv["AWS_SECRET_ACCESS_KEY"] + "\n", Exit: 1})
