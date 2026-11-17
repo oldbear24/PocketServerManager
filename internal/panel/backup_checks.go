@@ -970,12 +970,29 @@ func (p *Panel) retryDueChecks(now time.Time) {
 	}
 }
 
+// checksMigration is the migration that brought the integrity checks.
+const checksMigration = "1771000000_backup_checks.go"
+
+// checksBegan is when this panel began to check repositories: when the
+// migration that brought the checks was applied; zero when that is not
+// known.
+func checksBegan(app core.App) time.Time {
+	var applied int64
+	err := app.DB().Select("applied").From(core.DefaultMigrationsTable).
+		Where(dbx.HashExp{"file": checksMigration}).Row(&applied)
+	if err != nil || applied <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMicro(applied).UTC()
+}
+
 // WatchChecks raises backup_check_unverified for every target that no check
 // has verified for twice the time between two slots of the schedule and a
 // day, as when its checks never complete: since its newest check that
-// completed, or since it was added. The panel calls it hourly; it does
-// nothing while the checks are off, and a target whose errors were confirmed
-// has its alert already.
+// completed, or since it was added, or since the panel began to check, for a
+// target it had before. The panel calls it hourly; it does nothing while the
+// checks are off, and a target whose errors were confirmed has its alert
+// already.
 func (p *Panel) WatchChecks(now time.Time) {
 	schedule, _ := p.checkSettings()
 	rule := parseCronRule(schedule)
@@ -990,13 +1007,16 @@ func (p *Panel) WatchChecks(now time.Time) {
 		p.Log.Error("failed to read the backup targets", "error", err)
 		return
 	}
+	// a target added before the panel could check it was not unverified
+	// for all that time
+	began := checksBegan(p.App)
 	for _, target := range targets {
 		if !checkable(target) || target.GetString("integrity_status") == schema.CheckFailed {
 			continue
 		}
 		since := target.GetDateTime("integrity_at").Time()
 		if since.IsZero() {
-			since = target.GetDateTime("created").Time()
+			since = maxTime(target.GetDateTime("created").Time(), began)
 		}
 		if now.Sub(since) <= limit {
 			continue

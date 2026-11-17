@@ -639,8 +639,9 @@ func TestCheckAlertsGoWithWhatTheyAreAbout(t *testing.T) {
 // TestTheWatchdogSaysWhatNoCheckVerified (#31, AC1): hourly, a target whose
 // newest check that completed, or whose adding when none did, is older than
 // twice the time between two slots and a day (15 days for a weekly schedule)
-// raises the warning that it is not verified; one with confirmed errors, one
-// being added, and all while the checks are off, do not.
+// raises the warning that it is not verified; a target added before the panel
+// began to check counts from then; one with confirmed errors, one being
+// added, and all while the checks are off, do not.
 func TestTheWatchdogSaysWhatNoCheckVerified(t *testing.T) {
 	f := newCheckFixture(t)
 	f.checkSettings(schema.DefaultCheckSchedule, 20)
@@ -664,12 +665,24 @@ func TestTheWatchdogSaysWhatNoCheckVerified(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// a target the panel had before it could check, as at an upgrade, was
+	// not unverified for all that time
+	f.p.WatchChecks(now)
+	if a := f.openAlert(alertCheckUnverified, never.Id); a != nil {
+		t.Errorf("a target added before the checks began is not verified: %v", a)
+	}
+	began := now.Add(-15*24*time.Hour - 2*time.Hour)
+	if _, err := f.app.DB().NewQuery("UPDATE _migrations SET applied={:at} WHERE file={:file}").
+		Bind(map[string]any{"at": began.UnixMicro(), "file": checksMigration}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+
 	f.p.WatchChecks(now)
 	if a := f.openAlert(alertCheckUnverified, f.target.Id); a == nil || a.GetString("severity") != schema.SeverityWarning ||
 		a.GetString("message") != "No integrity check of b2 has completed since "+old.Format("2006-01-02 15:04")+" UTC." {
 		t.Errorf("the alert of a target checked 15 days ago: %v", a)
 	}
-	if a := f.openAlert(alertCheckUnverified, never.Id); a == nil || !strings.HasPrefix(a.GetString("message"), "No integrity check of never has completed since ") {
+	if a := f.openAlert(alertCheckUnverified, never.Id); a == nil || a.GetString("message") != "No integrity check of never has completed since "+began.Format("2006-01-02 15:04")+" UTC." {
 		t.Errorf("the alert of a target never checked: %v", a)
 	}
 	for _, target := range []*core.Record{nas, broken} {

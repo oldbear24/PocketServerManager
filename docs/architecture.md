@@ -586,7 +586,7 @@ This section is the contract that the agent, the panel and the web UI of #31 cod
   |---|---|---|---|---|
   | `backup_failed` | `<job>:<target>` | warning while a retry is planned (" PocketCloud tries again at 15:04 UTC (attempt n of 4)."), then critical; an open critical alert stays critical | a run failed | a run of the job to the target succeeds; as today |
   | `backup_check_failed` | `<target>` | critical | errors confirmed: "The integrity check of X found errors in group n/t: <first error>" | an `ok` check; the target removed |
-  | `backup_check_unverified` | `<target>` | warning | `suspect`, `error`, `skipped` for an old agent, and the hourly watchdog: "No integrity check of X has completed since <date> UTC." (older than twice the gap between two slots plus a day) | an `ok` or `failed` check; the target removed; checks turned off |
+  | `backup_check_unverified` | `<target>` | warning | `suspect`, `error`, `skipped` for an old agent, and the hourly watchdog: "No integrity check of X has completed since <date> UTC." (older than twice the gap between two slots plus a day; the date is the target's newest check that completed, else when it was added, or when the panel began to check, the migration's time, for a target it had before) | an `ok` or `failed` check; the target removed; checks turned off |
 
   Events: `backup.check_started` (info), `backup.check_ok` (info), `backup.check_failed` (critical), `backup.check_unverified` (warning), `backup.check_skipped` (info), and a warning `backup.failed` while a run's retry is planned. Each check rule is raised in a transaction that reads the target again, with `host` the target's server.
 
