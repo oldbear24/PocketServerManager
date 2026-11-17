@@ -176,7 +176,9 @@ func checkChecksSchema(t *testing.T, app core.App) {
 		field.Required || field.MaxSelect != 1 || schema.RetryNextRun != "next_run" || schema.RetryGivenUp != "given_up" {
 		t.Errorf("a run's retry_end takes %v", field.Values)
 	}
-	if field := runs.Fields.GetByName("trigger").(*core.SelectField); !slices.Equal(field.Values, []string{schema.RunSchedule, schema.RunManual, schema.RunRetry}) {
+	// #31's triggers first; #32's migration adds change after them
+	if field := runs.Fields.GetByName("trigger").(*core.SelectField); len(field.Values) < 3 ||
+		!slices.Equal(field.Values[:3], []string{schema.RunSchedule, schema.RunManual, schema.RunRetry}) {
 		t.Errorf("a run's trigger takes %v", field.Values)
 	}
 	if field := runs.Fields.GetByName("failure").(*core.SelectField); !slices.Equal(field.Values, backup.Failures) || field.Required {
@@ -430,8 +432,10 @@ func TestTheChecksMigrationAppliesOverRestores(t *testing.T) {
 		t.Errorf("the check of a removed command: %v, %v", kept, err)
 	}
 
-	reverted, err := core.NewMigrationsRunner(app, core.AppMigrations).Down(1)
-	if err != nil || !slices.Equal(reverted, []string{checksMigration}) {
+	// the migrations after it go first
+	later := migrationsFrom(t, checksMigration)
+	reverted, err := core.NewMigrationsRunner(app, core.AppMigrations).Down(len(later))
+	if err != nil || !slices.Equal(reverted, later) {
 		t.Fatalf("reverting: %v, %v", reverted, err)
 	}
 	if _, err := app.FindCollectionByNameOrId(schema.BackupChecks); err == nil {
