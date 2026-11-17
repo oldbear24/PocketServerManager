@@ -52,6 +52,8 @@ import (
 //	       found the repository locked does (#31). A backup that saved
 //	       nothing says why as its result: the failure's class, restic's
 //	       exit code and the lock that kept it out (backup.RunFailure).
+//	check  check a repository, one group of its data packs or its
+//	       structure, in one of two passes (#31): see backuptool_check.go.
 //	relay  what restic runs for a dump: it reads the frames from the backup
 //	       tool's --socket SOCKET and writes the dump to its standard
 //	       output, and ends with the dump's exit code.
@@ -153,7 +155,7 @@ func (o *options) Set(value string) error {
 // which brings a dump.
 func BackupTool(ctx context.Context, args []string, env map[string]string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("name an op: init, backup or relay")
+		return errors.New("name an op: init, backup, check or relay")
 	}
 	op := args[0]
 	flags := flag.NewFlagSet("backup-tool "+op, flag.ContinueOnError)
@@ -194,6 +196,9 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	offset := flags.Int("offset", 0, "how many entries of the folder to skip")
 	limit := flags.Int("limit", 0, "how many entries or snapshots to say")
 	match := flags.String("match", "", "a part of the names to list, in any case")
+	// the integrity check (#31)
+	subset := flags.String("subset", "", "the group n/t of the data packs a check reads; empty: the structure only")
+	pass := flags.String("pass", "", "the pass of a check: free, without a lock, or confirm, with the exclusive lock")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -291,8 +296,15 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 			return errors.New("a dump writes one --path of the snapshot")
 		}
 		return r.dump(ctx, *snapshot, paths[0], *expectTag, stdout)
+	case "check":
+		// the pass is said however it ended, as the agent reads it
+		result, err := r.check(ctx, *subset, *pass)
+		if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil && err == nil { //nolint:gosec // Pass names a check's pass, free or confirm: no secret
+			err = encodeErr
+		}
+		return err
 	}
-	return fmt.Errorf("unknown op %q: use init, backup, snapshots, ls, restore, dump or relay", op)
+	return fmt.Errorf("unknown op %q: use init, backup, snapshots, ls, restore, dump, check or relay", op)
 }
 
 // How many snapshots a list says, and entries a page of a folder (#30).
