@@ -1322,6 +1322,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		if !plan.at.IsZero() {
 			fields["retry_at"] = plan.at
 		}
+		fields["retry_end"] = plan.end
 		fields["retry_note"] = plan.note
 	}
 	// once: the run's command may be settled from two places

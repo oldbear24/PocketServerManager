@@ -169,9 +169,13 @@ func checkChecksSchema(t *testing.T, app core.App) {
 		t.Fatal(err)
 	}
 	checkFieldTypes(t, runs, map[string]string{
-		"attempt": core.FieldTypeNumber, "retry_of": core.FieldTypeText, "retry_at": core.FieldTypeDate,
+		"attempt": core.FieldTypeNumber, "retry_of": core.FieldTypeText, "retry_at": core.FieldTypeDate, "retry_end": core.FieldTypeSelect,
 		"retry_note": core.FieldTypeText, "failure": core.FieldTypeSelect, "lock": core.FieldTypeJSON,
 	}, false)
+	if field := runs.Fields.GetByName("retry_end").(*core.SelectField); !slices.Equal(field.Values, []string{schema.RetryNextRun, schema.RetryGivenUp}) ||
+		field.Required || field.MaxSelect != 1 || schema.RetryNextRun != "next_run" || schema.RetryGivenUp != "given_up" {
+		t.Errorf("a run's retry_end takes %v", field.Values)
+	}
 	if field := runs.Fields.GetByName("trigger").(*core.SelectField); !slices.Equal(field.Values, []string{schema.RunSchedule, schema.RunManual, schema.RunRetry}) {
 		t.Errorf("a run's trigger takes %v", field.Values)
 	}
@@ -244,7 +248,7 @@ func fullCheck(f checkFixture) map[string]any {
 func retriedRun(f checkFixture) map[string]any {
 	return map[string]any{"job": f.job.Id, "target": f.target.Id, "host": f.host.Id, "trigger": schema.RunRetry,
 		"status": schema.RunFailed, "attempt": 2, "retry_of": f.run.Id, "retry_at": types.NowDateTime(),
-		"retry_note": strings.Repeat("n", 500), "failure": backup.FailureLocked,
+		"retry_note": strings.Repeat("n", 500), "failure": backup.FailureLocked, "retry_end": schema.RetryGivenUp,
 		"lock": backup.Lock{PID: 1, Host: "nas", User: "root", Exclusive: true}}
 }
 
@@ -310,7 +314,7 @@ func TestTheChecksMigrationAppliesToAFreshDatabase(t *testing.T) {
 	if _, err := trySave(app, schema.BackupRuns, retriedRun(f)); err == nil {
 		t.Error("a second retry of the same run was saved")
 	}
-	for _, value := range []string{"retry_of", "failure"} {
+	for _, value := range []string{"retry_of", "failure", "retry_end"} {
 		bad := retriedRun(f)
 		bad["retry_of"] = ""
 		bad[value] = "Not An Id!"
@@ -438,7 +442,7 @@ func TestTheChecksMigrationAppliesOverRestores(t *testing.T) {
 		t.Errorf("the retry after the revert: %v, %v", retry, err)
 	}
 	for collection, fields := range map[string][]string{
-		schema.BackupRuns:    {"attempt", "retry_of", "retry_at", "retry_note", "failure", "lock"},
+		schema.BackupRuns:    {"attempt", "retry_of", "retry_at", "retry_end", "retry_note", "failure", "lock"},
 		schema.BackupTargets: {"integrity_status", "integrity_at", "integrity_error", "last_check", "last_check_status", "last_check_error", "next_check_at", "integrity_group"},
 		schema.Settings:      {"backup_check_schedule", "backup_check_groups"},
 	} {

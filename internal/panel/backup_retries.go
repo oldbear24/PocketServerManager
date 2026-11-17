@@ -204,11 +204,13 @@ func holderNames(lock *backup.Lock, holder *core.Record) (label, server string) 
 }
 
 // retryPlan is the retry a failed run gets: when, and which attempt it is;
-// or why it gets none.
+// or why it gets none, and how its retry ended (schema.Retry*), when the run
+// would have been tried again.
 type retryPlan struct {
 	at      time.Time
 	attempt int
 	note    string
+	end     string
 }
 
 // planRetry plans the retry of a run that failed with a class: one that
@@ -226,15 +228,17 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 	default:
 		return retryPlan{}
 	}
-	if (!started && failure != backup.FailureInterrupted) || attempt >= maxRunAttempts {
+	if !started && failure != backup.FailureInterrupted {
 		return retryPlan{}
 	}
 	switch {
+	case attempt >= maxRunAttempts:
+		return retryPlan{end: schema.RetryGivenUp}
 	case !job.GetBool("enabled"):
 		// as a disabled job's run by hand
-		return retryPlan{note: jobDisabledNote}
+		return retryPlan{note: jobDisabledNote, end: schema.RetryGivenUp}
 	case labelGone(job):
-		return retryPlan{note: labelGoneMessage}
+		return retryPlan{note: labelGoneMessage, end: schema.RetryGivenUp}
 	}
 	at := finished.UTC().Add(runBackoff[attempt-1])
 	if failure == backup.FailureLocked {
@@ -246,7 +250,7 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 		}
 	}
 	if next, ok := nextRunOf(job, finished).(time.Time); ok && !next.After(at.Add(retryNudge)) {
-		return retryPlan{note: nextRunNote(next)}
+		return retryPlan{note: nextRunNote(next), end: schema.RetryNextRun}
 	}
 	return retryPlan{at: at, attempt: attempt + 1}
 }
@@ -287,32 +291,32 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 	// else settles it: the alerts of a job whose label went, or of a target
 	// taken out of it, were resolved, and a newer run's outcome is the
 	// alert's now
-	giveUp := func(note string, alert bool) {
-		if p.moveRetry(run, "", note) && alert {
+	giveUp := func(end, note string, alert bool) {
+		if p.endRetry(run, end, note) && alert {
 			p.alertFailure(job, target, run, retryGivenUp(run, note), retryPlan{})
 		}
 	}
 	host, err := p.App.FindRecordById(schema.Hosts, job.GetString("host"))
 	if err != nil {
-		giveUp("The server of the job is gone.", true)
+		giveUp(schema.RetryGivenUp, "The server of the job is gone.", true)
 		return
 	}
 	switch {
 	case !job.GetBool("enabled"):
-		giveUp(jobDisabledNote, true)
+		giveUp(schema.RetryGivenUp, jobDisabledNote, true)
 		return
 	case labelGone(job):
-		giveUp(labelGoneMessage, false)
+		giveUp(schema.RetryGivenUp, labelGoneMessage, false)
 		return
 	case !backsUpTo(job, target):
-		giveUp("The target is no longer one of the job's targets.", false)
+		giveUp(schema.RetryGivenUp, "The target is no longer one of the job's targets.", false)
 		return
 	case newerRunIn(p.App, run):
-		giveUp("A newer run of the job to the target took its place.", false)
+		giveUp(schema.RetryGivenUp, "A newer run of the job to the target took its place.", false)
 		return
 	}
 	if next, ok := nextRunOf(job, now).(time.Time); ok && !next.After(now.Add(retryNudge)) {
-		giveUp(nextRunNote(next), true)
+		giveUp(schema.RetryNextRun, nextRunNote(next), true)
 		return
 	}
 
@@ -329,9 +333,9 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 		// not an attempt: the holder ends first
 		p.moveRetry(run, now.Add(retryRearm), fmt.Sprintf("Waits for %s.", label))
 	case state == holderAlive:
-		giveUp(fmt.Sprintf("The repository stayed locked by %s for %d hours.", label, int(holderPatience.Hours())), true)
+		giveUp(schema.RetryGivenUp, fmt.Sprintf("The repository stayed locked by %s for %d hours.", label, int(holderPatience.Hours())), true)
 	case now.Sub(retryAt) > retryMissedAfter:
-		giveUp("Its retry was missed while the panel was down.", true)
+		giveUp(schema.RetryGivenUp, "Its retry was missed while the panel was down.", true)
 	case p.runGoing(job, target) || p.offline(host) || p.restoreWriting(job) != nil:
 		p.moveRetry(run, maxTime(retryAt, now).Add(retryNudge), run.GetString("retry_note"))
 	default:
@@ -360,16 +364,29 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-// moveRetry moves a run's planned retry, or gives it up with an empty at,
-// saying why. It tells whether it did: the retry may have been claimed or
-// given up meanwhile.
-func (p *Panel) moveRetry(run *core.Record, at any, note string) bool {
+// moveRetry moves a run's planned retry to another moment, saying why. It
+// tells whether it did: the retry may have been claimed or given up
+// meanwhile.
+func (p *Panel) moveRetry(run *core.Record, at time.Time, note string) bool {
+	return p.setRetry(run, at, "", note)
+}
+
+// endRetry gives up a run's planned retry without making it, saying why and
+// how it ended: schema.RetryNextRun when the job's next scheduled run takes
+// its place, schema.RetryGivenUp otherwise. It tells whether it did.
+func (p *Panel) endRetry(run *core.Record, end, note string) bool {
+	return p.setRetry(run, "", end, note)
+}
+
+// setRetry moves a run's planned retry, or with an empty at ends it.
+func (p *Panel) setRetry(run *core.Record, at any, end, note string) bool {
 	moved := false
 	err := p.update(context.Background(), run, func(fresh *core.Record) error {
 		if fresh.GetDateTime("retry_at").IsZero() || fresh.GetString("status") != schema.RunFailed {
 			return errUnchanged
 		}
 		fresh.Set("retry_at", at)
+		fresh.Set("retry_end", end)
 		fresh.Set("retry_note", cutText(note, 500))
 		moved = true
 		return nil
@@ -482,7 +499,7 @@ func (p *Panel) dropRetries(job, target *core.Record, note string) {
 		return
 	}
 	for _, run := range runs {
-		p.moveRetry(run, "", note)
+		p.endRetry(run, schema.RetryGivenUp, note)
 	}
 }
 
@@ -592,6 +609,7 @@ func (p *Panel) planRetryAt(run *core.Record, at time.Time) (bool, error) {
 			return fmt.Errorf("the job is disabled, so PocketCloud plans no retry of it: try again once restic counts the lock as stale, at %s UTC", at.UTC().Format("15:04"))
 		}
 		fresh.Set("retry_at", at.UTC())
+		fresh.Set("retry_end", "")
 		fresh.Set("retry_note", "Waits until restic counts the lock as stale.")
 		planned = true
 		return tx.Save(fresh)

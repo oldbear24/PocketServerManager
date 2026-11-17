@@ -131,6 +131,20 @@ const (
 	RunCancelled = "cancelled"
 )
 
+// How the panel ended a failed run's planned retry without making it (#31),
+// as its backup_runs.retry_end says; empty while a retry is planned, once it
+// was made, or when none was ever planned.
+const (
+	// RetryNextRun is a retry whose place the job's next scheduled run
+	// takes.
+	RetryNextRun = "next_run"
+	// RetryGivenUp is a retry given up otherwise: the job was disabled, its
+	// label went, the target left it, its server is gone, a lock's holder
+	// kept the lock 12 hours, it was missed while the panel was down, a
+	// newer run took its place, or no attempt was left.
+	RetryGivenUp = "given_up"
+)
+
 // Kinds of check of a target's repository (#31).
 const (
 	// CheckIntegrity is restic check: the structure, and one group of the
