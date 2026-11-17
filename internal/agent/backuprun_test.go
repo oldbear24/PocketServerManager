@@ -693,7 +693,7 @@ func TestThePanelsCopyIsBackedUpWithNothingMounted(t *testing.T) {
 	if len(requests) != 1 || requests[0].GetArtifactId() != testExport || requests[0].GetOffset() != 0 || server.Dials() != 1 {
 		t.Errorf("fetched: %v, %d dials", requests, server.Dials())
 	}
-	if log, _ := result["log"].(string); strings.Contains(log, relayReady) {
+	if log, _ := result["log"].(string); strings.Contains(log, relayReady) || !strings.Contains(log, "Backing up the panel's copy as pocketcloud-panel.pcpb") {
 		t.Errorf("the log:\n%s", log)
 	}
 

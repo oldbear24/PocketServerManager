@@ -627,7 +627,7 @@ func TestABrokenExportStreamIsResumedThenRetried(t *testing.T) {
 	failed := r.runPanelJob(r.a)
 	retry := failed.GetDateTime("retry_at").Time()
 	if failed.GetString("status") != schema.RunFailed || failed.GetString("failure") != backup.FailureInterrupted ||
-		!strings.Contains(failed.GetString("error"), "the panel's copy broke off after") ||
+		!strings.HasPrefix(failed.GetString("error"), "Restic saved no snapshot: the panel's copy broke off after ") ||
 		retry.Before(time.Now().Add(4*time.Minute)) || retry.After(time.Now().Add(6*time.Minute)) {
 		t.Errorf("the run that kept breaking off: %v", failed.FieldsData())
 	}

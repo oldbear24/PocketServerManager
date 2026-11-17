@@ -448,17 +448,18 @@ func TestARelayThatSaysTryAgainIsInterrupted(t *testing.T) {
 	}{
 		{name: "a copy that broke off", end: &backup.DumpEnd{Code: backup.RelayRetry, Message: "the panel's copy broke off after 1.0 MiB of 3.0 MiB: connection reset"},
 			failure: backup.FailureInterrupted,
-			want:    "the dump failed with exit code 75, and restic saved no snapshot: the panel's copy broke off after 1.0 MiB of 3.0 MiB: connection reset"},
+			want:    "restic saved no snapshot: the panel's copy broke off after 1.0 MiB of 3.0 MiB: connection reset"},
 		{name: "a copy the panel no longer offers", end: &backup.DumpEnd{Code: 1, Message: "the panel no longer offers this copy: gone"},
-			failure: backup.FailureSource, want: "the dump failed with exit code 1, and restic saved no snapshot: the panel no longer offers this copy: gone"},
-		{name: "a code next to 75", end: &backup.DumpEnd{Code: 74}, failure: backup.FailureSource, want: "the dump failed with exit code 74"},
-		{name: "a stream cut", failure: backup.FailureSource, want: "the dump broke off before it said how it went"},
+			failure: backup.FailureSource, want: "restic saved no snapshot: the panel no longer offers this copy: gone"},
+		{name: "a code next to 75", end: &backup.DumpEnd{Code: 74}, failure: backup.FailureSource, want: "the panel's copy ended with exit code 74, and restic saved no snapshot"},
+		{name: "a stream cut", failure: backup.FailureSource, want: "the panel's copy broke off before it said how it went, and restic saved no snapshot"},
 	} {
 		failure, line, err := runFailure(t, env, dumpFrames(t, "PCPB", c.end), args()...)
 		if failure.Failure != c.failure || failure.ResticCode != 1 || line["failure"] != c.failure {
 			t.Errorf("%s: %+v %v", c.name, failure, line)
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), c.want) {
+		// the panel's copy is not called a dump
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) || strings.Contains(err.Error(), "dump") {
 			t.Errorf("%s: %v", c.name, err)
 		}
 	}

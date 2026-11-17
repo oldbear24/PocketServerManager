@@ -149,12 +149,13 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 			return nil, err
 		}
 		defer dump.close()
+		dump.panel = run.stdinName == backup.PanelFileName
 		// restic runs the relay itself: this binary, with the dump's socket
 		self, err := os.Executable()
 		if err != nil {
 			self = "pocketcloud-agent"
 		}
-		fmt.Fprintf(r.log, "Backing up the dump as %s\n", run.stdinName)
+		fmt.Fprintf(r.log, "Backing up %s as %s\n", dump.what(), run.stdinName)
 		args = append(args, "--stdin-from-command", "--stdin-filename", run.stdinName, "--", self, "backup-tool", "relay", "--socket", run.relay)
 	} else {
 		fmt.Fprintf(r.log, "Backing up %s\n", strings.Join(run.paths, ", "))
@@ -335,6 +336,17 @@ type dumpRelay struct {
 	accepted chan struct{}
 	conn     net.Conn
 	verdict  chan dumpVerdict
+	// panel says that the frames are the panel's copy of itself, which
+	// the agent fetched from the panel, not a dump (#32)
+	panel bool
+}
+
+// what names what comes through the relay.
+func (d *dumpRelay) what() string {
+	if d.panel {
+		return "the panel's copy"
+	}
+	return "the dump"
 }
 
 // dumpVerdict is how the frames that passed ended.
@@ -400,13 +412,22 @@ func (d *dumpRelay) failure() (string, int) {
 	case verdict := <-d.verdict:
 		switch {
 		case errors.Is(verdict.err, backup.ErrDumpCut):
-			return "the dump broke off before it said how it went, and restic saved no snapshot", 0
+			return d.what() + " broke off before it said how it went, and restic saved no snapshot", 0
 		case verdict.err != nil, verdict.end.Code == 0:
 			// restic stopped reading the dump, or failed after it
 			return "", 0
 		}
-		failure := fmt.Sprintf("the dump failed with exit code %d, and restic saved no snapshot", verdict.end.Code)
-		if message := strings.Join(strings.Fields(verdict.end.Message), " "); message != "" {
+		message := strings.Join(strings.Fields(verdict.end.Message), " ")
+		if d.panel && message != "" {
+			// the agent's own words name the panel's copy and say why
+			return "restic saved no snapshot: " + message, verdict.end.Code
+		}
+		verb := "failed"
+		if d.panel {
+			verb = "ended"
+		}
+		failure := fmt.Sprintf("%s %s with exit code %d, and restic saved no snapshot", d.what(), verb, verdict.end.Code)
+		if message != "" {
 			failure += ": " + message
 		}
 		return failure, verdict.end.Code
