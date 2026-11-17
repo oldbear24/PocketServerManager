@@ -103,6 +103,10 @@ type Agent struct {
 	// restore looks whether the containers stayed up: 10 seconds unless set.
 	// Tests, which wait for each restore, shorten it.
 	RestoreVerifyWait time.Duration
+	// PanelFetchWaits, when set, are the waits before each resume of a
+	// fetch of the panel's copy that broke off, one per resume: 2, 5 and
+	// 10 seconds unless set (#32). Tests shorten them.
+	PanelFetchWaits []time.Duration
 
 	lastRTT  atomic.Int64
 	lastSkew atomic.Int64

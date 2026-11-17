@@ -36,7 +36,8 @@ import (
 // runs in the database's own container with docker exec, and the agent
 // writes what it prints to the job's attached standard input, as the relay's
 // frames (see internal/backup/relay.go), which the backup tool hands to
-// restic.
+// restic. The panel's copy of itself comes the same way, fetched from the
+// panel (#32, see backuppanel.go), and the job mounts nothing of the server.
 
 const (
 	// backupVolumes is where a job mounts the volumes it backs up.
@@ -60,8 +61,8 @@ var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 var backupJobDirs = []string{"/bin", "/sbin", "/lib", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/local/bin",
 	"/tmp", "/run/pocketcloud", "/var/lib/pocketcloud", resticCacheDir, backup.LocalMount, backupVolumes}
 
-// handleBackupRun backs up a job's volumes, directories or database dump to a
-// target's repository, and applies the job's retention.
+// handleBackupRun backs up a job's volumes, directories, database dump or the
+// panel's copy to a target's repository, and applies the job's retention.
 func (a *Agent) handleBackupRun(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
 	payload := command.GetBackupRun()
 	if err := checkRepository(payload.GetRepository()); err != nil {
@@ -188,15 +189,18 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 	// Docker's seccomp profile allows open_by_handle_at, which opens any file
 	// of a file system the job mounts a part of
 	job := backupJobSpec{capabilities: []string{"DAC_OVERRIDE"}, stopGrace: backupStopGrace}
-	volumes, paths, dump := payload.GetVolumes(), payload.GetPaths(), payload.GetStdinCommand()
+	volumes, paths, dump, export := payload.GetVolumes(), payload.GetPaths(), payload.GetStdinCommand(), payload.GetPanelExport()
 	sources := 0
 	for _, source := range [][]string{volumes, paths, dump} {
 		if len(source) > 0 {
 			sources++
 		}
 	}
+	if export != "" {
+		sources++
+	}
 	if sources != 1 {
-		return job, errors.New("a backup run backs up volumes, directories or a dump: exactly one of them")
+		return job, errors.New("a backup run backs up volumes, directories, a dump or the panel: exactly one of them")
 	}
 	if payload.GetHostName() == "" {
 		return job, errors.New("a backup run needs the server's name, for its snapshots")
@@ -278,6 +282,25 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			}
 			job.mounts = append(job.mounts, mount)
 			args = append(args, "--path", real)
+		}
+	case export != "":
+		// the panel's copy of itself (#32), fetched from the panel: nothing
+		// of the server is mounted, and the job reads no file of it
+		job.capabilities = nil
+		if _, ok := backup.PanelExportRun(export); !ok {
+			return job, fmt.Errorf("%q names no copy of the panel", export)
+		}
+		if name := payload.GetStdinFileName(); name != backup.PanelFileName {
+			return job, fmt.Errorf("the panel's copy is saved as %s, not as %q", backup.PanelFileName, name)
+		}
+		if payload.GetStdinContainer() != "" || len(payload.GetEnv()) > 0 {
+			return job, errors.New("a backup of the panel runs nothing in a container")
+		}
+		args = append(args, "--stdin-name", backup.PanelFileName, "--relay", dumpSocket)
+		repo := payload.GetRepository()
+		secrets := backup.Secrets(repo.GetPassword(), repo.GetEnv(), repo.GetSshKey())
+		job.feed = func(ctx context.Context, stdin io.WriteCloser) {
+			a.feedPanelExport(ctx, stdin, export, secrets)
 		}
 	default:
 		name := payload.GetStdinFileName()

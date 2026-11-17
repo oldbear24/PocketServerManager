@@ -18,6 +18,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
+	"github.com/oldbear24/PocketServerManager/internal/testutil/fakefetch"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
@@ -643,6 +644,117 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 	}
 	if r.jobCount() != jobs {
 		t.Error("a job ran for a database that is not running")
+	}
+}
+
+// TestThePanelsCopyIsBackedUpWithNothingMounted (#32): a run of the panel's
+// backup job mounts nothing of the server, adds no capability, and backs up
+// the panel's copy, fetched on a connection of its own, through the relay
+// as /pocketcloud-panel.pcpb of the host panel with the job's three tags;
+// the job is the hardened one of every backup, named after its command, and
+// a local target's is bound with no network.
+func TestThePanelsCopyIsBackedUpWithNothingMounted(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	server, dial := fakefetch.NewServer(t)
+	r.LiveUpload = dial
+	data := panelCopy(5<<20/2 + 1)
+	server.Offer(testExport, fakefetch.Artifact{Data: data})
+	run := panelRun(repo)
+	result, err := r.handleBackupRun(context.Background(), commandOf("k3j9x2m4q8w1z7v", run), &Reporter{})
+	if err != nil {
+		t.Fatalf("%v: %v", err, result)
+	}
+	snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl())
+	if len(snapshots) != 1 || snapshots[0].Files["/"+backup.PanelFileName] != string(data) || snapshots[0].Hostname != "panel" ||
+		!slices.Equal(snapshots[0].Tags, []string{"pocketcloud", "job:p4n3lj0b0000001", "pocketcloud-panel"}) ||
+		!slices.Equal(snapshots[0].Paths, []string{"/pocketcloud-panel.pcpb"}) {
+		t.Fatalf("snapshots: %+v", snapshots)
+	}
+	if result["snapshot_id"] != snapshots[0].ID || result["total_bytes"] != int64(len(data)) {
+		t.Errorf("the result: %v", result)
+	}
+	job := r.lastJob(t)
+	if !slices.Equal(job.Cmd, []string{"backup-tool", "backup", "--host", "panel", "--tag", "pocketcloud", "--tag", "job:p4n3lj0b0000001",
+		"--tag", "pocketcloud-panel", "--keep-daily", "14", "--keep-weekly", "8", "--keep-monthly", "12",
+		"--stdin-name", "pocketcloud-panel.pcpb", "--relay", dumpSocket, "--cache", "/cache"}) {
+		t.Errorf("the job's command: %q", job.Cmd)
+	}
+	mounts := mountsOf(job)
+	if len(mounts) != 2 || mounts[resticCacheDir] == nil || mounts[imageVolume]["Type"] != "tmpfs" || mounts[imageVolume]["ReadOnly"] != true {
+		t.Errorf("the job mounts %v", mounts)
+	}
+	if len(anyStrings(job.Host["CapAdd"])) != 0 || !slices.Equal(anyStrings(job.Host["CapDrop"]), []string{"ALL"}) ||
+		!slices.Equal(anyStrings(job.Host["SecurityOpt"]), []string{"no-new-privileges"}) || job.Host["NetworkMode"] != "bridge" ||
+		job.Hostname != "pc-k3j9x2m4q8w1z7v" || job.Stdin == nil {
+		t.Errorf("the job: %v, hostname %q", job.Host, job.Hostname)
+	}
+	requests := server.Requests()
+	if len(requests) != 1 || requests[0].GetArtifactId() != testExport || requests[0].GetOffset() != 0 || server.Dials() != 1 {
+		t.Errorf("fetched: %v, %d dials", requests, server.Dials())
+	}
+	if log, _ := result["log"].(string); strings.Contains(log, relayReady) {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// to a local target
+	repoDir := filepath.Join(t.TempDir(), "restic")
+	local := &agentv1.BackupRepository{TargetId: "t2", Url: backup.LocalMount, Password: "repo-password-2", Mount: repoDir}
+	if _, err := r.handleBackupInit(context.Background(), initCommand(local), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	run.Repository = local
+	if result, err := r.handleBackupRun(context.Background(), commandOf("k3j9x2m4q8w1z7w", run), &Reporter{}); err != nil {
+		t.Fatalf("%v: %v", err, result)
+	}
+	job = r.lastJob(t)
+	if repoMount := mountsOf(job)[backup.LocalMount]; repoMount["Source"] != repoDir || len(mountsOf(job)) != 3 ||
+		job.Host["NetworkMode"] != "none" || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER"}) {
+		t.Errorf("the local target's job: %v", job.Host)
+	}
+	if snapshots := fakerestic.Snapshots(t, r.root, repoDir); len(snapshots) != 1 || snapshots[0].Files["/"+backup.PanelFileName] != string(data) {
+		t.Errorf("the local target's snapshots: %d", len(snapshots))
+	}
+}
+
+// TestARunOfThePanelIsRefusedWhenItIsNotOne (#32): the panel's copy is one
+// source of four, named by its run's id, saved as pocketcloud-panel.pcpb,
+// with no container to run in; anything else is refused before a job runs
+// or the panel is asked for anything.
+func TestARunOfThePanelIsRefusedWhenItIsNotOne(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	server, dial := fakefetch.NewServer(t)
+	r.LiveUpload = dial
+	jobs := r.jobCount()
+	r.volume(t, "here", nil)
+	for _, tc := range []struct {
+		change func(*agentv1.BackupRun)
+		want   string
+	}{
+		{func(b *agentv1.BackupRun) { b.Volumes = []string{"here"} }, "a backup run backs up volumes, directories, a dump or the panel: exactly one of them"},
+		{func(b *agentv1.BackupRun) { b.Paths = []string{"/srv"} }, "exactly one of them"},
+		{func(b *agentv1.BackupRun) { b.StdinCommand = []string{"pg_dump"} }, "exactly one of them"},
+		{func(b *agentv1.BackupRun) { b.PanelExport = "panel-export:short" }, `"panel-export:short" names no copy of the panel`},
+		{func(b *agentv1.BackupRun) { b.PanelExport = "panel-export:K3J9X2M4Q8W1Z7V" }, "names no copy of the panel"},
+		{func(b *agentv1.BackupRun) { b.PanelExport = "site-upload:k3j9x2m4q8w1z7v" }, "names no copy of the panel"},
+		{func(b *agentv1.BackupRun) { b.PanelExport = testExport + "/../x" }, "names no copy of the panel"},
+		{func(b *agentv1.BackupRun) { b.StdinFileName = "panel.db" }, `the panel's copy is saved as pocketcloud-panel.pcpb, not as "panel.db"`},
+		{func(b *agentv1.BackupRun) { b.StdinFileName = "" }, "saved as pocketcloud-panel.pcpb"},
+		{func(b *agentv1.BackupRun) { b.StdinFileName = "../" + backup.PanelFileName }, "saved as pocketcloud-panel.pcpb"},
+		{func(b *agentv1.BackupRun) { b.StdinContainer = "umami-db-1" }, "a backup of the panel runs nothing in a container"},
+		{func(b *agentv1.BackupRun) { b.Env = map[string]string{"PGPASSWORD": "x"} }, "runs nothing in a container"},
+		{func(b *agentv1.BackupRun) { b.Tags = nil }, "needs its job's tags"},
+		{func(b *agentv1.BackupRun) { b.HostName = "" }, "needs the server's name"},
+	} {
+		run := panelRun(repo)
+		tc.change(run)
+		if _, err := r.handleBackupRun(context.Background(), runCommand(run), &Reporter{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v, want %q", run, err, tc.want)
+		}
+	}
+	if r.jobCount() != jobs || len(server.Requests()) != 0 || server.Dials() != 0 {
+		t.Errorf("%d jobs ran, %d fetches", r.jobCount()-jobs, len(server.Requests()))
 	}
 }
 
