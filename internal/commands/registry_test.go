@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -191,6 +194,101 @@ func TestRestoreResourceIsTheStackAndDryRunHasNone(t *testing.T) {
 	}
 }
 
+// TestADatabaseRestoreHoldsItsApplication: a restore of a database (#53)
+// holds the owner stack, as a restore to the original location does, or the
+// site whose site.* commands would start what it stopped; a restore into a
+// new database holds that database on its server. A preview holds nothing.
+func TestADatabaseRestoreHoldsItsApplication(t *testing.T) {
+	connection := &agentv1.DbConnection{ContainerId: "pcdb-main-db-1", Engine: "postgres", AdminUser: "postgres"}
+	restore := func(r *agentv1.BackupRestore) *agentv1.Command {
+		r.Repository = &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}
+		r.RestoreId, r.JobTag, r.SnapshotId = "r1", "job:j1", strings.Repeat("3f", 32)
+		return &agentv1.Command{Payload: &agentv1.Command_BackupRestore{BackupRestore: r}}
+	}
+	database := func(mode, name string) *agentv1.BackupDbRestore {
+		return &agentv1.BackupDbRestore{Connection: connection, Database: name, File: "shop.pgdump", Mode: mode, User: name,
+			Scratch: "pc_rs_aaaaaaaaaaaaaaa", Previous: "pc_old_aaaaaaaaaaaaaaa"}
+	}
+	site := database("replace", "wp")
+	site.Site, site.StopContainers = "wp", []string{"wp-php", "wp-worker"}
+
+	for _, tc := range []struct {
+		name    string
+		command *agentv1.Command
+		want    string
+	}{
+		{"a stack's database", restore(&agentv1.BackupRestore{Stack: "shop", Overwrite: true, Database: database("replace", "shop")}), "stack:shop"},
+		{"a site's database", restore(&agentv1.BackupRestore{Overwrite: true, Database: site}), "site:wp"},
+		{"a site's database that a stack owns", restore(&agentv1.BackupRestore{Stack: "wp-stack", Overwrite: true, Database: site}), "stack:wp-stack"},
+		{"a database of no application", restore(&agentv1.BackupRestore{Overwrite: true, Database: database("replace", "shop")}), "db:pcdb-main-db-1/shop"},
+		{"a new database", restore(&agentv1.BackupRestore{Database: database("new", "shop_restored")}), "db:pcdb-main-db-1/shop_restored"},
+		{"a preview", restore(&agentv1.BackupRestore{DryRun: true, Stack: "shop", Database: database("replace", "shop")}), ""},
+		{"a preview of a new database", restore(&agentv1.BackupRestore{DryRun: true, Database: database("new", "shop_restored")}), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Specs[TypeOf(tc.command)].Resource(tc.command); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRestoreTestsAndDiscardsOfAServerRunOneByOne: a server restores one
+// test copy at a time, and none of its temporary databases is dropped while
+// a test of it runs (#53); another server's tests do not wait.
+func TestRestoreTestsAndDiscardsOfAServerRunOneByOne(t *testing.T) {
+	test := func(container string) *agentv1.Command {
+		return &agentv1.Command{Payload: &agentv1.Command_BackupRestoreTest{BackupRestoreTest: &agentv1.BackupRestoreTest{
+			Repository: &agentv1.BackupRepository{Url: "/repo", TargetId: "t1"}, SnapshotId: strings.Repeat("3f", 32), JobTag: "job:j1",
+			CheckId: "aaaaaaaaaaaaaaa", Database: &agentv1.BackupDbRestore{
+				Connection: &agentv1.DbConnection{ContainerId: container, Engine: "mariadb", AdminUser: "root"},
+				Database:   "pc_rt_aaaaaaaaaaaaaaa", File: "shop.sql", Mode: "test", User: "shop",
+			},
+			DropBefore: []string{"pc_rt_bbbbbbbbbbbbbbb"},
+		}}}
+	}
+	discard := func(container string) *agentv1.Command {
+		return &agentv1.Command{Payload: &agentv1.Command_DbDatabaseDiscard{DbDatabaseDiscard: &agentv1.DbDatabaseDiscard{
+			Connection: &agentv1.DbConnection{ContainerId: container, Engine: "mariadb", AdminUser: "root"},
+			Names:      []string{"pc_rt_bbbbbbbbbbbbbbb"}, RevokeFrom: "shop",
+		}}}
+	}
+	for _, tc := range []struct {
+		name    string
+		command *agentv1.Command
+		want    string
+	}{
+		{"a test", test("pcdb-maria-db-1"), "db-test:pcdb-maria-db-1"},
+		{"a discard", discard("pcdb-maria-db-1"), "db-test:pcdb-maria-db-1"},
+		{"a test of another server", test("pcdb-pg-db-1"), "db-test:pcdb-pg-db-1"},
+		{"a test of no server", test(""), ""},
+		{"a discard of no server", discard(""), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Specs[TypeOf(tc.command)].Resource(tc.command); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	for commandType, timeout := range map[string]time.Duration{"backup.restore_test": 6 * time.Hour, "db.database.discard": 10 * time.Minute} {
+		if spec := Specs[commandType]; spec.Timeout != timeout || spec.SettledByAgent || spec.Uninterruptible {
+			t.Errorf("%s: %+v", commandType, spec)
+		}
+	}
+}
+
+// TestTheDatabaseCommandsKeepTheirFieldNumbers pins the wire numbers of #53's
+// command types, which agents of either version read.
+func TestTheDatabaseCommandsKeepTheirFieldNumbers(t *testing.T) {
+	fields := (&agentv1.Command{}).ProtoReflect().Descriptor().Oneofs().ByName("payload").Fields()
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{"db_database_discard": 183, "backup_restore_test": 229} {
+		field := fields.ByName(name)
+		if field == nil || field.Number() != number {
+			t.Errorf("%s is %v, not field %d", name, field, number)
+		}
+	}
+}
+
 // TestOnlyRestoresAndDownloadsAreSettledByTheAgent: a cancelled restore waits
 // for the agent to say which containers it started again, and a download for
 // the agent to stop sending (#30). Every other type is finished by a cancel at
@@ -218,6 +316,8 @@ func TestSecretCarryingTypesAreNotOpenToTheAPI(t *testing.T) {
 	for _, commandType := range []string{
 		"stack.deploy", "cert.install", "db.server.create", "db.database.create", "db.database.rotate",
 		"backup.run", "backup.init", "backup.restore", "backup.dump", "agent.update", "exec.start", "edge.apply",
+		// the database's passwords and the target's secrets come at delivery (#53)
+		"backup.restore_test", "db.database.discard",
 	} {
 		if role := Specs[commandType].Role; role != "" {
 			t.Errorf("%s can be requested through the API by %s", commandType, role)

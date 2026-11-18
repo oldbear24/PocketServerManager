@@ -166,6 +166,8 @@ func restoreResource(c *agentv1.Command) string {
 	switch {
 	case restore == nil || restore.GetDryRun():
 		return ""
+	case restore.GetDatabase() != nil:
+		return databaseRestoreResource(restore)
 	case restore.GetStack() != "":
 		return "stack:" + restore.GetStack()
 	case len(restore.GetOriginal()) > 0:
@@ -180,6 +182,40 @@ func restoreResource(c *agentv1.Command) string {
 		return "path:" + restore.GetTargetPath()
 	}
 	return ""
+}
+
+// databaseRestoreResource orders a restore of a database (#53): one of a
+// stack's database holds the stack, as a restore to the original location
+// does, so that no deploy starts its application meanwhile; one of a site's
+// database holds the site, the key of its site.* commands; any other, such as
+// one into a new database, holds the database on its server.
+func databaseRestoreResource(restore *agentv1.BackupRestore) string {
+	database := restore.GetDatabase()
+	switch {
+	case restore.GetStack() != "":
+		return "stack:" + restore.GetStack()
+	case database.GetSite() != "":
+		return "site:" + database.GetSite()
+	}
+	return "db:" + database.GetConnection().GetContainerId() + "/" + database.GetDatabase()
+}
+
+// databaseTest orders the restore tests of a database server (#53), and the
+// drops of its temporary databases, one after another: a server restores one
+// test copy at a time, and a copy is never dropped while a test of its server
+// runs.
+func databaseTest(c *agentv1.Command) string {
+	var container string
+	switch p := c.GetPayload().(type) {
+	case *agentv1.Command_BackupRestoreTest:
+		container = p.BackupRestoreTest.GetDatabase().GetConnection().GetContainerId()
+	case *agentv1.Command_DbDatabaseDiscard:
+		container = p.DbDatabaseDiscard.GetConnection().GetContainerId()
+	}
+	if container == "" {
+		return ""
+	}
+	return "db-test:" + container
 }
 
 func self(*agentv1.Command) string {
@@ -239,6 +275,8 @@ var Specs = map[string]Spec{
 	"db.stats":           {Timeout: 2 * time.Minute},
 	"db.adminer.start":   {Timeout: 5 * time.Minute},
 	"db.adminer.stop":    {Timeout: 2 * time.Minute},
+	// drops of temporary databases of restores and restore tests (#53)
+	"db.database.discard": {Timeout: 10 * time.Minute, Resource: databaseTest},
 
 	"edge.apply": {Timeout: 5 * time.Minute, Resource: edge},
 
@@ -263,6 +301,9 @@ var Specs = map[string]Spec{
 	"backup.forget":    {Timeout: 2 * time.Hour, Resource: backup},
 	// a download streamed from the repository to a browser (#30)
 	"backup.dump": {Timeout: 12 * time.Hour, SettledByAgent: true},
+	// a database job's newest dump restored into a temporary database of its
+	// server (#53)
+	"backup.restore_test": {Timeout: 6 * time.Hour, Resource: databaseTest},
 
 	"agent.update":             {Timeout: 15 * time.Minute, Resource: self},
 	"agent.restart":            {Timeout: 2 * time.Minute, Role: schema.RoleAdmin, Resource: self},

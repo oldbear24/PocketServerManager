@@ -108,6 +108,9 @@ message Command {
     DbAdminerStop db_adminer_stop = 181;
     // db_server_move moves the databases of a server into another one.
     DbServerMove db_server_move = 182;
+    // db_database_discard drops temporary databases of restores and restore
+    // tests, and only those (#53).
+    DbDatabaseDiscard db_database_discard = 183;
 
     // edge_apply loads a complete edge proxy configuration.
     EdgeApply edge_apply = 190;
@@ -141,6 +144,9 @@ message Command {
     // backup_dump streams a snapshot's folder as a tar, or one file as it
     // is, to the panel while a browser downloads it (#30).
     BackupDump backup_dump = 228;
+    // backup_restore_test restores a database job's newest dump into a
+    // temporary database of its server, and compares the tables (#53).
+    BackupRestoreTest backup_restore_test = 229;
 
     // agent_update swaps the agent container using a temporary updater container.
     AgentUpdate agent_update = 230;
