@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -384,6 +386,80 @@ func TestAMariaDBRestoreInPlaceRehearsesFirst(t *testing.T) {
 	}
 }
 
+// TestAMariaDBRestoreInPlaceEmptiesOnlyWhatItCanRestoreInTime (#53, A2):
+// once MariaDB's database is dropped, the restore runs to its end, while the
+// panel gives up on the command at its deadline: the restore begins only
+// when the time left exceeds as long as its rehearsal took and a margin,
+// before the stop, and again after it; otherwise nothing changed, and what
+// stopped starts again.
+func TestAMariaDBRestoreInPlaceEmptiesOnlyWhatItCanRestoreInTime(t *testing.T) {
+	maria := databases.MariaDB
+	var ahead atomic.Int64
+	keep := rehearsalClock
+	rehearsalClock = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	t.Cleanup(func() { rehearsalClock = keep })
+	for _, tc := range []struct {
+		name string
+		// rehearsal is how long the rehearsal takes, stop how long the stop
+		rehearsal, stop time.Duration
+		message         string
+		stopped         bool
+	}{
+		{name: "fits", rehearsal: time.Hour, stop: time.Minute},
+		{name: "rehearsal too long", rehearsal: 90 * time.Minute, message: "Nothing changed in shop: too little time is left to restore it again."},
+		{name: "stop too long", rehearsal: time.Hour, stop: 40 * time.Minute, stopped: true,
+			message: "Nothing changed in shop: too little time is left to restore it again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDBHarness(t)
+			d.shop(maria)
+			server := d.servers[maria.Name]
+			snapshot, _ := d.backupDatabase(t, maria, "shop")
+			d.app("shop-web-1", "shop")
+			d.db.SetTables(server, "shop", "items", "orders", "since")
+			ahead.Store(0)
+			d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+				if strings.Contains(strings.Join(call.Cmd, " "), "--one-database") && slices.Contains(call.Env, "PC_DATABASE="+databases.ScratchName(testRestoreID)) {
+					ahead.Add(int64(tc.rehearsal))
+				}
+				return fakedocker.ExecResult{}, false
+			})
+			noted := d.engine.OnStop
+			d.engine.OnStop = func(c *fakedocker.Container) {
+				noted(c)
+				ahead.Add(int64(tc.stop))
+			}
+			// the panel gives a restore 3 h, and the agent keeps 5 min of
+			// them to start the application again
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(3*time.Hour))
+			defer cancel()
+			result, err := d.restore(ctx, "c1", d.replace(maria, snapshot, "shop", "shop-web-1"))
+			shop, _ := d.db.Database(server, "shop")
+			if tc.message == "" {
+				if err != nil || shop.From != "shop" || !slices.Equal(shop.Tables, []string{"items", "orders"}) {
+					t.Fatalf("a restore that fits: %v, shop %+v", err, shop)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.message {
+				t.Errorf("the restore: %v, want %q", err, tc.message)
+			}
+			if shop.From != "" || !slices.Equal(shop.Tables, []string{"items", "orders", "since"}) ||
+				slices.ContainsFunc(d.interesting(), func(e string) bool { return e == "exec:recreate" || e == "exec:restore:shop" }) {
+				t.Errorf("shop after: %+v, %q", shop, d.interesting())
+			}
+			if stopped := slices.Contains(d.happened(), "stop:shop-web-1"); stopped != tc.stopped ||
+				d.status("shop-web-1") != "running" || d.policy(t, "shop-web-1").Name != "unless-stopped" ||
+				tc.stopped && !slices.Equal(anyStrings(result["app_started"]), []string{"shop-web-1"}) {
+				t.Errorf("the application: stopped %v, %s, %v, %v", stopped, d.status("shop-web-1"), d.policy(t, "shop-web-1"), result["app_started"])
+			}
+			if names := d.db.DatabaseNames(server); !slices.Equal(names, []string{"blog", "shop"}) {
+				t.Errorf("the server has %q", names)
+			}
+		})
+	}
+}
+
 // TestADatabaseRestoreReportsItsStepsInTheWebsOrder (#53): the steps a
 // database restore reports come in the order the web shows them: PostgreSQL
 // in place restores its copy before the stop and swaps it in after it;
@@ -736,7 +812,247 @@ func TestAnInterruptedDatabaseRestoreFinishesByItsPhase(t *testing.T) {
 	}
 }
 
-// testCommand is a restore test, as the panel sends it.
+// TestAnAgentThatRestartedDuringTheSwapAsksTheServer (#53, A1): the swap's
+// process runs on in the server's container when the agent restarts, and
+// may commit: once it can have ended, the server says whether the copy took
+// the database's place. Done, the restore succeeded, and the data before it
+// stays, closed; not done, nothing changed; when the server does not say,
+// the restore says neither, and keeps the data before it. What stopped
+// starts again in each case.
+func TestAnAgentThatRestartedDuringTheSwapAsksTheServer(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	server := d.servers[pg.Name]
+	started := time.Now().UTC().Add(-time.Second).Truncate(time.Second)
+	for _, tc := range []struct {
+		name, id string
+		// on is what the server holds of shop's restore when the agent
+		// starts; inFlight commits the swap while the agent waits
+		on       []string
+		inFlight bool
+		silent   bool
+		state    string
+		message  string
+	}{
+		{name: "done", id: "ddddddddddddddd", on: []string{"shop", "pc_old_"}, state: stateSucceeded},
+		{name: "in flight", id: "fffffffffffffff", on: []string{"shop", "pc_rs_"}, inFlight: true, state: stateSucceeded},
+		{name: "not done", id: "nnnnnnnnnnnnnnn", on: []string{"shop", "pc_rs_"}, state: stateFailed,
+			message: "Nothing changed in shop: the agent restarted during the restore. It started the application again (1 of 1 containers)."},
+		{name: "silent", id: "sssssssssssssss", on: []string{"shop", "pc_rs_"}, silent: true, state: stateFailed,
+			message: "The restore of shop may have gone through: the agent restarted while it put the copy in place, and the server did not say whether the copy took its place " +
+				"(the database server's client failed with exit code 2: psql: error: the database system is starting up). If it did, the data before it stays a day as pc_old_%s. " +
+				"It started the application again (1 of 1 containers)."},
+	} {
+		id := tc.id
+		scratch, previous := databases.ScratchName(id), databases.PreviousName(id)
+		for _, name := range tc.on {
+			switch name {
+			case "shop":
+				d.db.AddDatabase(server, "shop", "shop", shopPassword, "items")
+			case "pc_old_":
+				d.db.AddDatabase(server, previous, "shop", shopPassword, "items")
+			case "pc_rs_":
+				d.db.AddDatabase(server, scratch, "shop", shopPassword, "items", "orders")
+			}
+		}
+		waited := settleSwapsWith(t, func(time.Time) {
+			if tc.inFlight {
+				swap, _ := databases.SwapSQL("shop", scratch, previous)
+				script := databases.Statements(pg, pg.AdminUser, "", swap)
+				d.db.Answer(&fakedocker.ExecCall{Container: server, Cmd: script.Cmd, Env: script.Env}, nil)
+			}
+		})
+		d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+			if tc.silent {
+				return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: the database system is starting up\n"}, true
+			}
+			return fakedocker.ExecResult{}, false
+		})
+		name := "app-" + strings.ReplaceAll(tc.name, " ", "-")
+		app := d.container(name, nil, "no", 0)
+		d.engine.SetStatus(app, "exited")
+		command := "c-" + id
+		marker := restoreMarker{CommandID: command, RestoreID: id,
+			Containers: []markedContainer{{ID: app, Name: name, RestartPolicy: restartPolicy{Name: "unless-stopped"}}},
+			Database: &databaseMarker{Container: server, Engine: pg.Name, Name: "shop", Scratch: scratch, Previous: previous,
+				Phase: backup.PhaseSwapping, AdminUser: pg.AdminUser, SwapStarted: started}}
+		raw, _ := json.Marshal(marker)
+		if err := os.MkdirAll(filepath.Join(d.Config.StateDir, restoreMarkers), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(d.markerPath(command), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.finishInterruptedRestores(context.Background())
+		d.setInject(nil)
+
+		entry, _ := d.store.get(command)
+		message := tc.message
+		if strings.Contains(message, "%s") {
+			message = fmt.Sprintf(message, id)
+		}
+		if entry.State != tc.state || entry.Error != message || entry.Result["interrupted"] != true {
+			t.Errorf("%s: %s %q\nwant %s %q", tc.name, entry.State, entry.Error, tc.state, message)
+		}
+		if keeps := tc.state == stateSucceeded || tc.silent; keeps != (entry.Result["previous"] == previous) {
+			t.Errorf("%s: previous %v", tc.name, entry.Result["previous"])
+		}
+		if len(*waited) != 1 || !(*waited)[0].Equal(started) {
+			t.Errorf("%s: waited for the swap begun at %v, not %v", tc.name, *waited, started)
+		}
+		if d.status(name) != "running" || d.policy(t, name).Name != "unless-stopped" {
+			t.Errorf("%s: the application is %s, %v", tc.name, d.status(name), d.policy(t, name))
+		}
+		before, there := d.db.Database(server, previous)
+		if tc.state == stateSucceeded && (!there || !before.Closed) {
+			t.Errorf("%s: the data before the restore: %+v %v", tc.name, before, there)
+		}
+		if _, err := os.Stat(d.markerPath(command)); !os.IsNotExist(err) {
+			t.Errorf("%s: the marker is left", tc.name)
+		}
+	}
+}
+
+// settleSwapsWith makes the agent's wait for a swap it lost sight of call
+// settle instead, and note the time it was given.
+func settleSwapsWith(t *testing.T, settle func(started time.Time)) *[]time.Time {
+	var mu sync.Mutex
+	waited := &[]time.Time{}
+	keep := swapSettled
+	swapSettled = func(_ context.Context, started time.Time) {
+		mu.Lock()
+		*waited = append(*waited, started)
+		mu.Unlock()
+		if settle != nil {
+			settle(started)
+		}
+	}
+	t.Cleanup(func() { swapSettled = keep })
+	return waited
+}
+
+// isSwap says whether a process is the swap of PostgreSQL's copy.
+func isSwap(call *fakedocker.ExecCall) bool {
+	return slices.ContainsFunc(call.Env, func(item string) bool {
+		return strings.HasPrefix(item, "PC_SQL=") && strings.Contains(item, " RENAME TO ")
+	})
+}
+
+// committed is a swap's process cut after its COMMIT, as when its last
+// statement failed.
+func committed(call *fakedocker.ExecCall) *fakedocker.ExecCall {
+	cut := &fakedocker.ExecCall{ID: call.ID, Container: call.Container, Cmd: call.Cmd}
+	for _, item := range call.Env {
+		if sql, ok := strings.CutPrefix(item, "PC_SQL="); ok {
+			before, _, _ := strings.Cut(sql, "COMMIT;")
+			item = "PC_SQL=" + before + "COMMIT;"
+		}
+		cut.Env = append(cut.Env, item)
+	}
+	return cut
+}
+
+// TestASwapThatTookPlaceDespiteAnErrorSucceeds (#53, A1): a swap whose
+// process fails after its COMMIT, as when its last statement fails, put the
+// copy in place: the server says so, and the restore succeeded, keeps the
+// data before it, closed, and starts the application again. A process whose
+// stream broke may still run: the agent waits for it before it asks. When
+// the server does not say, the restore says neither that it went through
+// nor that nothing changed, and keeps the data before it.
+func TestASwapThatTookPlaceDespiteAnErrorSucceeds(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	server := d.servers[pg.Name]
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	d.app("shop-web-1", "shop")
+	previous := databases.PreviousName(testRestoreID)
+	waited := settleSwapsWith(t, nil)
+
+	// the swap's last statement fails after the COMMIT; the marker said
+	// it was under way, as the administrator, from when
+	var during databaseMarker
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		if !isSwap(call) {
+			return fakedocker.ExecResult{}, false
+		}
+		var marker restoreMarker
+		if raw, err := os.ReadFile(d.markerPath("c1")); err == nil && json.Unmarshal(raw, &marker) == nil && marker.Database != nil {
+			during = *marker.Database
+		}
+		d.db.Answer(committed(call), nil)
+		return fakedocker.ExecResult{Code: 3, Stderr: "ERROR:  canceling statement due to lock timeout\n"}, true
+	})
+	result, err := d.restore(context.Background(), "c1", d.replace(pg, snapshot, "shop", "shop-web-1"))
+	if err != nil || result["previous"] != previous || result["files_restored"] != float64(1) {
+		t.Fatalf("a swap whose last statement failed: %v %v", err, result)
+	}
+	shop, _ := d.db.Database(server, "shop")
+	before, there := d.db.Database(server, previous)
+	if shop.From != "shop" || !there || !before.Closed || slices.Contains(d.db.DatabaseNames(server), databases.ScratchName(testRestoreID)) {
+		t.Errorf("after: shop %+v, previous %+v, databases %q", shop, before, d.db.DatabaseNames(server))
+	}
+	if d.status("shop-web-1") != "running" || len(*waited) != 0 {
+		t.Errorf("the application is %s; waited for the swap %v", d.status("shop-web-1"), *waited)
+	}
+	if during.Phase != backup.PhaseSwapping || during.AdminUser != pg.AdminUser || time.Since(during.SwapStarted) > time.Minute {
+		t.Errorf("the marker during the swap: %+v", during)
+	}
+	if log, _ := result["log"].(string); !strings.Contains(log, "Putting the copy in place failed after it took place") {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// the swap's stream breaks while its process runs on, and commits
+	d.db.AddDatabase(server, "shop", "shop", shopPassword, "items", "orders")
+	other := func(id string) *agentv1.BackupRestore {
+		payload := d.replace(pg, snapshot, "shop", "shop-web-1")
+		payload.RestoreId, payload.Database.Scratch, payload.Database.Previous = id, databases.ScratchName(id), databases.PreviousName(id)
+		return payload
+	}
+	var swap *fakedocker.ExecCall
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		if !isSwap(call) {
+			return fakedocker.ExecResult{}, false
+		}
+		swap = call
+		d.engine.Fail("/exec/"+call.ID+"/json", "connection reset by peer")
+		return fakedocker.ExecResult{}, true
+	})
+	waited = settleSwapsWith(t, func(time.Time) {
+		d.engine.Fail("/exec/"+swap.ID+"/json", "")
+		d.db.Answer(swap, nil)
+	})
+	result, err = d.restore(context.Background(), "c2", other("sssssssssssssss"))
+	if err != nil || result["previous"] != databases.PreviousName("sssssssssssssss") || len(*waited) != 1 || (*waited)[0].IsZero() {
+		t.Fatalf("a swap whose stream broke: %v %v, waited %v", err, result, *waited)
+	}
+	if shop, _ := d.db.Database(server, "shop"); shop.From != "shop" || d.status("shop-web-1") != "running" {
+		t.Errorf("after: shop %+v, the application %s", shop, d.status("shop-web-1"))
+	}
+
+	// the swap fails, and the server does not say whether it took place
+	d.db.AddDatabase(server, "shop", "shop", shopPassword, "items", "orders")
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		switch {
+		case isSwap(call):
+			return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: server closed the connection unexpectedly\n"}, true
+		case slices.ContainsFunc(call.Env, func(item string) bool { return strings.Contains(item, "FROM pg_database WHERE datname") }):
+			return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: the database system is starting up\n"}, true
+		}
+		return fakedocker.ExecResult{}, false
+	})
+	result, err = d.restore(context.Background(), "c3", other("uuuuuuuuuuuuuuu"))
+	want := "The restore of shop may have gone through: putting the copy in place failed (the server's client failed with exit code 2: " +
+		"psql: error: server closed the connection unexpectedly), and the server did not say whether the copy took its place " +
+		"(the database server's client failed with exit code 2: psql: error: the database system is starting up). " +
+		"If it did, the data before it stays a day as pc_old_uuuuuuuuuuuuuuu."
+	if err == nil || err.Error() != want || result["previous"] != databases.PreviousName("uuuuuuuuuuuuuuu") {
+		t.Errorf("a swap the server says nothing of:\n%v\nwant\n%s\n%v", err, want, result["previous"])
+	}
+	if d.status("shop-web-1") != "running" {
+		t.Errorf("the application is %s", d.status("shop-web-1"))
+	}
+}
 func (d *dbHarness) testCommand(engine databases.Engine, snapshot, database string, dropBefore ...string) *agentv1.Command {
 	return &agentv1.Command{Id: "t1", Type: "backup.restore_test", Payload: &agentv1.Command_BackupRestoreTest{BackupRestoreTest: &agentv1.BackupRestoreTest{
 		Repository: d.repo, SnapshotId: snapshot, JobTag: testJobTag, CheckId: testCheckID, DropBefore: dropBefore,
@@ -1070,5 +1386,119 @@ func TestADatabaseRestoreIsStoppedUntilTheSwapOnly(t *testing.T) {
 	}
 	if shop, _ := d.db.Database(d.servers[pg.Name], "shop"); shop.From != "shop" || d.status("shop-web-1") != "running" {
 		t.Errorf("after a stop during the swap: %+v, %s", shop, d.status("shop-web-1"))
+	}
+}
+
+// leave copies a file into a container, as a restore stages its dump, and
+// says its path.
+func (d *dbHarness) leave(t *testing.T, container, dir, name string) string {
+	t.Helper()
+	if err := d.Docker.CopyFileFrom(context.Background(), container, dir, name, strings.NewReader("dump"), 4, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir + "/" + name
+}
+
+// TestTheDumpOfAnInterruptedRestoreGoesAtTheAgentsStart (#53, D4): a
+// database restore the agent was killed during left the dump it staged in
+// the server's container, as its deferred removal never ran; the next
+// agent removes it as it finishes the restore by its marker, before it
+// takes a command, whatever the phase: a large dump left would fill the
+// server's disk. A file of another name stays.
+func TestTheDumpOfAnInterruptedRestoreGoesAtTheAgentsStart(t *testing.T) {
+	d := newDBHarness(t)
+	for _, tc := range []struct{ phase, engine string }{
+		{backup.PhaseScratch, databases.Postgres.Name},
+		{backup.PhaseStopped, databases.Postgres.Name},
+		{backup.PhaseSwapped, databases.Postgres.Name},
+		{backup.PhaseRehearsal, databases.MariaDB.Name},
+		{backup.PhaseEmptied, databases.MariaDB.Name},
+		{backup.PhaseRestored, databases.MariaDB.Name},
+	} {
+		engine, _ := databases.EngineOf(tc.engine)
+		server := d.servers[tc.engine]
+		command := "c-" + tc.phase
+		staged := d.leave(t, server, databases.StagedDir, databases.StagedName(engine, command))
+		notes := d.leave(t, server, databases.StagedDir, "pocketcloud-restore-notes.txt")
+		marker := restoreMarker{CommandID: command, RestoreID: testRestoreID, Database: &databaseMarker{
+			Container: server, Engine: tc.engine, Name: "shop", Scratch: databases.ScratchName(testRestoreID), Phase: tc.phase}}
+		if tc.engine == databases.Postgres.Name {
+			marker.Database.Previous = databases.PreviousName(testRestoreID)
+		}
+		raw, _ := json.Marshal(marker)
+		if err := os.MkdirAll(filepath.Join(d.Config.StateDir, restoreMarkers), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(d.markerPath(command), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.finishInterruptedRestores(context.Background())
+		if files := d.engine.Files(server); slices.Contains(files, staged) || !slices.Contains(files, notes) {
+			t.Errorf("%s: the files left %q", tc.phase, files)
+		}
+		if entry, ok := d.store.get(command); !ok || entry.Result["interrupted"] != true {
+			t.Errorf("%s: %+v", tc.phase, entry)
+		}
+	}
+}
+
+// TestTheDumpsRestoresLeftGoAtTheAgentsStart (#53, D4): a restore test the
+// agent was killed during left its dump in the server's container, with no
+// marker to say so, as may a restore into a new database; the next agent,
+// before it takes a command, removes the dumps that restores staged in
+// every running shared server's container, and those only: files of other
+// names, one deeper in /tmp, and the files of a container of another role
+// or of a server that does not run stay.
+func TestTheDumpsRestoresLeftGoAtTheAgentsStart(t *testing.T) {
+	d := newDBHarness(t)
+	pg, maria := databases.Postgres, databases.MariaDB
+	d.shop(pg)
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	// the test's removal of its dump does not run, as when the agent is
+	// killed
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		return fakedocker.ExecResult{Code: 137}, slices.Equal(call.Cmd, []string{"sh", "-c", `rm -f "$PC_FILE"`})
+	})
+	if result, err := d.handleBackupRestoreTest(context.Background(), d.testCommand(pg, snapshot, "shop"), &Reporter{}); err != nil {
+		t.Fatalf("%v\n%v", err, result["log"])
+	}
+	d.setInject(nil)
+	pgServer, mariaServer := d.servers[pg.Name], d.servers[maria.Name]
+	tested := databases.StagedDir + "/" + databases.StagedName(pg, "t1")
+	if !slices.Contains(d.engine.Files(pgServer), tested) {
+		t.Fatalf("the test left %q", d.engine.Files(pgServer))
+	}
+	gone := map[string][]string{
+		pgServer:    {tested, d.leave(t, pgServer, databases.StagedDir, databases.StagedName(pg, "k3m9x2p7q1w8e4r"))},
+		mariaServer: {d.leave(t, mariaServer, databases.StagedDir, databases.StagedName(maria, "t2"))},
+	}
+	stay := map[string][]string{}
+	for _, server := range []string{pgServer, mariaServer} {
+		for _, name := range []string{"pocketcloud-restore-notes.txt", "pocketcloud-restore-.sql", "pocketcloud-restore-t1.sql.part",
+			"pocketcloud-move-c1-0.sql", "shop.sql"} {
+			stay[server] = append(stay[server], d.leave(t, server, databases.StagedDir, name))
+		}
+		stay[server] = append(stay[server], d.leave(t, server, databases.StagedDir+"/keep", databases.StagedName(maria, "t3")))
+	}
+	site := d.container("shop-php", map[string]string{"pocketcloud.role": "site"}, "unless-stopped", 0)
+	stay[site] = []string{d.leave(t, site, databases.StagedDir, databases.StagedName(maria, "t4"))}
+	stopped := d.db.AddServer("pcdb-old-db-1", pg.Name)
+	stay[stopped] = []string{d.leave(t, stopped, databases.StagedDir, databases.StagedName(pg, "t5"))}
+	d.engine.SetStatus(stopped, "exited")
+
+	d.removeStagedDumps(context.Background())
+	for container, files := range gone {
+		for _, file := range files {
+			if slices.Contains(d.engine.Files(container), file) {
+				t.Errorf("%s is left in %s", file, container)
+			}
+		}
+	}
+	for container, files := range stay {
+		for _, file := range files {
+			if !slices.Contains(d.engine.Files(container), file) {
+				t.Errorf("%s was removed from %s", file, container)
+			}
+		}
 	}
 }

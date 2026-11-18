@@ -164,6 +164,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.cleanupBackupJobs(ctx)
 	// once the jobs of the restores that ended with the agent are gone
 	a.finishInterruptedRestores(ctx)
+	// before a command of this agent stages a dump of its own (#53)
+	a.removeStagedDumps(ctx)
 
 	// the edge keeps serving without the panel; one that is gone comes back
 	go a.restoreEdge(ctx)

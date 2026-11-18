@@ -18,17 +18,28 @@
 //     database, PostgreSQL's as a fake custom archive (PGDMP, then
 //     pg_restore's list of it: a TABLE and a TABLE DATA entry per table) and
 //     MariaDB's as SQL with a CREATE TABLE and an INSERT per table, a
-//     DEFINER of the database's user, and "-- Dump completed" last.
+//     trigger, an event and a procedure of the database's user as DEFINER,
+//     whose bodies, between DELIMITER lines, hold CREATE TABLE lines, and
+//     "-- Dump completed" last.
 //     SetDumpContent stands in for one database's next dumps.
 //   - CountDump: pg_restore --list of a staged dump (it fails on what is no
-//     archive) or MariaDB's footer check, and the tables counted.
+//     archive) or MariaDB's footer check, and the tables counted: MariaDB's
+//     CREATE TABLE lines outside the DELIMITER blocks, as the restore makes
+//     no table of a body.
 //   - RestoreAsUser, with the privilege model of a restore that runs as the
 //     database's own user: the user signs in with its password, may write
-//     only a database it owns (PostgreSQL) or has a grant on (MariaDB), and
-//     a statement of the dump that names another database (USE b, `b`.`t`,
-//     CREATE or DROP DATABASE b, \connect b, a DATABASE entry) fails on
-//     privileges: "Access denied for user 'a'@'%' to database 'b'". A
-//     DEFINER of another user fails unless PC_DEFINER rewrites it. A
+//     only a database it owns (PostgreSQL) or has a grant on (MariaDB). On
+//     MariaDB a statement the server gets that names a database the user has
+//     no grant on fails on privileges: a table of it (`b`.`t`: "DROP command
+//     denied to user 'a'@'172.17.0.2' for table `b`.`posts`"), or the
+//     database (CREATE or DROP DATABASE b: "Access denied for user 'a'@'%'
+//     to database 'b'"). With --one-database the client sends no USE of
+//     another database: it skips what follows, up to a USE of its own, and
+//     exits 0, as the real client does; without it, USE b fails on
+//     privileges as well. pg_restore restores no DATABASE entry (it runs
+//     without --create), and a psql command such as \connect b in an
+//     archive is a syntax error to the server. A DEFINER of another user
+//     fails unless PC_DEFINER rewrites it. A
 //     restore whose database, or the dump's database, has "fail" in its
 //     name fails. PostgreSQL's restore is one transaction and changes
 //     nothing when it fails; MariaDB's keeps the tables created before the
@@ -38,7 +49,9 @@
 //   - df (FreeSpace, SetFree), the client's --sandbox (Sandbox,
 //     SetSandbox), SignIn, EndSessions (the sessions SetSessions gave a
 //     database), RemoveStaged (the file the archive PUT copied in goes),
-//     SweepStaged, and #19's Dump, Clone, RestoreFile and CountTables.
+//     SweepStaged, ListStaged (the files the archive PUT copied into /tmp
+//     whose names begin as a staged dump's, as find's -name matches them),
+//     and #19's Dump, Clone, RestoreFile and CountTables.
 //
 // Every process is noted (Execs) with its kind and the databases it named.
 package fakedb
@@ -46,6 +59,7 @@ package fakedb
 import (
 	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -69,6 +83,7 @@ const (
 	KindSandbox      = "sandbox"
 	KindRemoveStaged = "remove-staged"
 	KindSweepStaged  = "sweep-staged"
+	KindListStaged   = "list-staged"
 	KindClone        = "clone"
 	KindExportDump   = "export-dump"
 	KindRestoreFile  = "restore-file"
@@ -428,7 +443,7 @@ func (p *process) run() fakedocker.ExecResult {
 	case strings.Contains(script, "pg_restore --list") || strings.Contains(script, "-- Dump completed"):
 		p.kind = KindCountDump
 		return p.countDump()
-	case strings.Contains(script, "pg_restore --no-password") || strings.Contains(script, "--one-database"):
+	case strings.Contains(script, "pg_restore --no-password") || strings.Contains(script, `--user="$PC_USER"`):
 		p.kind = KindRestore
 		return p.restore()
 	case strings.Contains(script, "BASE TABLE"):
@@ -441,9 +456,12 @@ func (p *process) run() fakedocker.ExecResult {
 		p.kind = KindRemoveStaged
 		p.s.engine.RemoveFile(p.container, env["PC_FILE"])
 		return fakedocker.ExecResult{}
-	case strings.Contains(script, "find /tmp -maxdepth 1"):
+	case strings.Contains(script, "find /tmp -maxdepth 1") && strings.Contains(script, "-mmin "):
 		p.kind = KindSweepStaged
 		return fakedocker.ExecResult{}
+	case strings.Contains(script, "find /tmp -maxdepth 1"):
+		p.kind = KindListStaged
+		return p.listStaged()
 	case strings.Contains(script, "df -Pk"):
 		p.kind = KindFreeSpace
 		return p.freeSpace()
@@ -557,6 +575,18 @@ func (p *process) freeSpace() fakedocker.ExecResult {
 		line("/dev/sda1", data, p.env["PC_DATA_DIR"]) + line("overlay", tmp, "/")}
 }
 
+// listStaged prints, as ListStaged's find does, the files copied into the
+// container's /tmp, not deeper, whose names begin as a staged dump's.
+func (p *process) listStaged() fakedocker.ExecResult {
+	var out strings.Builder
+	for _, file := range p.s.engine.Files(p.container) {
+		if path.Dir(file) == databases.StagedDir && strings.HasPrefix(path.Base(file), "pocketcloud-restore-") {
+			out.WriteString(file + "\n")
+		}
+	}
+	return fakedocker.ExecResult{Stdout: out.String()}
+}
+
 // postgresArchive starts a fake custom archive.
 const postgresArchive = "PGDMP"
 
@@ -605,8 +635,10 @@ func PostgresDump(name, owner string, tables ...string) string {
 }
 
 // MariaDBDump is a fake SQL dump of a MariaDB database with tables, as
-// DumpCommand writes one: a table and a row each, and a trigger whose
-// definer is definer, if one is given.
+// DumpCommand writes one: a table and a row each, and, when a definer is
+// given, a trigger, an event and a procedure of that definer, between
+// DELIMITER lines as mariadb-dump writes them, whose bodies hold CREATE
+// TABLE lines that make no table on restore.
 func MariaDBDump(name, definer string, tables ...string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB, for debian-linux-gnu (x86_64)\n--\n-- Host: localhost    Database: %s\n", name)
@@ -616,10 +648,33 @@ func MariaDBDump(name, definer string, tables ...string) string {
 		fmt.Fprintf(&out, "set autocommit=0;\nINSERT INTO `%s` VALUES (1);\ncommit;\n", table)
 	}
 	if definer != "" && len(tables) > 0 {
-		fmt.Fprintf(&out, "/*!50003 CREATE*/ /*!50017 DEFINER=`%s`@`%%`*/ /*!50003 TRIGGER `%s_touch` BEFORE INSERT ON `%s` FOR EACH ROW SET NEW.id = NEW.id */;;\n", definer, tables[0], tables[0])
+		first := tables[0]
+		fmt.Fprintf(&out, "DELIMITER ;;\n/*!50003 CREATE*/ /*!50017 DEFINER=`%s`@`%%`*/ /*!50003 TRIGGER `%s_touch` BEFORE INSERT ON `%s` FOR EACH ROW SET NEW.id = NEW.id */;;\nDELIMITER ;\n",
+			definer, first, first)
+		fmt.Fprintf(&out, "DELIMITER ;;\n/*!50106 CREATE*/ /*!50117 DEFINER=`%s`@`%%`*/ /*!50106 EVENT `%s_rollup` ON SCHEDULE EVERY 1 DAY STARTS '2026-11-18 00:00:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN\n"+
+			"CREATE TABLE IF NOT EXISTS `%s_rollup` (`id` int);\nEND */ ;;\nDELIMITER ;\n", definer, first, first)
+		fmt.Fprintf(&out, "DELIMITER ;;\nCREATE DEFINER=`%s`@`%%` PROCEDURE `%s_archive`()\nBEGIN\nCREATE TABLE `%s_old` (`id` int);\nEND ;;\nDELIMITER ;\n",
+			definer, first, first)
 	}
 	out.WriteString("-- Dump completed\n")
 	return out.String()
+}
+
+// inBodies says, of each line of a MariaDB dump, whether it is in a
+// DELIMITER ;; … DELIMITER ; block, where mariadb-dump writes triggers,
+// routines and events with their bodies as they are.
+func inBodies(lines []string) []bool {
+	in, body := make([]bool, len(lines)), false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "DELIMITER ;;") {
+			body = true
+		}
+		in[i] = body
+		if line == "DELIMITER ;" {
+			body = false
+		}
+	}
+	return in
 }
 
 // staged is the file a process reads, as the archive PUT copied it in.
@@ -637,8 +692,10 @@ func (p *process) staged() ([]byte, string) {
 var tocEntry = regexp.MustCompile(`^\d+; \d+ \d+ (\S+) (\S+) (\S+)(?: (\S+))?(?: (\S+))?$`)
 
 // archive reads a fake custom archive: the database it is of, its tables,
-// and the databases its entries name besides.
-func archive(content string) (source string, tables, others []string, ok bool) {
+// and the psql commands in it, such as \connect, which pg_restore sends to
+// the server as SQL. A DATABASE entry, as of the database the dump is of,
+// is not restored without --create, which a restore never passes.
+func archive(content string) (source string, tables, commands []string, ok bool) {
 	if !strings.HasPrefix(content, postgresArchive) {
 		return "", nil, nil, false
 	}
@@ -647,22 +704,19 @@ func archive(content string) (source string, tables, others []string, ok bool) {
 			source = strings.TrimSpace(rest)
 			continue
 		}
-		if rest, found := strings.CutPrefix(line, `\connect `); found {
-			others = append(others, strings.TrimSpace(rest))
+		if strings.HasPrefix(line, `\`) {
+			commands = append(commands, line)
 			continue
 		}
 		match := tocEntry.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
-		switch {
-		case match[1] == "TABLE" && match[2] != "DATA" && match[2] != "ATTACH":
+		if match[1] == "TABLE" && match[2] != "DATA" && match[2] != "ATTACH" {
 			tables = append(tables, match[3])
-		case match[1] == "DATABASE":
-			others = append(others, match[2])
 		}
 	}
-	return source, tables, others, true
+	return source, tables, commands, true
 }
 
 // mariadbDumpOf reads the database a MariaDB dump is of.
@@ -678,7 +732,7 @@ func mariadbDumpOf(content string) string {
 var (
 	createTable = regexp.MustCompile("^CREATE TABLE `?([A-Za-z0-9_]+)`?")
 	useDatabase = regexp.MustCompile("^USE `?([A-Za-z0-9_]+)`?\\s*;")
-	qualified   = regexp.MustCompile("`([A-Za-z0-9_]+)`\\.`")
+	qualified   = regexp.MustCompile("`([A-Za-z0-9_]+)`\\.`([A-Za-z0-9_]+)`")
 	dropCreate  = regexp.MustCompile("(?i)^(?:CREATE|DROP|ALTER) DATABASE (?:IF (?:NOT )?EXISTS )?`?([A-Za-z0-9_]+)`?")
 	definerOf   = regexp.MustCompile("DEFINER=`([^`]+)`@")
 )
@@ -706,8 +760,10 @@ func (p *process) countDump() fakedocker.ExecResult {
 		return fakedocker.ExecResult{Code: 1, Stderr: "the dump is incomplete: it does not end as a whole dump does\n"}
 	}
 	count := 0
-	for _, line := range strings.Split(string(content), "\n") {
-		if strings.HasPrefix(line, "CREATE TABLE ") {
+	lines := strings.Split(string(content), "\n")
+	bodies := inBodies(lines)
+	for i, line := range lines {
+		if !bodies[i] && strings.HasPrefix(line, "CREATE TABLE ") {
 			count++
 		}
 	}
@@ -734,20 +790,19 @@ func (p *process) restore() fakedocker.ExecResult {
 	if p.sv.pg {
 		return p.restorePostgres(user, target, string(content))
 	}
-	return p.restoreMariaDB(user, target, definer, string(content))
+	return p.restoreMariaDB(user, target, definer, string(content), strings.Contains(p.script, "--one-database"))
 }
 
 func (p *process) restorePostgres(user, target, content string) fakedocker.ExecResult {
-	source, tables, others, ok := archive(content)
+	source, tables, commands, ok := archive(content)
 	p.named(source)
 	if !ok {
 		return fakedocker.ExecResult{Code: 1, Stderr: "pg_restore: error: input file does not appear to be a valid archive\n"}
 	}
-	for _, other := range others {
-		if other != target {
-			p.named(other)
-			return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("pg_restore: error: could not execute query: ERROR:  permission denied for database %s\n", other)}
-		}
+	if len(commands) > 0 {
+		// the server knows no psql command: pg_restore never connects
+		// elsewhere
+		return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("pg_restore: error: could not execute query: ERROR:  syntax error at or near \"\\\"\nCommand was: %s\n", commands[0])}
 	}
 	if strings.Contains(target, "fail") || strings.Contains(source, "fail") {
 		return fakedocker.ExecResult{Code: 1, Stderr: "pg_restore: error: could not execute query: ERROR:  syntax error at or near \"fail\"\n"}
@@ -765,35 +820,54 @@ func (p *process) restorePostgres(user, target, content string) fakedocker.ExecR
 	return fakedocker.ExecResult{}
 }
 
-func (p *process) restoreMariaDB(user, target, definer, content string) fakedocker.ExecResult {
+// restoreMariaDB is the mariadb client of RestoreAsUser, signed in as user
+// with target as its database. With --one-database, the client sends no
+// USE of another database: it skips the statements that follow, but for
+// SET, until a USE of target, and goes on (mysql.cc's com_use and com_go).
+// Without it, a USE of a database the user has no grant on fails. A
+// statement the server gets fails on privileges when it names a database
+// the user has no grant on: a table of it (`b`.`t`, ERROR 1142), or the
+// database itself (CREATE, DROP or ALTER DATABASE b, ERROR 1044).
+func (p *process) restoreMariaDB(user, target, definer, content string, oneDatabase bool) fakedocker.ExecResult {
 	source := mariadbDumpOf(content)
 	p.named(source)
 	failing := strings.Contains(target, "fail") || strings.Contains(source, "fail")
 	lines := strings.Split(content, "\n")
+	bodies := inBodies(lines)
 	last := -1
 	for i, line := range lines {
-		if createTable.MatchString(line) {
+		if !bodies[i] && createTable.MatchString(line) {
 			last = i
 		}
 	}
 	p.s.mu.Lock()
 	defer p.s.mu.Unlock()
-	db := p.sv.databases[target]
+	current, skipping := target, false
 	denied := func(at int, other string) fakedocker.ExecResult {
 		p.named(other)
 		return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1044 (42000) at line %d: Access denied for user '%s'@'%%' to database '%s'\n", at+1, user, other)}
 	}
 	for i, line := range lines {
-		if match := useDatabase.FindStringSubmatch(line); match != nil && match[1] != target {
-			return denied(i, match[1])
-		}
-		if match := dropCreate.FindStringSubmatch(line); match != nil && match[1] != target {
-			return denied(i, match[1])
-		}
-		for _, match := range qualified.FindAllStringSubmatch(line, -1) {
-			if match[1] != target {
+		if match := useDatabase.FindStringSubmatch(line); match != nil && !bodies[i] {
+			switch {
+			case match[1] == target:
+				current, skipping = target, false
+			case oneDatabase:
+				skipping = true
+			case !p.sv.mayWrite(match[1], user):
 				return denied(i, match[1])
+			case p.sv.databases[match[1]] == nil:
+				p.named(match[1])
+				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1049 (42000) at line %d: Unknown database '%s'\n", i+1, match[1])}
+			default:
+				p.named(match[1])
+				current, skipping = match[1], false
 			}
+			continue
+		}
+		if skipping {
+			// "Ignoring query to other database"
+			continue
 		}
 		if match := definerOf.FindStringSubmatch(line); match != nil {
 			who := match[1]
@@ -804,16 +878,32 @@ func (p *process) restoreMariaDB(user, target, definer, content string) fakedock
 				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1227 (42000) at line %d: Access denied; you need (at least one of) the SUPER, SET USER privilege(s) for this operation\n", i+1)}
 			}
 		}
+		if bodies[i] {
+			// a trigger's, routine's or event's body is kept as it is: what
+			// it names is looked at when it runs
+			continue
+		}
+		if match := dropCreate.FindStringSubmatch(line); match != nil && !p.sv.mayWrite(match[1], user) {
+			return denied(i, match[1])
+		}
+		for _, match := range qualified.FindAllStringSubmatch(line, -1) {
+			if !p.sv.mayWrite(match[1], user) {
+				p.named(match[1])
+				command, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1142 (42000) at line %d: %s command denied to user '%s'@'172.17.0.2' for table `%s`.`%s`\n",
+					i+1, strings.ToUpper(command), user, match[1], match[2])}
+			}
+		}
 		if match := createTable.FindStringSubmatch(line); match != nil {
 			if failing && i == last {
 				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1064 (42000) at line %d: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use near 'fail' at line 1\n", i+1)}
 			}
-			if !slices.Contains(db.tables, match[1]) {
+			if db := p.sv.databases[current]; !slices.Contains(db.tables, match[1]) {
 				db.tables = append(db.tables, match[1])
 			}
 		}
 	}
-	db.from = source
+	p.sv.databases[target].from = source
 	return fakedocker.ExecResult{}
 }
 

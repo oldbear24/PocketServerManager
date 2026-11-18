@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -622,7 +623,9 @@ func TestRestoringOneDatabaseLeavesTheOthers(t *testing.T) {
 // was crafted to write another database of the server fails as the
 // database's own user has no privilege there: the rehearsal fails, nothing
 // changed in the database, its application never stopped, and the other
-// database is as it was.
+// database is as it was. A dump that switches to the other database with
+// USE restores only its own: the client, with --one-database, skips what
+// follows, and the other database is as it was.
 func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	d := newDBBackupsHarness(t)
 	server := d.sharedServer("maria", "mariadb")
@@ -630,9 +633,9 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	d.database(server, "shop", shop, "items", "orders")
 	d.database(server, "blog", nil, "posts", "comments")
 	container := server.GetString("container_ref")
-	d.db.SetDumpContent(container, "shop", "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB\n--\n-- Host: localhost    Database: shop\n"+
-		"CREATE TABLE `items` (`id` int);\nINSERT INTO `items` VALUES (1);\n"+
-		"CREATE TABLE `orders` (`id` int);\nUSE `blog`;\nDROP TABLE `posts`;\n-- Dump completed\n")
+	header := "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB\n--\n-- Host: localhost    Database: shop\n" +
+		"CREATE TABLE `items` (`id` int);\nINSERT INTO `items` VALUES (1);\nCREATE TABLE `orders` (`id` int);\n"
+	d.db.SetDumpContent(container, "shop", header+"DROP TABLE `blog`.`posts`;\n-- Dump completed\n")
 	job := d.jobOf("database", d.databaseNamed(server, "shop").Id)
 	run := d.backedUp(job)
 
@@ -643,7 +646,7 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	}
 	ended := d.ended(restore.Id)
 	if ended.GetString("status") != schema.RestoreFailed || !strings.HasPrefix(ended.GetString("error"), "Nothing changed in shop: ") ||
-		!strings.Contains(ended.GetString("error"), "Access denied for user 'shop'@'%' to database 'blog'") {
+		!strings.Contains(ended.GetString("error"), "DROP command denied to user 'shop'@") || !strings.Contains(ended.GetString("error"), "for table `blog`.`posts`") {
 		t.Errorf("the restore of the crafted dump: %v", ended.FieldsData())
 	}
 	if tables, _ := d.tables(server, "blog"); !slices.Equal(tables, []string{"posts", "comments"}) {
@@ -665,6 +668,35 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	}
 	if event := d.event("backup.restore_failed", "data.restore={:id}", dbx.Params{"id": restore.Id}); event.GetString("severity") != schema.SeverityCritical {
 		t.Errorf("the restore's event: %v", event.FieldsData())
+	}
+
+	// a dump that switches to blog: only shop is restored
+	d.db.SetDumpContent(container, "shop", header+"USE `blog`;\nDROP TABLE `posts`;\nINSERT INTO `posts` VALUES (9);\n-- Dump completed\n")
+	run = d.backedUp(job)
+	from, lives = len(d.db.Execs()), d.lives()
+	restore = d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "database"})
+	if status, out := d.startNamed(restore, "shop"); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	if ended := d.ended(restore.Id); ended.GetString("status") != schema.RestoreSucceeded || ended.GetInt("tables") != 2 {
+		t.Errorf("the restore of the dump that uses blog: %v", ended.FieldsData())
+	}
+	if tables, from := d.tables(server, "shop"); !slices.Equal(tables, []string{"items", "orders"}) || from != "shop" {
+		t.Errorf("shop after the dump that uses blog: %v from %q", tables, from)
+	}
+	if tables, from := d.tables(server, "blog"); !slices.Equal(tables, []string{"posts", "comments"}) || from != "" {
+		t.Errorf("blog after the dump that uses it: %v from %q", tables, from)
+	}
+	for _, exec := range d.execsSince(server, from) {
+		if slices.Contains(exec.Databases, "blog") {
+			t.Errorf("a process named blog: %+v", exec)
+		}
+		if exec.Kind == fakedb.KindRestore && (exec.Env["PC_USER"] != "shop" || exec.Failed) {
+			t.Errorf("a restore: %+v", exec)
+		}
+	}
+	if life := d.lifeSince(lives); !slices.Equal(life, []string{"stop:shop-web-1", "start:shop-web-1"}) {
+		t.Errorf("what stopped and started: %v", life)
 	}
 }
 
@@ -1391,5 +1423,50 @@ func TestSiteFilesJob(t *testing.T) {
 	d.waitFor("the job to be disabled", func() bool { return !d.job(job.Id).GetBool("enabled") })
 	if kept := d.job(job.Id); kept.GetString("problem") != "Its site was removed." || kept.GetString("site") != "" || len(d.snapshots(job.Id)) != 1 {
 		t.Errorf("the removed site's job: %v", kept.FieldsData())
+	}
+}
+
+// TestAnAgentRemovesTheDumpsRestoresLeftWhenItStarts (#53, D4): the dumps
+// that restores and restore tests staged in the shared servers' containers
+// and did not remove, as when the agent was killed during one, are gone
+// once the agent that starts again is connected, which is before it takes
+// a command; files of other names stay.
+func TestAnAgentRemovesTheDumpsRestoresLeftWhenItStarts(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	servers := []*core.Record{d.sharedServer("main", "postgres"), d.sharedServer("maria", "mariadb")}
+	if err := d.agent.stop(); err != nil {
+		t.Fatal(err)
+	}
+	d.waitFor("the agent to be gone", func() bool { return !d.panel.Commands.Connected(d.host.Id) })
+	gone, stay := map[string][]string{}, map[string][]string{}
+	for i, server := range servers {
+		container := server.GetString("container_ref")
+		engine, _ := databases.EngineOf(server.GetString("engine"))
+		killed := databases.StagedName(engine, fmt.Sprintf("killed%d", i))
+		for _, name := range []string{killed, "pocketcloud-restore-notes.txt", "shop.sql"} {
+			content := "dump"
+			if err := d.agent.Docker.CopyFileFrom(context.Background(), container, databases.StagedDir, name, strings.NewReader(content), int64(len(content)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gone[container] = []string{databases.StagedDir + "/" + killed}
+		stay[container] = []string{databases.StagedDir + "/pocketcloud-restore-notes.txt", databases.StagedDir + "/shop.sql"}
+	}
+
+	d.agent = d.harness.start(d.agent.config, quickRestores)
+	d.waitFor("the agent to connect again", func() bool { return d.panel.Commands.Connected(d.host.Id) })
+	for container, files := range gone {
+		for _, file := range files {
+			if slices.Contains(d.docker.Files(container), file) {
+				t.Errorf("%s is left in %s", file, container)
+			}
+		}
+	}
+	for container, files := range stay {
+		for _, file := range files {
+			if !slices.Contains(d.docker.Files(container), file) {
+				t.Errorf("%s was removed from %s", file, container)
+			}
+		}
 	}
 }

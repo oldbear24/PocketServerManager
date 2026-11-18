@@ -66,16 +66,20 @@ type restoreMarker struct {
 
 // databaseMarker is where a database restore in place was (#53): its
 // server's container, the database, its copies, and its phase
-// (backup.Phase*), written before each step.
+// (backup.Phase*), written before each step. During PostgreSQL's swap it
+// also says when the last try began, and the server's administrator, whom
+// an agent that restarted asks whether the swap took place.
 type databaseMarker struct {
-	Container string `json:"container"`
-	Engine    string `json:"engine"`
-	Name      string `json:"name"`
-	Scratch   string `json:"scratch"`
-	Previous  string `json:"previous"`
-	Phase     string `json:"phase"`
-	Charset   string `json:"charset"`
-	Collation string `json:"collation"`
+	Container   string    `json:"container"`
+	Engine      string    `json:"engine"`
+	Name        string    `json:"name"`
+	Scratch     string    `json:"scratch"`
+	Previous    string    `json:"previous"`
+	Phase       string    `json:"phase"`
+	Charset     string    `json:"charset"`
+	Collation   string    `json:"collation"`
+	AdminUser   string    `json:"admin_user,omitempty"`
+	SwapStarted time.Time `json:"swap_started,omitzero"`
 }
 
 // markedContainer is a container a restore stopped, with the restart policy
@@ -503,7 +507,7 @@ func (a *Agent) finishInterruptedRestores(ctx context.Context) {
 		session := &restoreSession{a: a, marker: marker, stopped: marker.Containers}
 		if marker.Database != nil {
 			// a database restore goes by where it was (#53)
-			a.finishInterruptedDatabaseRestore(session)
+			a.finishInterruptedDatabaseRestore(ctx, session)
 			continue
 		}
 		started := session.startAgain(false)

@@ -310,6 +310,13 @@ func TestOnlyTemporaryDatabasesAreDiscarded(t *testing.T) {
 	refused("a swap of PostgreSQL's own database", err)
 	_, err = SwapSQL(`shop"; DROP DATABASE "blog`, scratch, previous)
 	refused("a swap of a hostile name", err)
+	for _, name := range []string{"shop", scratch, testCopy, `pc_old_aaaaaaaaaaaaaaa"; DROP DATABASE "blog`} {
+		_, err = ClosePreviousSQL(name)
+		refused("a close of "+name, err)
+	}
+	if got, err := ClosePreviousSQL(previous); err != nil || got != `ALTER DATABASE "pc_old_aaaaaaaaaaaaaaa" WITH ALLOW_CONNECTIONS false;` {
+		t.Errorf("the close of the data before a restore: %v %s", err, got)
+	}
 	for _, name := range []string{"mysql", "information_schema", scratch, "Shop", "shop`; DROP DATABASE `blog"} {
 		_, err = RecreateSQL(name, Charset{})
 		refused("a recreation of "+name, err)
@@ -405,7 +412,7 @@ func TestTheScriptsOfARestore(t *testing.T) {
 		{
 			"mariadb dump's tables", CountDump(MariaDB, "/tmp/pocketcloud-restore-c1.sql"),
 			`tail -c 4096 "$PC_FILE" | grep -q '^-- Dump completed' || { echo "the dump is incomplete: it does not end as a whole dump does" >&2; exit 1; }` + "\n" +
-				`grep -c '^CREATE TABLE ' "$PC_FILE" || true`,
+				`sed '/^DELIMITER ;;/,/^DELIMITER ;$/d' "$PC_FILE" | grep -c '^CREATE TABLE ' || true`,
 			[]string{"PC_FILE=/tmp/pocketcloud-restore-c1.sql"},
 		},
 		{
@@ -445,6 +452,7 @@ func TestTheScriptsOfARestore(t *testing.T) {
 		},
 		{"remove", removed, `rm -f "$PC_FILE"`, []string{"PC_FILE=/tmp/pocketcloud-restore-c1.sql"}},
 		{"sweep", SweepStaged(), `find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*' -mmin +1440 -exec rm -f {} +`, nil},
+		{"list", ListStaged(), `exec find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*'`, nil},
 		{"free space", FreeSpace("/var/lib/postgresql/data"), `exec df -Pk -- "$PC_DATA_DIR" /tmp`, []string{"PC_DATA_DIR=/var/lib/postgresql/data"}},
 		{"sandbox", Sandbox(), wantClient + `if "$client" --help 2>/dev/null | grep -q -- '--sandbox'; then echo yes; else echo no; fi`, nil},
 	} {
@@ -480,6 +488,40 @@ func TestTheScriptsOfARestore(t *testing.T) {
 	}
 	if _, err := RemoveStaged(StagedDir + "/" + StagedName(Postgres, "k3m9x2p7q1w8e4r")); err != nil {
 		t.Errorf("a staged dump is not removed: %v", err)
+	}
+}
+
+// TestStagedFilesAreStagedDumpsOnly (#53, D4): of what ListStaged prints,
+// the lines that are whole a path a restore or a restore test stages its
+// dump as are staged dumps, and nothing else is: another name, another
+// folder, a line cut from a name with a newline in it.
+func TestStagedFilesAreStagedDumpsOnly(t *testing.T) {
+	output := strings.Join([]string{
+		"/tmp/pocketcloud-restore-k3m9x2p7q1w8e4r.pgdump",
+		"/tmp/pocketcloud-restore-c-1_a.sql",
+		"/tmp/pocketcloud-restore-notes.txt",
+		"/tmp/pocketcloud-restore-.sql",
+		"/tmp/pocketcloud-restore-c1.sql.part",
+		"/tmp/pocketcloud-restore-c 1.sql",
+		"/tmp/pocketcloud-restore-" + strings.Repeat("a", 65) + ".sql",
+		"/tmp/pocketcloud-move-c1-0.sql",
+		"/tmp/sub/pocketcloud-restore-c1.sql",
+		"/var/tmp/pocketcloud-restore-c1.sql",
+		" /tmp/pocketcloud-restore-c2.sql",
+		"/tmp/pocketcloud-restore-c3.sql ",
+		"",
+	}, "\n")
+	want := []string{"/tmp/pocketcloud-restore-k3m9x2p7q1w8e4r.pgdump", "/tmp/pocketcloud-restore-c-1_a.sql"}
+	if files := StagedFiles(output); !slices.Equal(files, want) {
+		t.Errorf("the staged dumps of %q: %q, want %q", output, files, want)
+	}
+	if files := StagedFiles(""); files == nil || len(files) != 0 {
+		t.Errorf("the staged dumps of nothing: %#v", files)
+	}
+	for _, file := range StagedFiles(output) {
+		if _, err := RemoveStaged(file); err != nil {
+			t.Errorf("%s is not removed: %v", file, err)
+		}
 	}
 }
 
@@ -603,12 +645,33 @@ func TestTheDumpsTablesAreCounted(t *testing.T) {
 		"INSERT INTO `orders` VALUES (1);\n" +
 		"CREATE TABLE `customers` (\n  `id` int NOT NULL\n);\n" +
 		"-- Dump completed\n"
+	// a trigger, an event and a procedure, as mariadb-dump writes them:
+	// their bodies as they are, between DELIMITER lines (an event's ;;; when
+	// its body holds ;;)
+	routines := strings.Replace(whole, "-- Dump completed\n", "DELIMITER ;;\n"+
+		"/*!50003 CREATE*/ /*!50017 DEFINER=`shop`@`%`*/ /*!50003 TRIGGER `orders_touch` BEFORE INSERT ON `orders` FOR EACH ROW SET NEW.id = NEW.id */;;\n"+
+		"DELIMITER ;\n"+
+		"DELIMITER ;;;\n"+
+		"/*!50106 CREATE*/ /*!50117 DEFINER=`shop`@`%`*/ /*!50106 EVENT `rollup` ON SCHEDULE EVERY 1 DAY STARTS '2026-11-18 00:00:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN\n"+
+		"CREATE TABLE IF NOT EXISTS `rollup` (`id` int);\n"+
+		"SELECT ';;';\n"+
+		"END */ ;;;\n"+
+		"DELIMITER ;\n"+
+		"/*!50003 DROP PROCEDURE IF EXISTS `archive` */;\n"+
+		"DELIMITER ;;\n"+
+		"CREATE DEFINER=`shop`@`%` PROCEDURE `archive`()\nBEGIN\n"+
+		"CREATE TABLE IF NOT EXISTS `orders_old` LIKE `orders`;\n"+
+		"CREATE TABLE `orders_copy` (`id` int);\n"+
+		"END ;;\n"+
+		"DELIMITER ;\n"+
+		"-- Dump completed\n", 1)
 	for name, tc := range map[string]struct {
 		content string
 		ok      bool
 		count   int64
 	}{
 		"whole":           {whole, true, 2},
+		"with routines":   {routines, true, 2},
 		"cut short":       {strings.TrimSuffix(whole, "-- Dump completed\n"), false, 0},
 		"without a table": {"-- MariaDB dump 10.19\n-- Dump completed\n", true, 0},
 		"dated":           {strings.Replace(whole, "-- Dump completed\n", "-- Dump completed on 2026-11-18  1:30:00\n", 1), true, 2},

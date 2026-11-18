@@ -78,6 +78,10 @@ const (
 	PhaseRehearsal = "rehearsal"
 	// PhaseStopped: the application is stopped; the database is unchanged.
 	PhaseStopped = "stopped"
+	// PhaseSwapping (PostgreSQL): the transaction that puts the copy in
+	// place of the database is under way, and may have committed: the
+	// server says whether it did.
+	PhaseSwapping = "swapping"
 	// PhaseSwapped (PostgreSQL): the copy is the database, the data before
 	// it pc_old_<restore id>.
 	PhaseSwapped = "swapped"

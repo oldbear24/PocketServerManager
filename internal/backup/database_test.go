@@ -129,7 +129,7 @@ func TestTheDatabaseNamesOfTheContract(t *testing.T) {
 		CapabilityDatabase: "backup.database",
 		DbRestoreReplace:   "replace", DbRestoreNew: "new", DbRestoreTest: "test",
 		StepFetch: "fetch", StepRehearse: "rehearse", StepDbRestore: "dbrestore", StepSwap: "swap",
-		PhaseScratch: "scratch", PhaseRehearsal: "rehearsal", PhaseStopped: "stopped",
+		PhaseScratch: "scratch", PhaseRehearsal: "rehearsal", PhaseStopped: "stopped", PhaseSwapping: "swapping",
 		PhaseSwapped: "swapped", PhaseEmptied: "emptied", PhaseRestored: "restored",
 		AlertRestoreTestFailed:     "backup_restore_test_failed",
 		AlertRestoreTestUnverified: "backup_restore_test_unverified",

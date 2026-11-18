@@ -274,6 +274,10 @@ func SwapSQL(database, scratch, previous string) (string, error) {
 	if strings.TrimPrefix(scratch, TemporaryScratch) != strings.TrimPrefix(previous, TemporaryPrevious) {
 		return "", fmt.Errorf("%s and %s are not of one restore", scratch, previous)
 	}
+	closing, err := ClosePreviousSQL(previous)
+	if err != nil {
+		return "", err
+	}
 	return strings.Join([]string{
 		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (" + postgresString(database) + ", " +
 			postgresString(scratch) + ") AND pid <> pg_backend_pid();",
@@ -282,8 +286,18 @@ func SwapSQL(database, scratch, previous string) (string, error) {
 		"ALTER DATABASE " + postgresIdent(database) + " RENAME TO " + postgresIdent(previous) + ";",
 		"ALTER DATABASE " + postgresIdent(scratch) + " RENAME TO " + postgresIdent(database) + ";",
 		"COMMIT;",
-		"ALTER DATABASE " + postgresIdent(previous) + " WITH ALLOW_CONNECTIONS false;",
+		closing,
 	}, "\n"), nil
+}
+
+// ClosePreviousSQL closes the data before a PostgreSQL restore in place to
+// connections, as SwapSQL does once the swap committed. The agent runs it on
+// its own when the swap's process failed after the commit.
+func ClosePreviousSQL(previous string) (string, error) {
+	if err := temporaryOf(previous, TemporaryPrevious); err != nil {
+		return "", err
+	}
+	return "ALTER DATABASE " + postgresIdent(previous) + " WITH ALLOW_CONNECTIONS false;", nil
 }
 
 // RecreateSQL empties a MariaDB database for an in-place restore: it drops
@@ -449,13 +463,16 @@ func StagedName(engine Engine, commandID string) string {
 // not whole. PostgreSQL's list has a TABLE entry for each, besides its data
 // and a partition's attach; pg_restore that cannot read the list fails it. A
 // MariaDB dump that does not end with "-- Dump completed" was cut short; it
-// has a CREATE TABLE line for each table.
+// has a CREATE TABLE line for each table, outside the DELIMITER ;; …
+// DELIMITER ; blocks it writes its triggers, routines and events in, whose
+// bodies it writes as they are, and which may hold CREATE TABLE lines that
+// make no table on restore.
 func CountDump(engine Engine, file string) Script {
 	script := `list=$(pg_restore --list "$PC_FILE") || { echo "pg_restore cannot read the dump's list" >&2; exit 1; }
 printf '%s\n' "$list" | awk '$4 == "TABLE" && $5 != "DATA" && $5 != "ATTACH" {n++} END {print n+0}'`
 	if engine.Name == MariaDB.Name {
 		script = `tail -c 4096 "$PC_FILE" | grep -q '^-- Dump completed' || { echo "the dump is incomplete: it does not end as a whole dump does" >&2; exit 1; }
-grep -c '^CREATE TABLE ' "$PC_FILE" || true`
+sed '/^DELIMITER ;;/,/^DELIMITER ;$/d' "$PC_FILE" | grep -c '^CREATE TABLE ' || true`
 	}
 	return Script{Cmd: []string{"sh", "-c", script}, Env: []string{"PC_FILE=" + file}}
 }
@@ -526,10 +543,30 @@ func RemoveStaged(file string) (Script, error) {
 }
 
 // SweepStaged removes the dumps of restores that ended without removing
-// theirs, such as when the agent restarted: those staged more than a day
-// ago. Every restore and restore test runs it first.
+// theirs and that the agent's start did not find, such as in a container
+// that was not running then: those staged more than a day ago. Every
+// restore and restore test runs it first.
 func SweepStaged() Script {
 	return Script{Cmd: []string{"sh", "-c", `find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*' -mmin +1440 -exec rm -f {} +`}}
+}
+
+// ListStaged prints the files in StagedDir whose names begin as a staged
+// dump's, a path a line; StagedFiles keeps those that are one.
+func ListStaged() Script {
+	return Script{Cmd: []string{"sh", "-c", `exec find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*'`}}
+}
+
+// StagedFiles are the staged dumps among the lines ListStaged printed: the
+// lines that are, whole, a path a restore or a restore test stages its dump
+// as, which RemoveStaged removes; any other line is left out.
+func StagedFiles(output string) []string {
+	files := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		if stagedPattern.MatchString(line) {
+			files = append(files, line)
+		}
+	}
+	return files
 }
 
 // FreeSpace prints the room left in the server's data directory
