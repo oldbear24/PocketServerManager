@@ -43,11 +43,19 @@ export function kitReasons(reasons: KitSection[] | null | undefined, t: Translat
   return (reasons ?? []).map((reason) => t(`settings.recovery.reason.${reason}`)).join(", ");
 }
 
-/** The lines of an env file a restored panel starts with: KEY=value, in the
- * panel's order, leaving out what is empty. */
+const expectCAPin = "POCKETCLOUD_EXPECT_CA_PIN";
+
+/** The lines of an env file a restored panel starts with: KEY=value, leaving
+ * out what is empty, in the order of `recover --env-out`'s file: by name, the
+ * CA pin last. The panel's answer keeps no order of its keys. */
 export function envLines(env: Record<string, string> | null | undefined): string {
   return Object.entries(env ?? {})
     .filter(([, value]) => value !== "")
+    .sort(([a], [b]) =>
+      a === expectCAPin || b === expectCAPin
+        ? Number(a === expectCAPin) - Number(b === expectCAPin)
+        : a.localeCompare(b, "en"),
+    )
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
 }

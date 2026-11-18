@@ -280,6 +280,28 @@ describe("the addresses the servers dial", () => {
     );
   });
 
+  it("orders the environment as recover's env file does, whatever order the panel's answer has", async () => {
+    show(
+      state({
+        start_env: {
+          POCKETCLOUD_EXPECT_CA_PIN: pin,
+          POCKETCLOUD_PUBLIC_URL: "https://panel.example.com",
+          POCKETCLOUD_HTTPS_CHALLENGE: "dns",
+          POCKETCLOUD_GRPC_ADDR: ":9443",
+        },
+      }),
+    );
+    const code = await card().findByRole("region", { name: "Start a restored panel with" });
+    expect(code.textContent).toBe(
+      [
+        "POCKETCLOUD_GRPC_ADDR=:9443",
+        "POCKETCLOUD_HTTPS_CHALLENGE=dns",
+        "POCKETCLOUD_PUBLIC_URL=https://panel.example.com",
+        `POCKETCLOUD_EXPECT_CA_PIN=${pin}`,
+      ].join("\n"),
+    );
+  });
+
   it("shows no addresses without servers", async () => {
     show(state({ addresses: null, unreported: 0 }));
     await card().findByText("Never downloaded");
