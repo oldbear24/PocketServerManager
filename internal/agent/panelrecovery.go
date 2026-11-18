@@ -428,6 +428,10 @@ func (a *Agent) fetchCopy(ctx context.Context, repo *agentv1.BackupRepository, t
 	}, rio.Stderr)
 	summary, verifyErr := verifier.finish()
 	switch {
+	case jobErr != nil && verifier.cutShort(verifyErr):
+		// restic, the repository, the network or the output failed: the
+		// check only saw the copy end early, and the job says why
+		return fail(jobErr)
 	case errors.Is(verifyErr, panelbackup.ErrOtherKey):
 		return fail(errors.New("the copy does not open with the kit's key: it belongs to another panel"))
 	case verifyErr != nil:
@@ -479,10 +483,14 @@ var errVerifyStopped = errors.New("the copy stopped opening with the kit's key")
 // digest, and checks it with the kit's key on the way: panelbackup.Verify
 // reads what passes, and a copy it refuses fails the writes after.
 type copyVerifier struct {
-	out     io.Writer
-	hash    hash.Hash
-	n       int64
-	pipe    *io.PipeWriter
+	out  io.Writer
+	hash hash.Hash
+	n    int64
+	pipe *io.PipeWriter
+	// offered counts what reached the check, and stopped says that the
+	// check refused the copy while it still came
+	offered int64
+	stopped bool
 	done    chan struct{}
 	summary panelbackup.Summary
 	err     error
@@ -507,7 +515,9 @@ func newCopyVerifier(out io.Writer, key []byte, verify bool) *copyVerifier {
 // Write checks data before it writes it on.
 func (v *copyVerifier) Write(data []byte) (int, error) {
 	if v.pipe != nil {
+		v.offered += int64(len(data))
 		if _, err := v.pipe.Write(data); err != nil {
+			v.stopped = true
 			return 0, err
 		}
 	}
@@ -515,6 +525,17 @@ func (v *copyVerifier) Write(data []byte) (int, error) {
 	v.hash.Write(data[:n])
 	v.n += int64(n)
 	return n, err
+}
+
+// cutShort says whether the check's error, after finish, only says that
+// the copy ended early, refusing nothing it read: it stopped no write, and
+// found the copy incomplete, or no copy as nothing came. A copy that ended
+// early is the job's failure, and the job's error says why.
+func (v *copyVerifier) cutShort(err error) bool {
+	if v.stopped {
+		return false
+	}
+	return errors.Is(err, panelbackup.ErrIncomplete) || (errors.Is(err, panelbackup.ErrNotAnExport) && v.offered == 0)
 }
 
 // finish ends the copy, and says what the check found.
