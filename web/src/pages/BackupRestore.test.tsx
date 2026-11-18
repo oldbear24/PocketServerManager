@@ -1717,6 +1717,71 @@ describe("a database's restore in the drawer (#53)", () => {
     ).not.toBeInTheDocument();
   });
 
+  /** A download as SQL as the panel keeps it: the dump's file is its path. */
+  function sqlDownload(fields: Partial<BackupRestore> = {}): BackupRestore {
+    return restore({
+      id: "r5",
+      job: "j9",
+      host: "h1",
+      mode: "download",
+      status: "queued",
+      path: "/shop.pgdump",
+      download_kind: "sql",
+      download_name: "db-main-shop-3f9a1c2e-20261109-1200.sql",
+      ...fields,
+    });
+  }
+
+  it("asks for SQL again when a download as SQL is tried again, not for the dump's file", async () => {
+    const download = vi.spyOn(restoresApi, "download").mockResolvedValue({
+      restore: sqlDownload(),
+      url: "/api/pc/backup-downloads/r5?ticket=x",
+    });
+    showDatabase("admin");
+    fireEvent.click(await drawer().findByRole("radio", { name: /Download/ }));
+    fireEvent.click(drawer().getByRole("button", { name: "Download as SQL" }));
+    await waitFor(() => expect(download).toHaveBeenCalledTimes(1));
+    // still queued: the link did not give the file
+    fireEvent.click(await drawer().findByRole("button", { name: "Download" }));
+    await waitFor(() => expect(download).toHaveBeenCalledTimes(2));
+    cleanup();
+
+    // and when one that failed is opened again
+    live.records["backup_restores/r5"] = sqlDownload({ status: "failed", command: "c5" });
+    showDatabase("admin", {}, { restore: "r5" });
+    fireEvent.click(await drawer().findByRole("button", { name: "Download" }));
+    await waitFor(() => expect(download).toHaveBeenCalledTimes(3));
+    expect(download.mock.calls).toEqual([
+      ["j9", { target: "t1", snapshot: first, kind: "sql" }],
+      ["j9", { target: "t1", snapshot: first, kind: "sql" }],
+      ["j9", { target: "t1", snapshot: first, kind: "sql" }],
+    ]);
+  });
+
+  it("picks nothing from a download as SQL opened again", async () => {
+    const create = vi.spyOn(restoresApi, "create").mockResolvedValue(restore({ job: "j9" }));
+    live.records["backup_restores/r5"] = sqlDownload({ status: "failed", command: "c5" });
+    showDatabase("admin", {}, { restore: "r5" });
+    expect(await drawer().findByRole("button", { name: "Download" })).toBeInTheDocument();
+    // the record goes, as a download's does: the drawer offers a restore again
+    act(() => {
+      delete live.records["backup_restores/r5"];
+      live.listeners.forEach((listener) => listener());
+    });
+    fireEvent.click(await drawer().findByRole("radio", { name: /To a new folder/ }));
+    // the whole snapshot, so the destination's other files may go
+    const replace = drawer().getByRole("checkbox", { name: /Also delete what the destination/ });
+    expect(replace).toBeEnabled();
+    expect(
+      drawer().queryByText("Only when the whole snapshot is restored."),
+    ).not.toBeInTheDocument();
+    fireEvent.change(drawer().getByLabelText("Server"), { target: { value: "h1" } });
+    fireEvent.change(drawer().getByLabelText("Folder"), { target: { value: "/srv/restored" } });
+    fireEvent.click(drawer().getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0][1]).not.toHaveProperty("include");
+  });
+
   it("takes its steps, and says the tables it restored", async () => {
     live.records["backup_restores/r1"] = dbRecord({
       status: "running",

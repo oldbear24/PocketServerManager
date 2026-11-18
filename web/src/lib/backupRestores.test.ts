@@ -7,6 +7,7 @@ import i18n from "../i18n";
 import { matchesFilter } from "../test-filter";
 import {
   browseStart,
+  downloadAsked,
   draftRecord,
   existingEntries,
   formatSnapshotTime,
@@ -372,6 +373,23 @@ describe("a database's restore (#53)", () => {
     expect(roomEnough({ free: { data: 10, tmp: 10 }, needed: { data: 10, tmp: 10 } })).toBe(true);
     expect(roomEnough({ free: { data: 9, tmp: 10 }, needed: { data: 10, tmp: 1 } })).toBe(false);
     expect(roomEnough({ free: { data: 10, tmp: 0 }, needed: { data: 1, tmp: 1 } })).toBe(false);
+  });
+
+  it("downloads as SQL again by the kind alone, a file or a folder by its path", () => {
+    expect(downloadAsked({ path: "/shop.pgdump", download_kind: "sql" })).toEqual({ kind: "sql" });
+    expect(downloadAsked({ path: "/shop.pgdump", download_kind: "file" })).toEqual({
+      path: "/shop.pgdump",
+      kind: "file",
+    });
+    expect(downloadAsked({ path: "/volumes/vw_data", download_kind: "dir" })).toEqual({
+      path: "/volumes/vw_data",
+      kind: "dir",
+    });
+    // a record of an older panel says no kind: a folder, as before
+    expect(downloadAsked({ path: "/volumes/vw_data", download_kind: "" })).toEqual({
+      path: "/volumes/vw_data",
+      kind: "dir",
+    });
   });
 
   it("starts with the typed name, and without one as before", async () => {

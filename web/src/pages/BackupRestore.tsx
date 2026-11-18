@@ -25,6 +25,7 @@ import { hasRole, useAuth } from "../lib/auth";
 import type { BackupJob, BackupRun } from "../lib/backupJobs";
 import {
   browseStart,
+  downloadAsked,
   existingEntries,
   failedDraft,
   formatSnapshotTime,
@@ -175,11 +176,9 @@ export function RestoreDrawer({
       setSource(record.source);
     }
     if (record.mode === "download") {
-      setPicks(
-        record.path
-          ? [{ path: record.path, type: record.download_kind === "file" ? "file" : "dir" }]
-          : [],
-      );
+      // a database's dump as SQL picks nothing: the panel knows its file (#53)
+      const asked = downloadAsked(record);
+      setPicks(asked.kind !== "sql" && asked.path ? [{ path: asked.path, type: asked.kind }] : []);
     } else {
       setPicks((record.include ?? []).map((path) => ({ path, type: "dir" as const })));
     }
@@ -493,12 +492,11 @@ export function RestoreDrawer({
           <Button
             variant="primary"
             disabled={busy}
-            onClick={() =>
-              void download(
-                record.path || downloadPath,
-                record.download_kind === "file" ? "file" : "dir",
-              )
-            }
+            onClick={() => {
+              // as it was asked for: a database's dump as SQL again, not its file
+              const asked = downloadAsked(record);
+              void download(asked.kind === "sql" ? "" : asked.path || downloadPath, asked.kind);
+            }}
           >
             {t("backups.restore.download")}
           </Button>

@@ -1109,6 +1109,7 @@
       "restore": "Restore…",
       "edit": "Backup settings…",
       "pending": "Its backup job appears once the database is ready.",
+      "reserved": "PocketCloud does not back up this database by itself: names that start with pc_rt_, pc_rs_ or pc_old_ belong to its temporary databases.",
       "dedicated": "A dedicated server is backed up by its stack's jobs.",
       "dedicatedNone": "Its stack has no backup job."
     }
@@ -2402,6 +2403,8 @@
       "own": "Its own",
       "group_one": "Databases on {{server}} · {{count}} job",
       "group_other": "Databases on {{server}} · {{count}} jobs",
+      "groupOnHost_one": "Databases on {{server}} ({{host}}) · {{count}} job",
+      "groupOnHost_other": "Databases on {{server}} ({{host}}) · {{count}} jobs",
       "groupState": "{{ok}} of {{total}} backed up in 24 h",
       "groupToggle": "Show each database",
       "restoreTest": "Restore test: {{state}}"

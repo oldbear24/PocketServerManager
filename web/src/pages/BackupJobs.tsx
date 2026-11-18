@@ -477,14 +477,23 @@ function failureWord(run: Pick<BackupRun, "status" | "failure">, t: Translate): 
   return run.status === "failed" && run.failure ? t(`backups.runFailure.${run.failure}`) : "";
 }
 
-/** The group a database's job is listed in: its server's name, kept after
- * the database was dropped (#53). */
-function groupKey(job: Pick<BackupJob, "db_server_name">): string {
-  return job.db_server_name || "–";
+/** The group a database's job is listed in: its server, by its host and its
+ * name, kept after the database was dropped (#53). A name is unique on its
+ * host only: two hosts may each have a db-main. */
+function groupKey(job: Pick<BackupJob, "host" | "db_server_name">): string {
+  return `${job.host}/${job.db_server_name || "–"}`;
 }
 
-/** The database jobs of one server, listed as one row. */
-type JobGroup = { kind: "group"; key: string; jobs: BackupJob[] };
+/** The database jobs of one server, listed as one row: the server's name and
+ * host, and whether a server of another host has the same name. */
+type JobGroup = {
+  kind: "group";
+  key: string;
+  server: string;
+  host: string;
+  sameName: boolean;
+  jobs: BackupJob[];
+};
 
 type JobEntry = JobGroup | { kind: "job"; job: BackupJob; grouped: boolean };
 
@@ -502,8 +511,22 @@ export function jobEntries(jobs: BackupJob[], open: ReadonlySet<string>): JobEnt
     if (group) {
       group.jobs.push(job);
     } else {
-      groups.set(key, { kind: "group", key, jobs: [job] });
+      groups.set(key, {
+        kind: "group",
+        key,
+        server: job.db_server_name || "–",
+        host: job.host,
+        sameName: false,
+        jobs: [job],
+      });
     }
+  }
+  const named = new Map<string, number>();
+  for (const group of groups.values()) {
+    named.set(group.server, (named.get(group.server) ?? 0) + 1);
+  }
+  for (const group of groups.values()) {
+    group.sameName = (named.get(group.server) ?? 0) > 1;
   }
   const entries: JobEntry[] = [];
   const listed = new Set<string>();
@@ -539,7 +562,8 @@ const runRank: Record<RunStatus, number> = {
 
 /** A server's database jobs in one row (#53): how many, how many backed up
  * within a day, the worst of their last runs, and their 14 days summed, a
- * day the colour of its worst run. Its button shows each database. */
+ * day the colour of its worst run; the server is named with its host when a
+ * server of another host has its name. Its button shows each database. */
 function JobGroupRow({
   group,
   runsByJob,
@@ -574,9 +598,7 @@ function JobGroupRow({
       worst = last;
     }
   }
-  const servers = [...new Set(group.jobs.map((job) => job.host))]
-    .map((id) => hosts.find((host) => host.id === id)?.name ?? "–")
-    .join(", ");
+  const server = hosts.find((host) => host.id === group.host)?.name ?? "–";
   const names = [...new Set(live.flatMap((job) => job.targets ?? []))]
     .map((id) => targets.find((target) => target.id === id)?.name)
     .filter(Boolean);
@@ -585,14 +607,20 @@ function JobGroupRow({
     <tr className="job-group">
       <td className="job-cell">
         <div className="job-name">
-          {t("backups.job.group", { server: group.key, count: group.jobs.length })}
+          {group.sameName
+            ? t("backups.job.groupOnHost", {
+                server: group.server,
+                host: server,
+                count: group.jobs.length,
+              })
+            : t("backups.job.group", { server: group.server, count: group.jobs.length })}
         </div>
         <div className="job-source">
           {t("backups.job.groupState", { ok: done, total: live.length })}
         </div>
       </td>
       <td className="job-where">
-        <span className="mono job-host">{servers}</span>
+        <span className="mono job-host">{server}</span>
         {" → "}
         {names.length > 0 ? (
           names.join(" + ")

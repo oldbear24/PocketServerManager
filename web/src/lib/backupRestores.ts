@@ -311,6 +311,18 @@ export type NewDownload = {
   kind: "dir" | "file" | "sql";
 };
 
+/** What a download asked for, to ask for it again: its path, as a file or a
+ * folder; a database's dump as SQL by its kind alone, as the panel knows its
+ * file (#53). */
+export function downloadAsked(
+  restore: Pick<BackupRestore, "path" | "download_kind">,
+): Pick<NewDownload, "path" | "kind"> {
+  if (restore.download_kind === "sql") {
+    return { kind: "sql" };
+  }
+  return { path: restore.path, kind: restore.download_kind === "file" ? "file" : "dir" };
+}
+
 /** The record a restore route answers with: the record itself, or, as the
  * contract writes it, `{restore}`. */
 function recordOf(answer: BackupRestore | { restore: BackupRestore }): BackupRestore {

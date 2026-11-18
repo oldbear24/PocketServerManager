@@ -535,6 +535,30 @@ describe("a database's backups card", () => {
     ).toBeInTheDocument();
     expect(card("Backups").queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it("says that a ready database named with a temporary database's prefix gets no job", () => {
+    // named before #53 refused such names: not of the namespace, but the
+    // panel makes it no job
+    const reports = database("pc_old_reports");
+    showPage("operator", { databases: [shop, reports] });
+    expect(row("pc_old_reports").getByText("—")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "pc_old_reports" }));
+    const backups = card("Backups");
+    expect(
+      backups.getByText(
+        "PocketCloud does not back up this database by itself: names that start with pc_rt_, pc_rs_ or pc_old_ belong to its temporary databases.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      backups.queryByText("Its backup job appears once the database is ready."),
+    ).not.toBeInTheDocument();
+    expect(backups.queryByRole("button")).not.toBeInTheDocument();
+    // not a temporary database
+    expect(screen.queryByText(/^Temporary database/)).not.toBeInTheDocument();
+    expect(i18n.getFixedT("cs")("db.backups.reserved")).toBe(
+      "PocketCloud tuto databázi sám nezálohuje: názvy začínající pc_rt_, pc_rs_ nebo pc_old_ patří jeho dočasným databázím.",
+    );
+  });
 });
 
 describe("a temporary database's card", () => {

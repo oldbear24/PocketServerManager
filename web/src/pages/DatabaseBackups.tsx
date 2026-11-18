@@ -30,6 +30,7 @@ import {
   dailyTime,
   latestTest,
   nextCron,
+  reservedName,
   temporaryKind,
   temporaryOwner,
 } from "../lib/databaseBackups";
@@ -198,7 +199,8 @@ function followText(
 /** A database's backups, under its connection (#53): its job, when, where
  * and how long, its last backup and its newest restore test; operators back
  * up, test and restore now, admins change the job. A dedicated server's
- * database says its stack's job backs it up. */
+ * database says its stack's job backs it up, and one whose name starts with
+ * a temporary database's prefix that it gets no job. */
 export function DatabaseBackupCard({
   database,
   dedicated,
@@ -250,6 +252,15 @@ export function DatabaseBackupCard({
         ) : (
           <p className="muted">{t("db.backups.dedicatedNone")}</p>
         )}
+      </Card>
+    );
+  }
+  if (!job && reservedName(database.name)) {
+    // the panel makes no job for a name of its temporary databases' prefixes,
+    // as one named before #53 may have: none is coming
+    return (
+      <Card title={t("db.backups.title")}>
+        <p className="warn-text">{t("db.backups.reserved")}</p>
       </Card>
     );
   }
