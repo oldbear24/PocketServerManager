@@ -121,6 +121,9 @@ func TestUINotBuilt(t *testing.T) {
 // TestStartingOpensNoBrowser guards against PocketBase's default installer, which
 // launches the default browser when no superuser exists yet.
 func TestStartingOpensNoBrowser(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of the
+	// package under the race detector: beside the migrations' tests
+	t.Parallel()
 	// a plain app: the test app of PocketBase turns the installer off by itself
 	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir()})
 	if err := app.Bootstrap(); err != nil {

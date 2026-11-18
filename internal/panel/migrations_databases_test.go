@@ -304,6 +304,9 @@ func databaseRestore(f databaseFixture, job *core.Record) map[string]any {
 // servers' defaults and the restore tests' schedule; one job per database
 // and per site; an integrity check and restore tests share a slot.
 func TestTheDatabaseBackupsMigrationAppliesToAFreshDatabase(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("the migrations of a fresh install fail: %v", err)
@@ -435,6 +438,9 @@ func TestTheDatabaseBackupsMigrationAppliesToAFreshDatabase(t *testing.T) {
 // SQL downloads, every restore test, the fields and the indexes, puts the
 // slot of before back, and keeps the rest; it applies again after that.
 func TestTheDatabaseBackupsMigrationAppliesOverRecovery(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if _, err := core.NewMigrationsRunner(app, migrationsBefore(t, databaseBackupsMigration)).Up(); err != nil {
 		t.Fatalf("the migrations through 1772000000 fail: %v", err)

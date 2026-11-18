@@ -151,6 +151,9 @@ func recoveryKit(id string) map[string]any {
 // recovery kits and the panel's own table; one job backs up the panel, and
 // one row names each kit.
 func TestThePanelRecoveryMigrationAppliesToAFreshDatabase(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("the migrations of a fresh install fail: %v", err)
@@ -221,6 +224,9 @@ func TestThePanelRecoveryMigrationAppliesToAFreshDatabase(t *testing.T) {
 // turns the other change runs into manual ones, and removes the field, the
 // collection and the table, and keeps the rest; it applies again after that.
 func TestThePanelRecoveryMigrationAppliesOverChecks(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if _, err := core.NewMigrationsRunner(app, migrationsBefore(t, recoveryMigration)).Up(); err != nil {
 		t.Fatalf("the migrations through 1771000000 fail: %v", err)

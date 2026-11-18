@@ -282,6 +282,9 @@ func checkSettingsDefaults(t *testing.T, app core.App) {
 // checks' settings, with their defaults; each index keeps one check per slot
 // and one retry per failed run or check.
 func TestTheChecksMigrationAppliesToAFreshDatabase(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("the migrations of a fresh install fail: %v", err)
@@ -369,6 +372,9 @@ func trySave(app core.App, name string, fields map[string]any) (*core.Record, er
 // removes the collection and the fields, and keeps the rest; it applies
 // again after that.
 func TestTheChecksMigrationAppliesOverRestores(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if _, err := core.NewMigrationsRunner(app, migrationsBefore(t, checksMigration)).Up(); err != nil {
 		t.Fatalf("the migrations through 1770000000 fail: %v", err)

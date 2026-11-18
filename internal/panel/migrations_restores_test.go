@@ -212,6 +212,9 @@ func saveFullRestore(t *testing.T, app core.App, f restoreFixture) *core.Record 
 // backup_restores with the fields that #30's agent, panel and web parts code
 // against, and commands get their cancel fields.
 func TestTheRestoresMigrationAppliesToAFreshDatabase(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("the migrations of a fresh install fail: %v", err)
@@ -236,6 +239,9 @@ func TestTheRestoresMigrationAppliesToAFreshDatabase(t *testing.T) {
 // keeps its records; reverting it removes the collection and the fields and
 // keeps the rest; it applies again after that.
 func TestTheRestoresMigrationAppliesOverBackupJobs(t *testing.T) {
+	// it migrates an app of its own from the start, the slowest work of
+	// the package under the race detector: beside the other such tests
+	t.Parallel()
 	app := bootMigrationPanel(t)
 	if _, err := core.NewMigrationsRunner(app, migrationsBefore(t, restoresMigration)).Up(); err != nil {
 		t.Fatalf("the migrations through 1769000000 fail: %v", err)
