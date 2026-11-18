@@ -1,18 +1,43 @@
 package panel
 
 import (
+	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tests"
 
 	"github.com/oldbear24/PocketServerManager/internal/backup"
+	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
+
+// restartedPanel is a panel started again on a copy of a running panel's
+// database, as after a restart: nothing the first one held in memory, its
+// timers included, is left. prepare changes the new panel before it starts.
+func restartedPanel(t *testing.T, app core.App, prepare func(*Panel)) (*Panel, *tests.TestApp) {
+	t.Helper()
+	dir := t.TempDir()
+	if _, err := app.ConcurrentDB().NewQuery("VACUUM INTO {:path}").Bind(dbx.Params{"path": filepath.Join(dir, "data.db")}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	again := testutil.NewAppFrom(t, dir)
+	t.Cleanup(again.Cleanup)
+	p := New(again, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
+	if prepare != nil {
+		prepare(p)
+	}
+	p.Register()
+	testutil.Handler(t, again)
+	return p, again
+}
 
 // changeFixture is a panel whose backup job, to two targets, is carried by
 // a connected server, and whose backups after a change come after delay,
@@ -228,4 +253,70 @@ func TestAChangeRunFollowsTheSchedulersRules(t *testing.T) {
 	if runs := f.changeRuns(job); len(runs) != 2 {
 		t.Errorf("%d change runs within the spacing", len(runs))
 	}
+}
+
+// TestAChangeBeforeARestartIsStillBackedUp (#32): the backup after a change
+// waits in memory, so a start of the panel arms it again when a server was
+// enrolled or removed, or a certificate revoked, after the newest run of
+// its job that started; a run skipped since does not count, and a panel
+// whose servers did not change since that run arms nothing. Once armed, the
+// change runs come after the delay.
+func TestAChangeBeforeARestartIsStillBackedUp(t *testing.T) {
+	pending := func(p *Panel) bool {
+		p.changes.mu.Lock()
+		defer p.changes.mu.Unlock()
+		return p.changes.pending
+	}
+	// a panel whose job ran once, after its servers were enrolled
+	ran := func(t *testing.T) (*jobFixture, *core.Record, *core.Record) {
+		t.Helper()
+		f, job := changeFixture(t, time.Hour, time.Hour)
+		other := testutil.NewHost(t, f.app, "node-2")
+		run, err := f.p.startRun(context.Background(), job, f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.endRun(run, map[string]any{"status": schema.CommandSucceeded, "started_at": time.Now().UTC(), "result": map[string]any{"snapshot_id": "4f2a"}})
+		return f, job, other
+	}
+	for _, test := range []struct {
+		name   string
+		change func(t *testing.T, f *jobFixture, job, other *core.Record)
+		armed  bool
+	}{
+		{"nothing since the run", func(*testing.T, *jobFixture, *core.Record, *core.Record) {}, false},
+		{"an enrollment", func(t *testing.T, f *jobFixture, _, _ *core.Record) { testutil.NewHost(t, f.app, "new-1") }, true},
+		{"a removal", func(t *testing.T, f *jobFixture, _, other *core.Record) {
+			if err := f.app.Delete(other); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"a revocation", func(t *testing.T, f *jobFixture, _, other *core.Record) {
+			if err := gateway.Revoke(f.app, "0a1b2c", other.Id, "node-2", "revoked by hand"); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"an enrollment, then a skipped run", func(t *testing.T, f *jobFixture, job, _ *core.Record) {
+			testutil.NewHost(t, f.app, "new-1")
+			f.p.skipRun(job, f.target, f.host, schema.RunChange, time.Time{}, "The server node-1 was offline at 12:00 UTC.", false)
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, job, other := ran(t)
+			test.change(t, f, job, other)
+			p, _ := restartedPanel(t, f.app, func(p *Panel) { p.SetChangeBackupTiming(time.Hour, time.Hour) })
+			if got := pending(p); got != test.armed {
+				t.Errorf("a backup after a change pending at the start: %v, not %v", got, test.armed)
+			}
+		})
+	}
+
+	f, job, _ := ran(t)
+	testutil.NewHost(t, f.app, "new-1")
+	_, app := restartedPanel(t, f.app, func(p *Panel) { p.SetChangeBackupTiming(100*time.Millisecond, time.Hour) })
+	waitUntil(t, "the change runs after the restart", func() bool {
+		runs, err := app.FindRecordsByFilter(schema.BackupRuns, "job={:job} && trigger={:change} && status={:queued}", "", 0, 0,
+			dbx.Params{"job": job.Id, "change": schema.RunChange, "queued": schema.RunQueued})
+		return err == nil && len(runs) == 2
+	})
 }

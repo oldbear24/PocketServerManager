@@ -327,6 +327,8 @@ func (p *Panel) Register() {
 
 		// the recovery's alerts, with the gateway started (#32)
 		p.evaluateRecoveryAlerts()
+		// a backup after a change that the panel's stop dropped (#32)
+		p.resumeChangeBackup()
 
 		return e.Next()
 	})
