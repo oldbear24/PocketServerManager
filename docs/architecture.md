@@ -87,7 +87,7 @@ The contract is in [`proto/pocketcloud/agent/v1`](../proto/pocketcloud/agent/v1)
 | `Enroll` | unary | token + CSR → client certificate (only RPC without client certificate) |
 | `SubscribeCommands` | server stream | long-lived command delivery; request carries version, capabilities, recently finished ids |
 | `ReportCommandUpdate` | unary | progress and results, idempotent by command id + sequence |
-| `Heartbeat` | unary | every 10 s; vitals, RTT, clock skew; with `probe` (#32) only authenticated and answered with the panel's time, nothing kept |
+| `Heartbeat` | unary | every 10 s; vitals, RTT, clock skew; with `probe` (#32: `repoint` and the diagnostics' round trip) only authenticated and answered with the panel's time, nothing kept |
 | `ReportInventory` / `ReportEvents` | unary / client stream | Docker inventory and incremental events |
 | `PushMetrics` | client stream | batched metrics |
 | `StreamLogs` | client stream | log chunks for an active `logs.follow` |

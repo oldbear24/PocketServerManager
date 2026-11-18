@@ -132,8 +132,11 @@ func (a *Agent) testConnectivity(parent context.Context) string {
 	}
 	defer conn.Close()
 
+	// a probe, which the panel authenticates and answers but keeps nothing
+	// of: a plain heartbeat on this second connection would count as the
+	// server's return and wipe what it knows of the server's edge (#32).
 	start := time.Now()
-	_, err = agentv1.NewAgentServiceClient(conn).Heartbeat(ctx, &agentv1.HeartbeatRequest{})
+	_, err = agentv1.NewAgentServiceClient(conn).Heartbeat(ctx, &agentv1.HeartbeatRequest{Probe: true})
 	if err != nil {
 		code := status.Code(err)
 		if code == codes.Unauthenticated || code == codes.PermissionDenied {
