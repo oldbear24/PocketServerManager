@@ -59,7 +59,15 @@ const (
 	// statement of the swap waits 10 s at most for a lock, and a rename 5 s
 	// for the sessions that end.
 	swapSettleTime = time.Minute
+	// rehearsalMargin is the time a MariaDB restore in place needs besides
+	// as long as its rehearsal took and a quarter more, before it empties
+	// the database: for the sessions, the recreation and the count.
+	rehearsalMargin = time.Minute
 )
+
+// rehearsalClock is the clock a MariaDB restore in place times its
+// rehearsal by, and the time it has left; tests move it.
+var rehearsalClock = time.Now
 
 // swapWait is how long the agent waits before it tries the swap again;
 // tests shorten it.
@@ -1070,6 +1078,7 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 	if err != nil {
 		return undo(err)
 	}
+	rehearsed := rehearsalClock()
 	if _, err := r.sql(ctx, create); err != nil {
 		return undo(err)
 	}
@@ -1081,11 +1090,22 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 	if _, err := r.checkTables(ctx, scratch, expected); err != nil {
 		return undo(err)
 	}
+	rehearsal := rehearsalClock().Sub(rehearsed)
 	created = false
 	if err := dropScratch(); err != nil {
 		return nothingChanged(ctx, database, fmt.Errorf("the rehearsal's copy could not be dropped: %w", err))
 	}
+	// the restore after the drop runs to its end, past the command's
+	// deadline if need be, while the panel gives up on the command at it
+	// and lets the application start: it begins only when it fits, before
+	// the stop and again after it
+	if err := restoreAgainFits(ctx, rehearsal); err != nil {
+		return nothingChanged(ctx, database, err)
+	}
 	if err := r.stopApplication(ctx, payload, session, progress); err != nil {
+		return nothingChanged(ctx, database, err)
+	}
+	if err := restoreAgainFits(ctx, rehearsal); err != nil {
 		return nothingChanged(ctx, database, err)
 	}
 
@@ -1117,6 +1137,21 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 	}
 	if err := writePhase(session, backup.PhaseRestored); err != nil {
 		fmt.Fprintln(r.out, "The restore's phase could not be noted:", err)
+	}
+	return nil
+}
+
+// restoreAgainFits says whether a MariaDB restore in place has the time,
+// before its deadline, to restore the dump into its database once it is
+// dropped: as long as the rehearsal took, a quarter more, and
+// rehearsalMargin.
+func restoreAgainFits(ctx context.Context, rehearsal time.Duration) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	if deadline.Sub(rehearsalClock()) < rehearsal+rehearsal/4+rehearsalMargin {
+		return errors.New("too little time is left to restore it again")
 	}
 	return nil
 }

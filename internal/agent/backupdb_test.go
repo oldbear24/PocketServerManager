@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,6 +383,80 @@ func TestAMariaDBRestoreInPlaceRehearsesFirst(t *testing.T) {
 	}
 	if held := d.restoring.holds("shop-web-1"); held {
 		t.Error("the restore still holds the container")
+	}
+}
+
+// TestAMariaDBRestoreInPlaceEmptiesOnlyWhatItCanRestoreInTime (#53, A2):
+// once MariaDB's database is dropped, the restore runs to its end, while the
+// panel gives up on the command at its deadline: the restore begins only
+// when the time left exceeds as long as its rehearsal took and a margin,
+// before the stop, and again after it; otherwise nothing changed, and what
+// stopped starts again.
+func TestAMariaDBRestoreInPlaceEmptiesOnlyWhatItCanRestoreInTime(t *testing.T) {
+	maria := databases.MariaDB
+	var ahead atomic.Int64
+	keep := rehearsalClock
+	rehearsalClock = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	t.Cleanup(func() { rehearsalClock = keep })
+	for _, tc := range []struct {
+		name string
+		// rehearsal is how long the rehearsal takes, stop how long the stop
+		rehearsal, stop time.Duration
+		message         string
+		stopped         bool
+	}{
+		{name: "fits", rehearsal: time.Hour, stop: time.Minute},
+		{name: "rehearsal too long", rehearsal: 90 * time.Minute, message: "Nothing changed in shop: too little time is left to restore it again."},
+		{name: "stop too long", rehearsal: time.Hour, stop: 40 * time.Minute, stopped: true,
+			message: "Nothing changed in shop: too little time is left to restore it again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDBHarness(t)
+			d.shop(maria)
+			server := d.servers[maria.Name]
+			snapshot, _ := d.backupDatabase(t, maria, "shop")
+			d.app("shop-web-1", "shop")
+			d.db.SetTables(server, "shop", "items", "orders", "since")
+			ahead.Store(0)
+			d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+				if strings.Contains(strings.Join(call.Cmd, " "), "--one-database") && slices.Contains(call.Env, "PC_DATABASE="+databases.ScratchName(testRestoreID)) {
+					ahead.Add(int64(tc.rehearsal))
+				}
+				return fakedocker.ExecResult{}, false
+			})
+			noted := d.engine.OnStop
+			d.engine.OnStop = func(c *fakedocker.Container) {
+				noted(c)
+				ahead.Add(int64(tc.stop))
+			}
+			// the panel gives a restore 3 h, and the agent keeps 5 min of
+			// them to start the application again
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(3*time.Hour))
+			defer cancel()
+			result, err := d.restore(ctx, "c1", d.replace(maria, snapshot, "shop", "shop-web-1"))
+			shop, _ := d.db.Database(server, "shop")
+			if tc.message == "" {
+				if err != nil || shop.From != "shop" || !slices.Equal(shop.Tables, []string{"items", "orders"}) {
+					t.Fatalf("a restore that fits: %v, shop %+v", err, shop)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.message {
+				t.Errorf("the restore: %v, want %q", err, tc.message)
+			}
+			if shop.From != "" || !slices.Equal(shop.Tables, []string{"items", "orders", "since"}) ||
+				slices.ContainsFunc(d.interesting(), func(e string) bool { return e == "exec:recreate" || e == "exec:restore:shop" }) {
+				t.Errorf("shop after: %+v, %q", shop, d.interesting())
+			}
+			if stopped := slices.Contains(d.happened(), "stop:shop-web-1"); stopped != tc.stopped ||
+				d.status("shop-web-1") != "running" || d.policy(t, "shop-web-1").Name != "unless-stopped" ||
+				tc.stopped && !slices.Equal(anyStrings(result["app_started"]), []string{"shop-web-1"}) {
+				t.Errorf("the application: stopped %v, %s, %v, %v", stopped, d.status("shop-web-1"), d.policy(t, "shop-web-1"), result["app_started"])
+			}
+			if names := d.db.DatabaseNames(server); !slices.Equal(names, []string{"blog", "shop"}) {
+				t.Errorf("the server has %q", names)
+			}
+		})
 	}
 }
 
