@@ -897,3 +897,27 @@ func TestADumpIsStagedFromItsJobsSnapshotOnly(t *testing.T) {
 		t.Errorf("a preview of another job's snapshot: %v", err)
 	}
 }
+
+// TestOnlyASitesContainersStopByName (#53, AC1): a container a database
+// restore names stops only when it is a site's <site>-php or <site>-worker,
+// even one of PocketCloud's role site; a named container of another role,
+// such as a database server's, never stops, nor one with another name.
+func TestOnlyASitesContainersStopByName(t *testing.T) {
+	d := newDBHarness(t)
+	d.container("wp-php", map[string]string{"pocketcloud.role": "site"}, "unless-stopped", 0)
+	d.container("wp-worker", nil, "unless-stopped", 0)
+	d.container("adminer", nil, "unless-stopped", 0)
+	d.container("evil-php", map[string]string{"pocketcloud.role": "db"}, "always", 0)
+	users, err := d.affected(context.Background(), "c1", nil, nil, []string{"wp-php", "wp-worker", "adminer", "evil-php"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, user := range users {
+		names = append(names, user.name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"wp-php", "wp-worker"}) {
+		t.Errorf("would stop %q", names)
+	}
+}
