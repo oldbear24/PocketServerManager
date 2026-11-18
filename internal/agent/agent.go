@@ -359,9 +359,11 @@ func (a *Agent) session(parent context.Context) error {
 // types it runs, and pseudo-capabilities next to them. Capabilities gate
 // command types only, so a field of a command an older agent would refuse
 // is said this way: backup.run.panel, a backup run of the panel's copy
-// (#32), always; host_shell only when this server opted in.
+// (#32), and backup.database, a run's extra tags, site_dir and excludes, a
+// restore into a database and a dump converted to SQL (#53), always;
+// host_shell only when this server opted in.
 func (a *Agent) capabilities() []string {
-	capabilities := append(a.Executor.Capabilities(), backup.CapabilityPanel)
+	capabilities := append(a.Executor.Capabilities(), backup.CapabilityPanel, backup.CapabilityDatabase)
 	if a.Config.HostShell {
 		capabilities = append(capabilities, capabilityHostShell)
 	}
