@@ -974,3 +974,59 @@ func TestAContainerThatStartsDuringARestoreRefusesTheStop(t *testing.T) {
 		t.Error("the restore still holds a container")
 	}
 }
+
+// TestADatabaseRestoreIsStoppedUntilTheSwapOnly (#53): a stop while the
+// copy is restored ends the restore, drops the copy and changes nothing,
+// and the application never stopped; once the application stopped for the
+// swap, the restore finishes, as a stop then would leave it stopped for
+// nothing.
+func TestADatabaseRestoreIsStoppedUntilTheSwapOnly(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	d.app("shop-web-1", "shop")
+	stopAt := func(match func(call *fakedocker.ExecCall) bool) context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+			if match(call) {
+				cancel()
+			}
+			return fakedocker.ExecResult{}, false
+		})
+		return ctx
+	}
+	ctx := stopAt(func(call *fakedocker.ExecCall) bool {
+		return strings.Contains(strings.Join(call.Cmd, " "), "pg_restore --no-password")
+	})
+	if _, err := d.restore(ctx, "c1", d.replace(pg, snapshot, "shop", "shop-web-1")); err == nil || err.Error() != "Nothing changed in shop: the restore was stopped." {
+		t.Errorf("a stop during the copy: %v", err)
+	}
+	if slices.ContainsFunc(d.happened(), func(e string) bool { return strings.HasPrefix(e, "stop:") }) ||
+		!slices.Equal(d.db.DatabaseNames(d.servers[pg.Name]), []string{"blog", "shop"}) {
+		t.Errorf("after a stop during the copy: %q, %q", d.happened(), d.db.DatabaseNames(d.servers[pg.Name]))
+	}
+
+	// stopped as the application stops
+	d.setInject(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	noted := d.engine.OnStop
+	d.engine.OnStop = func(c *fakedocker.Container) {
+		noted(c)
+		if c.Name == "shop-web-1" {
+			cancel()
+		}
+	}
+	result, err := d.restore(ctx, "c2", d.replace(pg, snapshot, "shop", "shop-web-1"))
+	if err != nil || result["previous"] != databases.PreviousName(testRestoreID) {
+		t.Errorf("a stop during the swap: %v %v", err, result)
+	}
+	if log, _ := result["log"].(string); !strings.Contains(log, "The restore is putting the copy in place and finishes.") {
+		t.Errorf("the log:\n%s", log)
+	}
+	if shop, _ := d.db.Database(d.servers[pg.Name], "shop"); shop.From != "shop" || d.status("shop-web-1") != "running" {
+		t.Errorf("after a stop during the swap: %+v, %s", shop, d.status("shop-web-1"))
+	}
+}

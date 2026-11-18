@@ -796,11 +796,15 @@ func emptiedError(database string, left []string) error {
 }
 
 // nothingChanged is the end of a restore that changed nothing in its
-// database.
-func nothingChanged(database string, err error) error {
+// database: a stop, or the end of its time, says so rather than what it
+// cut short.
+func nothingChanged(ctx context.Context, database string, err error) error {
 	message := strings.TrimSuffix(err.Error(), ".")
-	if errors.Is(err, context.Canceled) {
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled), errors.Is(err, context.Canceled):
 		message = "the restore was stopped"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		message = "the restore ran out of time"
 	}
 	return sentenceError(fmt.Sprintf("Nothing changed in %s: %s.", database, message))
 }
@@ -855,7 +859,7 @@ func (r *dbRun) replacePostgres(ctx context.Context, payload *agentv1.BackupRest
 				fmt.Fprintln(r.out, "The copy could not be dropped, and the panel drops it later:", dropErr)
 			}
 		}
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 
 	progress.report("fetch", "Copying the dump to the database server", 10, 0, 0, "")
@@ -885,11 +889,13 @@ func (r *dbRun) replacePostgres(ctx context.Context, payload *agentv1.BackupRest
 
 	// from here the restore finishes: the swap is one transaction, and a
 	// stop now would leave the application stopped for nothing
-	work := context.WithoutCancel(ctx)
-	progress.report("swap", "Putting the restored copy in place", 80, 0, 0, "")
 	if ctx.Err() != nil {
 		fmt.Fprintln(r.out, "The restore is putting the copy in place and finishes.")
 	}
+	work := context.WithoutCancel(ctx)
+	// what fails from here says why, and not that the restore was stopped
+	ctx = work
+	progress.report("swap", "Putting the restored copy in place", 80, 0, 0, "")
 	ended, err := r.endSessions(work, database)
 	if err != nil {
 		return undo(err)
@@ -926,11 +932,11 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 	database, scratch, user := r.db.GetDatabase(), r.db.GetScratch(), r.db.GetUser()
 	out, err := r.sql(ctx, databases.CharsetSQL(database))
 	if err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 	charset, err := databases.ParseCharset(out)
 	if err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 	session.marker.Database.Charset, session.marker.Database.Collation = charset.Set, charset.Collation
 	if err := writePhase(session, backup.PhaseRehearsal); err != nil {
@@ -951,7 +957,7 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 				fmt.Fprintln(r.out, "The copy could not be dropped, and the panel drops it later:", dropErr)
 			}
 		}
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 
 	progress.report("fetch", "Copying the dump to the database server", 10, 0, 0, "")
@@ -977,26 +983,27 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 	}
 	created = false
 	if err := dropScratch(); err != nil {
-		return nothingChanged(database, fmt.Errorf("the rehearsal's copy could not be dropped: %w", err))
+		return nothingChanged(ctx, database, fmt.Errorf("the rehearsal's copy could not be dropped: %w", err))
 	}
 	if err := r.stopApplication(ctx, payload, session, progress); err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 
 	// from here the restore finishes, as the database is about to be
 	// emptied
 	work := context.WithoutCancel(ctx)
+	ctx = work
 	if err := writePhase(session, backup.PhaseEmptied); err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 	ended, err := r.endSessions(work, database)
 	if err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 	result.ConnectionsEnded = ended
 	recreate, err := databases.RecreateSQL(database, charset)
 	if err != nil {
-		return nothingChanged(database, err)
+		return nothingChanged(ctx, database, err)
 	}
 	progress.report("dbrestore", "Restoring the database", 75, 0, 0, "")
 	if _, err := r.sql(work, recreate); err != nil {
