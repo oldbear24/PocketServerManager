@@ -677,6 +677,56 @@ func TestAPanelBackupFollowsAnEnrollment(t *testing.T) {
 	}
 }
 
+// TestARepointCheckChangesNothingOnThePanel (#32): `repoint --check`, which
+// the guide runs on each server before its agent restarts, asks the panel
+// whether it knows the server and changes nothing of it: a server the
+// restored panel marked offline stays offline, its edge's state kept, with
+// no event, so that no alert follows; a removed server, whose certificate
+// its removal revoked, is still refused.
+func TestARepointCheckChangesNothingOnThePanel(t *testing.T) {
+	h := newHarness(t)
+	running, host := h.enrolled("vm")
+	if err := running.stop(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	h.waitFor("the stream to close", func() bool {
+		closed, err := h.app.CountRecords(schema.Events, dbx.HashExp{"host": host.Id, "kind": "connection.disconnected"})
+		return err == nil && closed > 0 && !h.host(host.Id).GetBool("stream_open")
+	})
+	// as the first start after a restore leaves a server
+	if _, err := h.app.DB().Update(schema.Hosts, dbx.Params{"status": schema.HostOffline, "stream_open": false,
+		"edge_applied_digest": "abc123", "edge_applied_revision": 7, "edge_running": true, "edge_caddy_version": "v2.8.4"},
+		dbx.HashExp{"id": host.Id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	before := h.host(host.Id)
+	events, err := h.app.CountRecords(schema.Events, dbx.HashExp{"host": host.Id})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	config := agent.Config{StateDir: running.config.StateDir}
+	if err := agent.Repoint(context.Background(), config, []string{"--panel", h.panel.Gateway.Addr(), "--check"}, &out); err != nil ||
+		!strings.HasSuffix(out.String(), " and knows it as vm. Nothing was changed (--check).\n") {
+		t.Fatalf("repoint --check: %v %q", err, out.String())
+	}
+	if after := h.host(host.Id); fmt.Sprint(after.FieldsData()) != fmt.Sprint(before.FieldsData()) {
+		t.Errorf("the server changed:\n%v\n%v", before.FieldsData(), after.FieldsData())
+	}
+	if now, _ := h.app.CountRecords(schema.Events, dbx.HashExp{"host": host.Id}); now != events {
+		t.Errorf("%d events", now-events)
+	}
+
+	if err := h.app.Delete(h.host(host.Id)); err != nil {
+		t.Fatal(err)
+	}
+	err = agent.Repoint(context.Background(), config, []string{"--panel", h.panel.Gateway.Addr(), "--check"}, &bytes.Buffer{})
+	if err == nil || !strings.HasSuffix(err.Error(), " does not know this server: nothing was changed. The panel said: the agent certificate has been revoked: enroll this server again") {
+		t.Errorf("a removed server: %v", err)
+	}
+}
+
 // serveErr starts a panel's hooks as serving does, and says why they
 // refused.
 func serveErr(app core.App) error {

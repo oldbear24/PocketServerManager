@@ -197,10 +197,16 @@ func (s *Server) ReportCommandUpdate(ctx context.Context, req *agentv1.ReportCom
 	return &agentv1.ReportCommandUpdateResponse{Cancel: cancel}, nil
 }
 
-// Heartbeat updates the host's live state.
+// Heartbeat updates the host's live state. A probe, which only asks whether
+// the panel knows the agent, as `pocketcloud-agent repoint` does (#32), was
+// authenticated as any call and changes nothing: a probe of a server that a
+// restored panel marked offline must not count as its return.
 func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error) {
 	hostID := hostIDFrom(ctx)
 	now := time.Now().UTC()
+	if req.GetProbe() {
+		return &agentv1.HeartbeatResponse{ServerTime: timestamppb.New(now)}, nil
+	}
 
 	var (
 		cameBack  bool

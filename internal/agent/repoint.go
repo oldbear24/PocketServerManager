@@ -31,10 +31,12 @@ import (
 // a panel restored on a machine that cannot take that address over is
 // reached once each server's agent is told the new one. `pocketcloud-agent
 // repoint --panel HOST:PORT` dials it with the agent's own certificate and
-// its pinned CA, as the agent does, and makes one heartbeat, which passes
-// only a panel that holds this server's CA and knows the server; only then
-// it rewrites the address in identity.json, and nothing else: the key and
-// the certificates stay as they are. --check rewrites nothing.
+// its pinned CA, as the agent does, and makes one heartbeat, a probe, which
+// passes only a panel that holds this server's CA and knows the server, and
+// which the panel keeps nothing of: a server a restored panel marked offline
+// stays so until its agent comes back. Only then it rewrites the address in
+// identity.json, and nothing else: the key and the certificates stay as
+// they are. --check rewrites nothing.
 
 // repointTimeout is how long repoint waits for the panel's answer.
 const repointTimeout = 20 * time.Second
@@ -86,7 +88,7 @@ func Repoint(ctx context.Context, config Config, args []string, out io.Writer) e
 	defer conn.Close()
 	callCtx, cancel := context.WithTimeout(ctx, repointTimeout)
 	defer cancel()
-	_, err = agentv1.NewAgentServiceClient(conn).Heartbeat(callCtx, &agentv1.HeartbeatRequest{SentAt: timestamppb.Now()})
+	_, err = agentv1.NewAgentServiceClient(conn).Heartbeat(callCtx, &agentv1.HeartbeatRequest{SentAt: timestamppb.Now(), Probe: true})
 	switch {
 	case otherCA.Load():
 		return fmt.Errorf("The panel at %s does not hold this server's CA: nothing was changed.", *address) //nolint:staticcheck // the sentence people read

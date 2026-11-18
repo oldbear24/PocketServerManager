@@ -1288,7 +1288,11 @@ type HeartbeatRequest struct {
 	// self_checks are the latest self-check results.
 	SelfChecks []*SelfCheck `protobuf:"bytes,7,rep,name=self_checks,json=selfChecks,proto3" json:"self_checks,omitempty"`
 	// edge is the state of the edge proxy; absent when this server runs none.
-	Edge          *EdgeStatus `protobuf:"bytes,8,opt,name=edge,proto3" json:"edge,omitempty"`
+	Edge *EdgeStatus `protobuf:"bytes,8,opt,name=edge,proto3" json:"edge,omitempty"`
+	// probe asks only whether the panel knows this agent, as `pocketcloud-agent
+	// repoint` checks a panel (#32): the call is authenticated as any other,
+	// but the panel keeps nothing of it and answers with its time alone.
+	Probe         bool `protobuf:"varint,9,opt,name=probe,proto3" json:"probe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1377,6 +1381,13 @@ func (x *HeartbeatRequest) GetEdge() *EdgeStatus {
 		return x.Edge
 	}
 	return nil
+}
+
+func (x *HeartbeatRequest) GetProbe() bool {
+	if x != nil {
+		return x.Probe
+	}
+	return false
 }
 
 // EdgeStatus is the state of a server's edge proxy, as the agent sees it.
@@ -3639,7 +3650,7 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\askipped\x18\x03 \x01(\bR\askipped\x12\x16\n" +
 	"\x06detail\x18\x04 \x01(\tR\x06detail\x129\n" +
 	"\n" +
-	"checked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xb2\x03\n" +
+	"checked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xc8\x03\n" +
 	"\x10HeartbeatRequest\x123\n" +
 	"\asent_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x125\n" +
 	"\x05facts\x18\x02 \x01(\v2\x1f.pocketcloud.agent.v1.HostFactsR\x05facts\x128\n" +
@@ -3649,7 +3660,8 @@ const file_pocketcloud_agent_v1_agent_proto_rawDesc = "" +
 	"\rclock_skew_ms\x18\x06 \x01(\x01R\vclockSkewMs\x12@\n" +
 	"\vself_checks\x18\a \x03(\v2\x1f.pocketcloud.agent.v1.SelfCheckR\n" +
 	"selfChecks\x124\n" +
-	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\"\xa0\x04\n" +
+	"\x04edge\x18\b \x01(\v2 .pocketcloud.agent.v1.EdgeStatusR\x04edge\x12\x14\n" +
+	"\x05probe\x18\t \x01(\bR\x05probe\"\xa0\x04\n" +
 	"\n" +
 	"EdgeStatus\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x1a\n" +

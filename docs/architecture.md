@@ -87,7 +87,7 @@ The contract is in [`proto/pocketcloud/agent/v1`](../proto/pocketcloud/agent/v1)
 | `Enroll` | unary | token + CSR → client certificate (only RPC without client certificate) |
 | `SubscribeCommands` | server stream | long-lived command delivery; request carries version, capabilities, recently finished ids |
 | `ReportCommandUpdate` | unary | progress and results, idempotent by command id + sequence |
-| `Heartbeat` | unary | every 10 s; vitals, RTT, clock skew |
+| `Heartbeat` | unary | every 10 s; vitals, RTT, clock skew; with `probe` (#32) only authenticated and answered with the panel's time, nothing kept |
 | `ReportInventory` / `ReportEvents` | unary / client stream | Docker inventory and incremental events |
 | `PushMetrics` | client stream | batched metrics |
 | `StreamLogs` | client stream | log chunks for an active `logs.follow` |
@@ -785,7 +785,7 @@ This section is the contract that the agent, the panel, the web UI and the guide
   ```
 
   Errors (exit 1): "the passphrase does not open this kit, or the kit was changed"; "no panel snapshot of job:<id> on panel-minio"; "the copy does not open with the kit's key: it belongs to another panel"; restic's own lines with secrets masked, also when restic, the repository, the network or the output (such as "no space left on device") cuts the copy short, while "the copy does not open with the kit's key: …" is kept for what the check refused (another key or version, a chunk that does not open, no copy in what came, bytes after the trailer, another CA); and the warning "the target disk is a directory of node-b: run this there".
-- **`pocketcloud-agent repoint --panel HOST:PORT [--check]`** dials with the stored identity and the pinned roots, makes one `Heartbeat`, and only then rewrites `identity.json`'s `panel` (never the key or the certificates). "The panel at X holds this server's CA (sha256:…) and knows it as vm. This server now dials X: restart the agent (docker restart pocketcloud-agent)."; refusals, nothing changed: "The panel at X does not hold this server's CA: nothing was changed." / "The panel at X does not know this server: nothing was changed."
+- **`pocketcloud-agent repoint --panel HOST:PORT [--check]`** dials with the stored identity and the pinned roots, makes one `Heartbeat` with `probe` set (`HeartbeatRequest` field 9), which the gateway authenticates as any call (another CA, a removed server or a revoked certificate is refused) and answers with its time alone, writing nothing of the host (no status, `last_seen`, edge state or event), and only then rewrites `identity.json`'s `panel` (never the key or the certificates). "The panel at X holds this server's CA (sha256:…) and knows it as vm. This server now dials X: restart the agent (docker restart pocketcloud-agent)."; refusals, nothing changed: "The panel at X does not hold this server's CA: nothing was changed." / "The panel at X does not know this server: nothing was changed."
 - **Alerts and events.** Target `panel`, no host, like `audit_integrity`.
 
   | Rule | Severity | Open while | Resolved by |
