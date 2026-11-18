@@ -921,3 +921,36 @@ func TestOnlyASitesContainersStopByName(t *testing.T) {
 		t.Errorf("would stop %q", names)
 	}
 }
+
+// TestAContainerThatStartsDuringARestoreRefusesTheStop (#53): what stops is
+// read again, live, before the stop: a container of the stack that started
+// while the copy was restored, which the preview did not show, refuses the
+// restore, which drops its copy, stops nothing and says nothing changed.
+func TestAContainerThatStartsDuringARestoreRefusesTheStop(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	d.app("shop-web-1", "shop")
+	var once sync.Once
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		if strings.Contains(strings.Join(call.Cmd, " "), "pg_restore --no-password") {
+			once.Do(func() { d.app("shop-late-1", "shop") })
+		}
+		return fakedocker.ExecResult{}, false
+	})
+	_, err := d.restore(context.Background(), "c1", d.replace(pg, snapshot, "shop", "shop-web-1"))
+	if err == nil || err.Error() != "Nothing changed in shop: shop-late-1 started using the destination after the preview: preview again." {
+		t.Errorf("a container that started meanwhile: %v", err)
+	}
+	if d.status("shop-web-1") != "running" || d.status("shop-late-1") != "running" ||
+		slices.ContainsFunc(d.happened(), func(e string) bool { return strings.HasPrefix(e, "stop:") }) {
+		t.Errorf("something stopped: %q", d.happened())
+	}
+	if names := d.db.DatabaseNames(d.servers[pg.Name]); !slices.Equal(names, []string{"blog", "shop"}) {
+		t.Errorf("the server has %q", names)
+	}
+	if d.restoring.holds("shop-web-1") || d.restoring.holds("shop-late-1") {
+		t.Error("the restore still holds a container")
+	}
+}
