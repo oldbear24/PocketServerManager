@@ -92,6 +92,10 @@ type restoreBody struct {
 	Source   string   `json:"source"`
 	Include  []string `json:"include"`
 	Replace  bool     `json:"replace"`
+	// Name and Server are a restore into a new database's (#53): its name,
+	// and for a dropped database the shared server it goes on.
+	Name   string `json:"name"`
+	Server string `json:"server"`
 }
 
 // restorePlan is where a restore writes, as the route works it out.
@@ -101,6 +105,10 @@ type restorePlan struct {
 	stack  string
 	path   string
 	source string
+	// database and databaseName are the database a database restore
+	// writes (#53): the record of a restore in place, and the name.
+	database     string
+	databaseName string
 }
 
 // hasRole tells whether a request's user has at least a role; superusers
@@ -111,8 +119,9 @@ func hasRole(e *core.RequestEvent, role string) bool {
 
 // handleCreateRestore makes a restore's draft and queues its preview, which
 // says what the restore would change and which containers would stop. An
-// operator restores to the original location on the job's server; an admin
-// restores a folder of the snapshot to a new folder of any server.
+// operator restores to the original location on the job's server, and a
+// database job's dump back into its database or into a new one (#53); an
+// admin restores a folder of the snapshot to a new folder of any server.
 func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 	var body restoreBody
 	if err := e.BindBody(&body); err != nil {
@@ -123,7 +132,7 @@ func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 		return e.NotFoundError("The job does not exist.", err)
 	}
 	switch body.Mode {
-	case schema.RestoreOriginal:
+	case schema.RestoreOriginal, schema.RestoreDatabase, schema.RestoreNewDatabase:
 	case schema.RestorePath:
 		if !hasRole(e, schema.RoleAdmin) {
 			return e.ForbiddenError("Only admins restore to a new folder.", nil)
@@ -150,17 +159,26 @@ func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 	if body.Replace && len(body.Include) > 0 {
 		return e.BadRequestError("Replace works for the whole snapshot only.", nil)
 	}
+	// a database restore's temporary copies are named after it (#53)
+	restoreID := core.GenerateDefaultRandomId()
 	var plan restorePlan
 	var problem *targetProblem
-	if body.Mode == schema.RestoreOriginal {
+	switch body.Mode {
+	case schema.RestoreOriginal:
 		plan, problem = p.originalPlan(job, target, body)
-	} else {
+	case schema.RestorePath:
 		plan, problem = p.pathPlan(job, target, body)
+	default:
+		plan, problem = p.databasePlan(job, target, body, restoreID)
 	}
 	if problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
-	if problem := p.restoreBlocked(job, target, body.Mode, plan.host, destinationsOf(body.Mode, plan.roots, plan.path), []string{plan.stack}, ""); problem != nil {
+	stacks := []string{plan.stack}
+	for _, root := range plan.roots {
+		stacks = append(stacks, root.StopProjects...)
+	}
+	if problem := p.restoreBlocked(job, target, body.Mode, plan.host, destinationsOf(body.Mode, plan.roots, plan.path), stacks, ""); problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
 	repository, err := p.repositoryOf(target)
@@ -173,7 +191,7 @@ func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 	restore := core.NewRecord(collection)
-	restore.Id = core.GenerateDefaultRandomId()
+	restore.Id = restoreID
 	requestedBy, requester := requester(e)
 	preview := core.GenerateDefaultRandomId()
 	include := body.Include
@@ -185,6 +203,7 @@ func (p *Panel) handleCreateRestore(e *core.RequestEvent) error {
 		"roots": plan.roots, "path": plan.path, "source": plan.source, "include": include, "replace": body.Replace,
 		"stack_name": plan.stack, "status": schema.RestorePreviewing, "expires_at": time.Now().UTC().Add(restorePreviewGood),
 		"requested_by": requestedBy, "requested_label": requester, "preview_command": preview,
+		"database": plan.database, "database_name": plan.databaseName,
 	})
 	if snapshot, ok := p.cachedSnapshot(job.Id, target.Id, body.Snapshot); ok {
 		if at, err := time.Parse(time.RFC3339, snapshot.Time); err == nil {
@@ -366,13 +385,19 @@ func (p *Panel) pathPlan(job, target *core.Record, body restoreBody) (restorePla
 }
 
 // destination is what a restore writes on its server: a volume or a
-// folder.
+// folder, or a database of a server's container (#53).
 type destination struct {
 	volume string
 	path   string
+	// database is <container>/<database>
+	database string
 }
 
 func (d destination) String() string {
+	if d.database != "" {
+		_, name, _ := strings.Cut(d.database, "/")
+		return name
+	}
 	if d.volume != "" {
 		return d.volume
 	}
@@ -381,6 +406,9 @@ func (d destination) String() string {
 
 // overlaps tells whether two destinations share data.
 func (d destination) overlaps(other destination) bool {
+	if d.database != "" || other.database != "" {
+		return d.database == other.database
+	}
 	if d.volume != "" || other.volume != "" {
 		return d.volume == other.volume
 	}
@@ -398,6 +426,12 @@ func destinationsOf(mode string, roots []restoreRoot, dir string) []destination 
 		return out
 	case schema.RestorePath:
 		return []destination{{path: dir}}
+	case schema.RestoreDatabase, schema.RestoreNewDatabase:
+		out := make([]destination, 0, len(roots))
+		for _, root := range roots {
+			out = append(out, destination{database: databaseDestination(root)})
+		}
+		return out
 	}
 	return nil
 }
@@ -416,7 +450,8 @@ func (p *Panel) restoreBlocked(job, target *core.Record, mode string, host *core
 	if !p.Commands.Connected(host.Id) {
 		return &targetProblem{http.StatusConflict, fmt.Sprintf("The server %s is offline: its agent restores the snapshot.", host.GetString("name"))}
 	}
-	if mode == schema.RestoreOriginal {
+	// a restore of the job's own data, a database's too (#53)
+	if mode == schema.RestoreOriginal || mode == schema.RestoreDatabase {
 		targets := p.jobTargets(job)
 		if !slices.ContainsFunc(targets, func(t *core.Record) bool { return t.Id == target.Id }) {
 			targets = append(targets, target)
@@ -487,6 +522,10 @@ func restoreLabel(job, target, restore, host *core.Record) string {
 		where = host.GetString("name") + ":" + restore.GetString("path")
 	case schema.RestoreDownload:
 		where = "download"
+	case schema.RestoreDatabase:
+		where = "database " + restore.GetString("database_name")
+	case schema.RestoreNewDatabase:
+		where = "new database " + restore.GetString("database_name")
 	}
 	short := restore.GetString("snapshot_id")
 	if len(short) > 8 {
@@ -574,6 +613,7 @@ func (p *Panel) previewFinished(restore, command *core.Record) {
 	if target, err := p.App.FindRecordById(schema.BackupTargets, restore.GetString("target")); err == nil {
 		hide = p.targetSecretValues(target)
 	}
+	hide = append(hide, p.databaseSecretValues(restore)...)
 	fields := map[string]any{}
 	switch command.GetString("status") {
 	case schema.CommandSucceeded:
@@ -633,11 +673,26 @@ func lowerFirst(text string) string {
 
 // restoreRoot is a root of a restore to the original location, as a record
 // keeps it: a path of the snapshot and the volume or directory of the server
-// it goes back into.
+// it goes back into. A database restore (#53) has one root, the plan the
+// route worked out: the dump's path, the shared server's container, engine
+// and administrator, the database it writes and the user it restores as, its
+// scratch copy and, in place on PostgreSQL, the copy of the data before it,
+// and what it stops besides the owner stack.
 type restoreRoot struct {
 	Source string `json:"source"`
 	Volume string `json:"volume,omitempty"`
 	Path   string `json:"path,omitempty"`
+
+	Container      string   `json:"container,omitempty"`
+	Engine         string   `json:"engine,omitempty"`
+	AdminUser      string   `json:"admin_user,omitempty"`
+	Database       string   `json:"database,omitempty"`
+	User           string   `json:"user,omitempty"`
+	Scratch        string   `json:"scratch,omitempty"`
+	Previous       string   `json:"previous,omitempty"`
+	StopProjects   []string `json:"stop_projects,omitempty"`
+	StopContainers []string `json:"stop_containers,omitempty"`
+	Site           string   `json:"site,omitempty"`
 }
 
 // restorePreview is what the panel reads of an agent's preview.
@@ -734,6 +789,11 @@ func restorePayload(restore *core.Record, dryRun bool) *agentv1.BackupRestore {
 	case schema.RestorePath:
 		payload.TargetPath = restore.GetString("path")
 		payload.Source = restore.GetString("source")
+	case schema.RestoreDatabase, schema.RestoreNewDatabase:
+		if root, ok := databaseRoot(restore); ok {
+			payload.Database = databaseRestorePayload(restore, root)
+		}
+		payload.Stack = restore.GetString("stack_name")
 	}
 	if !dryRun {
 		payload.Overwrite = restore.GetBool("overwrite")
@@ -742,15 +802,21 @@ func restorePayload(restore *core.Record, dryRun bool) *agentv1.BackupRestore {
 	return payload
 }
 
-// dumpPayload is a download's backup.dump, without its repository.
+// dumpPayload is a download's backup.dump, without its repository. A
+// PostgreSQL dump downloaded as SQL names the server container whose image
+// converts it (#53).
 func dumpPayload(restore *core.Record) *agentv1.BackupDump {
-	return &agentv1.BackupDump{
+	payload := &agentv1.BackupDump{
 		SnapshotId: restore.GetString("snapshot_id"),
 		Path:       restore.GetString("path"),
 		RestoreId:  restore.Id,
 		FileName:   restore.GetString("download_name"),
 		JobTag:     "job:" + restore.GetString("job"),
 	}
+	if roots := rootsOf(restore); restore.GetString("download_kind") == schema.DownloadSQL && len(roots) == 1 {
+		payload.SqlFrom = roots[0].Container
+	}
+	return payload
 }
 
 // restorePayloadMatches tells whether a command is what its record builds,
@@ -776,9 +842,10 @@ func restorePayloadMatches(command *agentv1.Command, restore *core.Record) bool 
 }
 
 // restoreRole is the role a record's mode needs: an operator restores to the
-// original location, an admin to a new folder or to a browser.
+// original location, and a database back into itself or into a new one
+// (#53); an admin to a new folder or to a browser.
 func restoreRole(mode string) string {
-	if mode == schema.RestoreOriginal {
+	if mode == schema.RestoreOriginal || databaseMode(mode) {
 		return schema.RoleOperator
 	}
 	return schema.RoleAdmin
@@ -841,6 +908,13 @@ func (p *Panel) checkRestoreDelivery(record *core.Record, command *agentv1.Comma
 		return errors.New("the command differs from the restore that was confirmed")
 	case command.GetBackupRestore().GetOverwrite() && restore.GetString("confirmed_by") == "" && restore.GetString("confirmed_label") == "":
 		return errors.New("the overwrite was not confirmed")
+	}
+	// a database restore writes the database it was planned for, as its
+	// user, on the server of its container (#53)
+	if root, ok := databaseRoot(restore); ok {
+		if err := p.checkDatabaseDelivery(record, restore, root, dryRun); err != nil {
+			return err
+		}
 	}
 	if record.GetString("status") != schema.CommandQueued {
 		return nil

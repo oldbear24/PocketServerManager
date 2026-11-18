@@ -2,6 +2,7 @@ package panel
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -1052,5 +1053,119 @@ func TestAChecksEndThePanelMissedIsKept(t *testing.T) {
 	f.p.RunDueChecks(time.Now())
 	if found := f.eventsOf("backup.check_unverified"); len(found) != 1 {
 		t.Errorf("%d events", len(found))
+	}
+}
+
+// testRow saves a restore test (#53) of a job, from a target, as the panel
+// keeps one, with the fields given.
+func (f *jobFixture) testRow(job, target *core.Record, fields map[string]any) *core.Record {
+	f.t.Helper()
+	all := map[string]any{"target": target.Id, "host": job.GetString("host"), "job": job.Id, "kind": schema.CheckRestoreTest,
+		"trigger": schema.RunSchedule, "status": schema.CheckQueued, "database_name": "shop", "snapshot_id": snapshotID}
+	for key, value := range fields {
+		all[key] = value
+	}
+	return f.save(schema.BackupChecks, all)
+}
+
+// setTest stores fields of a check, as the panel would.
+func (f *jobFixture) setTest(row *core.Record, fields map[string]any) {
+	f.t.Helper()
+	row.Load(fields)
+	if err := f.app.Save(row); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestARestoreTestIsNoIntegrityCheck (#53, D21): the five places of #31 that
+// read every check as an integrity check read integrity checks only. A
+// restore test never changes its target's integrity or its newest check; the
+// checks' scheduler never settles it, never tries it again as an integrity
+// check, and turning the checks off leaves its retry; and it shares a target
+// and a slot with an integrity check.
+func TestARestoreTestIsNoIntegrityCheck(t *testing.T) {
+	f := newCheckFixture(t)
+	job := f.job("db-main-shop", map[string]any{"origin": schema.JobDatabase, "source_kind": schema.SourceDatabase, "source": "shop", "engine": schema.DumpPostgres})
+	slot := parseCronRule(farSchedule()).next(time.Now())
+
+	// an integrity check and a restore test share the target and the slot
+	check, err := f.p.startCheck(f.target, checkStart{trigger: schema.RunSchedule, scheduledAt: slot, requester: "schedule", now: slot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	test := f.testRow(job, f.target, map[string]any{"scheduled_at": slot})
+	if _, err := f.p.startCheck(f.target, checkStart{trigger: schema.RunSchedule, scheduledAt: slot, requester: "schedule", now: slot}); !errors.Is(err, errCheckTaken) {
+		t.Errorf("a second integrity check of the slot: %v", err)
+	}
+
+	// a newer restore test that passed is no check of the target's integrity
+	finished := time.Now().UTC()
+	f.setTest(test, map[string]any{"status": schema.CheckOK, "finished_at": finished})
+	f.p.noteTargetCheck(f.target.Id, f.fresh(test))
+	target := f.fresh(f.target)
+	if target.GetString("last_check") != check.Id || target.GetString("last_check_status") != schema.CheckQueued ||
+		!target.GetDateTime("integrity_at").IsZero() || target.GetString("integrity_status") != "" {
+		t.Errorf("a restore test changed the target's summary: %v", target.FieldsData())
+	}
+
+	// the checks' scheduler neither settles a test whose command is gone, nor
+	// tries one again, and turning the checks off leaves its retry
+	open := f.testRow(job, f.target, map[string]any{"status": schema.CheckRunning})
+	retry := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	due := f.testRow(job, f.target, map[string]any{"status": schema.CheckError, "attempt": 1, "retry_at": retry, "finished_at": finished})
+	f.p.RunDueChecks(time.Now())
+	if kept := f.fresh(open); kept.GetString("status") != schema.CheckRunning || kept.GetString("error") != "" {
+		t.Errorf("the checks' scheduler settled a restore test: %v", kept.FieldsData())
+	}
+	if kept := f.fresh(due); !kept.GetDateTime("retry_at").Time().Equal(retry) {
+		t.Errorf("the checks' scheduler took a restore test's retry: %v", kept.FieldsData())
+	}
+	integrity, err := f.app.FindRecordsByFilter(schema.BackupChecks, "kind={:kind}", "", 0, 0, map[string]any{"kind": schema.CheckIntegrity})
+	if err != nil || len(integrity) != 1 {
+		t.Errorf("%d integrity checks after the pass (%v)", len(integrity), err)
+	}
+	f.p.checksTurnedOff()
+	if kept := f.fresh(due); !kept.GetDateTime("retry_at").Time().Equal(retry) {
+		t.Errorf("turning the checks off took a restore test's retry: %v", kept.FieldsData())
+	}
+
+	// an integrity check's finisher leaves a restore test alone, whatever
+	// command it names
+	command := f.save(schema.Commands, map[string]any{"host": f.host.Id, "type": "backup.check",
+		"payload": map[string]any{"repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"}}})
+	linked := f.testRow(job, f.target, map[string]any{"status": schema.CheckRunning, "command": command.Id})
+	f.closeCommand(command, schema.CommandSucceeded)
+	f.p.backupCheckFinished(f.fresh(command))
+	if kept := f.fresh(linked); kept.GetString("status") != schema.CheckRunning {
+		t.Errorf("an integrity check's finisher kept a restore test: %v", kept.FieldsData())
+	}
+}
+
+// TestOldRestoreTestsGoPerKindAndJob (#53, D21): old checks go per kind and,
+// for restore tests, per job: a target keeps its newest integrity check
+// whatever tests came after it, and each job its newest test.
+func TestOldRestoreTestsGoPerKindAndJob(t *testing.T) {
+	f := newCheckFixture(t)
+	shop := f.job("db-main-shop", map[string]any{"origin": schema.JobDatabase, "source_kind": schema.SourceDatabase, "source": "shop", "engine": schema.DumpPostgres})
+	blog := f.job("db-main-blog", map[string]any{"origin": schema.JobDatabase, "source_kind": schema.SourceDatabase, "source": "blog", "engine": schema.DumpPostgres})
+	aged := func(row *core.Record, age time.Duration) *core.Record {
+		t.Helper()
+		if _, err := f.app.DB().NewQuery("UPDATE backup_checks SET created={:at} WHERE id={:id}").
+			Bind(map[string]any{"at": types.NowDateTime().Add(-age).String(), "id": row.Id}).Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	day := 24 * time.Hour
+	integrity := aged(f.save(schema.BackupChecks, map[string]any{"target": f.target.Id, "host": f.host.Id, "kind": schema.CheckIntegrity,
+		"trigger": schema.RunSchedule, "status": schema.CheckOK}), 300*day)
+	shopOld := aged(f.testRow(shop, f.target, map[string]any{"status": schema.CheckOK}), 250*day)
+	shopNewest := aged(f.testRow(shop, f.target, map[string]any{"status": schema.CheckOK}), 200*day)
+	blogNewest := aged(f.testRow(blog, f.target, map[string]any{"status": schema.CheckFailed}), 260*day)
+	f.p.pruneBackupChecks()
+	for row, kept := range map[*core.Record]bool{integrity: true, shopOld: false, shopNewest: true, blogNewest: true} {
+		if _, err := f.app.FindRecordById(schema.BackupChecks, row.Id); (err == nil) != kept {
+			t.Errorf("check %s (%s %s) kept: %v", row.Id, row.GetString("kind"), row.GetString("job"), err == nil)
+		}
 	}
 }

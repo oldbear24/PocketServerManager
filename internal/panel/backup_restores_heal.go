@@ -64,6 +64,8 @@ func (p *Panel) settleStarted(restore *core.Record) {
 	case err != nil:
 		p.settleRestore(restore, schema.RestoreFailed,
 			fmt.Sprintf("The restore ended without the panel recording how: check the application on %s.", p.hostName(restore.GetString("host"))))
+		// what a database restore made, as far as the panel can tell (#53)
+		p.databaseRestored(restore, nil)
 	case commandFinal(command):
 		p.restoreFinished(command)
 	case restore.GetString("stop_requested_label") != "":

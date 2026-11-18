@@ -29,9 +29,9 @@ const (
 	newYearToo = "30 0 1 1 *"
 )
 
-// sharedServer is a shared database server of a host, ready, with its
+// hostServer is a shared database server of a host, ready, with its
 // administrator's password.
-func (f *jobFixture) sharedServer(host *core.Record, name, engine string) *core.Record {
+func (f *jobFixture) hostServer(host *core.Record, name, engine string) *core.Record {
 	f.t.Helper()
 	admin := "postgres"
 	if engine == schema.EngineMariaDB {
@@ -111,8 +111,8 @@ func (f *jobFixture) settle() {
 // none.
 func TestEveryDatabaseOfASharedServerGetsAJob(t *testing.T) {
 	f := newJobFixture(t)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
-	maria := f.sharedServer(f.host, "maria", schema.EngineMariaDB)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
+	maria := f.hostServer(f.host, "maria", schema.EngineMariaDB)
 
 	shop := f.database(main, "shop", dbReady)
 	job := f.jobOfDatabase(shop)
@@ -174,7 +174,7 @@ func TestEveryDatabaseOfASharedServerGetsAJob(t *testing.T) {
 // job, and none of them fails.
 func TestADatabaseGetsOneJobThoughAskedAtOnce(t *testing.T) {
 	f := newJobFixture(t)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	shop := f.database(main, "shop", dbReady)
 	const callers = 8
 	start := make(chan struct{})
@@ -205,7 +205,7 @@ func TestADatabaseGetsOneJobThoughAskedAtOnce(t *testing.T) {
 func TestADatabaseJobTakesAFreeName(t *testing.T) {
 	f := newJobFixture(t)
 	f.job("main-shop", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	if job := f.jobOfDatabase(f.database(main, "shop", dbReady)); job.GetString("name") != "main-shop-2" {
 		t.Errorf("the name: %s", job.GetString("name"))
 	}
@@ -220,7 +220,7 @@ func TestADatabaseJobTakesAFreeName(t *testing.T) {
 // through their route.
 func TestAutomaticJobsFollowTheirServersSettings(t *testing.T) {
 	f := newJobFixture(t)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	shop, blog := f.jobOfDatabase(f.database(main, "shop", dbReady)), f.jobOfDatabase(f.database(main, "blog", dbReady))
 	other := testutil.NewHost(t, f.app, "node-2")
 	elsewhere := f.addTarget("elsewhere", backup.KindLocal, other, backup.Config{Path: "/srv/restic"}, backup.Credentials{})
@@ -429,7 +429,7 @@ func deploy(t *testing.T, app core.App, site *core.Record) {
 func TestADroppedDatabaseLeavesItsJobDisabled(t *testing.T) {
 	f := newJobFixture(t)
 	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	shop := f.database(main, "shop", dbReady)
 	job := f.jobOfDatabase(shop)
 	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
@@ -513,7 +513,7 @@ func TestADroppedDatabaseLeavesItsJobDisabled(t *testing.T) {
 	}
 	// a host removed takes its jobs
 	other := testutil.NewHost(t, f.app, "node-2")
-	server := f.sharedServer(other, "pool", schema.EngineMariaDB)
+	server := f.hostServer(other, "pool", schema.EngineMariaDB)
 	pooled := f.jobOfDatabase(f.database(server, "notes", dbReady))
 	if err := f.app.Delete(other); err != nil {
 		t.Fatal(err)
@@ -530,8 +530,8 @@ func TestADroppedDatabaseLeavesItsJobDisabled(t *testing.T) {
 func TestAMovedDatabaseKeepsItsJob(t *testing.T) {
 	f := newJobFixture(t)
 	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
-	next := f.sharedServer(f.host, "next", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
+	next := f.hostServer(f.host, "next", schema.EnginePostgres)
 	shop := f.database(main, "shop", dbReady)
 	job := f.jobOfDatabase(shop)
 
@@ -562,7 +562,7 @@ func TestAMovedDatabaseKeepsItsJob(t *testing.T) {
 // they are.
 func TestOrphanedLabelJobsLeaveDatabaseJobsAlone(t *testing.T) {
 	f := newJobFixture(t)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	job := f.jobOfDatabase(f.database(main, "shop", dbReady))
 	f.p.markOrphanedLabelJobs()
 	if job := f.fresh(job); !job.GetBool("enabled") || job.GetString("problem") != noTarget || job.GetBool("label_removed") {
@@ -636,7 +636,7 @@ func TestADeployedPHPSiteGetsAFilesJob(t *testing.T) {
 func TestAutomaticJobsKeepWhatTheyBackUp(t *testing.T) {
 	f := newJobFixture(t)
 	other := testutil.NewHost(t, f.app, "node-2")
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	job := f.jobOfDatabase(f.database(main, "shop", dbReady))
 	for _, kind := range []string{schema.SourceDatabase, schema.SourceSite} {
 		if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs", f.admin, map[string]any{"name": "mine", "host": f.host.Id,

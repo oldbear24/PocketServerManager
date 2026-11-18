@@ -1423,7 +1423,7 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 	}
 	// the agent took the secrets out already; whatever it missed, and the
 	// database's passwords, which a run never carries (#53)
-	hide := append(p.targetSecretValues(target), p.databaseSecretValues(job)...)
+	hide := append(p.targetSecretValues(target), p.jobDatabaseSecrets(job)...)
 	// the longest first, so that one inside another goes whole
 	slices.SortFunc(hide, func(a, b string) int { return len(b) - len(a) })
 	message = capitalize(backup.Redact(message, hide...))

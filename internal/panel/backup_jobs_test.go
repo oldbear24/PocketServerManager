@@ -1532,8 +1532,8 @@ func TestOriginalRestoreOfThePanelIsRefused(t *testing.T) {
 func TestADatabaseRunDumpsOnlyItsDatabase(t *testing.T) {
 	f := newJobFixture(t)
 	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
-	maria := f.sharedServer(f.host, "maria", schema.EngineMariaDB)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
+	maria := f.hostServer(f.host, "maria", schema.EngineMariaDB)
 	shop := f.jobOfDatabase(f.database(main, "shop", dbReady))
 	blog := f.jobOfDatabase(f.database(maria, "blog", dbReady))
 	build := func(job *core.Record) (*agentv1.BackupRun, error) {
@@ -1689,8 +1689,8 @@ func TestASiteRunBacksUpItsSharedFiles(t *testing.T) {
 func TestADatabaseRunIsNotDeliveredOnceItsDatabaseMovedOrWent(t *testing.T) {
 	f := newJobFixture(t)
 	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
-	next := f.sharedServer(f.host, "next", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
+	next := f.hostServer(f.host, "next", schema.EnginePostgres)
 	shop := f.database(main, "shop", dbReady)
 	job := f.jobOfDatabase(shop)
 	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
@@ -1757,7 +1757,7 @@ func TestADatabaseBeingDroppedSkipsItsRuns(t *testing.T) {
 	f := newJobFixture(t)
 	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
 	f.agent(f.host)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	shop := f.database(main, "shop", dbReady)
 	job := f.jobOfDatabase(shop)
 	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
@@ -1795,7 +1795,7 @@ func TestADatabaseBeingDroppedSkipsItsRuns(t *testing.T) {
 // job's run keeps hides the database's passwords, which it never carries.
 func TestAJobKeepsWhenItsLastBackupSucceeded(t *testing.T) {
 	f := newJobFixture(t)
-	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	main := f.hostServer(f.host, "main", schema.EnginePostgres)
 	job := f.jobOfDatabase(f.database(main, "shop", dbReady))
 	job.Set("targets", []string{f.target.Id})
 	if err := f.app.Save(job); err != nil {

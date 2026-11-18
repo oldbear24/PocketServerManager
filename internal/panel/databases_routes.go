@@ -429,7 +429,12 @@ func (p *Panel) handleRemoveServer(e *core.RequestEvent) error {
 		return e.Error(http.StatusConflict, "Databases are moving into or out of this server.", nil)
 	}
 
-	count, err := p.App.CountRecords(schema.Databases, dbx.HashExp{"server": server.Id})
+	// its temporary databases go with it; not while a restore or a restore
+	// test of it is under way (#53)
+	if p.openOnServer(server) {
+		return e.Error(http.StatusConflict, fmt.Sprintf("A restore or a restore test on %s is under way: remove the server once it ends.", server.GetString("name")), nil)
+	}
+	count, err := p.App.CountRecords(schema.Databases, dbx.HashExp{"server": server.Id, "temporary_until": ""})
 	if err != nil {
 		return e.InternalServerError("", err)
 	}
@@ -504,6 +509,10 @@ func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server
 	if err := databases.ValidDatabaseName(engine, name); err != nil {
 		return nil, nil, err
 	}
+	// the names of PocketCloud's temporary databases (#53)
+	if err := databases.ReservedPrefix(name); err != nil {
+		return nil, nil, err
+	}
 	if reason := p.claimedByMove(server, name, stackID); reason != "" {
 		return nil, nil, errors.New(reason)
 	}
@@ -526,38 +535,8 @@ func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server
 
 	var database *core.Record
 	err = p.App.RunInTransaction(func(tx core.App) error {
-		collection, err := tx.FindCachedCollectionByNameOrId(schema.Databases)
-		if err != nil {
-			return err
-		}
-		database = core.NewRecord(collection)
-		database.Set("server", server.Id)
-		database.Set("name", name)
-		database.Set("status", dbCreating)
-		database.Set("owner_kind", "none")
-		if stackID != "" {
-			database.Set("owner_kind", "stack")
-			database.Set("stack", stackID)
-		}
-		if request.Site != "" {
-			database.Set("owner_kind", "site")
-			database.Set("site", request.Site)
-		}
-		if err := tx.SaveWithContext(audit.WithActor(ctx, actor), database); err != nil {
-			return err
-		}
-
-		users, err := tx.FindCachedCollectionByNameOrId(schema.DBUsers)
-		if err != nil {
-			return err
-		}
-		account := core.NewRecord(users)
-		account.Set("server", server.Id)
-		account.Set("name", name)
-		account.Set("password", databases.NewPassword())
-		account.Set("databases", []string{database.Id})
-		account.Set("secret_name", secret)
-		return tx.SaveWithContext(audit.WithActor(ctx, actor), account)
+		database, err = databaseRecordsIn(audit.WithActor(ctx, actor), tx, server, name, stackID, request.Site)
+		return err
 	})
 	if err != nil {
 		return nil, nil, err
@@ -577,6 +556,48 @@ func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server
 	}
 
 	return database, queued, nil
+}
+
+// databaseRecordsIn saves, in a transaction, the records of a new database
+// of a server, creating, and of its user, named after it, with a new password
+// and the secret db/<name>: for a stack, or a site, or nothing yet. ctx
+// carries who asked for it.
+func databaseRecordsIn(ctx context.Context, tx core.App, server *core.Record, name, stackID, siteID string) (*core.Record, error) {
+	collection, err := tx.FindCachedCollectionByNameOrId(schema.Databases)
+	if err != nil {
+		return nil, err
+	}
+	database := core.NewRecord(collection)
+	database.Set("server", server.Id)
+	database.Set("name", name)
+	database.Set("status", dbCreating)
+	database.Set("owner_kind", "none")
+	if stackID != "" {
+		database.Set("owner_kind", "stack")
+		database.Set("stack", stackID)
+	}
+	if siteID != "" {
+		database.Set("owner_kind", "site")
+		database.Set("site", siteID)
+	}
+	if err := tx.SaveWithContext(ctx, database); err != nil {
+		return nil, err
+	}
+
+	users, err := tx.FindCachedCollectionByNameOrId(schema.DBUsers)
+	if err != nil {
+		return nil, err
+	}
+	account := core.NewRecord(users)
+	account.Set("server", server.Id)
+	account.Set("name", name)
+	account.Set("password", databases.NewPassword())
+	account.Set("databases", []string{database.Id})
+	account.Set("secret_name", databases.SecretName(name))
+	if err := tx.SaveWithContext(ctx, account); err != nil {
+		return nil, err
+	}
+	return database, nil
 }
 
 func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {
@@ -649,6 +670,17 @@ func (p *Panel) databaseFor(e *core.RequestEvent) (database, server *core.Record
 	}
 	if database.GetString("status") == dbDropping {
 		return nil, nil, e.BadRequestError("The database is being dropped.", nil)
+	}
+	// a temporary database is dropped by itself, and a database being
+	// restored or tested is not changed meanwhile (#53)
+	if isTemporary(database) {
+		return nil, nil, e.Error(http.StatusConflict, temporaryMessage, nil)
+	}
+	if p.databaseRestoreOpen(server, database.GetString("name")) != nil {
+		return nil, nil, e.Error(http.StatusConflict, fmt.Sprintf("A restore of %s is under way.", database.GetString("name")), nil)
+	}
+	if p.databaseTestOpen(server, database.GetString("name")) != nil {
+		return nil, nil, e.Error(http.StatusConflict, fmt.Sprintf("A restore test of %s is under way.", database.GetString("name")), nil)
 	}
 	return database, server, nil
 }
@@ -830,6 +862,10 @@ func (p *Panel) handleExportDatabase(e *core.RequestEvent) error {
 // handleDropDatabase drops a database and its user. The agent keeps a final dump
 // in the panel first, and drops nothing if that fails.
 func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
+	// a temporary database of a restore or a restore test is discarded (#53)
+	if record, err := e.App.FindRecordById(schema.Databases, e.Request.PathValue("id")); err == nil && isTemporary(record) {
+		return p.dropTemporary(e, record)
+	}
 	database, server, err := p.ownDatabaseFor(e)
 	if err != nil {
 		return err
@@ -843,9 +879,21 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 		keep = slices.ContainsFunc(owner.GetStringSlice("databases"), func(id string) bool { return id != database.Id })
 	}
 
+	// its temporary copies go first, as its user owns them (#53)
+	copies := p.temporaryCopies(server, database)
+	temporaries := make([]string, 0, len(copies))
+	changes := []fieldChange{}
+	for _, copied := range copies {
+		temporaries = append(temporaries, copied.GetString("name"))
+		changes = append(changes, fieldChange{record: copied, fields: map[string]any{"status": dbDropping}})
+	}
+
 	ctx := e.Request.Context()
 	database.Set("status", dbDropping)
 	if err := p.saveChanges(audit.WithActor(ctx, audit.ActorFromRequest(e)), database); err != nil {
+		return e.InternalServerError("", err)
+	}
+	if err := p.setFieldsTogether(changes...); err != nil {
 		return e.InternalServerError("", err)
 	}
 
@@ -856,10 +904,11 @@ func (p *Panel) handleDropDatabase(e *core.RequestEvent) error {
 		RequestedBy: userID,
 		Requester:   label,
 		Command: &agentv1.Command{Payload: &agentv1.Command_DbDatabaseDrop{DbDatabaseDrop: &agentv1.DbDatabaseDrop{
-			Connection: connectionOf(server),
-			Database:   database.GetString("name"),
-			User:       user,
-			KeepUser:   keep,
+			Connection:  connectionOf(server),
+			Database:    database.GetString("name"),
+			User:        user,
+			KeepUser:    keep,
+			Temporaries: temporaries,
 		}}},
 	})
 	if err != nil {

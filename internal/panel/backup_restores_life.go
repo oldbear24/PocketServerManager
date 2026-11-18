@@ -65,6 +65,13 @@ func startedRoots(restore *core.Record, preview restorePreview) []restoreRoot {
 // someone must confirm: it goes back to the original location, or its
 // destination holds anything, or the preview would change or delete files.
 func needsConfirm(restore *core.Record, preview restorePreview) bool {
+	// a database is replaced whole; a new one replaces nothing (#53)
+	switch restore.GetString("mode") {
+	case schema.RestoreDatabase:
+		return true
+	case schema.RestoreNewDatabase:
+		return false
+	}
 	if restore.GetString("mode") == schema.RestoreOriginal || preview.Counts.Updated > 0 || preview.Counts.Deleted > 0 {
 		return true
 	}
@@ -84,6 +91,9 @@ func needsConfirm(restore *core.Record, preview restorePreview) bool {
 func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	var body struct {
 		ConfirmOverwrite bool `json:"confirm_overwrite"`
+		// ConfirmName is the database's name, typed to confirm a restore
+		// back into it (#53)
+		ConfirmName string `json:"confirm_name"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
@@ -126,10 +136,6 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	case mode == schema.RestorePath && (len(preview.Roots) == 0 || !preview.Roots[0].InSnapshot):
 		return e.Error(http.StatusConflict, fmt.Sprintf("%s is not in this snapshot.", restore.GetString("source")), nil)
 	}
-	needs := needsConfirm(restore, preview)
-	if needs && !body.ConfirmOverwrite {
-		return e.Error(http.StatusConflict, "The destination already holds files: confirm that the restore overwrites them.", nil)
-	}
 	job, err := e.App.FindRecordById(schema.BackupJobs, restore.GetString("job"))
 	if err != nil {
 		return e.NotFoundError("The job does not exist.", err)
@@ -137,6 +143,17 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	target, err := e.App.FindRecordById(schema.BackupTargets, restore.GetString("target"))
 	if err != nil {
 		return e.NotFoundError("The target does not exist.", err)
+	}
+	// a database restore: the typed name, what the preview found, and the
+	// plan as it was previewed (#53)
+	if databaseMode(mode) {
+		if problem := p.databaseStart(restore, job, target, body.ConfirmOverwrite, body.ConfirmName); problem != nil {
+			return e.Error(problem.status, problem.message, nil)
+		}
+	}
+	needs := needsConfirm(restore, preview)
+	if needs && !body.ConfirmOverwrite {
+		return e.Error(http.StatusConflict, "The destination already holds files: confirm that the restore overwrites them.", nil)
 	}
 	host, err := e.App.FindRecordById(schema.Hosts, restore.GetString("host"))
 	if err != nil {
@@ -147,8 +164,11 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 		draft.Set("roots", roots)
 	}
 	stacks := stoppedProjects(restore)
-	if mode == schema.RestoreOriginal {
+	if mode == schema.RestoreOriginal || mode == schema.RestoreDatabase {
 		stacks = append(stacks, restore.GetString("stack_name"))
+	}
+	if root, ok := databaseRoot(restore); ok {
+		stacks = append(stacks, root.StopProjects...)
 	}
 	if problem := p.restoreBlocked(job, target, mode, host, restoreDestinations(draft), stacks, restore.Id); problem != nil {
 		return e.Error(problem.status, problem.message, nil)
@@ -182,6 +202,12 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 		if mode == schema.RestoreOriginal {
 			fresh.Set("roots", roots)
 		}
+		// the databases it makes are recorded with its command (#53)
+		if root, ok := databaseRoot(fresh); ok {
+			if err := p.restoreRecordsIn(audit.WithActor(ctx, audit.ActorFromRequest(e)), tx, fresh, root); err != nil {
+				return err
+			}
+		}
 		payload := restorePayload(fresh, false)
 		payload.Repository = repository
 		_, err = p.Commands.CreateIn(ctx, tx, commands.Options{
@@ -198,6 +224,9 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	if errors.Is(err, errRestoreMoved) {
 		return e.Error(http.StatusConflict, "The restore changed meanwhile: look at it again.", nil)
 	}
+	if databaseMode(mode) && uniqueViolation(err) {
+		return e.Error(http.StatusConflict, fmt.Sprintf("A database named %s exists on its server already.", restore.GetString("database_name")), nil)
+	}
 	if err != nil {
 		return e.BadRequestError("The restore could not be started: "+saveErrorText(err), nil)
 	}
@@ -205,10 +234,18 @@ func (p *Panel) handleStartRestore(e *core.RequestEvent) error {
 	for _, dest := range restoreDestinations(started) {
 		dests = append(dests, dest.String())
 	}
-	p.Audit.Security(audit.ActionBackupRestore, audit.ActorFromRequest(e), started.GetString("label"), map[string]any{
+	data := map[string]any{
 		"restore": started.Id, "job": job.Id, "target": target.Id, "snapshot": started.GetString("snapshot_id"), "mode": mode,
 		"host": host.Id, "destination": dests, "replace": started.GetBool("replace"), "overwrite": needs, "includes": includeOf(started),
-	})
+	}
+	// a database restore names the database and its server (#53)
+	if root, ok := databaseRoot(started); ok {
+		data["database"] = started.GetString("database_name")
+		if server, err := p.serverByContainer(host.Id, root.Container); err == nil {
+			data["server"] = server.GetString("name")
+		}
+	}
+	p.Audit.Security(audit.ActionBackupRestore, audit.ActorFromRequest(e), started.GetString("label"), data)
 	return e.JSON(http.StatusOK, started)
 }
 
@@ -344,6 +381,8 @@ func (p *Panel) realRestoreFinished(restore, command *core.Record) {
 	if target, err := p.App.FindRecordById(schema.BackupTargets, restore.GetString("target")); err == nil {
 		hide = p.targetSecretValues(target)
 	}
+	// and a database restore's passwords (#53)
+	hide = append(hide, p.databaseSecretValues(restore)...)
 	status, message := p.restoreOutcome(restore, command, result, hasResult)
 	message = backup.Redact(message, hide...)
 	problem := ""
@@ -371,6 +410,12 @@ func (p *Panel) realRestoreFinished(restore, command *core.Record) {
 	if started := command.GetDateTime("started_at"); !started.IsZero() {
 		fields["started_at"] = started
 	}
+	if databaseMode(restore.GetString("mode")) {
+		var restored backup.DbRestoreResult
+		_ = json.Unmarshal(raw, &restored)
+		fields["tables"] = restored.Tables
+		fields["previous"] = restored.Previous
+	}
 	// once: the restore's command may be settled from two places
 	kept := false
 	err := p.update(context.Background(), restore, func(fresh *core.Record) error {
@@ -387,6 +432,8 @@ func (p *Panel) realRestoreFinished(restore, command *core.Record) {
 		p.Log.Error("failed to keep a restore", "restore", restore.Id, "error", err)
 	}
 	if kept {
+		// what a database restore made or left (#53)
+		p.databaseRestored(restore, command)
 		p.noteRestore(restore, result)
 	}
 }
@@ -453,8 +500,15 @@ func (p *Panel) restoreNeverStarted(command *core.Record) string {
 }
 
 // restoreDestinationKey names the data a restore writes, as its ordering
-// key does: the stack of the original location, or the volume or folder.
+// key does: a database by its record (#53), the stack of the original
+// location, or the volume or folder.
 func restoreDestinationKey(restore *core.Record) string {
+	if root, ok := databaseRoot(restore); ok {
+		if id := restore.GetString("database"); id != "" {
+			return "database:" + id
+		}
+		return "database:" + databaseDestination(root)
+	}
 	if restore.GetString("mode") == schema.RestoreOriginal && restore.GetString("stack_name") != "" {
 		return "stack:" + restore.GetString("stack_name")
 	}
@@ -480,6 +534,9 @@ func restoreAlertKey(restore *core.Record) string {
 
 // restoreWhere says in words what a restore writes.
 func (p *Panel) restoreWhere(restore *core.Record) string {
+	if root, ok := databaseRoot(restore); ok {
+		return p.databaseRestoreWhere(restore, root)
+	}
 	dests := []string{}
 	for _, dest := range restoreDestinations(restore) {
 		dests = append(dests, dest.String())
@@ -540,6 +597,9 @@ func (p *Panel) noteRestore(before *core.Record, result restoreResult) {
 	switch status {
 	case schema.RestoreSucceeded:
 		text := cutText(fmt.Sprintf("%s restored %d files, %d bytes.", label, result.FilesRestored, result.BytesRestored), 2048)
+		if databaseMode(restore.GetString("mode")) {
+			text = cutText(fmt.Sprintf("%s restored %d tables, %d bytes.", label, restore.GetInt("tables"), result.BytesRestored), 2048)
+		}
 		events.Log(p.App, host, "backup.restored", schema.SeverityInfo, text, data)
 	case schema.RestoreFailed:
 		events.Log(p.App, host, "backup.restore_failed", schema.SeverityCritical, failed, data)

@@ -31,7 +31,8 @@ func bootMigrationPanel(t *testing.T) *core.BaseApp {
 	})
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
-	// what the hooks do later ends before the app is torn down, as the
+	// what the hooks would do later, such as the removal of a site's files
+	// that a migration reverted, ends before the app is torn down, as the
 	// panel's stop does it (cleanups run last first)
 	t.Cleanup(p.later.stop)
 	// as the panel's start does, for the targets' sealed fields

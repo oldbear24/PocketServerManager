@@ -105,6 +105,7 @@ func TestFinishRestore(t *testing.T) {
 
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
+	t.Cleanup(p.later.stop)
 	handler := testutil.Handler(t, app)
 
 	// the sealed entry, where the restored log resumes
@@ -264,6 +265,7 @@ func TestTheRestoreIsWatchedAfterARestart(t *testing.T) {
 	writeMarker(t, app.DataDir(), restoredMarker(strings.Repeat("e1", 16)))
 	first := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	first.Register()
+	t.Cleanup(first.later.stop)
 	testutil.Handler(t, app)
 	if !alertOpen(app, backup.AlertPanelRestored, backup.PanelAlertTarget) {
 		t.Fatal("no panel_restored alert after the restore")

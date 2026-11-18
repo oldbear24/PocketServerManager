@@ -650,11 +650,11 @@ func (p *Panel) databaseMoved(job *core.Record, payload *agentv1.BackupRun) bool
 	return err == nil && payload.GetStdinContainer() != server.GetString("container_ref")
 }
 
-// databaseSecretValues are the passwords of a database job's database, its
+// jobDatabaseSecrets are the passwords of a database job's database, its
 // server's administrator's and its user's, to hide from what a run keeps: a
 // run never carries them, but a dump's error might say what its server's
 // environment holds.
-func (p *Panel) databaseSecretValues(job *core.Record) []string {
+func (p *Panel) jobDatabaseSecrets(job *core.Record) []string {
 	if job.GetString("source_kind") != schema.SourceDatabase || job.GetString("database") == "" {
 		return nil
 	}

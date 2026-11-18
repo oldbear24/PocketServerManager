@@ -28,6 +28,10 @@ func newTestPanel(t testing.TB) (*Panel, *tests.TestApp, http.Handler) {
 
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
+	// what the panel would do later, such as its backup ten minutes after a
+	// change of its servers, does not run on the app torn down after the
+	// test: a run of the package can last longer than that
+	t.Cleanup(p.later.stop)
 
 	return p, app, testutil.Handler(t, app)
 }

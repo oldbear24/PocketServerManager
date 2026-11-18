@@ -55,6 +55,8 @@ func (p *Panel) registerDatabases() {
 	for _, commandType := range []string{
 		"db.database.create", "db.database.rotate", "db.database.drop", "db.database.clone",
 		"db.database.export", "db.stats", "db.adminer.start",
+		// the drop of temporary databases (#53): the connection only
+		"db.database.discard",
 	} {
 		p.Commands.RegisterEnricher(commandType, p.enrichDatabaseCommand)
 	}
@@ -65,6 +67,8 @@ func (p *Panel) registerDatabases() {
 	p.Commands.OnFinish("db.database.drop", p.databaseDropFinished)
 	p.Commands.OnFinish("db.stats", p.databaseStatsFinished)
 	p.Commands.OnFinish("stack.deploy", p.serverDeployFinished)
+	// the temporary databases of restores and restore tests (#53)
+	p.registerTemporaries()
 
 	// a shared server's stack goes with its server, not while databases live on it
 	p.App.OnRecordDeleteRequest(schema.Stacks).BindFunc(func(e *core.RecordRequestEvent) error {
@@ -282,47 +286,104 @@ func (p *Panel) enrichDatabaseCommand(record *core.Record, command *agentv1.Comm
 		connection = payload.DbDatabaseExport.GetConnection()
 	case *agentv1.Command_DbStats:
 		connection = payload.DbStats.GetConnection()
+	case *agentv1.Command_DbDatabaseDiscard:
+		connection = payload.DbDatabaseDiscard.GetConnection()
 	}
 	if connection == nil {
 		return errors.New("the command names no database server")
 	}
 
-	server, err := p.serverByContainer(record.GetString("host"), connection.GetContainerId())
-	if err != nil {
-		return fmt.Errorf("the database server %s is no longer known: %w", connection.GetContainerId(), err)
-	}
-
-	admin, err := p.sealed(server, "admin_password")
+	server, err := p.adminConnection(record, connection)
 	if err != nil {
 		return err
 	}
-	if admin == "" {
-		return fmt.Errorf("the panel does not know the administrator's password of %s", server.GetString("name"))
-	}
-	connection.AdminPassword = admin
 
 	if setPassword == nil || user == "" {
 		return nil
-	}
-
-	account, err := p.userOf(server, user)
-	if err != nil {
-		return fmt.Errorf("the database user %s is no longer known: %w", user, err)
 	}
 
 	field := "password"
 	if pending {
 		field = "pending_password"
 	}
-	password, err := p.sealed(account, field)
+	_, password, err := p.userSecret(server, user, field)
 	if err != nil {
 		return err
 	}
-	if password == "" {
-		return fmt.Errorf("the database user %s has no %s", user, strings.ReplaceAll(field, "_", " "))
-	}
 	setPassword(password)
 
+	return nil
+}
+
+// adminConnection adds the administrator's password to a command's
+// connection, from the server of the command's host whose container it names,
+// which it returns.
+func (p *Panel) adminConnection(record *core.Record, connection *agentv1.DbConnection) (*core.Record, error) {
+	server, err := p.serverByContainer(record.GetString("host"), connection.GetContainerId())
+	if err != nil {
+		return nil, fmt.Errorf("the database server %s is no longer known: %w", connection.GetContainerId(), err)
+	}
+
+	admin, err := p.sealed(server, "admin_password")
+	if err != nil {
+		return nil, err
+	}
+	if admin == "" {
+		return nil, fmt.Errorf("the panel does not know the administrator's password of %s", server.GetString("name"))
+	}
+	connection.AdminPassword = admin
+	return server, nil
+}
+
+// userSecret opens a secret of a database user of a server: its password, or
+// the one that waits for a rotation.
+func (p *Panel) userSecret(server *core.Record, user, field string) (*core.Record, string, error) {
+	account, err := p.userOf(server, user)
+	if err != nil {
+		return nil, "", fmt.Errorf("the database user %s is no longer known: %w", user, err)
+	}
+	password, err := p.sealed(account, field)
+	if err != nil {
+		return nil, "", err
+	}
+	if password == "" {
+		return nil, "", fmt.Errorf("the database user %s has no %s", user, strings.ReplaceAll(field, "_", " "))
+	}
+	return account, password, nil
+}
+
+// completeDatabase adds a database restore's or restore test's passwords as
+// it is delivered (#53): its server's administrator's, and its user's, the
+// one it restores as; but for the preview of a restore into a new database,
+// whose user does not exist yet (withUser false). A user whose password is
+// being rotated restores nothing: the server may hold either password. A
+// refusal leaves no password on the command.
+func (p *Panel) completeDatabase(record *core.Record, restore *agentv1.BackupDbRestore, withUser bool) (err error) {
+	if restore.GetConnection() == nil {
+		return errors.New("the command names no database server")
+	}
+	defer func() {
+		if err != nil {
+			restore.Connection.AdminPassword = ""
+			restore.Password = ""
+		}
+	}()
+	server, err := p.adminConnection(record, restore.GetConnection())
+	if err != nil {
+		return err
+	}
+	if !withUser {
+		return nil
+	}
+	user := restore.GetUser()
+	if account, err := p.userOf(server, user); err == nil && account.GetString("pending_password") != "" {
+		return fmt.Errorf("a rotation of %s's password is under way", user)
+	}
+	_, password, err := p.userSecret(server, user, "password")
+	if err != nil {
+		return err
+	}
+	restore.Password = password
 	return nil
 }
 
@@ -478,10 +539,11 @@ func (p *Panel) databaseRotateFinished(record *core.Record) {
 
 func (p *Panel) databaseDropFinished(record *core.Record) {
 	var payload struct {
-		Connection commandConnection `json:"connection"`
-		Database   string            `json:"database"`
-		User       string            `json:"user"`
-		KeepUser   bool              `json:"keep_user"`
+		Connection  commandConnection `json:"connection"`
+		Database    string            `json:"database"`
+		User        string            `json:"user"`
+		KeepUser    bool              `json:"keep_user"`
+		Temporaries []string          `json:"temporaries"`
 	}
 	if payloadInto(record, &payload) != nil {
 		return
@@ -492,14 +554,31 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 		return
 	}
 
-	if record.GetString("status") != schema.CommandSucceeded {
+	// the database's temporary copies went first, or stay to be dropped
+	// by the sweep (#53)
+	ctx := audit.WithActor(context.Background(), dbActor)
+	succeeded := record.GetString("status") == schema.CommandSucceeded
+	for _, name := range payload.Temporaries {
+		copied, err := p.databaseOf(server, name)
+		if err != nil || !isTemporary(copied) {
+			continue
+		}
+		if succeeded {
+			if err := p.App.DeleteWithContext(ctx, copied); err != nil {
+				p.Log.Error("failed to remove a temporary database", "database", copied.Id, "error", err)
+			}
+			continue
+		}
+		p.setFields(copied, map[string]any{"status": dbReady})
+	}
+
+	if !succeeded {
 		database.Set("status", dbReady)
 		database.Set("last_error", "The database was not dropped: "+record.GetString("error"))
 		p.saveAs(database)
 		return
 	}
 
-	ctx := audit.WithActor(context.Background(), dbActor)
 	stackID := database.GetString("stack")
 
 	if account, err := p.userOf(server, payload.User); err == nil && !payload.KeepUser {
@@ -601,6 +680,9 @@ func (p *Panel) databaseStatsFinished(record *core.Record) {
 	// reports, and forgets what it no longer does
 	if server.GetString("kind") == schema.DBServerDedicated {
 		records = p.syncDedicatedDatabases(server, records, result)
+	} else {
+		// a temporary database the panel has no record of is dropped (#53)
+		p.adoptTemporaries(server, records, result)
 	}
 
 	for _, database := range records {
@@ -643,8 +725,9 @@ func (p *Panel) syncDedicatedDatabases(server *core.Record, records []*core.Reco
 	}
 
 	for name := range result.Databases {
-		// only names PocketCloud could also create are taken over
-		if known[name] || databases.ValidDatabaseName(engine, name) != nil {
+		// only names PocketCloud could also create are taken over, never one
+		// of its temporary databases' (#53)
+		if known[name] || databases.ValidDatabaseName(engine, name) != nil || databases.ReservedPrefix(name) != nil {
 			continue
 		}
 		stats := result.Databases[name]

@@ -102,6 +102,7 @@ func TestRestoresThePanelMissedAreSettledAtItsStart(t *testing.T) {
 	t.Cleanup(app.Cleanup)
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
+	t.Cleanup(p.later.stop)
 	if err := p.loadMasterKey(); err != nil {
 		t.Fatal(err)
 	}
