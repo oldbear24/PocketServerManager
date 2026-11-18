@@ -412,7 +412,7 @@ func TestTheScriptsOfARestore(t *testing.T) {
 		{
 			"mariadb dump's tables", CountDump(MariaDB, "/tmp/pocketcloud-restore-c1.sql"),
 			`tail -c 4096 "$PC_FILE" | grep -q '^-- Dump completed' || { echo "the dump is incomplete: it does not end as a whole dump does" >&2; exit 1; }` + "\n" +
-				`grep -c '^CREATE TABLE ' "$PC_FILE" || true`,
+				`sed '/^DELIMITER ;;/,/^DELIMITER ;$/d' "$PC_FILE" | grep -c '^CREATE TABLE ' || true`,
 			[]string{"PC_FILE=/tmp/pocketcloud-restore-c1.sql"},
 		},
 		{
@@ -610,12 +610,33 @@ func TestTheDumpsTablesAreCounted(t *testing.T) {
 		"INSERT INTO `orders` VALUES (1);\n" +
 		"CREATE TABLE `customers` (\n  `id` int NOT NULL\n);\n" +
 		"-- Dump completed\n"
+	// a trigger, an event and a procedure, as mariadb-dump writes them:
+	// their bodies as they are, between DELIMITER lines (an event's ;;; when
+	// its body holds ;;)
+	routines := strings.Replace(whole, "-- Dump completed\n", "DELIMITER ;;\n"+
+		"/*!50003 CREATE*/ /*!50017 DEFINER=`shop`@`%`*/ /*!50003 TRIGGER `orders_touch` BEFORE INSERT ON `orders` FOR EACH ROW SET NEW.id = NEW.id */;;\n"+
+		"DELIMITER ;\n"+
+		"DELIMITER ;;;\n"+
+		"/*!50106 CREATE*/ /*!50117 DEFINER=`shop`@`%`*/ /*!50106 EVENT `rollup` ON SCHEDULE EVERY 1 DAY STARTS '2026-11-18 00:00:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN\n"+
+		"CREATE TABLE IF NOT EXISTS `rollup` (`id` int);\n"+
+		"SELECT ';;';\n"+
+		"END */ ;;;\n"+
+		"DELIMITER ;\n"+
+		"/*!50003 DROP PROCEDURE IF EXISTS `archive` */;\n"+
+		"DELIMITER ;;\n"+
+		"CREATE DEFINER=`shop`@`%` PROCEDURE `archive`()\nBEGIN\n"+
+		"CREATE TABLE IF NOT EXISTS `orders_old` LIKE `orders`;\n"+
+		"CREATE TABLE `orders_copy` (`id` int);\n"+
+		"END ;;\n"+
+		"DELIMITER ;\n"+
+		"-- Dump completed\n", 1)
 	for name, tc := range map[string]struct {
 		content string
 		ok      bool
 		count   int64
 	}{
 		"whole":           {whole, true, 2},
+		"with routines":   {routines, true, 2},
 		"cut short":       {strings.TrimSuffix(whole, "-- Dump completed\n"), false, 0},
 		"without a table": {"-- MariaDB dump 10.19\n-- Dump completed\n", true, 0},
 		"dated":           {strings.Replace(whole, "-- Dump completed\n", "-- Dump completed on 2026-11-18  1:30:00\n", 1), true, 2},

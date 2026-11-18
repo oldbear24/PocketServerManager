@@ -167,7 +167,8 @@ func TestStatementsMakeRenameAndDropDatabases(t *testing.T) {
 }
 
 // TestDumpsNameTheirDatabase: a database's dump says which database it is,
-// with its tables; CountDump counts them in the staged file, and refuses a
+// with its tables; CountDump counts them in the staged file, but for the
+// CREATE TABLE lines of MariaDB's routine and event bodies, and refuses a
 // PostgreSQL file that is no archive and a MariaDB dump cut short.
 func TestDumpsNameTheirDatabase(t *testing.T) {
 	h := newHarness(t)
@@ -188,7 +189,9 @@ func TestDumpsNameTheirDatabase(t *testing.T) {
 			}
 		default:
 			if !strings.Contains(dump, "Database: shop\n") || !strings.Contains(dump, "CREATE TABLE `orders`") || !strings.HasSuffix(dump, "-- Dump completed\n") ||
-				!strings.Contains(dump, "DEFINER=`shop`@`%`") || strings.Contains(dump, "posts") {
+				!strings.Contains(dump, "DEFINER=`shop`@`%`") || strings.Contains(dump, "posts") ||
+				// the bodies of its event and procedure make no table
+				strings.Count(dump, "\nCREATE TABLE ") != 4 || strings.Count(dump, "\nDELIMITER ;;\n") != 3 {
 				t.Errorf("mariadb dump:\n%s", dump)
 			}
 		}

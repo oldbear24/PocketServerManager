@@ -463,13 +463,16 @@ func StagedName(engine Engine, commandID string) string {
 // not whole. PostgreSQL's list has a TABLE entry for each, besides its data
 // and a partition's attach; pg_restore that cannot read the list fails it. A
 // MariaDB dump that does not end with "-- Dump completed" was cut short; it
-// has a CREATE TABLE line for each table.
+// has a CREATE TABLE line for each table, outside the DELIMITER ;; …
+// DELIMITER ; blocks it writes its triggers, routines and events in, whose
+// bodies it writes as they are, and which may hold CREATE TABLE lines that
+// make no table on restore.
 func CountDump(engine Engine, file string) Script {
 	script := `list=$(pg_restore --list "$PC_FILE") || { echo "pg_restore cannot read the dump's list" >&2; exit 1; }
 printf '%s\n' "$list" | awk '$4 == "TABLE" && $5 != "DATA" && $5 != "ATTACH" {n++} END {print n+0}'`
 	if engine.Name == MariaDB.Name {
 		script = `tail -c 4096 "$PC_FILE" | grep -q '^-- Dump completed' || { echo "the dump is incomplete: it does not end as a whole dump does" >&2; exit 1; }
-grep -c '^CREATE TABLE ' "$PC_FILE" || true`
+sed '/^DELIMITER ;;/,/^DELIMITER ;$/d' "$PC_FILE" | grep -c '^CREATE TABLE ' || true`
 	}
 	return Script{Cmd: []string{"sh", "-c", script}, Env: []string{"PC_FILE=" + file}}
 }

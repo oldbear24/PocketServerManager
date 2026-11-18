@@ -18,10 +18,14 @@
 //     database, PostgreSQL's as a fake custom archive (PGDMP, then
 //     pg_restore's list of it: a TABLE and a TABLE DATA entry per table) and
 //     MariaDB's as SQL with a CREATE TABLE and an INSERT per table, a
-//     DEFINER of the database's user, and "-- Dump completed" last.
+//     trigger, an event and a procedure of the database's user as DEFINER,
+//     whose bodies, between DELIMITER lines, hold CREATE TABLE lines, and
+//     "-- Dump completed" last.
 //     SetDumpContent stands in for one database's next dumps.
 //   - CountDump: pg_restore --list of a staged dump (it fails on what is no
-//     archive) or MariaDB's footer check, and the tables counted.
+//     archive) or MariaDB's footer check, and the tables counted: MariaDB's
+//     CREATE TABLE lines outside the DELIMITER blocks, as the restore makes
+//     no table of a body.
 //   - RestoreAsUser, with the privilege model of a restore that runs as the
 //     database's own user: the user signs in with its password, may write
 //     only a database it owns (PostgreSQL) or has a grant on (MariaDB). On
@@ -612,8 +616,10 @@ func PostgresDump(name, owner string, tables ...string) string {
 }
 
 // MariaDBDump is a fake SQL dump of a MariaDB database with tables, as
-// DumpCommand writes one: a table and a row each, and a trigger whose
-// definer is definer, if one is given.
+// DumpCommand writes one: a table and a row each, and, when a definer is
+// given, a trigger, an event and a procedure of that definer, between
+// DELIMITER lines as mariadb-dump writes them, whose bodies hold CREATE
+// TABLE lines that make no table on restore.
 func MariaDBDump(name, definer string, tables ...string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB, for debian-linux-gnu (x86_64)\n--\n-- Host: localhost    Database: %s\n", name)
@@ -623,10 +629,33 @@ func MariaDBDump(name, definer string, tables ...string) string {
 		fmt.Fprintf(&out, "set autocommit=0;\nINSERT INTO `%s` VALUES (1);\ncommit;\n", table)
 	}
 	if definer != "" && len(tables) > 0 {
-		fmt.Fprintf(&out, "/*!50003 CREATE*/ /*!50017 DEFINER=`%s`@`%%`*/ /*!50003 TRIGGER `%s_touch` BEFORE INSERT ON `%s` FOR EACH ROW SET NEW.id = NEW.id */;;\n", definer, tables[0], tables[0])
+		first := tables[0]
+		fmt.Fprintf(&out, "DELIMITER ;;\n/*!50003 CREATE*/ /*!50017 DEFINER=`%s`@`%%`*/ /*!50003 TRIGGER `%s_touch` BEFORE INSERT ON `%s` FOR EACH ROW SET NEW.id = NEW.id */;;\nDELIMITER ;\n",
+			definer, first, first)
+		fmt.Fprintf(&out, "DELIMITER ;;\n/*!50106 CREATE*/ /*!50117 DEFINER=`%s`@`%%`*/ /*!50106 EVENT `%s_rollup` ON SCHEDULE EVERY 1 DAY STARTS '2026-11-18 00:00:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN\n"+
+			"CREATE TABLE IF NOT EXISTS `%s_rollup` (`id` int);\nEND */ ;;\nDELIMITER ;\n", definer, first, first)
+		fmt.Fprintf(&out, "DELIMITER ;;\nCREATE DEFINER=`%s`@`%%` PROCEDURE `%s_archive`()\nBEGIN\nCREATE TABLE `%s_old` (`id` int);\nEND ;;\nDELIMITER ;\n",
+			definer, first, first)
 	}
 	out.WriteString("-- Dump completed\n")
 	return out.String()
+}
+
+// inBodies says, of each line of a MariaDB dump, whether it is in a
+// DELIMITER ;; … DELIMITER ; block, where mariadb-dump writes triggers,
+// routines and events with their bodies as they are.
+func inBodies(lines []string) []bool {
+	in, body := make([]bool, len(lines)), false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "DELIMITER ;;") {
+			body = true
+		}
+		in[i] = body
+		if line == "DELIMITER ;" {
+			body = false
+		}
+	}
+	return in
 }
 
 // staged is the file a process reads, as the archive PUT copied it in.
@@ -712,8 +741,10 @@ func (p *process) countDump() fakedocker.ExecResult {
 		return fakedocker.ExecResult{Code: 1, Stderr: "the dump is incomplete: it does not end as a whole dump does\n"}
 	}
 	count := 0
-	for _, line := range strings.Split(string(content), "\n") {
-		if strings.HasPrefix(line, "CREATE TABLE ") {
+	lines := strings.Split(string(content), "\n")
+	bodies := inBodies(lines)
+	for i, line := range lines {
+		if !bodies[i] && strings.HasPrefix(line, "CREATE TABLE ") {
 			count++
 		}
 	}
@@ -783,9 +814,10 @@ func (p *process) restoreMariaDB(user, target, definer, content string, oneDatab
 	p.named(source)
 	failing := strings.Contains(target, "fail") || strings.Contains(source, "fail")
 	lines := strings.Split(content, "\n")
+	bodies := inBodies(lines)
 	last := -1
 	for i, line := range lines {
-		if createTable.MatchString(line) {
+		if !bodies[i] && createTable.MatchString(line) {
 			last = i
 		}
 	}
@@ -797,7 +829,7 @@ func (p *process) restoreMariaDB(user, target, definer, content string, oneDatab
 		return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1044 (42000) at line %d: Access denied for user '%s'@'%%' to database '%s'\n", at+1, user, other)}
 	}
 	for i, line := range lines {
-		if match := useDatabase.FindStringSubmatch(line); match != nil {
+		if match := useDatabase.FindStringSubmatch(line); match != nil && !bodies[i] {
 			switch {
 			case match[1] == target:
 				current, skipping = target, false
@@ -818,6 +850,20 @@ func (p *process) restoreMariaDB(user, target, definer, content string, oneDatab
 			// "Ignoring query to other database"
 			continue
 		}
+		if match := definerOf.FindStringSubmatch(line); match != nil {
+			who := match[1]
+			if definer != "" && !strings.HasPrefix(line, "INSERT INTO ") {
+				who = definer
+			}
+			if who != user {
+				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1227 (42000) at line %d: Access denied; you need (at least one of) the SUPER, SET USER privilege(s) for this operation\n", i+1)}
+			}
+		}
+		if bodies[i] {
+			// a trigger's, routine's or event's body is kept as it is: what
+			// it names is looked at when it runs
+			continue
+		}
 		if match := dropCreate.FindStringSubmatch(line); match != nil && !p.sv.mayWrite(match[1], user) {
 			return denied(i, match[1])
 		}
@@ -827,15 +873,6 @@ func (p *process) restoreMariaDB(user, target, definer, content string, oneDatab
 				command, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1142 (42000) at line %d: %s command denied to user '%s'@'172.17.0.2' for table `%s`.`%s`\n",
 					i+1, strings.ToUpper(command), user, match[1], match[2])}
-			}
-		}
-		if match := definerOf.FindStringSubmatch(line); match != nil {
-			who := match[1]
-			if definer != "" && !strings.HasPrefix(line, "INSERT INTO ") {
-				who = definer
-			}
-			if who != user {
-				return fakedocker.ExecResult{Code: 1, Stderr: fmt.Sprintf("ERROR 1227 (42000) at line %d: Access denied; you need (at least one of) the SUPER, SET USER privilege(s) for this operation\n", i+1)}
 			}
 		}
 		if match := createTable.FindStringSubmatch(line); match != nil {
