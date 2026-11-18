@@ -2,7 +2,10 @@
 // and which fields hold secrets. See docs/data-model.md.
 package schema
 
-import "slices"
+import (
+	"regexp"
+	"slices"
+)
 
 // Collections created by migrations.
 const (
@@ -97,6 +100,14 @@ const (
 	// encrypted on the panel (#32). The job's server is the carrier, whose
 	// agent uploads the encrypted copy; at most one job has it.
 	SourcePanel = "panel"
+	// SourceDatabase is one database of a shared server (#53), dumped by the
+	// server's own client: the job's database relation names it, and the
+	// server is resolved at each run, never stored.
+	SourceDatabase = "database"
+	// SourceSite is what a PHP site keeps outside its releases (#53): the
+	// directory <site>/shared of the sites volume, or <site> for a
+	// classic-mode site.
+	SourceSite = "site"
 )
 
 // Database engines whose dumps a backup job makes (#29).
@@ -111,6 +122,21 @@ const (
 	JobManual = "manual"
 	// JobLabel is a job a stack's pocketcloud.backup label makes (OriginLabel).
 	JobLabel = OriginLabel
+	// JobDatabase is the job the panel makes for every database of a shared
+	// server (#53): one per database, never made through the API.
+	JobDatabase = "database"
+	// JobSite is the job <site>-files the panel makes for every PHP site once
+	// it is deployed (#53).
+	JobSite = "site"
+)
+
+// The settings of a job that follows its server's automatic backups (#53):
+// backup_jobs.own_settings lists those the job set for itself, and the host's
+// auto_backup_* fields give the others.
+const (
+	OwnSchedule  = "schedule"
+	OwnTargets   = "targets"
+	OwnRetention = "retention"
 )
 
 // How a backup run, or a check of a target, started.
@@ -162,7 +188,11 @@ const (
 	// CheckIntegrity is restic check: the structure, and one group of the
 	// data packs.
 	CheckIntegrity = "integrity"
-	// CheckRestoreTest is reserved for #53's restore tests.
+	// CheckRestoreTest is a restore test of a database job (#53): the
+	// newest dump of one target goes into a temporary database of the job's
+	// server, and the tables restored are compared with the dump's. Its row
+	// names the job, the database, the snapshot and the temporary database;
+	// its host is the job's server, whose agent restores.
 	CheckRestoreTest = "restore_test"
 )
 
@@ -207,6 +237,20 @@ const (
 	DefaultCheckGroups   = 20
 )
 
+// DefaultRestoreTestSchedule is when the restore tests of database jobs run
+// (#53), which admins change in the settings: every Wednesday at 05:20 UTC,
+// after the automatic backups of 01:00 to 02:45.
+const DefaultRestoreTestSchedule = "20 5 * * 3"
+
+// TemporaryDatabase is the namespace of PocketCloud's temporary databases
+// (#53): pc_rt_<check id>, a restore test's copy; pc_rs_<restore id>, an
+// in-place restore's scratch copy; pc_old_<restore id>, the data an in-place
+// restore of PostgreSQL replaced. Each is a databases record whose
+// temporary_until says when the panel drops it. A new database may not take
+// a name of the namespace, and nothing drops a database outside it as
+// temporary.
+var TemporaryDatabase = regexp.MustCompile(`^pc_(rt|rs|old)_[a-z0-9]{15}$`)
+
 // States of a restore or a download of a snapshot (#30). A restore is a
 // draft while it is previewed, until someone starts it; a download starts
 // queued.
@@ -249,6 +293,13 @@ const (
 	// RestoreDownload streams a folder of the snapshot as a tar, or one file
 	// as it is, to a browser.
 	RestoreDownload = "download"
+	// RestoreDatabase puts a database job's dump back into its database
+	// (#53), as the database's own user: the application stops for a while,
+	// and the other databases of the server are not touched.
+	RestoreDatabase = "database"
+	// RestoreNewDatabase restores a database job's dump into a new database
+	// with a user of its own (#53): nothing else changes.
+	RestoreNewDatabase = "new_database"
 )
 
 // What a download of a snapshot sends (#30).
@@ -257,6 +308,9 @@ const (
 	DownloadDir = "dir"
 	// DownloadFile is one file of the snapshot, as it is.
 	DownloadFile = "file"
+	// DownloadSQL is a database job's dump as plain SQL (#53): a MariaDB
+	// dump as it is, a PostgreSQL one converted by pg_restore on the way.
+	DownloadSQL = "sql"
 )
 
 // PanelTable is a plain table of one row, not a collection, so the API and the
@@ -538,7 +592,8 @@ var Audited = []AuditedCollection{
 	{Name: DBServers, Label: "name", Host: "host", Ignore: []string{
 		"status", "size_bytes", "connections", "max_connections", "version", "stats_at", "last_error", "container_ref",
 	}},
-	{Name: Databases, Label: "name", Ignore: []string{"status", "size_bytes", "connections", "last_error"}},
+	// a temporary database's time moves as its restore or test goes (#53)
+	{Name: Databases, Label: "name", Ignore: []string{"status", "size_bytes", "connections", "last_error", "temporary_until"}},
 	{Name: DBUsers, Label: "name"},
 	{Name: DBNetworks, Label: "name"},
 	{Name: DBMoves, Label: "source_name", Host: "host", Ignore: []string{"status", "error", "moved_at", "removed_at", "command"}},
@@ -548,7 +603,11 @@ var Audited = []AuditedCollection{
 		"integrity_status", "integrity_at", "integrity_error", "last_check", "last_check_status",
 		"last_check_error", "next_check_at", "integrity_group",
 	}},
-	{Name: BackupJobs, Label: "name", Host: "host", Ignore: []string{"next_run_at", "last_run_at", "last_status", "problem", "label_removed"}},
+	{Name: BackupJobs, Label: "name", Host: "host", Ignore: []string{
+		"next_run_at", "last_run_at", "last_status", "problem", "label_removed",
+		// when a run of it last succeeded (#53)
+		"last_success_at",
+	}},
 }
 
 // IsEncrypted reports whether a field holds a secret.

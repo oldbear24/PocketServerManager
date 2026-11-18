@@ -18,6 +18,13 @@ const (
 	// capabilities gate command types only, and an older agent would refuse
 	// BackupRun.panel_export as a second source.
 	CapabilityPanel = "backup.run.panel"
+	// CapabilityDatabase is the pseudo-capability of an agent that backs up,
+	// restores and converts single databases and PHP sites' files (#53):
+	// BackupRun.extra_tags, site_dir and excludes, BackupRestore.database and
+	// BackupDump.sql_from, which an older agent would refuse or, for
+	// extra_tags, leave out. backup.restore_test and db.database.discard are
+	// gated by their command types.
+	CapabilityDatabase = "backup.database"
 	// PanelExportPrefix starts the artifact id of a panel run's copy, which
 	// the backup_runs id completes (PanelExportID).
 	PanelExportPrefix = "panel-export:"
