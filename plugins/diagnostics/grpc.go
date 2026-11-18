@@ -32,6 +32,14 @@ func remoteAddressOf(ctx context.Context) string {
 type connKey struct{}
 type rpcKey struct{}
 
+// rpcState follows one call, for Config.Probe.
+type rpcState struct {
+	// unary is set for a unary call whose request has not arrived yet.
+	unary atomic.Bool
+	// probe is set for a call whose request was a probe.
+	probe atomic.Bool
+}
+
 // connState follows one connection, which belongs to one agent once it made a call.
 type connState struct {
 	agent        atomic.Pointer[agentState]
@@ -76,7 +84,7 @@ func (h *statsHandler) HandleConn(ctx context.Context, event stats.ConnStats) {
 }
 
 func (h *statsHandler) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
-	return context.WithValue(ctx, rpcKey{}, info.FullMethodName)
+	return context.WithValue(ctx, rpcKey{}, &rpcState{})
 }
 
 func (h *statsHandler) HandleRPC(ctx context.Context, event stats.RPCStats) {
@@ -90,6 +98,9 @@ func (h *statsHandler) HandleRPC(ctx context.Context, event stats.RPCStats) {
 
 	agent := state.agent.Load()
 	if agent == nil {
+		if h.plugin.unbound(ctx, event) {
+			return
+		}
 		agent = h.plugin.bindConnection(ctx, state)
 		if agent == nil {
 			return
@@ -118,6 +129,38 @@ func (h *statsHandler) HandleRPC(ctx context.Context, event stats.RPCStats) {
 			state.lastError.Store(&message)
 		}
 	}
+}
+
+// unbound says whether an event of a call leaves its connection untied for
+// now, with Config.Probe: a unary call ties it only once its request shows
+// it is no probe. The header comes before Begin says whether the call is
+// unary; a call that ends without a request ties it then, as before.
+func (p *Plugin) unbound(ctx context.Context, event stats.RPCStats) bool {
+	call, _ := ctx.Value(rpcKey{}).(*rpcState)
+	if p.config.Probe == nil || call == nil {
+		return false
+	}
+	if call.probe.Load() {
+		return true
+	}
+
+	switch e := event.(type) {
+	case *stats.InHeader:
+		return true
+	case *stats.Begin:
+		if !e.IsClientStream && !e.IsServerStream {
+			call.unary.Store(true)
+			return true
+		}
+	case *stats.InPayload:
+		if message, ok := e.Payload.(proto.Message); ok && call.unary.Load() && p.config.Probe(message) {
+			call.probe.Store(true)
+			return true
+		}
+	}
+
+	call.unary.Store(false)
+	return false
 }
 
 // bindConnection ties a connection to its agent, on the first call it makes:

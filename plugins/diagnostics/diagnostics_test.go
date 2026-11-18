@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
@@ -327,6 +328,79 @@ func TestConnectionHistory(t *testing.T) {
 	}
 	if len(summary.Events) != 3 {
 		t.Errorf("events: %+v", summary.Events)
+	}
+}
+
+type heartbeatOnly struct {
+	agentv1.UnimplementedAgentServiceServer
+}
+
+func (heartbeatOnly) Heartbeat(context.Context, *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error) {
+	return &agentv1.HeartbeatResponse{}, nil
+}
+
+// TestAProbeAloneLeavesNoConnection (#32): through a real gRPC server, as
+// its events come, a connection whose one call is a probe is not tied to
+// its agent: nothing is told to OnConnection and nothing is counted, so a
+// server's check of the panel, as `repoint --check` while its agent is
+// stopped, adds no connection to its events. A plain heartbeat on the next
+// connection is its first connection.
+func TestAProbeAloneLeavesNoConnection(t *testing.T) {
+	seen := make(chan ConnectionEvent, 8)
+	plugin, _ := newPlugin(t, Config{
+		Enabled:      true,
+		OnConnection: func(_ string, event ConnectionEvent) { seen <- event },
+		Probe: func(message proto.Message) bool {
+			request, ok := message.(*agentv1.HeartbeatRequest)
+			return ok && request.GetProbe()
+		},
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.StatsHandler(plugin.StatsHandler()), grpc.UnaryInterceptor(plugin.UnaryInterceptor()))
+	agentv1.RegisterAgentServiceServer(server, heartbeatOnly{})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	heartbeat := func(probe bool) {
+		t.Helper()
+		conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := agentv1.NewAgentServiceClient(conn).Heartbeat(context.Background(), &agentv1.HeartbeatRequest{Probe: probe}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// a connection is told as it is tied, during its first call
+	heartbeat(true)
+	select {
+	case event := <-seen:
+		t.Fatalf("a probe was told: %+v", event)
+	default:
+	}
+	if summary, _ := plugin.Agent("agent-1"); summary.Connected || summary.MessagesIn != 0 || len(summary.Events) != 0 {
+		t.Errorf("a probe counted: %+v", summary)
+	}
+
+	heartbeat(false)
+	for _, kind := range []string{"connected", "disconnected"} {
+		select {
+		case event := <-seen:
+			if event.Kind != kind {
+				t.Fatalf("%+v, not %s", event, kind)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no %s event", kind)
+		}
+	}
+	if summary, _ := plugin.Agent("agent-1"); summary.Reconnects != 0 || summary.MessagesIn != 1 || len(summary.Events) != 2 {
+		t.Errorf("%+v", summary)
 	}
 }
 

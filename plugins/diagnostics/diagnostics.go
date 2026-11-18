@@ -66,6 +66,12 @@ type Config struct {
 	// anything else, and what it is about.
 	Describe func(message proto.Message) (kind, subject string)
 
+	// Probe tells the requests of unary calls that are to leave no trace,
+	// as a server's check of the panel: a connection is tied to its agent
+	// only by a call that is not one, so that a probe alone is neither
+	// counted nor told to OnConnection.
+	Probe func(message proto.Message) bool
+
 	// ConfigDump returns the configuration for a bundle, without secrets.
 	ConfigDump func() map[string]any
 

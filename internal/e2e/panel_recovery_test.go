@@ -682,9 +682,11 @@ func TestAPanelBackupFollowsAnEnrollment(t *testing.T) {
 // whether it knows the server and changes nothing of it: a server the
 // restored panel marked offline stays offline, its edge's state kept, with
 // no event, so that no alert follows; a removed server, whose certificate
-// its removal revoked, is still refused.
+// its removal revoked, is still refused. The panel runs the diagnostics
+// plugin, as it does by default, which records connections: the probe's,
+// with the agent stopped, is none.
 func TestARepointCheckChangesNothingOnThePanel(t *testing.T) {
-	h := newHarness(t)
+	h := newHarnessWithDiagnostics(t)
 	running, host := h.enrolled("vm")
 	if err := running.stop(); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)

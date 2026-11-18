@@ -47,6 +47,7 @@ func (p *Panel) EnableDiagnostics() *diagnostics.Plugin {
 		Authorize:     authorizeDiagnostics,
 		OnConnection:  p.onAgentConnection,
 		Describe:      describeMessage,
+		Probe:         isProbe,
 		ConfigDump:    p.configDump,
 		QueueSnapshot: p.queueSnapshot,
 	})
@@ -176,6 +177,16 @@ func (p *Panel) onAgentConnection(hostID string, event diagnostics.ConnectionEve
 		"reason": event.Reason,
 		"remote": event.Remote,
 	})
+}
+
+// isProbe tells the plugin the calls that leave no trace on the panel (#32):
+// the probes of `repoint` and of the diagnostics' round trip, which the
+// gateway only authenticates and answers. Without it a probe from a server
+// whose agent is stopped would show in the server's events as a connection
+// and a disconnection.
+func isProbe(message proto.Message) bool {
+	request, ok := message.(*agentv1.HeartbeatRequest)
+	return ok && request.GetProbe()
 }
 
 // describeMessage classifies messages for the trace filters.

@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -45,6 +46,25 @@ func newHarness(t *testing.T, options ...func(*gateway.Server)) *harness {
 // registers: its config is not changed while it runs.
 func newHarnessWith(t *testing.T, panelConfig func(*panel.Config), options ...func(*gateway.Server)) *harness {
 	t.Helper()
+	return newHarnessBefore(t, panelConfig, nil, options...)
+}
+
+// newHarnessWithDiagnostics starts a panel with the diagnostics plugin, as
+// cmd/panel does by default: the plugin, not the gateway, then records the
+// agents' connections as events.
+func newHarnessWithDiagnostics(t *testing.T) *harness {
+	t.Helper()
+	t.Setenv(panel.EnvDiagnostics, "1")
+	// the plugin sends every component's log through itself
+	logger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	return newHarnessBefore(t, nil, func(p *panel.Panel) { p.EnableDiagnostics() })
+}
+
+// newHarnessBefore starts a panel with a change of its config and of the
+// panel itself, made before it registers.
+func newHarnessBefore(t *testing.T, panelConfig func(*panel.Config), before func(*panel.Panel), options ...func(*gateway.Server)) *harness {
+	t.Helper()
 
 	app := testutil.NewApp(t)
 	t.Cleanup(app.Cleanup)
@@ -59,6 +79,9 @@ func newHarnessWith(t *testing.T, panelConfig func(*panel.Config), options ...fu
 	}
 	p := panel.New(app, config, fstest.MapFS{"index.html": {Data: []byte("ui")}})
 	p.Observers = append(p.Observers, options...)
+	if before != nil {
+		before(p)
+	}
 	p.Register()
 
 	return &harness{
