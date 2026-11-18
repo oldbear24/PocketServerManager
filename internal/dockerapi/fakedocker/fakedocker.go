@@ -114,6 +114,9 @@ type Job struct {
 	Entrypoint []string
 	Cmd        []string
 	Env        []string
+	// Image is the image the container was created from, as its create
+	// config named it.
+	Image string
 	// User is the user the container runs as, as its create config set it.
 	User string
 	// Host is the container's HostConfig.
@@ -996,7 +999,7 @@ func stopJob(c *Container) {
 
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
-	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
+	job := Job{Name: c.Name, Image: c.Image, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
 	job.Hostname, _ = c.Config["Hostname"].(string)
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR

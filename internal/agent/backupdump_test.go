@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,8 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
+	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
 	"github.com/oldbear24/PocketServerManager/internal/testutil/fakerestic"
 )
 
@@ -306,5 +309,125 @@ func TestTheSnapshotListAndAFolderComeFromAJob(t *testing.T) {
 	trimList(result, "snapshots", maxSnapshotsResult)
 	if size := resultSize(result); size > maxSnapshotsResult || len(result["snapshots"].([]any)) < 500 {
 		t.Errorf("trimmed to %d bytes, %d snapshots", size, len(result["snapshots"].([]any)))
+	}
+}
+
+// conversions are the jobs that converted a dump to SQL.
+func (h *restoreHarness) conversions() []fakedocker.Job {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var jobs []fakedocker.Job
+	for _, job := range h.jobs {
+		if slices.Equal(job.Entrypoint, []string{"pg_restore"}) {
+			jobs = append(jobs, job)
+		}
+	}
+	return jobs
+}
+
+// TestAPostgresDumpDownloadsAsSQL (#53): a PostgreSQL job's dump downloads
+// as plain SQL, converted as it streams by pg_restore of a container made
+// from the server's own image, which has no network, no capability, a
+// read-only root and its own /tmp, keeps no log, takes the dump on its
+// input and is gone afterwards; a conversion that fails, or a dump that
+// fails, aborts the download.
+func TestAPostgresDumpDownloadsAsSQL(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	snapshot, dump := d.backupDatabase(t, pg, "shop")
+	payload := &agentv1.BackupDump{Repository: d.repo, SnapshotId: snapshot, Path: "/shop.pgdump", RestoreId: "r1",
+		FileName: "shop-20261118-0130.sql", JobTag: testJobTag, SqlFrom: "pcdb-main-db-1"}
+	panel := livePanel(t, d.Agent)
+	result, err := d.handleBackupDump(context.Background(), dumpCommand("d1", payload), &Reporter{})
+	if err != nil {
+		t.Fatalf("%v %v", err, result)
+	}
+	if err := <-panel.ended; err != nil {
+		t.Fatalf("the upload: %v", err)
+	}
+	want := "--\n-- PostgreSQL database dump\n--\n\n" + dump
+	if panel.data.String() != want || result["bytes"] != int64(len(want)) || panel.header.GetFileName() != "shop-20261118-0130.sql" {
+		t.Errorf("the download: %q %v", panel.data.String(), result)
+	}
+	conversions := d.conversions()
+	if len(conversions) != 1 {
+		t.Fatalf("%d conversions", len(conversions))
+	}
+	job := conversions[0]
+	if job.Image != "sha256:"+strings.Repeat("a", 64) || job.User != "postgres" || !slices.Equal(job.Cmd, []string{"--file=-", "--no-owner", "--no-privileges"}) ||
+		job.Labels["pocketcloud.role"] != "job" || job.Labels["pocketcloud.command"] != "d1" || job.Labels[backupTargetLabel] != "t1" {
+		t.Errorf("the conversion: %+v", job)
+	}
+	tmpfs, _ := job.Host["Tmpfs"].(map[string]any)
+	logs, _ := job.Host["LogConfig"].(map[string]any)
+	if job.Host["NetworkMode"] != "none" || !slices.Equal(anyStrings(job.Host["CapDrop"]), []string{"ALL"}) || job.Host["CapAdd"] != nil ||
+		!slices.Equal(anyStrings(job.Host["SecurityOpt"]), []string{"no-new-privileges"}) || job.Host["ReadonlyRootfs"] != true ||
+		tmpfs["/tmp"] == nil || job.Host["PidsLimit"] != float64(64) || logs["Type"] != "none" || job.Host["Mounts"] != nil || job.Host["Binds"] != nil {
+		t.Errorf("the conversion's host config: %v", job.Host)
+	}
+	for _, name := range d.engine.Names() {
+		if container := d.engine.Find(name); container != nil && container.Labels["pocketcloud.role"] == "job" {
+			t.Errorf("a job is left: %s", name)
+		}
+	}
+
+	// a dump that is no archive: the conversion fails
+	d.db.SetDumpContent(d.servers[pg.Name], "shop", "-- plain SQL\n")
+	payload.SnapshotId, _ = d.backupDatabase(t, pg, "shop")
+	panel = livePanel(t, d.Agent)
+	if _, err := d.handleBackupDump(context.Background(), dumpCommand("d2", payload), &Reporter{}); err == nil ||
+		err.Error() != "the conversion to SQL failed with exit code 1: pg_restore: error: input file does not appear to be a valid archive" {
+		t.Errorf("a conversion that failed: %v", err)
+	}
+	if err := <-panel.ended; err == nil {
+		t.Error("the download was kept")
+	}
+
+	// a dump that fails
+	payload.SnapshotId = snapshot
+	fakerestic.Damage(t, d.root, d.repo.GetUrl())
+	panel = livePanel(t, d.Agent)
+	if _, err := d.handleBackupDump(context.Background(), dumpCommand("d3", payload), &Reporter{}); err == nil || !strings.Contains(err.Error(), "ciphertext verification failed") {
+		t.Errorf("a dump that failed: %v", err)
+	}
+	if err := <-panel.ended; err == nil {
+		t.Error("the download was kept")
+	}
+}
+
+// TestOnlyASharedPostgresServerConvertsToSQL (#53): the conversion runs
+// from a running shared PostgreSQL server's image only, of a database job's
+// one file; anything else is refused before the panel is reached.
+func TestOnlyASharedPostgresServerConvertsToSQL(t *testing.T) {
+	d := newDBHarness(t)
+	d.container("umami-db-1", map[string]string{composeProjectLabel: "umami"}, "always", 0)
+	dials := 0
+	d.LiveUpload = func(context.Context) (agentv1.AgentServiceClient, func(), error) {
+		dials++
+		return nil, nil, errors.New("no panel")
+	}
+	for name, tc := range map[string]struct{ from, path, want string }{
+		"not a server": {"umami-db-1", "/shop.pgdump", "The SQL is made by a shared PostgreSQL server's own pg_restore only."},
+		"mariadb":      {"pcdb-maria-db-1", "/shop.pgdump", "The SQL is made by a shared PostgreSQL server's own pg_restore only."},
+		"gone":         {"gone", "/shop.pgdump", "The SQL is made by a shared PostgreSQL server's own pg_restore only."},
+		"not a dump":   {"pcdb-main-db-1", "/shop.sql", "is not the dump of a PostgreSQL database"},
+		"in a folder":  {"pcdb-main-db-1", "/volumes/data/shop.pgdump", "the one file of a database's snapshot"},
+		"a whole snap": {"pcdb-main-db-1", "/", "is not the dump of a PostgreSQL database"},
+	} {
+		payload := &agentv1.BackupDump{Repository: d.repo, SnapshotId: strings.Repeat("a", 64), Path: tc.path, RestoreId: "r1",
+			FileName: "shop.sql", JobTag: testJobTag, SqlFrom: tc.from}
+		if _, err := d.handleBackupDump(context.Background(), dumpCommand("d1", payload), &Reporter{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	d.engine.SetStatus(d.servers[databases.Postgres.Name], "exited")
+	payload := &agentv1.BackupDump{Repository: d.repo, SnapshotId: strings.Repeat("a", 64), Path: "/shop.pgdump", RestoreId: "r1",
+		FileName: "shop.sql", JobTag: testJobTag, SqlFrom: "pcdb-main-db-1"}
+	if _, err := d.handleBackupDump(context.Background(), dumpCommand("d1", payload), &Reporter{}); !errors.Is(err, errNotPostgresServer) {
+		t.Errorf("a stopped server: %v", err)
+	}
+	if dials != 0 || len(d.conversions()) != 0 {
+		t.Errorf("%d dials, %d conversions", dials, len(d.conversions()))
 	}
 }
