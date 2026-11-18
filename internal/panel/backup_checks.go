@@ -121,12 +121,15 @@ func (p *Panel) registerBackupChecks() {
 	// route, which admins may bypass through it
 	p.App.OnRecordCreateRequest(schema.Settings).BindFunc(p.checkSettingsRequest)
 	p.App.OnRecordUpdateRequest(schema.Settings).BindFunc(p.checkSettingsRequest)
+	// the restore tests of database jobs, rows of their own kind (#53)
+	p.registerRestoreTests()
 }
 
 func (p *Panel) bindBackupCheckRoutes(group *router.RouterGroup[*core.RequestEvent]) {
 	admins := requireRole(schema.RoleAdmin)
 	group.POST("/backup-targets/{id}/check", p.handleCheckTarget).BindFunc(admins)
 	group.PUT("/settings/backup-checks", p.handleCheckSettings).BindFunc(admins)
+	group.POST("/backup-jobs/{id}/restore-test", p.handleRestoreTest).BindFunc(requireRole(schema.RoleOperator, schema.RoleAdmin))
 }
 
 // checkSettings reads when the checks run, "" when they are off or the
@@ -232,6 +235,14 @@ func (p *Panel) checkSettingsRequest(e *core.RecordRequestEvent) error {
 			return e.BadRequestError(problem, validation.Errors{"backup_check_groups": validation.NewError("validation_invalid_groups", problem)})
 		}
 	}
+	// the restore tests' schedule takes the same rules (#53)
+	tests := stacks.NormalSchedule(record.GetString("restore_test_schedule"))
+	if record.IsNew() || tests != stacks.NormalSchedule(before.GetString("restore_test_schedule")) {
+		if problem := checkScheduleText(tests, time.Now()); problem != "" {
+			return e.BadRequestError(problem, validation.Errors{"restore_test_schedule": validation.NewError("validation_invalid_schedule", problem)})
+		}
+		record.Set("restore_test_schedule", tests)
+	}
 	if err := e.Next(); err != nil {
 		return err
 	}
@@ -252,6 +263,10 @@ func (p *Panel) checkSettingsChanged(before, after *core.Record) {
 	if schedule == "" && was != "" {
 		p.checksTurnedOff()
 	}
+	// turning the restore tests off resolves what only tests would (#53)
+	if stacks.NormalSchedule(after.GetString("restore_test_schedule")) == "" && stacks.NormalSchedule(before.GetString("restore_test_schedule")) != "" {
+		p.restoreTestsTurnedOff()
+	}
 }
 
 // handleCheckSettings sets when the checks run and how much of a repository
@@ -261,6 +276,9 @@ func (p *Panel) handleCheckSettings(e *core.RequestEvent) error {
 	var body struct {
 		Schedule *string  `json:"schedule"`
 		Groups   *float64 `json:"groups"`
+		// RestoreTestSchedule is when the restore tests of database jobs run
+		// (#53); empty turns them off
+		RestoreTestSchedule *string `json:"restore_test_schedule"`
 	}
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
@@ -284,6 +302,13 @@ func (p *Panel) handleCheckSettings(e *core.RequestEvent) error {
 		}
 		settings.Set("backup_check_groups", int(*body.Groups))
 	}
+	if body.RestoreTestSchedule != nil {
+		tests := stacks.NormalSchedule(*body.RestoreTestSchedule)
+		if problem := checkScheduleText(tests, now); problem != "" {
+			return e.BadRequestError(problem, nil)
+		}
+		settings.Set("restore_test_schedule", tests)
+	}
 	if err := e.App.SaveWithContext(audit.WithActor(e.Request.Context(), audit.ActorFromRequest(e)), settings); err != nil {
 		return e.BadRequestError("The checks could not be saved: "+saveErrorText(err), nil)
 	}
@@ -293,7 +318,13 @@ func (p *Panel) handleCheckSettings(e *core.RequestEvent) error {
 	if at := parseCronRule(schedule).next(now); !at.IsZero() {
 		next = at.UTC().Format(time.RFC3339)
 	}
-	return e.JSON(http.StatusOK, map[string]any{"schedule": schedule, "groups": groups, "next_check_at": next})
+	tests := p.restoreTestSchedule()
+	nextTest := ""
+	if at := parseCronRule(tests).next(now); !at.IsZero() {
+		nextTest = at.UTC().Format(time.RFC3339)
+	}
+	return e.JSON(http.StatusOK, map[string]any{"schedule": schedule, "groups": groups, "next_check_at": next,
+		"restore_test_schedule": tests, "next_restore_test_at": nextTest})
 }
 
 // checksTurnedOff resolves what only checks would resolve: the alerts that a

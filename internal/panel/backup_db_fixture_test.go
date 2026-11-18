@@ -34,7 +34,21 @@ type dbFixture struct {
 // agent restores databases.
 func newDBFixture(t *testing.T, engine string) *dbFixture {
 	t.Helper()
+	// the panel's own schedulers pass at the start of a minute, and settle
+	// what the tests leave open: the tests' passes come first
+	if now := time.Now(); now.Second() > 45 {
+		time.Sleep(now.Truncate(time.Minute).Add(time.Minute + time.Second).Sub(now))
+	}
 	f := &dbFixture{jobFixture: newJobFixture(t)}
+	// restore tests whose slots the panel's own scheduler never meets
+	settings, err := f.p.settingsRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Set("restore_test_schedule", farSchedule())
+	if err := f.app.Save(settings); err != nil {
+		t.Fatal(err)
+	}
 	f.carry(f.host, "backup.run", "backup.restore", "backup.dump", "backup.snapshots", "backup.browse", "backup.restore_test",
 		"db.database.discard", "db.database.drop", "db.stats", backup.CapabilityDatabase)
 	if engine == databases.MariaDB.Name {
