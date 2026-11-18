@@ -85,10 +85,10 @@ func testAnswer(t *testing.T, result backup.RestoreTestResult) map[string]any {
 // TestRestoreTestsStartInTheirSlot (#53, P7, AC2): at the slot of the
 // restore tests' schedule, every enabled database job with a snapshot gets
 // one test, queued, with its temporary database's record and its command,
-// which holds no secret, waits 12 hours, drops the server's earlier copies
-// whose tests ended, and orders with the server's other tests; a second pass
-// of the slot starts none; a slot missed while the panel was down less than
-// a day ago is caught up once.
+// which holds no secret and no copy to drop, waits 12 hours, and orders with
+// the server's other tests; delivered, it drops the server's earlier copies
+// whose tests ended; a second pass of the slot starts none; a slot missed
+// while the panel was down less than a day ago is caught up once.
 func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	f := newDBFixture(t, databases.Postgres.Name)
 	f.host.Set("status", schema.HostOnline)
@@ -145,7 +145,7 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	payload := f.payloadOfTest(command)
 	raw := mustString(t, command.Get("payload"))
 	if command.GetString("type") != "backup.restore_test" || command.GetString("resource") != "db-test:db-main-db-1" ||
-		!slices.Equal(payload.GetDropBefore(), []string{earlier.GetString("name")}) || payload.GetDatabase().GetUser() != "shop" ||
+		len(payload.GetDropBefore()) != 0 || payload.GetDatabase().GetUser() != "shop" ||
 		strings.Contains(raw, adminSecretPG) || strings.Contains(raw, userSecretShop) || strings.Contains(raw, "repo-password") ||
 		command.GetString("label") != "Test the restore of shop on db-main" || command.GetString("requested_label") != "schedule" {
 		t.Errorf("the command: %v %s", command.FieldsData(), raw)
@@ -155,8 +155,8 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	}
 	mshopRows := f.testsOf(mshopJob)
 	blogRows := f.testsOf(blogJob)
-	if blogPayload := f.payloadOfTest(f.stored(schema.Commands, blogRows[0].GetString("command"))); !slices.Equal(blogPayload.GetDropBefore(), []string{earlier.GetString("name")}) {
-		t.Errorf("blog's test drops %v", blogPayload.GetDropBefore())
+	if blogPayload := f.payloadOfTest(f.stored(schema.Commands, blogRows[0].GetString("command"))); len(blogPayload.GetDropBefore()) != 0 {
+		t.Errorf("blog's test is stored dropping %v", blogPayload.GetDropBefore())
 	}
 	if mshopCommand := f.stored(schema.Commands, mshopRows[len(mshopRows)-1].GetString("command")); mshopCommand.GetString("resource") != "db-test:maria-db-1" {
 		t.Errorf("MariaDB's test orders with %q", mshopCommand.GetString("resource"))
@@ -164,8 +164,14 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 
 	// the tests of a server run one at a time
 	stream := f.dbAgent()
-	got := []string{f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest().GetDatabase().GetConnection().GetContainerId(),
-		f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest().GetDatabase().GetConnection().GetContainerId()}
+	got := []string{}
+	for range 2 {
+		test := f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest()
+		got = append(got, test.GetDatabase().GetConnection().GetContainerId())
+		if test.GetDatabase().GetConnection().GetContainerId() == "db-main-db-1" && !slices.Equal(test.GetDropBefore(), []string{earlier.GetString("name")}) {
+			t.Errorf("the first test of db-main drops %v", test.GetDropBefore())
+		}
+	}
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"db-main-db-1", "maria-db-1"}) || !f.quiet(stream) {
 		t.Errorf("delivered at once: %v", got)
@@ -175,6 +181,71 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	f.p.RunDueRestoreTests(slot.Add(40 * time.Second))
 	if rows := f.testsOf(blogJob); len(rows) != 1 {
 		t.Errorf("%d tests of one slot", len(rows))
+	}
+}
+
+// TestTheTestsOfASlotDropEachOthersCopies (#53, P7, AC2): the tests of
+// one server queued at one slot run one after another, and each drops the
+// copy of the test before it, which had ended by the time it was delivered:
+// a server keeps its newest test copy only. A copy whose test's command
+// ended counts, though its finisher has not kept the test yet; one whose
+// test still runs does not.
+func TestTheTestsOfASlotDropEachOthersCopies(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	f.host.Set("status", schema.HostOnline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	blog, _ := f.addDatabase(f.server, "blog", "user-secret-blog", nil)
+	blogJob := f.dbJob(blog)
+	f.snapshotRun(blogJob, f.target, otherSnapshot, 2048)
+	slot := parseCronRule(farSchedule()).next(time.Now())
+	f.p.RunDueRestoreTests(slot.Add(20 * time.Second))
+	shopRows, blogRows := f.testsOf(f.job), f.testsOf(blogJob)
+	if len(shopRows) != 1 || len(blogRows) != 1 {
+		t.Fatalf("%d and %d tests at the slot", len(shopRows), len(blogRows))
+	}
+
+	stream := f.dbAgent()
+	first := f.receivedOf(stream, "backup.restore_test")
+	if test := first.GetBackupRestoreTest(); test.GetCheckId() != shopRows[0].Id || len(test.GetDropBefore()) != 0 {
+		t.Fatalf("the first test: %v", test)
+	}
+	if !f.quiet(stream) {
+		t.Fatal("blog's test was delivered while shop's ran")
+	}
+	shopCopy := shopRows[0].GetString("temporary")
+	// while shop's test runs, a delivery of blog's would leave its copy
+	if dropped := earlierTestCopies(f.app, f.server, blogRows[0].GetString("temporary")); len(dropped) != 0 {
+		t.Errorf("a running test's copy would be dropped: %v", dropped)
+	}
+	// its command ended, and its finisher has not kept it yet
+	running := f.fresh(f.stored(schema.Commands, first.GetId()))
+	running.Set("status", schema.CommandDispatched)
+	if err := f.app.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	running.Load(map[string]any{"status": schema.CommandSucceeded, "started_at": time.Now().UTC().Add(-time.Minute), "finished_at": time.Now().UTC(),
+		"result": testAnswer(t, backup.RestoreTestResult{Status: backup.RestoreTestOK, Tables: 2, TablesExpected: 2, Created: true})})
+	if err := f.app.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	if dropped := earlierTestCopies(f.app, f.server, blogRows[0].GetString("temporary")); !slices.Equal(dropped, []string{shopCopy}) {
+		t.Errorf("the copy of a test whose command ended: %v", dropped)
+	}
+	f.p.restoreTestFinished(f.fresh(running))
+	if kept := f.fresh(shopRows[0]); kept.GetString("status") != schema.CheckOK {
+		t.Fatalf("shop's test: %v", kept.FieldsData())
+	}
+	if copied, err := f.p.databaseOf(f.server, shopCopy); err != nil || copied.GetString("status") != dbReady {
+		t.Fatalf("shop's copy stays its two hours: %v %v", copied, err)
+	}
+
+	// blog's test, delivered now, drops shop's copy
+	f.p.Commands.Kick(f.host.Id)
+	second := f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest()
+	if second.GetCheckId() != blogRows[0].Id || !slices.Equal(second.GetDropBefore(), []string{shopCopy}) {
+		t.Errorf("blog's test drops %v", second.GetDropBefore())
 	}
 }
 

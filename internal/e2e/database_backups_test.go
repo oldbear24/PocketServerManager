@@ -946,8 +946,9 @@ func (d *dbBackupsHarness) testNow(job *core.Record) *core.Record {
 // database of its server, one test of a server at a time, and passes when
 // the tables are all there; a test of a damaged repository fails with the
 // critical alert and its event, which the next test that passes resolves;
-// the temporary databases go two hours after their test; a job whose tests
-// have not passed for long raises the warning.
+// a test drops the copy of the test before it, so the server keeps its
+// newest test copy only, and the last goes two hours after its test; a job
+// whose tests have not passed for long raises the warning.
 func TestRestoreTestsRunOnScheduleAndAlert(t *testing.T) {
 	d := newDBBackupsHarness(t)
 	server := d.sharedServer("main", "postgres")
@@ -1016,11 +1017,18 @@ func TestRestoreTestsRunOnScheduleAndAlert(t *testing.T) {
 		t.Errorf("two tests of a server ran at once: %v - %v and %v - %v", ended[0].GetDateTime("started_at"), ended[0].GetDateTime("finished_at"),
 			ended[1].GetDateTime("started_at"), ended[1].GetDateTime("finished_at"))
 	}
-	for temporary := range rows {
-		if copied, ok := d.db.Database(server.GetString("container_ref"), temporary); !ok || copied.Owner == "" || !copied.Closed || copied.From == "" {
-			t.Errorf("the test's database %s on the server: %+v", temporary, copied)
-		}
+	// the second test of the slot dropped the first's copy as it began
+	newest, earlier := ended[1].GetString("temporary"), ended[0].GetString("temporary")
+	if copied, ok := d.db.Database(server.GetString("container_ref"), newest); !ok || copied.Owner == "" || !copied.Closed || copied.From == "" {
+		t.Errorf("the newest test's database %s on the server: %+v", newest, copied)
 	}
+	if copied, ok := d.db.Database(server.GetString("container_ref"), earlier); ok {
+		t.Errorf("the earlier test's database %s stays beside the newest: %+v", earlier, copied)
+	}
+	d.waitFor("the record of the dropped copy to go", func() bool {
+		_, err := d.app.FindFirstRecordByFilter(schema.Databases, "name={:name}", dbx.Params{"name": earlier})
+		return err != nil
+	})
 
 	// a damaged repository fails the test, with the critical alert
 	repository := filepath.Join(d.hostRoot, d.diskDir)

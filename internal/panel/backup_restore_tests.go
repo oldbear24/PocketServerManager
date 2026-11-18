@@ -56,9 +56,9 @@ func (p *Panel) testSubject(job *core.Record) (database, server, user *core.Reco
 
 // restoreTestPayload is the one builder of a restore test's
 // backup.restore_test, without its repository and drop_before: the panel
-// adds those as it queues it, and the enricher compares what it delivers with
-// what this builds from the row, the database's server as it is then, and
-// the database's user.
+// adds the repository as it queues it, and the enricher compares what it
+// delivers with what this builds from the row, the database's server as it
+// is then, and the database's user, and adds drop_before.
 func restoreTestPayload(row, server *core.Record, user string) *agentv1.BackupRestoreTest {
 	engine, _ := databases.EngineOf(server.GetString("engine"))
 	return &agentv1.BackupRestoreTest{
@@ -81,10 +81,11 @@ func restoreTestPayload(row, server *core.Record, user string) *agentv1.BackupRe
 // target and server; the target is not being added, and a local target is
 // read on its own server only; the command is what the row builds, into the
 // container of the database's server as it is now and as the database's
-// user, and drops earlier test copies only. On its first delivery the row
-// waits for it, and whoever started a test by hand is still an operator. A
-// command sent again after its agent reconnected keeps its secrets, as a
-// restore does (see checkRestoreDelivery).
+// user. On its first delivery the row waits for it, and whoever started a
+// test by hand is still an operator. A command sent again after its agent
+// reconnected keeps its secrets, as a restore does (see
+// checkRestoreDelivery). Each delivery gets the server's earlier test copies
+// to drop as they are then (earlierTestCopies).
 func (p *Panel) checkTestDelivery(record *core.Record, test *agentv1.BackupRestoreTest, target *core.Record) error {
 	row, err := p.App.FindRecordById(schema.BackupChecks, test.GetCheckId())
 	if err != nil {
@@ -116,24 +117,20 @@ func (p *Panel) checkTestDelivery(record *core.Record, test *agentv1.BackupResto
 	if !ok {
 		return errors.New("the command differs from the restore test")
 	}
-	got.Repository, got.DropBefore = nil, nil
+	// the stored command drops nothing: what it drops is worked out below
+	got.Repository = nil
 	if !proto.Equal(got, restoreTestPayload(row, server, user.GetString("name"))) {
 		return errors.New("the command differs from the restore test")
 	}
-	for _, name := range test.GetDropBefore() {
-		if prefix, _, ok := databases.TemporaryOwner(name); !ok || prefix != databases.TemporaryTest || name == row.GetString("temporary") {
-			return errors.New("the command drops more than earlier test copies")
+	if record.GetString("status") == schema.CommandQueued {
+		if row.GetString("status") != schema.CheckQueued {
+			return errors.New("the restore test is not waiting for this command")
+		}
+		if row.GetString("trigger") == schema.RunManual &&
+			!p.stillHasRole(record.GetString("requested_by"), record.GetString("requested_label"), schema.RoleOperator) {
+			return errors.New("only an operator's restore test gets the target's secrets")
 		}
 	}
-	if record.GetString("status") != schema.CommandQueued {
-		return nil
-	}
-	if row.GetString("status") != schema.CheckQueued {
-		return errors.New("the restore test is not waiting for this command")
-	}
-	if row.GetString("trigger") == schema.RunManual &&
-		!p.stillHasRole(record.GetString("requested_by"), record.GetString("requested_label"), schema.RoleOperator) {
-		return errors.New("only an operator's restore test gets the target's secrets")
-	}
+	test.DropBefore = earlierTestCopies(p.App, server, row.GetString("temporary"))
 	return nil
 }
