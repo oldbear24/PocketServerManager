@@ -1,0 +1,27 @@
+sequenceDiagram
+  autonumber
+  participant P as Panel
+  participant A as Agent
+  participant J as Job container<br/>(restic)
+  participant D as db-main<br/>(shared server)
+  participant S as shop's<br/>containers
+
+  Note over P,S: Backup of the database shop: daily, a job of its own
+  P->>A: backup.run<br/>tags db:shop,<br/>dbserver:db-main
+  A->>J: restic backup<br/>--stdin-from-command<br/>relay
+  A->>D: docker exec: pg_dump<br/>of shop alone, with the<br/>container's own password
+  D-->>A: the dump
+  A->>J: the dump in relay frames:<br/>restic saves /shop.pgdump<br/>to the target
+
+  Note over P,S: Restore back into shop (PostgreSQL)
+  P->>A: backup.restore,<br/>passwords added<br/>at delivery
+  A->>J: restic dump of the<br/>snapshot from the target
+  J-->>A: tar of /shop.pgdump
+  A->>D: archive API: copy to<br/>/tmp/pocketcloud-restore-<br/>#lt;id#gt;.pgdump
+  A->>D: pg_restore as shop<br/>over the container's address<br/>into pc_rs_#lt;id#gt;, then count<br/>its tables
+  A->>S: stop
+  A->>D: one transaction:<br/>shop → pc_old_#lt;id#gt;,<br/>pc_rs_#lt;id#gt; → shop
+  A->>S: start
+  A-->>P: result:<br/>pc_old_#lt;id#gt; stays 24 h
+
+  Note over P,S: MariaDB rehearses in pc_rs_#lt;id#gt; first,<br/>then stops shop's containers and drops, recreates and restores shop.<br/>A restore test restores into pc_rt_#lt;check#gt;, dropped two hours later.
