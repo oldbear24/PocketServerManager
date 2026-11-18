@@ -141,8 +141,9 @@ type Panel struct {
 	// checkPass holds a pass of the integrity checks' scheduler (#31).
 	checkPass sync.Mutex
 
-	// restoreWatch is set from a restored panel's first start until every
-	// server is back (#32); restoreRecount while a count of them is due.
+	// restoreWatch is set while panel_restored is open, from a restored
+	// panel's first start, and from any start after it, until every server
+	// is back (#32); restoreRecount while a count of them is due.
 	restoreWatch   atomic.Bool
 	restoreRecount atomic.Bool
 	// recoveryPending is set while an evaluation of the recovery's alerts
