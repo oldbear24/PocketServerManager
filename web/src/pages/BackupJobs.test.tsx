@@ -17,15 +17,34 @@ import { describeSource, JobDialog, type StackName } from "./BackupJobs";
 // Monday 13:00 in Prague, on winter time: an hour ahead of UTC
 const now = Date.parse("2026-11-09T12:00:00Z");
 
-const live = vi.hoisted(() => ({ lists: {} as Record<string, unknown[]> }));
-vi.mock("../lib/realtime", () => {
-  const list = (collection: string) => {
-    const items = live.lists[collection] ?? [];
-    return { items, loading: false, error: null, total: items.length, reload: () => {} };
+const live = vi.hoisted(() => ({
+  lists: {} as Record<string, unknown[]>,
+  // collections whose first load has not come back yet: empty and loading
+  loading: new Set<string>(),
+  listeners: new Set<() => void>(),
+  version: 0,
+  /** ends a collection's first load, as the panel's answer does */
+  deliver(collection: string) {
+    this.loading.delete(collection);
+    this.version++;
+    this.listeners.forEach((listener) => listener());
+  },
+}));
+vi.mock("../lib/realtime", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    live.listeners.add(listener);
+    return () => live.listeners.delete(listener);
+  };
+  const useList = (collection: string) => {
+    useSyncExternalStore(subscribe, () => live.version);
+    const loading = live.loading.has(collection);
+    const items = loading ? [] : (live.lists[collection] ?? []);
+    return { items, loading, error: null, total: items.length, reload: () => {} };
   };
   return {
-    useLiveList: list,
-    useLiveRecords: list,
+    useLiveList: useList,
+    useLiveRecords: useList,
     useLiveRecord: () => ({ record: null, loading: false, error: null }),
     useNow: () => now,
   };
@@ -61,6 +80,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   pb.authStore.clear();
   live.lists = {};
+  live.loading.clear();
 });
 
 function signInAs(role: User["role"]) {
@@ -1379,6 +1399,34 @@ describe("the panel's own backup (#32)", () => {
     showAt("admin", "/backups?setup=panel", { backup_jobs: [panel] });
     expect(screen.getByRole("dialog", { name: "Panel backup" })).toBeInTheDocument();
     expect(missing()).not.toBeInTheDocument();
+  });
+
+  it("waits for the jobs before its alert's link sets the job up or opens it", () => {
+    const setUp = () => screen.queryByRole("dialog", { name: "Back up the panel" });
+    const change = () => screen.queryByRole("dialog", { name: "Panel backup" });
+    // a fresh load: the jobs come after the page's first render
+    live.loading.add("backup_jobs");
+    showAt("admin", "/backups?setup=panel", {
+      backup_jobs: [{ ...panel, enabled: false }, vaultwarden],
+    });
+    expect(setUp()).not.toBeInTheDocument();
+    expect(change()).not.toBeInTheDocument();
+    act(() => live.deliver("backup_jobs"));
+    // the job is there, turned off: its own dialog turns it on again
+    const dialog = change();
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog!).getByLabelText("Server that uploads it")).toHaveValue("h3");
+    expect(screen.queryByText("The panel has its backup job already.")).not.toBeInTheDocument();
+    expect(setUp()).not.toBeInTheDocument();
+    cleanup();
+
+    // and without one, the set-up, once the jobs say so
+    live.loading.add("backup_jobs");
+    showAt("admin", "/backups?setup=panel", { backup_jobs: [vaultwarden] });
+    expect(setUp()).not.toBeInTheDocument();
+    act(() => live.deliver("backup_jobs"));
+    expect(setUp()).toBeInTheDocument();
+    expect(change()).not.toBeInTheDocument();
   });
 
   it("asks no one but an admin, and nothing without a server", () => {
