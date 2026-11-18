@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
+	"golang.org/x/crypto/bcrypt"
 
 	_ "github.com/oldbear24/PocketServerManager/migrations"
 
@@ -108,6 +109,31 @@ func migratedDataDir() (string, error) {
 	return migrated.dir, migrated.err
 }
 
+// Password is the password of every user and superuser the helpers make.
+const Password = "correct horse battery staple"
+
+// passwordHash is Password's bcrypt hash at bcrypt's default cost, as
+// PocketBase makes it, made once per test binary: hashing it for each user is
+// a good part of a short test's time under the race detector.
+var passwordHash struct {
+	once sync.Once
+	hash string
+	err  error
+}
+
+// setPassword gives an auth record Password, with the hash made once.
+func setPassword(t testing.TB, record *core.Record) {
+	t.Helper()
+	passwordHash.once.Do(func() {
+		hash, err := bcrypt.GenerateFromPassword([]byte(Password), bcrypt.DefaultCost)
+		passwordHash.hash, passwordHash.err = string(hash), err
+	})
+	if passwordHash.err != nil {
+		t.Fatal(passwordHash.err)
+	}
+	record.SetRaw(core.FieldNamePassword, &core.PasswordFieldValue{Plain: Password, Hash: passwordHash.hash})
+}
+
 // NewUser creates a user with a role and returns it with an auth token.
 func NewUser(t testing.TB, app core.App, email, role string) (*core.Record, string) {
 	t.Helper()
@@ -119,7 +145,7 @@ func NewUser(t testing.TB, app core.App, email, role string) (*core.Record, stri
 
 	user := core.NewRecord(collection)
 	user.SetEmail(email)
-	user.SetPassword("correct horse battery staple")
+	setPassword(t, user)
 	user.Set("role", role)
 	if err := app.Save(user); err != nil {
 		t.Fatal(err)
@@ -144,7 +170,7 @@ func NewSuperuser(t testing.TB, app core.App) (*core.Record, string) {
 
 	superuser := core.NewRecord(collection)
 	superuser.SetEmail("root@example.com")
-	superuser.SetPassword("correct horse battery staple")
+	setPassword(t, superuser)
 	if err := app.Save(superuser); err != nil {
 		t.Fatal(err)
 	}
