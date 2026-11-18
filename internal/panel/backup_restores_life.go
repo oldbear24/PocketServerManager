@@ -524,12 +524,51 @@ func restoreDestinationKey(restore *core.Record) string {
 // restoreAlertKey is the target of a restore's alerts: its server and the
 // data it writes. The data's name is hashed when the key would not fit.
 func restoreAlertKey(restore *core.Record) string {
-	key := restore.GetString("host") + ":" + restoreDestinationKey(restore)
+	return alertKeyOf(restore.GetString("host"), restoreDestinationKey(restore))
+}
+
+// alertKeyOf is the target of the alerts of restores of data on a server.
+func alertKeyOf(host, destination string) string {
+	key := host + ":" + destination
 	if len(key) <= 255 {
 		return key
 	}
-	sum := sha256.Sum256([]byte(restoreDestinationKey(restore)))
-	return restore.GetString("host") + ":sha256:" + hex.EncodeToString(sum[:])
+	sum := sha256.Sum256([]byte(destination))
+	return host + ":sha256:" + hex.EncodeToString(sum[:])
+}
+
+// restoreAlertKeys are the alerts a restore that went well resolves: its
+// own; and for a database's, the key of the database's name on its server,
+// which a restore of that name has whose database record went, such as one
+// into a new database that failed and dropped what it made (#53).
+func restoreAlertKeys(restore *core.Record) []string {
+	keys := []string{restoreAlertKey(restore)}
+	if root, ok := databaseRoot(restore); ok && restore.GetString("database") != "" {
+		keys = append(keys, alertKeyOf(restore.GetString("host"), "database:"+databaseDestination(root)))
+	}
+	return keys
+}
+
+// databaseRestoreAlertsGone resolves the alerts of the restores of a
+// database that was dropped (#53): they are keyed by its record, which the
+// drop clears in its restores, so neither a later restore nor the removal of
+// those restores would find them again.
+func (p *Panel) databaseRestoreAlertsGone(app core.App, database *core.Record) {
+	alerts := []*core.Record{}
+	err := app.RecordQuery(schema.Alerts).
+		AndWhere(dbx.HashExp{"rule": alertBackupRestore}).
+		AndWhere(dbx.Like("target", ":database:"+database.Id).Match(true, false)).
+		AndWhere(dbx.NewExp("[[status]] != {:resolved}", dbx.Params{"resolved": schema.AlertResolved})).
+		All(&alerts)
+	if err != nil {
+		p.Log.Error("failed to read the alerts of a database's restores", "database", database.Id, "error", err)
+		return
+	}
+	for _, alert := range alerts {
+		if err := events.ResolveAlert(app, alertBackupRestore, alert.GetString("target")); err != nil {
+			p.Log.Error("failed to resolve an alert", "rule", alertBackupRestore, "error", err)
+		}
+	}
 }
 
 // restoreWhere says in words what a restore writes.
@@ -589,8 +628,10 @@ func (p *Panel) noteRestore(before *core.Record, result restoreResult) {
 	case problem != "":
 		p.raiseRestoreAlert(host, key, schema.SeverityWarning, down)
 	case status == schema.RestoreSucceeded:
-		if err := events.ResolveAlert(p.App, alertBackupRestore, key); err != nil {
-			p.Log.Error("failed to resolve an alert", "rule", alertBackupRestore, "error", err)
+		for _, key := range restoreAlertKeys(restore) {
+			if err := events.ResolveAlert(p.App, alertBackupRestore, key); err != nil {
+				p.Log.Error("failed to resolve an alert", "rule", alertBackupRestore, "error", err)
+			}
 		}
 	}
 

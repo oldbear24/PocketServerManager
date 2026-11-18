@@ -17,6 +17,7 @@ import (
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
 	"github.com/oldbear24/PocketServerManager/internal/databases"
+	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
@@ -588,6 +589,63 @@ func TestAPartialRestoreSaysSoOnItsDatabase(t *testing.T) {
 	}
 	if alert := f.openAlert(alertBackupRestore, f.host.Id+":database:"+f.database.Id); alert == nil || alert.GetString("severity") != schema.SeverityCritical {
 		t.Errorf("the alert: %v", alert)
+	}
+}
+
+// TestADroppedDatabaseTakesTheAlertsOfItsRestores (#53): the alert of a
+// database's failed restore is keyed by the database's record, which its
+// drop clears in the restore: the drop resolves it, as nothing would later,
+// and leaves another database's alone. A restore into a new database that
+// failed and dropped what it made has the key of the name on its server,
+// which a restore into a new database of that name that went well resolves.
+func TestADroppedDatabaseTakesTheAlertsOfItsRestores(t *testing.T) {
+	f := newDBFixture(t, databases.MariaDB.Name)
+	container := f.server.GetString("container_ref")
+	root := func(name string) []restoreRoot {
+		return []restoreRoot{{Source: "/shop.sql", Container: container, Engine: databases.MariaDB.Name,
+			AdminUser: f.server.GetString("admin_user"), Database: name, User: name}}
+	}
+	failedNew := f.restore(f.job, map[string]any{"mode": schema.RestoreNewDatabase, "status": schema.RestoreFailed,
+		"database_name": "shop_copy", "roots": root("shop_copy"),
+		"error": "The restore into the new database shop_copy failed, and it was dropped again: no room."})
+	f.p.noteRestore(failedNew, restoreResult{})
+	byName := f.host.Id + ":database:" + container + "/shop_copy"
+	if f.openAlert(alertBackupRestore, byName) == nil {
+		t.Fatal("no alert of the failed restore into a new database")
+	}
+	copied, _ := f.addDatabase(f.server, "shop_copy", "copy-secret", nil)
+	done := f.restore(f.job, map[string]any{"mode": schema.RestoreNewDatabase, "status": schema.RestoreSucceeded,
+		"database": copied.Id, "database_name": "shop_copy", "roots": root("shop_copy")})
+	f.p.noteRestore(done, restoreResult{})
+	if alert := f.openAlert(alertBackupRestore, byName); alert != nil {
+		t.Errorf("a restore into shop_copy went well, and the alert stays: %v", alert.FieldsData())
+	}
+
+	restore, command := f.databaseRestore(schema.RestoreDatabase, false)
+	message := "The restore failed after shop was emptied: it holds part of the backup, and shop-web-1 stay stopped. Restore again, then start them on their pages."
+	f.ended(command, schema.CommandFailed, message, map[string]any{"partial": true, "app_left_stopped": []any{"shop-web-1"}})
+	ended := f.fresh(command)
+	ended.Set("started_at", time.Now().UTC().Add(-time.Minute))
+	f.p.restoreFinished(ended)
+	key := f.host.Id + ":database:" + f.database.Id
+	if f.openAlert(alertBackupRestore, key) == nil {
+		t.Fatal("no alert of the failed restore")
+	}
+	otherKey := f.host.Id + ":database:" + copied.Id
+	if err := events.RaiseAlert(f.app, alertBackupRestore, otherKey, f.host.Id, schema.SeverityCritical, "The restore of shop_copy failed."); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.Delete(f.database); err != nil {
+		t.Fatal(err)
+	}
+	if kept := f.fresh(restore); kept.GetString("database") != "" || restoreAlertKey(kept) == key {
+		t.Errorf("the drop left the restore its database: %v", kept.FieldsData())
+	}
+	if alert := f.openAlert(alertBackupRestore, key); alert != nil {
+		t.Errorf("shop was dropped, and the alert of its restore stays: %v", alert.FieldsData())
+	}
+	if f.openAlert(alertBackupRestore, otherKey) == nil {
+		t.Error("the drop of shop resolved the alert of shop_copy's restore")
 	}
 }
 

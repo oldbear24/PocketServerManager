@@ -64,6 +64,12 @@ func (p *Panel) registerBackupRestores() {
 		p.restoreRemoved(e.App, e.Record)
 		return e.Next()
 	})
+	// and of a database's restores once it is dropped, whose key its
+	// restores no longer name (#53)
+	p.App.OnRecordAfterDeleteSuccess(schema.Databases).BindFunc(func(e *core.RecordEvent) error {
+		p.databaseRestoreAlertsGone(e.App, e.Record)
+		return e.Next()
+	})
 	// what the panel missed is settled every minute, and once it started
 	// (see Register)
 	p.App.Cron().MustAdd("pocketcloud_backup_restores", "* * * * *", p.settleRestores)
