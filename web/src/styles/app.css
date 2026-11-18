@@ -3192,6 +3192,49 @@ td .row-actions {
   color: var(--warn-text);
 }
 
+/* a database job's restore test (#53): red only when the backup could not be
+ * restored; the word says it, the colour repeats it */
+.run-test {
+  max-width: 170px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-test.err {
+  color: var(--err-text);
+}
+
+.run-test.warn {
+  color: var(--warn-text);
+}
+
+/* a server's database jobs in one row, and each of them under it */
+.job-group td {
+  background: var(--surface-2);
+}
+
+.job-grouped td:first-child {
+  padding-left: 34px;
+}
+
+.job-group .row-actions .button {
+  white-space: nowrap;
+}
+
+/* whether a setting of a database's job follows its server or is its own */
+.follow-switch {
+  display: flex;
+  margin-bottom: -6px;
+}
+
+.follow-switch .segmented {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
 /* a server's jobs, on its page: what, how the last run went, when next;
  * three columns, which a phone shows nearly whole */
 .server-jobs {

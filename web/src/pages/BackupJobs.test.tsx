@@ -12,7 +12,7 @@ import type { BackupTarget } from "../lib/backups";
 import { pb, type User } from "../lib/pb";
 import type { Container, Host, Volume } from "../lib/types";
 import { BackupsPage } from "./Backups";
-import { describeSource, JobDialog, type StackName } from "./BackupJobs";
+import { describeSource, JobDialog, JobsCard, type StackName } from "./BackupJobs";
 
 // Monday 13:00 in Prague, on winter time: an hour ahead of UTC
 const now = Date.parse("2026-11-09T12:00:00Z");
@@ -23,6 +23,8 @@ const live = vi.hoisted(() => ({
   loading: new Set<string>(),
   listeners: new Set<() => void>(),
   version: 0,
+  /** what each list of a collection asked for */
+  asked: {} as Record<string, Record<string, unknown>[]>,
   /** ends a collection's first load, as the panel's answer does */
   deliver(collection: string) {
     this.loading.delete(collection);
@@ -36,7 +38,8 @@ vi.mock("../lib/realtime", async () => {
     live.listeners.add(listener);
     return () => live.listeners.delete(listener);
   };
-  const useList = (collection: string) => {
+  const useList = (collection: string, options: Record<string, unknown> = {}) => {
+    (live.asked[collection] ??= []).push(options);
     useSyncExternalStore(subscribe, () => live.version);
     const loading = live.loading.has(collection);
     const items = loading ? [] : (live.lists[collection] ?? []);
@@ -1458,5 +1461,288 @@ describe("the panel's own backup (#32)", () => {
       ],
     });
     expect(kit()).not.toBeInTheDocument();
+  });
+});
+
+describe("the jobs of databases and sites (#53)", () => {
+  const shop = job({
+    id: "d1",
+    name: "db-main-shop",
+    host: "h1",
+    source_kind: "database",
+    source: "shop",
+    engine: "postgres",
+    targets: ["t1"],
+    schedule: "30 0 * * *",
+    retention: { daily: 7, weekly: 4, monthly: 6 },
+    origin: "database",
+    database: "db1",
+    db_server_name: "db-main",
+    own_settings: [],
+    last_success_at: "2026-11-09 00:31:00.000Z",
+  });
+  const blog = job({
+    ...shop,
+    id: "d2",
+    name: "db-main-blog",
+    source: "blog",
+    database: "db2",
+    last_success_at: "2026-11-07 00:31:00.000Z",
+  });
+  // its database was dropped: kept, off, with its snapshots
+  const old = job({
+    ...shop,
+    id: "d3",
+    name: "db-main-old",
+    source: "old",
+    database: "",
+    enabled: false,
+    next_run_at: "",
+    problem: "Its database was dropped.",
+  });
+  const notes = job({
+    ...shop,
+    id: "d4",
+    name: "pg-two-notes",
+    host: "h2",
+    source: "notes",
+    database: "db4",
+    db_server_name: "pg-two",
+    targets: ["t2"],
+  });
+  const files = job({
+    id: "f1",
+    name: "wp-files",
+    host: "h1",
+    source_kind: "site",
+    source: "wp/shared",
+    targets: ["t1"],
+    origin: "site",
+    site: "site1",
+  });
+  // the page picks the first job, whose group would open
+  const databaseJobs = [files, shop, blog, old, notes];
+  const dbRuns = [
+    run("dr1", {
+      job: "d1",
+      created: "2026-11-09 00:30:00.000Z",
+      finished_at: "2026-11-09 00:31:00.000Z",
+    }),
+    run("dr2", {
+      job: "d2",
+      status: "failed",
+      created: "2026-11-09 00:30:00.000Z",
+      finished_at: "2026-11-09 00:30:10.000Z",
+      error: "pg_dump: error: connection failed",
+    }),
+    run("dr3", { job: "d1", created: "2026-11-08 00:30:00.000Z" }),
+  ];
+
+  it("say what they back up, and that the panel made them", async () => {
+    const t = i18n.getFixedT("en");
+    expect(describeSource(shop, stacks, t)).toBe("pg_dump · db-main/shop · one job per database");
+    expect(describeSource(old, stacks, t)).toBe("db-main/old · dropped · one job per database");
+    expect(describeSource(files, stacks, t)).toBe("files of wp · shared/ · made for its site");
+    expect(describeSource({ ...files, source: "wp" }, stacks, t)).toBe(
+      "files of wp · made for its site",
+    );
+    const cs = i18n.getFixedT("cs");
+    expect(describeSource(old, stacks, cs)).toBe(
+      "db-main/old · smazaná · úloha pro každou databázi",
+    );
+    expect(describeSource(files, stacks, cs)).toBe("soubory webu wp · shared/ · vytvořeno pro web");
+  });
+
+  it("are grouped per database server, with the worst run, the day's count and a summed strip", () => {
+    live.asked = {};
+    showPage("admin", { backup_jobs: databaseJobs, backup_runs: dbRuns });
+    // a job per database: more than a list's 200
+    expect(live.asked.backup_jobs?.[0]).toMatchObject({ perPage: 500 });
+    expect(live.asked.backup_checks).toContainEqual(
+      expect.objectContaining({ filter: "kind = 'restore_test'", perPage: 500 }),
+    );
+
+    const group = within(
+      screen.getByText("Databases on db-main · 3 jobs").closest("tr") as HTMLElement,
+    );
+    // the dropped database's job is not counted
+    expect(group.getByText("1 of 2 backed up in 24 h")).toBeInTheDocument();
+    expect(group.getByText("Error · 01:30")).toBeInTheDocument();
+    expect(group.getByRole("img")).toHaveAccessibleName("Last 14 days: 2 succeeded, 1 failed");
+    expect(group.getByText("pve-01")).toBeInTheDocument();
+    expect(group.getByText("daily 01:30")).toBeInTheDocument();
+    expect(screen.getByText("Databases on pg-two · 1 job")).toBeInTheDocument();
+    // the site's job is a job of its own
+    expect(
+      row("wp-files").getByText("files of wp · shared/ · made for its site"),
+    ).toBeInTheDocument();
+
+    // each database's job shows once the group opens
+    expect(screen.queryByText("db-main-shop")).not.toBeInTheDocument();
+    const toggle = group.getByRole("button", { name: "Show each database" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(row("db-main-shop").getByText("OK · 01:31")).toBeInTheDocument();
+    expect(row("db-main-blog").getByText("Error · 01:30")).toBeInTheDocument();
+    expect(screen.queryByText("db-main-notes")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.queryByText("db-main-shop")).not.toBeInTheDocument();
+  });
+
+  it("open the group of the job picked", () => {
+    signInAs("admin");
+    live.lists = {};
+    wrap(
+      <JobsCard
+        jobs={databaseJobs}
+        runs={dbRuns}
+        targets={targets}
+        hosts={hosts}
+        stacks={stacks}
+        loading={false}
+        error={null}
+        now={now}
+        canRun
+        isAdmin
+        selected="d4"
+        onSelect={() => {}}
+        onAdd={() => {}}
+        onEdit={() => {}}
+      />,
+    );
+    expect(
+      row("pg-two-notes").getByRole("button", { name: "Show the snapshots of pg-two-notes" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("db-main-shop")).not.toBeInTheDocument();
+  });
+
+  it("say when a database was dropped, run no more, and can be removed then", () => {
+    showPage("admin", { backup_jobs: databaseJobs, backup_runs: dbRuns });
+    fireEvent.click(screen.getAllByRole("button", { name: "Show each database" })[0]);
+
+    const dropped = row("db-main-old");
+    expect(
+      dropped.getByText(
+        "Its database was dropped: the job no longer runs, and its snapshots go into a new database.",
+      ),
+    ).toBeInTheDocument();
+    // the panel's own problem is not said twice
+    expect(dropped.queryByText("Its database was dropped.")).not.toBeInTheDocument();
+    expect(dropped.getByRole("button", { name: "Run db-main-old now" })).toBeDisabled();
+    expect(dropped.getByRole("button", { name: "Remove job db-main-old" })).toBeInTheDocument();
+    expect(dropped.queryByRole("button", { name: "Edit job db-main-old" })).not.toBeInTheDocument();
+
+    // a database's job comes back while its database exists: never removed
+    const live = row("db-main-shop");
+    expect(live.getByRole("button", { name: "Edit job db-main-shop" })).toBeInTheDocument();
+    expect(live.queryByRole("button", { name: "Remove job db-main-shop" })).not.toBeInTheDocument();
+    expect(
+      row("wp-files").queryByRole("button", { name: "Remove job wp-files" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("say how a database job's newest restore test went", () => {
+    const test = {
+      id: "c1",
+      kind: "restore_test",
+      job: "d2",
+      status: "failed",
+      created: "2026-11-04 04:20:00.000Z",
+    };
+    showPage("admin", {
+      backup_jobs: databaseJobs,
+      backup_runs: dbRuns,
+      backup_checks: [test, { ...test, id: "c0", job: "d1", status: "ok" }],
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Show each database" })[0]);
+    expect(row("db-main-blog").getByText("Restore test: Failed")).toHaveClass("run-test", "err");
+    expect(row("db-main-shop").getByText("Restore test: Passed")).toHaveClass("run-test", "ok");
+    expect(row("db-main-old").queryByText(/^Restore test/)).not.toBeInTheDocument();
+  });
+});
+
+describe("the dialog of a database's job (#53)", () => {
+  const shop = job({
+    id: "d1",
+    name: "db-main-shop",
+    host: "h1",
+    source_kind: "database",
+    source: "shop",
+    engine: "postgres",
+    targets: ["t1"],
+    schedule: "30 0 * * *",
+    retention: { daily: 7, weekly: 4, monthly: 6 },
+    origin: "database",
+    database: "db1",
+    db_server_name: "db-main",
+    own_settings: ["retention"],
+  });
+
+  it("shows its source read-only, and its settings following its server's", () => {
+    openDialog(shop);
+    expect(screen.getByText("pg_dump · db-main/shop · one job per database")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "PocketCloud made this job for db-main/shop: what it backs up and its server follow that. When, where and how long can follow pve-01's settings or be its own.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("What to back up")).not.toBeInTheDocument();
+    // the schedule and the targets follow the server; the retention is its own
+    expect(screen.getByRole("combobox", { name: "Schedule" })).toBeDisabled();
+    expect(screen.getByLabelText("Time")).toBeDisabled();
+    expect(screen.getByLabelText("Backblaze B2")).toBeDisabled();
+    expect(screen.getByLabelText("Daily")).toBeEnabled();
+    for (const name of ["Where it goes", "Schedule", "Snapshots to keep"]) {
+      const group = screen.getByRole("group", { name: `${name}: As set for pve-01 / Its own` });
+      const pressed = within(group)
+        .getAllByRole("button")
+        .filter((button) => button.getAttribute("aria-pressed") === "true")
+        .map((button) => button.textContent);
+      expect(pressed).toEqual([name === "Snapshots to keep" ? "Its own" : "As set for pve-01"]);
+    }
+    expect(screen.queryByText(/Compose file/)).not.toBeInTheDocument();
+    expect(confirm("Save")).toBeDisabled();
+  });
+
+  it("makes a setting its own, sent though it is the same, and follows the server again", async () => {
+    const change = vi.spyOn(jobsApi, "change").mockResolvedValue(shop);
+    openDialog(shop);
+
+    fireEvent.click(
+      within(
+        screen.getByRole("group", { name: "Schedule: As set for pve-01 / Its own" }),
+      ).getByRole("button", {
+        name: "Its own",
+      }),
+    );
+    expect(screen.getByLabelText("Time")).toBeEnabled();
+    fireEvent.click(
+      within(
+        screen.getByRole("group", { name: "Snapshots to keep: As set for pve-01 / Its own" }),
+      ).getByRole("button", {
+        name: "As set for pve-01",
+      }),
+    );
+    expect(screen.getByLabelText("Daily")).toBeDisabled();
+    fireEvent.click(confirm("Save"));
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    expect(change.mock.calls[0]).toEqual(["d1", { schedule: "30 0 * * *", follow: ["retention"] }]);
+  });
+
+  it("sends a changed own setting, and never the source", async () => {
+    const change = vi.spyOn(jobsApi, "change").mockResolvedValue(shop);
+    openDialog(shop);
+    type("Weekly", "8");
+    type("Name", "shop-db");
+    fireEvent.click(confirm("Save"));
+    await waitFor(() => expect(change).toHaveBeenCalled());
+    expect(change.mock.calls[0]).toEqual([
+      "d1",
+      {
+        name: "shop-db",
+        retention: { last: 0, hourly: 0, daily: 7, weekly: 8, monthly: 6, yearly: 0 },
+      },
+    ]);
   });
 });
