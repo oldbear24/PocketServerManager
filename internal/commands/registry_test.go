@@ -194,6 +194,16 @@ func TestRestoreResourceIsTheStackAndDryRunHasNone(t *testing.T) {
 	}
 }
 
+// resourceOf is a command's ordering key, or says that its type orders
+// nothing.
+func resourceOf(command *agentv1.Command) string {
+	spec, ok := Specs[TypeOf(command)]
+	if !ok || spec.Resource == nil {
+		return "<no ordering key>"
+	}
+	return spec.Resource(command)
+}
+
 // TestADatabaseRestoreHoldsItsApplication: a restore of a database (#53)
 // holds the owner stack, as a restore to the original location does, or the
 // site whose site.* commands would start what it stopped; a restore into a
@@ -226,7 +236,7 @@ func TestADatabaseRestoreHoldsItsApplication(t *testing.T) {
 		{"a preview of a new database", restore(&agentv1.BackupRestore{DryRun: true, Database: database("new", "shop_restored")}), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Specs[TypeOf(tc.command)].Resource(tc.command); got != tc.want {
+			if got := resourceOf(tc.command); got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
@@ -265,7 +275,7 @@ func TestRestoreTestsAndDiscardsOfAServerRunOneByOne(t *testing.T) {
 		{"a discard of no server", discard(""), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Specs[TypeOf(tc.command)].Resource(tc.command); got != tc.want {
+			if got := resourceOf(tc.command); got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
