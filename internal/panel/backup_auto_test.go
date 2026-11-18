@@ -472,6 +472,11 @@ func TestADroppedDatabaseLeavesItsJobDisabled(t *testing.T) {
 		out["message"] != "Its database was dropped: the job cannot be turned on again." {
 		t.Errorf("turn it on: %d %v", status, out)
 	}
+	// a change of what else it does keeps why it does not run
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"schedule": newYear}); status != http.StatusOK ||
+		out["problem"] != "Its database was dropped." || out["enabled"] != false || out["next_run_at"] != "" {
+		t.Errorf("change its schedule: %d %v", status, out)
+	}
 	// its schedule, as if it were still enabled, starts nothing
 	f.p.startJobRuns(job, schema.RunSchedule, time.Now().UTC().Truncate(time.Minute))
 	if runs := f.runsOf(job); len(runs) != 0 {
@@ -488,14 +493,24 @@ func TestADroppedDatabaseLeavesItsJobDisabled(t *testing.T) {
 		t.Errorf("remove it: %d %v", status, out)
 	}
 
-	// a server removed takes its databases' sources
+	// a server removed takes its databases' sources; a job that was off
+	// already says why it does not run, and was not disabled
 	blog := f.jobOfDatabase(f.database(main, "blog", dbReady))
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+blog.Id, f.admin, map[string]any{"enabled": false}); status != http.StatusOK {
+		t.Fatalf("turn blog's job off: %d %v", status, out)
+	}
 	if err := f.app.Delete(main); err != nil {
 		t.Fatal(err)
 	}
 	f.eventually("the server's jobs disabled", func() bool {
 		return !f.fresh(blog).GetBool("enabled") && f.fresh(blog).GetString("problem") == databaseDropped
 	})
+	f.settle()
+	for _, event := range f.eventsOf(backup.EventJobDisabled) {
+		if strings.Contains(event.GetString("message"), "main-blog") {
+			t.Errorf("an event of a job that was off: %s", event.GetString("message"))
+		}
+	}
 	// a host removed takes its jobs
 	other := testutil.NewHost(t, f.app, "node-2")
 	server := f.sharedServer(other, "pool", schema.EngineMariaDB)
@@ -571,8 +586,8 @@ func TestADeployedPHPSiteGetsAFilesJob(t *testing.T) {
 		return jobs
 	}
 	f.p.reconcileAutoJobs()
-	if len(siteJobs(wp)) != 0 {
-		t.Error("a site that was never deployed got a job")
+	if err := f.p.ensureSiteJob(wp.Id); err != nil || len(siteJobs(wp)) != 0 {
+		t.Errorf("a site that was never deployed got a job: %v", err)
 	}
 	for _, site := range []*core.Record{wp, static} {
 		deploy(t, f.app, site)
@@ -666,5 +681,52 @@ func TestAutomaticJobsKeepWhatTheyBackUp(t *testing.T) {
 	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+files.Id, f.admin, map[string]any{"source": "blog"}); status != http.StatusBadRequest ||
 		out["message"] != "A site's job always backs up its site: change when, where or how long its backups are kept." {
 		t.Errorf("change a site's job: %d %v", status, out)
+	}
+}
+
+// TestARunOfAJobWhoseSourceWentIsNotTriedAgain (#53): a failed run of a job
+// whose database or site went, even before the job is disabled, gets no
+// retry, saying why; a planned one is given up; and one is not tried again
+// by hand.
+func TestARunOfAJobWhoseSourceWentIsNotTriedAgain(t *testing.T) {
+	f := newJobFixture(t)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	for _, test := range []struct {
+		origin, kind, message string
+	}{
+		{schema.JobDatabase, schema.SourceDatabase, databaseGoneMessage},
+		{schema.JobSite, schema.SourceSite, siteGoneMessage},
+	} {
+		// still enabled: the pass that disables it has not run yet
+		job := f.job("gone-"+test.origin, map[string]any{"origin": test.origin, "source_kind": test.kind, "source": "shop"})
+		run := f.failRun(job, "Fatal: boom", map[string]any{"failure": backup.FailureRestic})
+		if !run.GetDateTime("retry_at").IsZero() || run.GetString("retry_note") != test.message || run.GetString("retry_end") != schema.RetryGivenUp {
+			t.Errorf("%s: the failed run: %v", test.origin, run.FieldsData())
+		}
+		if status, out := f.send(http.MethodPost, "/api/pc/backup-runs/"+run.Id+"/retry", operator, nil); status != http.StatusConflict ||
+			out["message"] != test.message {
+			t.Errorf("%s: try it again: %d %v", test.origin, status, out)
+		}
+		if _, err := f.p.planRetryAt(run, time.Now().Add(time.Hour)); err == nil || err.Error() != test.message {
+			t.Errorf("%s: plan it for when a lock is stale: %v", test.origin, err)
+		}
+		// a retry planned before the source went
+		run.Set("retry_at", types.NowDateTime().Add(-time.Minute))
+		run.Set("retry_end", "")
+		run.Set("retry_note", "")
+		if err := f.app.Save(run); err != nil {
+			t.Fatal(err)
+		}
+		f.p.retryDueRuns(time.Now())
+		if run := f.fresh(run); !run.GetDateTime("retry_at").IsZero() || run.GetString("retry_note") != test.message || run.GetString("retry_end") != schema.RetryGivenUp {
+			t.Errorf("%s: the planned retry: %v", test.origin, run.FieldsData())
+		}
+		if runs := f.runsOf(job); len(runs) != 1 {
+			t.Errorf("%s: %d runs", test.origin, len(runs))
+		}
+		// and it raised no alert, as its job no longer alerts
+		if alert := f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id)); alert != nil {
+			t.Errorf("%s: an alert: %v", test.origin, alert.FieldsData())
+		}
 	}
 }

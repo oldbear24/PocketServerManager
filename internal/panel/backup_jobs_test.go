@@ -1597,6 +1597,24 @@ func TestADatabaseRunDumpsOnlyItsDatabase(t *testing.T) {
 	}
 }
 
+// TestARetryOfARefusedDatabaseRun (#53): a retry whose command cannot be
+// made for what it backs up fails with the class source, as a first run
+// does.
+func TestARetryOfARefusedDatabaseRun(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	dedicated := f.save(schema.DBServers, map[string]any{"host": f.host.Id, "name": "umami-db", "engine": schema.EnginePostgres,
+		"kind": schema.DBServerDedicated, "container_ref": "umami-db-1", "status": dbReady})
+	umami := f.save(schema.Databases, map[string]any{"server": dedicated.Id, "name": "umami", "owner_kind": "stack", "status": dbReady})
+	job := f.job("umami", map[string]any{"source_kind": schema.SourceDatabase, "source": "umami", "database": umami.Id, "origin": schema.JobDatabase})
+	failed := f.failRun(job, "Fatal: boom", map[string]any{"failure": backup.FailureRestic})
+	retry, err := f.p.claimRetry(context.Background(), failed, job, f.target, f.host, false, commands.Options{})
+	if err != nil || retry.GetString("status") != schema.RunFailed || retry.GetString("failure") != backup.FailureSource ||
+		retry.GetString("error") != "The database umami is no longer on a shared server." {
+		t.Errorf("the retry: %v %v", retry, err)
+	}
+}
+
 // TestASiteRunBacksUpItsSharedFiles (#53): the run of a PHP site's job backs
 // up its shared/, read-only, without what its backup_exclude leaves out,
 // tagged with the site; a classic site's backs up its whole directory but
@@ -1643,11 +1661,23 @@ func TestASiteRunBacksUpItsSharedFiles(t *testing.T) {
 	if _, err := build(old); err == nil || err.Error() != "the agent of node-old cannot back up PHP sites' files yet: update it" {
 		t.Errorf("an old agent: %v", err)
 	}
+	// a run queued before the site was removed is not delivered
+	queued, err := f.p.startRun(context.Background(), f.fresh(job), f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+	if err != nil || queued.GetString("command") == "" {
+		t.Fatalf("the run: %v %v", queued, err)
+	}
 	if err := f.app.Delete(site); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := build(f.host); err == nil || err.Error() != "the site was removed" || refusalClass(err) != backup.FailureSource {
 		t.Errorf("a removed site: %v", err)
+	}
+	command, err := f.app.FindRecordById(schema.Commands, queued.GetString("command"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.deliver(command); err == nil || err.Error() != "the site was removed" {
+		t.Errorf("delivered after the site went: %v", err)
 	}
 	f.settle()
 }
@@ -1785,5 +1815,15 @@ func TestAJobKeepsWhenItsLastBackupSucceeded(t *testing.T) {
 	}
 	if failed.GetString("error") != "Pg_dump: password authentication failed for ***" || failed.GetString("log") != "*** and ***" {
 		t.Errorf("what the failed run keeps: %q %q", failed.GetString("error"), failed.GetString("log"))
+	}
+	// nor do the events and the alert say them
+	alert := f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id))
+	if alert == nil || strings.Contains(alert.GetString("message"), "secret") || !strings.Contains(alert.GetString("message"), "***") {
+		t.Errorf("the alert: %v", alert)
+	}
+	for _, event := range f.eventsOf("backup.failed") {
+		if strings.Contains(event.GetString("message"), "secret") {
+			t.Errorf("an event: %s", event.GetString("message"))
+		}
 	}
 }
