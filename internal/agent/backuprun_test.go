@@ -552,7 +552,8 @@ func TestADirectoryIsReadOnlyWithTheMountsUnderIt(t *testing.T) {
 // TestADumpIsFedThroughTheJobsInput (#29): the job is attached before it
 // starts; the dump runs in its database's container with docker exec, and
 // what it prints reaches restic through the job's input and the relay as
-// the snapshot's one file.
+// the snapshot's one file. The job reads no file of the server, and has no
+// capability (#53).
 func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 	r := newRunAgent(t)
 	repo := r.remote(t)
@@ -598,7 +599,7 @@ func TestADumpIsFedThroughTheJobsInput(t *testing.T) {
 		"--stdin-name", "umami-db.pgdump", "--relay", dumpSocket, "--cache", "/cache"}) {
 		t.Errorf("the job's command: %q", job.Cmd)
 	}
-	if len(mountsOf(job)) != 2 || !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) || job.Stdin == nil {
+	if len(mountsOf(job)) != 2 || job.Host["CapAdd"] != nil || job.Stdin == nil {
 		t.Errorf("the job: %v", job.Host)
 	}
 	// attached before it started
@@ -1047,5 +1048,218 @@ func TestARunSaysWhyItFailed(t *testing.T) {
 	r.engine.Fail("POST /containers/create", "")
 	if err == nil || result["failure"] != nil {
 		t.Errorf("a job that did not start: %v %v", result, err)
+	}
+}
+
+// databaseRun is a backup run of a database job's dump (#53), as the panel
+// sends it: the dump runs in the shared server's container, with no
+// environment, and the snapshot's extra tags name the database and its
+// server.
+func databaseRun(repo *agentv1.BackupRepository, container string) *agentv1.BackupRun {
+	return &agentv1.BackupRun{
+		RunId: "r53", Repository: repo, StdinContainer: container, StdinFileName: "shop.pgdump",
+		StdinCommand: []string{"sh", "-c", `exec pg_dump --format=custom --username="$1" --dbname="$2"`, "sh", "postgres", "shop"},
+		Tags:         []string{"pocketcloud", "job:j53"}, ExtraTags: backup.DatabaseTags("shop", "db-main"), HostName: "nas",
+		Retention: &agentv1.BackupRetention{Daily: 7},
+	}
+}
+
+// TestADatabasesDumpIsTaggedAndKeptAsOneGroup (#53): a database job's dump
+// runs in the server's container, its snapshot has the job's tags and the
+// extra tags db:<name> and dbserver:<server>, and its retention selects the
+// job's snapshots by the job's tags alone, as one group, so that a move to
+// another server leaves no group that is never thinned out. The job has no
+// capability on a remote target, and a local target's own on a local one;
+// the answer says what the repository grew by, packed.
+func TestADatabasesDumpIsTaggedAndKeptAsOneGroup(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	db := r.engine.AddContainer("pcdb-main-db-1", "postgres:17", map[string]string{"pocketcloud.role": "db"})
+	r.engine.OnExec = func(*fakedocker.ExecCall, []byte) fakedocker.ExecResult {
+		return fakedocker.ExecResult{Stdout: "PGDMP of shop"}
+	}
+	run := databaseRun(repo, "pcdb-main-db-1")
+	result, err := r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+	if err != nil {
+		t.Fatalf("%v: %v", err, result)
+	}
+	job := r.lastJob(t)
+	if !slices.Equal(job.Cmd, []string{"backup-tool", "backup", "--host", "nas", "--tag", "pocketcloud", "--tag", "job:j53",
+		"--extra-tag", "db:shop", "--extra-tag", "dbserver:db-main", "--keep-daily", "7", "--stdin-name", "shop.pgdump", "--relay", dumpSocket, "--cache", "/cache"}) {
+		t.Errorf("the job's command: %q", job.Cmd)
+	}
+	if job.Host["CapAdd"] != nil || job.Host["NetworkMode"] != "bridge" || len(mountsOf(job)) != 2 {
+		t.Errorf("a dump to a remote target: %v", job.Host)
+	}
+	snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl())
+	if len(snapshots) != 1 || !slices.Equal(snapshots[0].Tags, []string{"pocketcloud", "job:j53", "db:shop", "dbserver:db-main"}) ||
+		snapshots[0].Files["/shop.pgdump"] != "PGDMP of shop" {
+		t.Fatalf("snapshots: %+v", snapshots)
+	}
+	if result["bytes_stored"] != int64(len("PGDMP of shop")) {
+		t.Errorf("what the repository grew by: %v", result)
+	}
+	calls := fakerestic.Calls(t, r.root)
+	if !strings.Contains(calls, " backup --json --quiet --retry-lock 30m --host nas --tag pocketcloud,job:j53,db:shop,dbserver:db-main --stdin-from-command") ||
+		!strings.Contains(calls, " forget --json --prune --retry-lock 5m --group-by  --tag pocketcloud,job:j53 --keep-daily 7\n") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+	// after a move, the server's tag differs, and the job keeps one group
+	run.ExtraTags = backup.DatabaseTags("shop", "db-new")
+	run.Retention = &agentv1.BackupRetention{Last: 1}
+	if result, err := r.handleBackupRun(context.Background(), runCommand(run), &Reporter{}); err != nil || result["forgotten"] != int64(1) {
+		t.Fatalf("after a move: %v %v", result, err)
+	}
+	if snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl()); len(snapshots) != 1 || !slices.Contains(snapshots[0].Tags, "dbserver:db-new") {
+		t.Errorf("one snapshot of the job is left: %+v", snapshots)
+	}
+
+	// a local target adds its own, with no network
+	local := &agentv1.BackupRepository{TargetId: "t2", Url: backup.LocalMount, Password: "repo-password-2", Mount: filepath.Join(t.TempDir(), "restic")}
+	if _, err := r.handleBackupInit(context.Background(), initCommand(local), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := r.handleBackupRun(context.Background(), runCommand(databaseRun(local, db)), &Reporter{}); err != nil {
+		t.Fatalf("to a local target: %v %v", err, result)
+	}
+	if job := r.lastJob(t); !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE", "FOWNER"}) || job.Host["NetworkMode"] != "none" {
+		t.Errorf("a dump to a local target: %v", job.Host)
+	}
+
+	// without extra tags, #29's retention is as it was
+	plain := databaseRun(repo, db)
+	plain.ExtraTags = nil
+	if _, err := r.handleBackupRun(context.Background(), runCommand(plain), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fakerestic.Calls(t, r.root); !strings.Contains(calls, " forget --json --prune --retry-lock 5m --group-by tags --tag pocketcloud,job:j53 --keep-daily 7\n") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+}
+
+// TestADatabaseRunHoldsItsDatabaseForReading (#53): a database's dump holds
+// the database of its server's container for reading, which a restore of it
+// writes: one does not run while the other does; another database of the
+// server is not held.
+func TestADatabaseRunHoldsItsDatabaseForReading(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	db := r.engine.AddContainer("pcdb-main-db-1", "postgres:17", map[string]string{"pocketcloud.role": "db"})
+	r.engine.OnExec = func(*fakedocker.ExecCall, []byte) fakedocker.ExecResult {
+		return fakedocker.ExecResult{Stdout: "PGDMP of shop"}
+	}
+	release, err := r.claims.claim(true, []string{databaseClaim(db, "shop")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := r.jobCount()
+	if _, err := r.handleBackupRun(context.Background(), runCommand(databaseRun(repo, "pcdb-main-db-1")), &Reporter{}); err == nil ||
+		err.Error() != "A restore into shop is under way: back it up once it ends." {
+		t.Errorf("a dump during a restore of its database: %v", err)
+	}
+	if r.jobCount() != jobs {
+		t.Error("a job ran")
+	}
+	release()
+	release, err = r.claims.claim(true, []string{databaseClaim(db, "blog")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := r.handleBackupRun(context.Background(), runCommand(databaseRun(repo, "pcdb-main-db-1")), &Reporter{}); err != nil {
+		t.Errorf("a dump during a restore of another database: %v", err)
+	}
+}
+
+// TestASitesFilesAreBackedUpReadOnly (#53): a PHP site's job mounts its
+// directory of the sites volume read-only at /srv/sites/<dir>: through the
+// volume's subpath from Engine API 1.45, and a bind of the volume's own
+// directory before; DAC_OVERRIDE stays, as www-data owns the files; what
+// the site's template excludes is left out; the tag site:<name> is the
+// snapshot's.
+func TestASitesFilesAreBackedUpReadOnly(t *testing.T) {
+	r := newRunAgent(t)
+	repo := r.remote(t)
+	r.volume(t, "pocketcloud-sites", map[string]string{"wp/shared/wp-content/uploads/a.png": "png", "wp/shared/wp-content/cache/c": "cached",
+		"wp/releases/d1/index.php": "<?php"})
+	run := &agentv1.BackupRun{RunId: "r54", Repository: repo, SiteDir: "wp/shared", Tags: []string{"pocketcloud", "job:j54"},
+		ExtraTags: backup.SiteTags("wp"), Excludes: []string{"/srv/sites/wp/shared/wp-content/cache"}, HostName: "nas"}
+	for _, api := range []string{"1.45", "1.44"} {
+		r.engine.APIVersion = api
+		result, err := r.handleBackupRun(context.Background(), runCommand(run), &Reporter{})
+		if err != nil {
+			t.Fatalf("API %s: %v: %v", api, err, result)
+		}
+		job := r.lastJob(t)
+		mount := mountsOf(job)["/srv/sites/wp/shared"]
+		options, _ := mount["VolumeOptions"].(map[string]any)
+		switch api {
+		case "1.45":
+			if mount["Type"] != "volume" || mount["Source"] != "pocketcloud-sites" || mount["ReadOnly"] != true || options["Subpath"] != "wp/shared" {
+				t.Errorf("API %s: the mount %v", api, mount)
+			}
+		default:
+			if mount["Type"] != "bind" || mount["Source"] != filepath.Join(r.engine.VolumeDir("pocketcloud-sites"), "wp/shared") || mount["ReadOnly"] != true {
+				t.Errorf("API %s: the mount %v", api, mount)
+			}
+		}
+		if !slices.Equal(anyStrings(job.Host["CapAdd"]), []string{"DAC_OVERRIDE"}) {
+			t.Errorf("API %s: capabilities %v", api, job.Host["CapAdd"])
+		}
+		if !slices.Equal(job.Cmd[:12], []string{"backup-tool", "backup", "--host", "nas", "--tag", "pocketcloud", "--tag", "job:j54",
+			"--extra-tag", "site:wp", "--path", "/srv/sites/wp/shared"}) || !slices.Contains(job.Cmd, "--exclude") {
+			t.Errorf("API %s: the job's command %q", api, job.Cmd)
+		}
+		snapshots := fakerestic.Snapshots(t, r.root, repo.GetUrl())
+		snapshot := snapshots[len(snapshots)-1]
+		if snapshot.Files["/srv/sites/wp/shared/wp-content/uploads/a.png"] != "png" || len(snapshot.Files) != 1 ||
+			!slices.Equal(snapshot.Tags, []string{"pocketcloud", "job:j54", "site:wp"}) {
+			t.Errorf("API %s: the snapshot %+v", api, snapshot)
+		}
+	}
+
+	// a classic site's whole directory, its build left out
+	r.engine.APIVersion = ""
+	classic := &agentv1.BackupRun{RunId: "r55", Repository: repo, SiteDir: "wp", Tags: []string{"pocketcloud", "job:j55"},
+		ExtraTags: backup.SiteTags("wp"), Excludes: []string{"/srv/sites/wp/releases/*/wp-content/cache", "/srv/sites/wp/.build"}, HostName: "nas"}
+	if _, err := r.handleBackupRun(context.Background(), runCommand(classic), &Reporter{}); err != nil {
+		t.Fatal(err)
+	}
+	if mount := mountsOf(r.lastJob(t))["/srv/sites/wp"]; mount["ReadOnly"] != true || mount["VolumeOptions"].(map[string]any)["Subpath"] != "wp" {
+		t.Errorf("a classic site's mount: %v", mount)
+	}
+
+	jobs := r.jobCount()
+	for _, tc := range []struct {
+		change func(*agentv1.BackupRun)
+		want   string
+	}{
+		{func(p *agentv1.BackupRun) { p.SiteDir = "../etc" }, "no directory of a site"},
+		{func(p *agentv1.BackupRun) { p.SiteDir = "wp/shared/../../etc" }, "no directory of a site"},
+		{func(p *agentv1.BackupRun) { p.SiteDir = "wp/releases" }, "no directory of a site"},
+		{func(p *agentv1.BackupRun) { p.SiteDir = "WP" }, "no directory of a site"},
+		{func(p *agentv1.BackupRun) { p.Volumes = []string{"data"} }, "exactly one of them"},
+		{func(p *agentv1.BackupRun) { p.Excludes = []string{"/srv/sites/blog/shared/cache"} }, "under no directory the backup saves"},
+		{func(p *agentv1.BackupRun) { p.Excludes = []string{"/srv/sites/wp/shared"} }, "under no directory the backup saves"},
+		{func(p *agentv1.BackupRun) { p.Excludes = []string{"/srv/sites/wp/shared/../../../etc"} }, "absolute and clean"},
+		{func(p *agentv1.BackupRun) { p.Excludes = []string{"cache"} }, "absolute and clean"},
+		{func(p *agentv1.BackupRun) {
+			p.Excludes = slices.Repeat([]string{"/srv/sites/wp/shared/x"}, backup.MaxExcludes+1)
+		}, "at most 100"},
+	} {
+		changed := &agentv1.BackupRun{RunId: "r56", Repository: repo, SiteDir: "wp/shared", Tags: []string{"pocketcloud", "job:j54"}, HostName: "nas"}
+		tc.change(changed)
+		if _, err := r.handleBackupRun(context.Background(), runCommand(changed), &Reporter{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v", changed, err)
+		}
+	}
+	// a dump has no path to leave a part of out
+	dump := databaseRun(repo, r.engine.AddContainer("pcdb-main-db-1", "postgres:17", map[string]string{"pocketcloud.role": "db"}))
+	dump.Excludes = []string{"/shop.pgdump"}
+	if _, err := r.handleBackupRun(context.Background(), runCommand(dump), &Reporter{}); err == nil || !strings.Contains(err.Error(), "under no directory the backup saves") {
+		t.Errorf("a dump with an exclude: %v", err)
+	}
+	if r.jobCount() != jobs {
+		t.Error("a job ran for a refused run")
 	}
 }

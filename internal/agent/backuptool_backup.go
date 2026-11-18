@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,9 +25,15 @@ import (
 // backupRun is what the backup op backs up, and what of it the repository
 // keeps.
 type backupRun struct {
-	host  string
-	tags  []string
-	paths []string
+	host string
+	tags []string
+	// extraTags are the snapshot's tags besides tags, which may change for
+	// a job, such as a database's server (#53): the retention selects by
+	// tags alone, and takes every snapshot of them as one group
+	extraTags []string
+	paths     []string
+	// excludes are restic's --exclude patterns, each under a path (#53)
+	excludes []string
 	// stdinName is the file name of a dump, which the tool serves on the
 	// socket relay
 	stdinName string
@@ -57,27 +64,36 @@ type backupRunResult struct {
 	// RetentionDeferred is restic's line that says who held the lock the
 	// retention needs, when it waits for the next run.
 	RetentionDeferred string `json:"retention_deferred,omitempty"`
+	// BytesStored is what the snapshot added to the repository, packed and
+	// compressed: restic's data_added_packed (#53).
+	BytesStored int64 `json:"bytes_stored,omitempty"`
 }
 
 // backupRunOf checks the backup op's flags.
-func backupRunOf(host string, tags, paths []string, stdinName, relay string, keep []*int) (backupRun, error) {
-	run := backupRun{host: host, tags: tags, paths: paths, stdinName: stdinName, relay: relay}
+func backupRunOf(host string, tags, extraTags, paths, excludes []string, stdinName, relay string, keep []*int) (backupRun, error) {
+	run := backupRun{host: host, tags: tags, extraTags: extraTags, paths: paths, excludes: excludes, stdinName: stdinName, relay: relay}
 	if host == "" {
 		return run, errors.New("a backup needs --host, the server's name, for its snapshot")
 	}
 	if (len(paths) > 0) == (stdinName != "") {
 		return run, errors.New("a backup is of the directories of --path or of a dump, --stdin-name, and not both")
 	}
-	for _, tag := range tags {
+	for _, tag := range append(slices.Clone(tags), extraTags...) {
 		// a comma would split it, as restic reads one
 		if tag == "" || strings.ContainsAny(tag, ", \n\r\x00") {
 			return run, fmt.Errorf("a tag cannot be %q", tag)
 		}
 	}
+	if len(extraTags) > 0 && len(tags) == 0 {
+		return run, errors.New("extra tags come with the job's own tags, --tag, which its retention selects by")
+	}
 	for _, p := range paths {
 		if !path.IsAbs(p) || path.Clean(p) != p || strings.ContainsAny(p, "\n\r\x00") {
 			return run, fmt.Errorf("a directory to back up is absolute and clean, not %q", p)
 		}
+	}
+	if err := checkExcludes(excludes, paths); err != nil {
+		return run, err
 	}
 	if stdinName != "" {
 		if strings.ContainsAny(stdinName, "/\n\r\x00") || stdinName == "." || stdinName == ".." {
@@ -101,12 +117,31 @@ func backupRunOf(host string, tags, paths []string, stdinName, relay string, kee
 	return run, nil
 }
 
+// checkExcludes checks restic's --exclude patterns of a backup (#53): at
+// most backup.MaxExcludes, each absolute, clean and under one of the paths
+// backed up, as the job's paths name them; a dump has none.
+func checkExcludes(excludes, paths []string) error {
+	if len(excludes) > backup.MaxExcludes {
+		return fmt.Errorf("a backup leaves out at most %d patterns, not %d", backup.MaxExcludes, len(excludes))
+	}
+	for _, exclude := range excludes {
+		if !path.IsAbs(exclude) || path.Clean(exclude) != exclude || strings.ContainsAny(exclude, "\n\r\x00") {
+			return fmt.Errorf("a pattern to leave out is absolute and clean, not %q", exclude)
+		}
+		if !slices.ContainsFunc(paths, func(p string) bool { return exclude != p && backup.Under(exclude, p) }) {
+			return fmt.Errorf("%s is under no directory the backup saves", exclude)
+		}
+	}
+	return nil
+}
+
 // resticSummary is the summary line of restic backup --json.
 type resticSummary struct {
 	MessageType         string `json:"message_type"`
 	FilesNew            int64  `json:"files_new"`
 	FilesChanged        int64  `json:"files_changed"`
 	DataAdded           int64  `json:"data_added"`
+	DataAddedPacked     int64  `json:"data_added_packed"`
 	TotalBytesProcessed int64  `json:"total_bytes_processed"`
 	SnapshotID          string `json:"snapshot_id"`
 }
@@ -123,7 +158,8 @@ func summaryOf(out []byte) *resticSummary {
 }
 
 func (s *resticSummary) result() backupRunResult {
-	return backupRunResult{SnapshotID: s.SnapshotID, BytesAdded: s.DataAdded, TotalBytes: s.TotalBytesProcessed, FilesNew: s.FilesNew, FilesChanged: s.FilesChanged}
+	return backupRunResult{SnapshotID: s.SnapshotID, BytesAdded: s.DataAdded, TotalBytes: s.TotalBytesProcessed, FilesNew: s.FilesNew,
+		FilesChanged: s.FilesChanged, BytesStored: s.DataAddedPacked}
 }
 
 // backup backs up a run's directories or dump, and applies its retention.
@@ -139,8 +175,11 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	// --quiet: no progress, and the summary still; one --tag with commas
 	// gives the snapshot every tag
 	args := []string{"backup", "--json", "--quiet", "--retry-lock", retryLock, "--host", run.host}
-	if len(run.tags) > 0 {
-		args = append(args, "--tag", strings.Join(run.tags, ","))
+	if tags := append(slices.Clone(run.tags), run.extraTags...); len(tags) > 0 {
+		args = append(args, "--tag", strings.Join(tags, ","))
+	}
+	for _, exclude := range run.excludes {
+		args = append(args, "--exclude", exclude)
 	}
 	var dump *dumpRelay
 	if run.stdinName != "" {
@@ -198,7 +237,7 @@ func (r restic) backup(ctx context.Context, run backupRun, stdin io.Reader) (*ba
 	fmt.Fprintf(r.log, "Saved the snapshot %.8s: %d new and %d changed files, %s added, %s in all\n",
 		result.SnapshotID, result.FilesNew, result.FilesChanged, sizeText(result.BytesAdded), sizeText(result.TotalBytes))
 	if len(run.keep) > 0 {
-		forgotten, err := r.forget(ctx, run.tags, run.keep)
+		forgotten, err := r.forget(ctx, run.tags, len(run.extraTags) > 0, run.keep)
 		result.Forgotten = forgotten
 		// the snapshot is saved: the run succeeded, and the panel says the
 		// retention did not
@@ -266,11 +305,18 @@ func (e *lockedError) Error() string { return e.said }
 
 // forget thins out the snapshots that have all of tags to the retention,
 // and prunes what they alone held. It counts the snapshots that went, also
-// when the prune after them failed.
-func (r restic) forget(ctx context.Context, tags []string, keep []keepOption) (int, error) {
+// when the prune after them failed. oneGroup takes them all as one group,
+// for a job whose snapshots have extra tags that may change (#53).
+func (r restic) forget(ctx context.Context, tags []string, oneGroup bool, keep []keepOption) (int, error) {
 	// one --tag with commas: snapshots with every tag, where several --tag
-	// would take those with any; grouped by tags, as a job's are the same
-	args := []string{"forget", "--json", "--prune", "--retry-lock", forgetRetryLock, "--group-by", "tags", "--tag", strings.Join(tags, ",")}
+	// would take those with any; grouped by tags, as a job's are the same,
+	// or not at all when its extra tags may differ, such as a database's
+	// server after a move, whose old group would never be thinned out
+	group := "tags"
+	if oneGroup {
+		group = ""
+	}
+	args := []string{"forget", "--json", "--prune", "--retry-lock", forgetRetryLock, "--group-by", group, "--tag", strings.Join(tags, ",")}
 	var policy []string
 	for _, option := range keep {
 		args = append(args, "--"+option.name, strconv.Itoa(option.n))

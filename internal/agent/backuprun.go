@@ -179,6 +179,10 @@ func (r backupRunResult) answer() map[string]any {
 	if r.RetentionDeferred != "" {
 		answer["retention_deferred"] = r.RetentionDeferred
 	}
+	if r.BytesStored > 0 {
+		// what the repository grew by, packed (#53)
+		answer["bytes_stored"] = r.BytesStored
+	}
 	return answer
 }
 
@@ -190,17 +194,20 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 	// of a file system the job mounts a part of
 	job := backupJobSpec{capabilities: []string{"DAC_OVERRIDE"}, stopGrace: backupStopGrace}
 	volumes, paths, dump, export := payload.GetVolumes(), payload.GetPaths(), payload.GetStdinCommand(), payload.GetPanelExport()
+	siteDir := payload.GetSiteDir()
 	sources := 0
 	for _, source := range [][]string{volumes, paths, dump} {
 		if len(source) > 0 {
 			sources++
 		}
 	}
-	if export != "" {
-		sources++
+	for _, source := range []string{export, siteDir} {
+		if source != "" {
+			sources++
+		}
 	}
 	if sources != 1 {
-		return job, errors.New("a backup run backs up volumes, directories, a dump or the panel: exactly one of them")
+		return job, errors.New("a backup run backs up volumes, directories, a dump, the panel or a site's files: exactly one of them")
 	}
 	if payload.GetHostName() == "" {
 		return job, errors.New("a backup run needs the server's name, for its snapshots")
@@ -212,6 +219,13 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 	for _, tag := range payload.GetTags() {
 		args = append(args, "--tag", tag)
 	}
+	// the snapshot's tags that may change for the job, such as a database's
+	// server, which the retention does not select by (#53)
+	for _, tag := range payload.GetExtraTags() {
+		args = append(args, "--extra-tag", tag)
+	}
+	// where the job sees what it backs up, which the excludes are under
+	var saved []string
 	retention := payload.GetRetention()
 	for i, n := range []int32{retention.GetLast(), retention.GetHourly(), retention.GetDaily(), retention.GetWeekly(), retention.GetMonthly(), retention.GetYearly()} {
 		if n < 0 {
@@ -240,6 +254,7 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			target := backupVolumes + "/" + name
 			job.mounts = append(job.mounts, map[string]any{"Type": "volume", "Source": name, "Target": target, "ReadOnly": true})
 			args = append(args, "--path", target)
+			saved = append(saved, target)
 		}
 	case len(paths) > 0:
 		recursive, err := a.recursiveReadOnly(ctx)
@@ -282,7 +297,24 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			}
 			job.mounts = append(job.mounts, mount)
 			args = append(args, "--path", real)
+			saved = append(saved, real)
 		}
+	case siteDir != "":
+		// a PHP site's files outside its releases (#53), read-only: its
+		// shared/, or a classic site's whole directory, which the panel's
+		// excludes thin out; DAC_OVERRIDE stays, as www-data owns them
+		if !siteDirName.MatchString(siteDir) {
+			return job, fmt.Errorf("%q is no directory of a site: <site>/shared, or <site>", siteDir)
+		}
+		target := siteFilesRoot + "/" + siteDir
+		mount, err := dockerSites{a: a}.sitesMount(ctx, siteDir, target)
+		if err != nil {
+			return job, err
+		}
+		mount["ReadOnly"] = true
+		job.mounts = append(job.mounts, mount)
+		args = append(args, "--path", target)
+		saved = append(saved, target)
 	case export != "":
 		// the panel's copy of itself (#32), fetched from the panel: nothing
 		// of the server is mounted, and the job reads no file of it
@@ -319,6 +351,13 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 		if !info.State.Running {
 			return job, fmt.Errorf("the container %s is not running, and the dump runs in it", strings.TrimPrefix(info.Name, "/"))
 		}
+		// the dump runs in its own container: the job reads no file of the
+		// server, and gets no capability but a local target's (#53)
+		job.capabilities = nil
+		if database := taggedDatabase(payload.GetExtraTags()); database != "" {
+			// what a database's restore writes, which never runs meanwhile
+			job.claims = append(job.claims, databaseClaim(info.ID, database))
+		}
 		args = append(args, "--stdin-name", name, "--relay", dumpSocket)
 		var env []string
 		for _, key := range slices.Sorted(maps.Keys(payload.GetEnv())) {
@@ -330,8 +369,40 @@ func (a *Agent) backupRunJob(ctx context.Context, payload *agentv1.BackupRun) (b
 			a.feedDump(ctx, stdin, info.ID, dump, env, secrets)
 		}
 	}
+	excludes := payload.GetExcludes()
+	if err := checkExcludes(excludes, saved); err != nil {
+		return job, err
+	}
+	for _, exclude := range excludes {
+		args = append(args, "--exclude", exclude)
+	}
 	job.args = args
 	return job, nil
+}
+
+// siteFilesRoot is where a site's backup job mounts its directory of the
+// sites volume: /srv/sites/<site>/shared, or /srv/sites/<site> (#53).
+const siteFilesRoot = "/srv/sites"
+
+// siteDirName is a site's directory a backup saves: a site's name, and
+// /shared but for a classic site (#53).
+var siteDirName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?(/shared)?$`)
+
+// taggedDatabase is the database an extra tag db:<name> names, if one does
+// (#53).
+func taggedDatabase(tags []string) string {
+	for _, tag := range tags {
+		if database, ok := strings.CutPrefix(tag, backup.TagDatabase); ok {
+			return database
+		}
+	}
+	return ""
+}
+
+// databaseClaim is the data claim of a database of a server's container:
+// a database's dump reads it, its restore writes it (#53).
+func databaseClaim(container, database string) string {
+	return "db:" + container + "/" + database
 }
 
 // mergedEnv is the values of both environments.
