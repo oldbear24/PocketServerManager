@@ -291,8 +291,11 @@ func TestADatabaseRestoreIsRefusedAsItIsMade(t *testing.T) {
 	f.setTest(test, map[string]any{"status": schema.CheckOK})
 
 	run := f.save(schema.BackupRuns, map[string]any{"job": f.job.Id, "target": f.target.Id, "host": f.host.Id, "trigger": schema.RunManual, "status": schema.RunRunning})
+	// the run's dump comes from the database's server, as a database run's
+	// does: the delivery refuses one of another container
 	runCommand := f.save(schema.Commands, map[string]any{"host": f.host.Id, "type": "backup.run",
-		"payload": map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"}}})
+		"payload": map[string]any{"run_id": run.Id, "repository": map[string]any{"target_id": f.target.Id, "url": "s3:x"},
+			"stdin_container": f.server.GetString("container_ref")}})
 	f.setTest(run, map[string]any{"command": runCommand.Id})
 	expect("a backup running", http.StatusConflict, "A backup of db-main-shop is running: restore when it ends.")
 	f.closeCommand(runCommand, schema.CommandFailed)
