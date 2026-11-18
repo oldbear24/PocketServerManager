@@ -903,6 +903,413 @@ This section is the contract that the agent, the panel, the web UI and the guide
 
   “Generate one” makes 25 characters of Crockford's base32 from `crypto.getRandomValues` (125 bits), shown in groups of five joined by `-`, which are part of the passphrase: what is shown is what is typed. The restore drawer's commands are the guide's word for word (a test of the web holds them together). The web's types gain `SourceKind` `"panel"`, `BackupRun.trigger` `"change"` and `Host.panel_address`; `alertLink` sends `recovery_kit` and `panel_restored` to `/settings#recovery-kit` and `panel_backup` to `/backups?setup=panel`, which `backupAlertRules` lists.
 
+### Per-database backups and restore tests (#53)
+
+> **Contract.** This section is the contract that the agent, the panel, the web UI and the docs of #53 code against, written before them: the names, the proto, the payloads, the scripts, the answers, the records, the REST API with its sentences, the alerts and events, and the UI's strings. The docs part turns it into the final prose. The names are in internal/schema (kinds, modes, the temporary namespace), internal/backup (database.go: the restore modes, tags, steps, phases, failure classes, alerts, events, the answers and the default schedule; panel.go: the capability) and internal/databases (backup.go: every command line and SQL statement); the records are the migration `1773000000_database_backups.go`. Field names are the proto's (`UseProtoNames`), as the stored payloads have them. No database password and no target secret is ever in a stored payload, a log, a result, an event or the audit: the enricher adds them to a command only as it delivers it.
+
+- **What it does.** Every ready database of a **shared** server gets a backup job of its own (origin and source kind `database`), daily by default, whose schedule, targets and retention follow per-server defaults unless the job sets its own; a database of a dedicated server stays its stack's business (its Backup cell shows the stack's `db_dump` job, and the Databáze KPI leaves it out). A run dumps that one database through #29's relay with the server's own client: PostgreSQL `pg_dump --format=custom --compress=0`, MariaDB `mariadb-dump` of one named database with one row per INSERT, so restic deduplicates; the snapshot is tagged `db:<name>` and `dbserver:<server>`. A database job restores on #30's record model three ways: back into the database (the application stopped, the name typed to confirm), into a new database, and a download as plain SQL. A restore runs as the database's **own user** over the container's address, so it cannot write any other database of the server (AC1). On PostgreSQL the restore in place goes into a scratch copy while the application runs and is swapped in atomically, keeping the old data 24 hours; on MariaDB a rehearsal into a scratch copy comes first, then drop, recreate, restore. Weekly **restore tests** (`backup_checks` rows of the kind `restore_test`) restore the newest dump into a temporary database `pc_rt_<check id>`, compare the tables, and raise `backup_restore_test_failed` (critical) when the backup could not be restored (AC2). Temporary databases are `databases` records with `temporary_until` in the reserved namespace `^pc_(rt|rs|old)_[a-z0-9]{15}$`, which a sweep drops. Every PHP site gets a job `<site>-files` (origin and source kind `site`) for its `shared/`, read-only, with `site_php.backup_exclude` as restic `--exclude`. There is no new collection; restic stays 0.17.3, only in job containers.
+- **Names.**
+
+  | Name | Value | What |
+  |---|---|---|
+  | `backup.CapabilityDatabase` | `backup.database` | the pseudo-capability of an agent that takes `BackupRun.extra_tags`, `site_dir`, `excludes`, `BackupRestore.database` and `BackupDump.sql_from`; the agent adds it to `capabilities()` beside `backup.run.panel` once it runs them. `backup.restore_test` and `db.database.discard` are gated by their command types |
+  | `schema.SourceDatabase`, `schema.SourceSite` | `database`, `site` | `backup_jobs.source_kind` of a database's and a site's job |
+  | `schema.JobDatabase`, `schema.JobSite` | `database`, `site` | `backup_jobs.origin` of the jobs the panel makes; `POST /backup-jobs` never makes them |
+  | `schema.OwnSchedule`, `OwnTargets`, `OwnRetention` | `schedule`, `targets`, `retention` | what `backup_jobs.own_settings` lists: the settings a job set for itself; the others follow its server's `auto_backup_*` |
+  | `schema.RestoreDatabase`, `schema.RestoreNewDatabase` | `database`, `new_database` | `backup_restores.mode` of a restore back into the database and into a new one |
+  | `schema.DownloadSQL` | `sql` | `backup_restores.download_kind` of a dump downloaded as plain SQL |
+  | `schema.CheckRestoreTest` | `restore_test` | `backup_checks.kind` of a restore test (reserved since #31) |
+  | `schema.DefaultRestoreTestSchedule` | `20 5 * * 3` | the restore tests' schedule the migration sets: Wednesdays 05:20 UTC, after the automatic backups of 01:00–02:45 |
+  | `schema.TemporaryDatabase` | `^pc_(rt\|rs\|old)_[a-z0-9]{15}$` | the temporary namespace |
+  | `databases.TemporaryTest`, `TemporaryScratch`, `TemporaryPrevious` | `pc_rt_`, `pc_rs_`, `pc_old_` | a restore test's copy (`TestDatabaseName(check id)`), an in-place restore's scratch copy (`ScratchName(restore id)`), the data an in-place restore of PostgreSQL replaced (`PreviousName(restore id)`); `TemporaryOwner(name)` gives the prefix and the record id back |
+  | `databases.ValidTemporaryName`, `databases.ReservedPrefix`, `databases.ReservedPrefixProblem` | | the strict namespace check; the refusal of a new name that starts with a prefix, "Names that start with pc_rt_, pc_rs_ or pc_old_ are PocketCloud's own temporary databases." (`ValidDatabaseName` lets such names pass) |
+  | `databases.BackupFile(engine, db)`, `databases.FileDatabase(engine, file)` | `<db>.pgdump`, `<db>.sql` | the one file of a database's snapshot, `/<file>`, and the database a file name names |
+  | `databases.StagedDir`, `databases.StagedName(engine, command id)` | `/tmp`, `pocketcloud-restore-<command id>.pgdump` or `.sql` | where a restore stages a dump in the server's container |
+  | `backup.DbRestoreReplace`, `DbRestoreNew`, `DbRestoreTest` | `replace`, `new`, `test` | `BackupDbRestore.mode` |
+  | `backup.TagDatabase`, `TagServer`, `TagSite`; `backup.DatabaseTags(db, server)`, `backup.SiteTags(site)` | `db:`, `dbserver:`, `site:` | the extra tags of a database's or a site's snapshot |
+  | `backup.MaxExcludes` | 100 | the most `excludes` a run takes |
+  | `backup.StepFetch`, `StepDbRestore`, `StepSwap` | `fetch`, `dbrestore`, `swap` | a database restore's progress steps besides #30's `check`, `stop`, `start`, `verify` |
+  | `backup.Phase*` | `scratch`, `rehearsal`, `stopped`, `swapped`, `emptied`, `restored` | a database restore's phase in the agent's restore marker |
+  | `backup.RestoreTestOK`, `backup.Test*`, `backup.TestFailures`, `backup.TestFailed(class)` | `ok`; the failure classes below | a restore test's answer |
+  | `backup.AlertRestoreTestFailed`, `AlertRestoreTestUnverified`, `AlertTemporaryLeft` | `backup_restore_test_failed`, `backup_restore_test_unverified`, `db_temporary_left` | the alert rules |
+  | `backup.EventRestoreTest{OK,Failed,Error,Skipped}`, `EventJobDisabled`, `EventTemporaryDropped`, `EventTemporaryFound` | `backup.restore_test_ok`, `…_failed`, `…_error`, `…_skipped`, `backup.job_disabled`, `db.temporary_dropped`, `db.temporary_found` | the events |
+  | `backup.AutoSchedule(host id)` | `M H * * *` | a server's default schedule when `auto_backup_schedule` is empty: k = FNV-1a 32 of the host's id mod 8, H = 1 + k/4, M = 15 × (k mod 4), so 01:00–02:45 UTC, away from the label jobs' 03:00 and the integrity checks' Sunday 05:00 |
+  | `backup.DbRestoreResult`, `RestoreTestResult`, `DbRestorePreview` (with `PreviewSnapshot`, `PreviewRoot`, `WouldStop`, `DbPreview`, `Space`, `StoppedApp`), `backup.ResultMap` | | the answers below; every key is always there, a list may be `null`; `ResultMap` turns one into the `map[string]any` the stream carries, as for checks |
+
+- **Commands.** The panel creates them all; none can be requested through the API (their database passwords and target secrets come at delivery).
+
+  | Type | Timeout | Queue | Ordering key | Settled by the agent | Agent worker slots |
+  |---|---|---|---|---|---|
+  | `backup.run` of a database's or a site's job | 12 h | 12 h | `backup:<target>`, as every run | no | `backup.run`, 2 |
+  | `backup.restore` with `database`, real | 12 h | as #30 | `stack:<stack>` when `stack` is set (ordered with the stack's deploys, as `original`); else `site:<database.site>` (the key of the site's `site.*` commands); else `db:<container>/<database>` | yes | `backup.restore`, 2 |
+  | `backup.restore` with `database`, preview (`dry_run`) | as #30 | as #30 | none | yes | `backup-read`, 4 (ephemeral) |
+  | `backup.restore_test` | 6 h | 12 h | `db-test:<database.connection.container_id>` | no | `backup.restore_test`, 1 (the agent adds the limit; without it the longest prefix would be `backup.restore`) |
+  | `db.database.discard` | 10 min | — | `db-test:<connection.container_id>`: never while a test of the server runs | no | `db.`, 3 |
+  | `backup.dump` with `sql_from` | as #30 | as #30 | none | yes | `backup.dump`, 2 |
+  | `db.database.drop` with `temporaries` | 1 h | — | as today | no | `db.`, 3 |
+
+- **Proto** (`proto/pocketcloud/agent/v1/commands.proto`, additive; `gen/` regenerated per ADR 0005). `Command` oneof: `DbDatabaseDiscard db_database_discard = 183;` and `BackupRestoreTest backup_restore_test = 229;`.
+
+  ```proto
+  message BackupRun {        // … #29–#32's fields 1–13
+    repeated string extra_tags = 14;   // db:<name>, dbserver:<server>, site:<name>: with any, forget selects by tags alone, --group-by ''
+    string site_dir = 15;              // <site>/shared, or <site> for a classic site: mounted read-only at /srv/sites/<site_dir>
+    repeated string excludes = 16;     // restic --exclude: absolute, clean, under the path backed up; at most 100
+  }
+  message BackupRestore {    // … #30's fields 1–14
+    BackupDbRestore database = 15;     // sets neither original nor target_path; sets restore_id, job_tag, snapshot_id,
+                                       // dry_run, overwrite (replace only), stack (the owner stack, if any), confirmed_stops
+  }
+  message BackupDump {       // … #30's fields 1–6
+    string sql_from = 7;               // a shared PostgreSQL server's container, whose image converts the dump to SQL
+  }
+  message DbDatabaseDrop {   // … fields 1–4
+    repeated string temporaries = 5;   // the database's pc_old_/pc_rt_ copies, dropped after the final dump and before the user
+  }
+  message BackupDbRestore {
+    DbConnection connection = 1;       // container_id = db_servers.container_ref; admin_password added at delivery
+    string database = 2;               // where it goes: the database, the new name, or pc_rt_<check id>
+    string file = 3;                   // the snapshot's file: <db>.pgdump (postgres) or <db>.sql (mariadb)
+    string mode = 4;                   // "replace" | "new" | "test"
+    string user = 5;                   // the database's own user, who restores and owns what is restored
+    string password = 6 [(pocketcloud.options.v1.sensitive) = true];  // that user's password, added at delivery
+    string scratch = 7;                // replace: pc_rs_<restore id> (PostgreSQL's copy; MariaDB's rehearsal)
+    string previous = 8;               // replace on PostgreSQL: pc_old_<restore id>
+    repeated string stop_projects = 9;    // other stacks of the host whose env names ${secret:db/<db>}
+    repeated string stop_containers = 10; // <site>-php, <site>-worker of a site's database
+    string site = 11;                  // the site of a site's database, for ordering with site.* commands
+  }
+  message BackupRestoreTest {
+    BackupRepository repository = 1;   // target_id and url stored; secrets at delivery
+    string snapshot_id = 2;            // 64 hex
+    string job_tag = 3;                // job:<id>
+    string check_id = 4;               // the backup_checks row
+    BackupDbRestore database = 5;      // mode "test"; database pc_rt_<check id>
+    repeated string drop_before = 6;   // earlier pc_rt_ databases of this server whose tests ended
+  }
+  message DbDatabaseDiscard {
+    DbConnection connection = 1;       // admin_password added at delivery
+    repeated string names = 2;         // each ^pc_(rt|rs|old)_[a-z0-9]{15}$
+    string revoke_from = 3;            // MariaDB: the user granted on them, if known
+  }
+  ```
+
+- **Payloads**, as stored (no secret):
+
+  ```jsonc
+  // backup.run of a database's job: the database and its server are resolved at each run, never stored in the job
+  {"run_id": "<run>", "repository": {"target_id": "<target>", "url": "<url>"},
+   "stdin_container": "pcdb-main-db-1",            // the server's container_ref: the agent inspects it by name
+   "stdin_command": ["sh", "-c", "<the engine's dump script, below>", "sh", "postgres", "shop"],
+   "stdin_file_name": "shop.pgdump", "host_name": "<server>",
+   "tags": ["pocketcloud", "job:<job>"], "extra_tags": ["db:shop", "dbserver:db-main"],
+   "retention": {"daily": 7, "weekly": 4, "monthly": 6}}   // env stays empty
+  // backup.run of a site's job
+  {"run_id": "<run>", "repository": {…}, "site_dir": "wp/shared", "host_name": "<server>",
+   "excludes": ["/srv/sites/wp/shared/wp-content/cache", "/srv/sites/wp/shared/wp-content/upgrade"],
+   "tags": ["pocketcloud", "job:<job>"], "extra_tags": ["site:wp"], "retention": {…}}
+  // classic mode: "site_dir": "wp", excludes /srv/sites/wp/releases/*/<p> and /srv/sites/wp/.build
+  // backup.restore back into a PostgreSQL database
+  {"repository": {…}, "snapshot_id": "<64 hex>", "job_tag": "job:<job>", "restore_id": "<restore>",
+   "dry_run": false, "overwrite": true, "stack": "shop", "confirmed_stops": ["shop-web-1"],
+   "database": {"connection": {"container_id": "pcdb-main-db-1", "engine": "postgres", "admin_user": "postgres"},
+     "database": "shop", "file": "shop.pgdump", "mode": "replace", "user": "shop",
+     "scratch": "pc_rs_<restore>", "previous": "pc_old_<restore>", "stop_projects": ["reports"]}}
+  // MariaDB: no "previous"; a site's database: "site": "wp", "stop_containers": ["wp-php", "wp-worker"], no "stack"
+  // backup.restore into a new database: "mode": "new", "database"/"user" the new name, no overwrite, scratch, previous, stops
+  // backup.restore_test
+  {"repository": {…}, "snapshot_id": "<64 hex>", "job_tag": "job:<job>", "check_id": "<check>",
+   "database": {"connection": {…}, "database": "pc_rt_<check>", "file": "shop.sql", "mode": "test", "user": "shop"},
+   "drop_before": ["pc_rt_<an earlier check>"]}
+  // db.database.discard
+  {"connection": {"container_id": "pcdb-maria-db-1", "engine": "mariadb", "admin_user": "root"},
+   "names": ["pc_rt_<check>"], "revoke_from": "shop"}
+  // backup.dump of a PostgreSQL job as SQL: #30's file download, and
+  {…, "file_name": "shop.pgdump", "sql_from": "pcdb-main-db-1"}
+  ```
+
+  At delivery the enricher (`enrichBackup`, one per type; `backup.restore_test` joins `backupCommandTypes`) adds the target's secrets as today, then `completeDatabase` adds `connection.admin_password` (`db_servers.admin_password` of the server whose `container_ref` it is) and `password` (the user's `db_users.password`, or the new user's record for `new`), and refuses while the user's `pending_password` is set: "a rotation of X's password is under way". `db.database.discard` takes the connection only. `checkRestoreDelivery` compares the payload before secrets are added, so `restorePayloadMatches` is unchanged.
+
+- **The dump** (`databases.DumpCommand(engine, adminUser, database)`, in `stdin_command`). It runs in the shared server's container with the password of the container's own environment, which its Compose file sets from `${PC_ADMIN_PASSWORD}`, so a run carries none and `BackupRun.env` stays empty, as #29's dumps; PostgreSQL's local socket trusts the role anyway. The administrator (`root` / `postgres`) and the database are the positional `$1` and `$2`, never env values, which runs mask from 4 characters (`root`, `shop` would read `***`). Never `--databases` or `--all-databases`: the dump has no `CREATE DATABASE` and no `USE`, and #29's MySQL `--all-databases` dump restored would roll back every database of the server. The name must pass `ValidDatabaseName`, the administrator be a plain name.
+
+  ```
+  postgres: sh -c 'PGPASSWORD="${POSTGRES_PASSWORD:-}" exec pg_dump --format=custom --compress=0 --lock-wait-timeout=10min --username="$1" --dbname="$2"' sh postgres shop
+  mariadb:  sh -c 'if command -v mariadb-dump >/dev/null 2>&1; then d=mariadb-dump; else d=mysqldump; fi; MYSQL_PWD="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}" exec "$d" --user="$1" --single-transaction --routines --triggers --events --hex-blob --skip-extended-insert --no-autocommit --order-by-primary --skip-dump-date --default-character-set=utf8mb4 "$2"' sh root shop
+  ```
+
+  Beyond the issue's flags: `--skip-extended-insert` keeps a row's change on its own line, so restic's content-defined chunks find the rest again; `--order-by-primary` keeps the rows' order; `--skip-dump-date` keeps the footer; `--no-autocommit` keeps a restore of one-row INSERTs at one transaction per table; `--lock-wait-timeout=10min` stops a dump that would wait for ever. The dump runs with `docker exec` in the server's container and reaches restic through #29's relay (`pocketcloud-agent backup-tool relay` as restic's `--stdin-from-command`), which exits with the dump's code, so restic saves nothing for a failed dump: the documented deviation from restic running the dump itself, whose job would need the database's network, credentials and a client of the server's version. A dump job and a restore test's fetch job get no capabilities (a local target still adds its own and `NetworkMode none`).
+
+- **Tags and retention.** `restic backup` gets `--tag` of `tags` + `extra_tags` (each passes `backupRunOf`'s tag checks). With any extra tag, `forget` selects `--tag pocketcloud,job:<id>` and groups with `--group-by ''`, so a move, which renames the server (`dbserver:`), leaves no group that is never pruned; without extra tags the arguments are #29's (`--group-by tags`). An agent without `backup.database` gets no database or site run at all (the panel refuses it), so it never splits groups. A database run also takes a read claim `db:<container>/<database>`; restic 0.17.3's `data_added_packed` becomes the run's `bytes_stored`.
+
+- **Scripts in the server's container** (`internal/databases/backup.go`; each a fixed `sh -c` with what varies in its environment, every password there, never on a command line; names in SQL are checked, then quoted). `Statements` runs SQL as the administrator on PostgreSQL's `postgres` database.
+
+  | Function | Runs as | What |
+  |---|---|---|
+  | `CharsetSQL(db)`, `ParseCharset` | admin | MariaDB: the source's `default_character_set_name`, `default_collation_name`; a name that is not `^[a-z0-9_]{1,64}$` never reaches SQL (`DefaultCharset` utf8mb4 / utf8mb4_unicode_ci stands in) |
+  | `ScratchSQL(engine, name, user, charset)` | admin | PG `CREATE DATABASE "<n>" OWNER "<user>"; REVOKE ALL ON DATABASE "<n>" FROM PUBLIC;` (as `CreateSQL`, so locale and owner are the original's); MariaDB `` CREATE DATABASE `<n>` CHARACTER SET <cs> COLLATE <coll>; GRANT ALL PRIVILEGES ON `<n>`.* TO '<user>'@'%'; ``. `<n>` must be `pc_rs_` or `pc_rt_`; it fails when the database exists |
+  | `SwapSQL(db, scratch, previous)` | admin, PG | `SELECT pg_terminate_backend(pid) … WHERE datname IN ('<db>', '<scratch>') AND pid <> pg_backend_pid(); SET lock_timeout = '10s'; BEGIN; ALTER DATABASE "<db>" RENAME TO "<previous>"; ALTER DATABASE "<scratch>" RENAME TO "<db>"; COMMIT; ALTER DATABASE "<previous>" WITH ALLOW_CONNECTIONS false;` — scratch `pc_rs_<id>`, previous `pc_old_<id>` of one restore, db neither temporary nor PostgreSQL's own. On "is being accessed by other users" the agent runs it again, up to 5 times, 2 s apart; `ON_ERROR_STOP` rolls back. If the real-Docker check shows the engine refuses `RENAME` in a transaction block, two statements, the first renamed back if the second fails |
+  | `RecreateSQL(db, charset)` | admin, MariaDB | `` DROP DATABASE IF EXISTS `<db>`; CREATE DATABASE `<db>` CHARACTER SET <cs> COLLATE <coll>; ``; grants survive the drop. Never a temporary or an engine's own name |
+  | `TestDatabaseSQL(engine, name, user, charset)` | admin | `create` = `ScratchSQL` of `pc_rt_<check>`; `closing` after the count: PG `ALTER DATABASE "<n>" WITH ALLOW_CONNECTIONS false;`, MariaDB `` REVOKE ALL PRIVILEGES ON `<n>`.* FROM '<user>'@'%'; `` |
+  | `DiscardSQL(engine, names, revokeFrom)` | admin | every name must be of the namespace. PG `DROP DATABASE IF EXISTS "<n>" WITH (FORCE);` each; MariaDB `revokes`, one `` REVOKE ALL PRIVILEGES ON `<n>`.* FROM '<u>'@'%'; `` per name, each run on its own with "no such grant" ignored, then `` DROP DATABASE IF EXISTS `<n>`; `` each |
+  | `SettingsSQL(engine, db)` | admin, PG | the database's `pg_db_role_setting` entries, one `name=value` per line, which a restore does not carry |
+  | `EndSessions(engine, admin, password, name)` | admin | ends the database's sessions but its own and prints how many: PG `SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '<n>' AND pid <> pg_backend_pid();`; MariaDB lists `information_schema.processlist` ids with `db = '<n>'` (but `CONNECTION_ID()`) and runs `KILL CONNECTION <id>` for each, skipping those that ended meanwhile; a list that fails fails it |
+  | `CountBaseTables(engine, admin, password, db)` | admin, on `<db>` | PG `SELECT count(*) FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema NOT IN ('pg_catalog', 'information_schema')`; MariaDB `… WHERE table_schema = DATABASE() AND table_type IN ('BASE TABLE', 'SYSTEM VERSIONED')`. `CountTables`, which counts views, stays for moves |
+  | `CountDump(engine, file)` | the container's user | PG `list=$(pg_restore --list "$PC_FILE")` (a failure fails it: `incomplete`), then `awk '$4 == "TABLE" && $5 != "DATA" && $5 != "ATTACH" {n++} END {print n+0}'`; MariaDB `tail -c 4096 "$PC_FILE" \| grep -q '^-- Dump completed'` or "the dump is incomplete: it does not end as a whole dump does", then `grep -c '^CREATE TABLE ' "$PC_FILE" \|\| true` |
+  | `RestoreAsUser(engine, user, password, db, file, definer)` | **the database's user**, over `addr="$(hostname -i \| cut -d' ' -f1)"` (refused when empty: on the socket the server would not check the password) | PG `exec pg_restore --no-password --host="$addr" --username="$PC_USER" --dbname="$PC_DATABASE" --single-transaction --exit-on-error --no-owner --no-privileges --no-tablespaces --no-publications --no-subscriptions --no-security-labels "$PC_FILE"`; MariaDB picks `mariadb` or `mysql`, adds `--sandbox` when the client's `--help` names it, and runs `"$client" $sb --host="$addr" --user="$PC_USER" --one-database --connect-timeout=10 "$PC_DATABASE" < "$PC_FILE"`; with `definer` (MariaDB into a new database) the file goes through `` sed -E '/^INSERT INTO /!s/DEFINER=`[^`]+`@`[^`]+`/DEFINER=`'"$PC_DEFINER"'`@`%`/g' `` first. Env: `PC_USER`, `PGPASSWORD` / `MYSQL_PWD` (the user's password), `PC_DATABASE`, `PC_FILE`, PG `PGCONNECT_TIMEOUT=10`, MariaDB `PC_DEFINER` (a plain name only). The file stays: MariaDB's rehearsal reads it twice |
+  | `RemoveStaged(file)` | the container's user | `rm -f "$PC_FILE"`, only for `^/tmp/pocketcloud-restore-[A-Za-z0-9_-]{1,64}\.(pgdump\|sql)$`; always run, deferred |
+  | `SweepStaged()` | the container's user | `find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*' -mmin +1440 -exec rm -f {} +`, at the start of every restore and test |
+  | `FreeSpace(dataDir)`, `ParseFreeSpace` | the container's user | `exec df -Pk -- "$PC_DATA_DIR" /tmp`, `PC_DATA_DIR` = `Engine.DataDirOf(image)`: the bytes available in each |
+  | `Sandbox()` | the container's user | prints `yes` when the MariaDB client takes `--sandbox` |
+  | `ParseCount` | | the number on a script's last line |
+
+  Names are checked with `ValidDatabaseName` (databases, users) and `ValidTemporaryName` (temporary databases). Every `runScript` masks the administrator's and the user's passwords (from 4 characters), never `PC_DATABASE`.
+
+- **A database restore** (`BackupRestore.database`, the agent's new `internal/agent/backupdb.go`). `checkRestore` takes exactly one of `original`, `target_path` or `database`; `database` needs `restore_id`, a mode of `replace` or `new`, `overwrite` for `replace`, and a `file` that `databases.FileDatabase` reads for the engine. The container `connection.container_id` must be running and labelled `pocketcloud.role=db`, as shared servers are, or: "Database restores go into a shared server's container only." The restore claims `db:<c>/<db>` for writing, and `db:<c>/<scratch>` and `db:<c>/<previous>` when set; a running dump of the database holds its read claim.
+  - **Preview** (`dry_run`; ephemeral, a `backup-read` slot). A `ls --snapshot <id> --dir / --limit 20` job gives `in_snapshot` and the file's size; execs in the server container give `ExistsSQL`, for `replace` the database's size (`StatsSQL`) and `CountBaseTables`, the sessions from outside what stops, PostgreSQL's `SettingsSQL`, `SignIn` as the user (not for `new`, whose user does not exist yet), MariaDB's `Sandbox`, and `FreeSpace`. `would_stop` comes from a generalised `affected(ctx, id, stacks, dests, named, claim)`: a container of any listed project counts; one whose name is in `named` counts even with `pocketcloud.role=site`, and only when it matches `^[a-z0-9][a-z0-9-]*-(php|worker)$`; every other role-labelled container is skipped, so the server's `db` container never stops. Needed: tmp = file + 256 MiB; data = 1.2 × max(database size, file) + 512 MiB for `replace` on PostgreSQL, MariaDB's rehearsal, and `new`. The answer (`backup.DbRestorePreview`):
+
+    ```json
+    {"dry_run":true,"snapshot":{"id":"<64 hex>","time":"<RFC 3339>","paths":["/shop.pgdump"]},
+     "roots":[{"index":0,"source":"/shop.pgdump","destination":"database shop","in_snapshot":true,"exists":true,"entries":12}],
+     "would_stop":[{"name":"shop-web-1","project":"shop","service":"web"}],"total_files":1,"total_bytes":1048576,
+     "database":{"exists":true,"user_exists":true,"size_bytes":8388608,"tables":12,"connections_other":0,
+                 "sign_in":true,"settings":["search_path=app"],"sandbox":false},
+     "free":{"data":53687091200,"tmp":53687091200},"needed":{"data":10603200,"tmp":269484032},"notes":[]}
+    ```
+
+    `entries` is the tables the database has now; `notes` are sentences, as #30's. The panel's start refuses from the preview when the file is missing, `sign_in` is false, or `free` is below `needed`.
+  - **Stage.** A backup-tool job runs `dump --snapshot S --path / --expect-tag job:J`; the agent reads the tar, takes its one regular file (its `path.Base` must be `file`; a second regular file refuses), and calls `CopyFileFrom(container, "/tmp", StagedName(engine, command id), tar reader, header size, 0o600)`. Then `CountDump` gives `tables_expected` (a refusal is `incomplete`). `RemoveStaged` always runs, deferred; `SweepStaged` runs first.
+  - **`replace` on PostgreSQL.** The restore marker (`restoreMarker`) gains `database: {container, engine, name, scratch, previous, phase, charset, collation}`, written before step 1. (1) Phase `scratch`: `ScratchSQL(scratch, user)`, `RestoreAsUser` into the scratch copy, `CountBaseTables(scratch)` must equal `tables_expected`. (2) Phase `stopped`: `affected(claim=true)`, `checkConfirmedStops`, `session.stop()` (#30's marker and restart policy `no`). (3) `SwapSQL`, then phase `swapped`. (4) `startAgain(verify)`. A failure before (3) runs `EndSessions` and `DiscardSQL(scratch)`, starts what stopped, and fails "Nothing changed in <db>: …". Cancel is honoured until (3); after it: "The restore is putting the copy in place and finishes."
+  - **`replace` on MariaDB.** (1) Phase `rehearsal`: `ScratchSQL(scratch, user)` with the source's `charset`, `RestoreAsUser` into it, count, `EndSessions`, `DiscardSQL(scratch, revoke_from=user)`. (2) Phase `stopped`, as above. (3) Phase `emptied`: `RecreateSQL`, `RestoreAsUser` into `<db>`, the count must equal. (4) Phase `restored`: `startAgain`. A failure in (3) puts the restart policies back **without starting**, removes the marker and answers `partial: true` with `app_left_stopped`, failing "The restore failed after <db> was emptied: it holds part of the backup, and <names> stay stopped. Restore again, then start them on their pages."
+  - **`new`** (both engines). `ExistsSQL` must find neither the database nor the user; `CreateSQL(engine, db, user, password)` with the delivered password; stage, count, `RestoreAsUser` as the new user (MariaDB with `definer` = the user); count. A failure runs `DropManySQL([db], [user])` and answers `dropped: true`. Nothing stops.
+  - **The answer** (`backup.DbRestoreResult`):
+
+    ```json
+    {"files_restored":1,"bytes_restored":1048576,"tables":12,"tables_expected":12,"previous":"pc_old_<restore>",
+     "connections_ended":0,"app_stopped":[{"id":"<docker id>","name":"shop-web-1"}],"app_started":["shop-web-1"],
+     "app_not_running":[],"start_errors":[],"partial":false,"app_left_stopped":[],"dropped":false,"interrupted":false,"log":"…"}
+    ```
+  - **`finishInterruptedRestores`** reads `marker.database.phase` before `startAgain`: `scratch` / `rehearsal` — nothing stopped, settled failed "Nothing changed", the panel's sweep drops the scratch copy; `stopped` — start again, failed "Nothing changed"; PG `swapped` / MariaDB `restored` — start again, settled **succeeded** with `interrupted: true`; MariaDB `emptied` — restart policies back without starting, failed with `app_left_stopped`.
+  - **Progress steps**: `check`, `fetch`, `dbrestore`, `stop`, `swap` (PostgreSQL in place only), `start`, `verify`, leaving out what a restore does not do.
+- **A restore test** (`backup.restore_test`, `handleBackupRestoreTest`). (1) Mode `test`; `database` is `^pc_rt_[a-z0-9]{15}$` with the suffix `check_id`; each `drop_before` is a `pc_rt_` name. (2) Claim `db:<c>/<temp>` for writing. (3) `ExistsSQL(temp)` must be false: a copy is never reused. (4) `DiscardSQL(drop_before)`, then `FreeSpace` (too little room: `space`). (5) `TestDatabaseSQL` create, stage, `CountDump`, `RestoreAsUser`, `CountBaseTables`, `TestDatabaseSQL` closing. The copy stays for the panel's sweep. The answer (`backup.RestoreTestResult`), also with the error of a failed test:
+
+  ```json
+  {"status":"ok","failure":"","tables":12,"tables_expected":12,"bytes":1048576,"duration_ms":5400,
+   "created":true,"dropped":["pc_rt_<an earlier check>"],"log":"…"}
+  ```
+
+  | `failure` (`backup.Test*`) | When | The row (`TestFailed`) |
+  |---|---|---|
+  | `damaged` | restic could not read the snapshot's data ("ciphertext verification failed", a pack or a blob not found) | `failed` |
+  | `incomplete` | `CountDump` refused | `failed` |
+  | `restore` | the client exited non-zero; the error holds its last 4 lines, passwords masked | `failed` |
+  | `tables` | the counts differ | `failed` |
+  | `unreachable`, `repository`, `locked` | from `repositoryError` and the lock classes | `error` |
+  | `space`, `container`, `sign_in`, `interrupted` | too little room; the container is not a running shared server's; the user's password does not sign in; the agent restarted | `error` |
+- **The SQL download** (`backup.dump` with `sql_from`). MariaDB's file is SQL already and streams as it is. For PostgreSQL the agent inspects `sql_from` (running, `pocketcloud.role=db`, a postgres image) and creates a **conversion container** from that container's image id (so the same `pg_restore`): `Entrypoint ["pg_restore"]`, `Cmd ["--file=-","--no-owner","--no-privileges"]`, `User "postgres"`, `NetworkMode none`, `CapDrop ALL`, `SecurityOpt no-new-privileges`, `ReadonlyRootfs`, `Tmpfs /tmp`, `PidsLimit 64`, `OpenStdin` and `StdinOnce`, labels `pocketcloud.role=job` and `pocketcloud.command=<id>` (so `cleanupBackupJobs` removes a leftover). The restic dump job (path `/<db>.pgdump`) writes into its stdin through `Attach`; closing that connection ends the input; its `AttachOutput` goes to the `artifactWriter`. A non-zero exit of either aborts the upload. A pipe-written custom archive has no data offsets: one sequential conversion works, `-j` and `-L` never. Plain SQL from `pg_restore` 17.6 / 16.10 and later starts with `\restrict`, which an older `psql` does not read. The live download path has no 1 GiB cap.
+- **Records** (migration `1773000000_database_backups.go`; see docs/data-model.md). Reverting it deletes the automatic jobs (and with them their runs, restores and tests), the restores into databases and the SQL downloads of any job, and every restore test, then removes the fields and indexes and puts #31's slot index back.
+  - `backup_jobs`: `origin` + `database`, `site`; `source_kind` + `database`, `site`; `database` (relation `databases`, one, **no cascade**: a drop clears it, and the job, its runs and its snapshots stay), `site` (relation `sites`, one, no cascade), `db_server_name` (text 48, for display after a drop), `own_settings` (json 1 KiB: any of `schedule`, `targets`, `retention`), `last_success_at` (date). Unique `idx_backup_jobs_database` on `database` where `database != ''`, unique `idx_backup_jobs_site` on `site` where `site != ''`.
+  - `backup_runs`: `bytes_stored` (number, restic's `data_added_packed`).
+  - `backup_restores`: `mode` + `database`, `new_database`; `download_kind` + `sql`; `database` (relation, no cascade), `database_name` (text 63), `previous` (text 63, `pc_old_<id>`), `tables` (number). The plan rides in `roots` (json 8 KiB), one root whose fields `restoreRoot` gains, each `omitempty`:
+
+    ```json
+    [{"source":"/shop.pgdump","container":"pcdb-main-db-1","engine":"postgres","admin_user":"postgres",
+      "database":"shop","user":"shop","scratch":"pc_rs_<restore>","previous":"pc_old_<restore>",
+      "stop_projects":["reports"],"stop_containers":["wp-php","wp-worker"],"site":"wp"}]
+    ```
+
+    A PostgreSQL SQL download stores `roots [{"container":"<sql_from>"}]`; `download_name` is `<db>-<YYYYMMDD-HHMM>.sql` (the snapshot's time), its path `/<file>`.
+  - `backup_checks` (a restore test): `job` (relation `backup_jobs`, **cascade**), `database_name` (text 63), `snapshot_id` (text 64), `temporary` (text 63, `pc_rt_<row id>`), `tables_expected`, `tables_restored`, `dump_bytes` (numbers), `failure` (text 32, the classes above); `host` is the job's server, whose agent restores; `kind` `restore_test`. The slot index becomes unique `(kind, target, job, scheduled_at)` where `scheduled_at != ''`, so a target's integrity check and its jobs' tests share a slot; index `(job, created)`.
+  - `hosts`: `auto_backup_schedule` (text 255, cron in UTC; empty = `backup.AutoSchedule(id)`), `auto_backup_targets` (relation `backup_targets`, at most 10, no cascade; none until an admin picks them), `auto_backup_retention` (json 1 KiB; null = daily 7, weekly 4, monthly 6).
+  - `settings`: `restore_test_schedule` (text 100; the migration sets `20 5 * * 3`; empty turns the tests off).
+  - `databases`: unchanged; `temporary_until` (since 1760000200) marks a temporary database, `owner_kind` `none`.
+  - The audit ignores `databases.temporary_until` and `backup_jobs.last_success_at`; `backup_checks` are not audited.
+- **Automatic jobs** (the panel's new `backup_auto.go`). `ensureDatabaseJob(id)` skips a database that is not `ready`, has `temporary_until`, has a temporary name, or whose server's `kind` is not `shared`, and one that has a job; otherwise it creates `{name: freeJobName(server+"-"+db), host: server.host, source_kind: database, source: db, engine: postgres|mysql, database: id, db_server_name: server.name, origin: database, enabled: true, own_settings: []}` with the host's defaults (minus local targets of other servers), `problem` and `next_run_at`, as `audit.System("backups","panel")`; a unique violation (a concurrent hook made it) is ignored. `ensureSiteJob(site)` makes `<site>-files` once the site has `site_php` and `active_deployment`. Hooks run through `p.later.after(0, …)`: database create/update (a move refreshes `db_server_name`), a site's first `active_deployment`, deletes (`markGoneAutoJobs`), and `OnServe` plus the cron `23 * * * *` (`reconcileAutoJobs`). A job whose database or site went is disabled with `next_run_at` empty, the problem "Its database was dropped." / "Its site was removed.", the warning event `backup.job_disabled`, and its restore-test alerts resolved. `sourceGone(job)` = `labelGone(job)` or an automatic job whose relation is empty. A run resolves the database and its server each time: refused (class `source`) when the database is gone or its server is not shared, or "the agent of X cannot back up databases one by one yet: update it"; a database `creating` or `dropping` gets a skipped run "The database X is being dropped." without an alert; an open restore of mode `database` of the database skips scheduled runs and refuses others (`restoreWriting`). First delivery refuses "the database was dropped" and "the database moved to another server since the run was queued" (`stdin_container` ≠ the current `container_ref`). `noteJobRun` sets `last_success_at`.
+- **Temporary databases** (the panel's new `db_temporaries.go`). A record is created in the transaction of the command that makes the database, so the record is the schedule: a restore's `pc_rs_<id>` (and PostgreSQL's `pc_old_<id>`) with `temporary_until` = now + 13 h, status `creating`; a test's `pc_rt_<id>` with now + 2 h. The sweep (cron `pocketcloud_db_temporaries` `* * * * *`, and at start) takes records with `temporary_until != '' && temporary_until <= now && status != 'dropping'` whose owner (the check or the restore its name holds) is final, on a connected server, and in one transaction sets `dropping` and queues `db.database.discard {names:[name], revoke_from}` (the name checked against the namespace again). Success deletes the record (event `db.temporary_dropped`); failure sets `ready`, `last_error`, `temporary_until` = now + 10 min, and a second failure raises `db_temporary_left`. After a PostgreSQL restore in place succeeded, `pc_old_<id>` becomes `ready` with `temporary_until` = finished + 24 h, closed to connections; after a test, `pc_rt_<id>` becomes `ready` with finished + 2 h. A name of the namespace that `db.stats` reports on a shared server without a record becomes one (`ready`, owner `none`, now + 2 h, event `db.temporary_found`), as after a panel restored from an older backup; `syncDedicatedDatabases` skips such names. `newDatabase` and a restore into a new database refuse the prefixes (`ReservedPrefixProblem`); `ensureDatabaseJob` skips temporary records; rotate, clone, connect, drop, export and Adminer refuse a temporary database, and every action on a database refuses while a restore or test of it is open. A database's drop passes its temporary copies in `DbDatabaseDrop.temporaries`, sets their records `dropping`, and deletes them on success; a move refuses while it has some: "Drop the temporary copies of X first, or wait until <time>." Server removal counts only non-temporary databases and refuses while restores or tests on the server are open.
+- **Restore tests in the panel** (the panel's new `backup_restore_tests.go`). Cron `pocketcloud_restore_tests` `* * * * *` runs `RunDueRestoreTests(now)`: at a due slot of `restore_test_schedule` (or one missed less than 24 h ago, caught up once after a start), every eligible job (enabled, origin `database`, its database `ready` and not temporary, its server shared and `ready`, one succeeded run with a `snapshot_id`) gets `startRestoreTest`; one whose server is offline, whose agent is too old, or whose user has `pending_password` gets a `skipped` row with a reason and `retry_at`. The target is the one of the job's targets with a succeeded run whose newest test of the job is oldest (never tested first; ties in the job's order); the snapshot its newest succeeded run. One transaction makes the row (`kind` `restore_test`, `job`, `target`, `host` = the job's server, `trigger`, `status` `queued`, `scheduled_at` on the first attempt, `database_name`, `snapshot_id`, `temporary` `pc_rt_<row id>`, `dump_bytes` = the run's `total_bytes`, `attempt`, `retry_of`), the temporary record and the command (`QueueTimeout` 12 h, `drop_before` = the server's `pc_rt_` records whose tests are final); a unique violation (the slot was taken) is ignored. Tests of one server run one at a time (`db-test:<container>`). The outcome: succeeded → `ok`; `failure` in `damaged`, `incomplete`, `restore`, `tables` → `failed`; any other failure or a timeout → `error`; never started → `skipped`; cancelled → `cancelled`. The row keeps `started_at`, `finished_at`, `duration_ms`, `error` and `log` (redacted with the target's secrets and the database's passwords), the tables and `failure`. `error` and `skipped` retry after 1, 3, 6, 12, 24 h (`checkRetryAt`; at most 6 attempts, never for a manual test, never past the next slot). Cron `pocketcloud_restore_tests_watch` `43 * * * *` runs `WatchRestoreTests`. #31 becomes kind-aware: `settleChecks` / `lostCheck`, `noteTargetCheck`, `retryDueChecks` and `checksTurnedOff` take `kind = 'integrity'` (a test never sets `integrity_at`), `settleRestoreTests` settles the tests, and `pruneBackupChecks` matches `kind` and `job`.
+- **Gates and roles.** The panel refuses a database or site run, a database restore, an SQL conversion and a test on an agent without `backup.database` (or without `backup.restore_test` for a test) with "…update it". Operators restore into the database and into a new one, start a test, run a backup and drop a temporary database; admins download as SQL, set a server's defaults, edit jobs and the test schedule. Delivery checks the requester's role again on first delivery, as #30's.
+- **REST API** (`/api/pc`, signed in). Errors are sentences.
+
+  | Route | Role | Body | Responses |
+  |---|---|---|---|
+  | `PUT /hosts/{id}/auto-backups` (new) | admins | `{"schedule": "15 1 * * *" \| "", "targets": [ids], "retention": {"daily", "weekly", "monthly", …} \| null}` | 200 `{"host", "jobs_changed"}`: in one transaction it saves the host, then every database or site job of the host takes the fields not in its `own_settings`, with `problem` and `next_run_at` again; audited as the requester. 400 `stacks.ScheduleProblem` / "The target X is a directory of its own server: only that server's jobs back up to it." / "Each count of the retention is between 0 and 10000."; 404 "The server does not exist." |
+  | `POST /backup-jobs` | admins | as today | 400 "Database and site jobs come with their database or site." |
+  | `PATCH /backup-jobs/{id}` | admins | as today, and `"follow": ["schedule" \| "targets" \| "retention"]`, which takes the field out of `own_settings` and copies the host's value; `schedule` / `targets` / `retention` set add the field to it | 400 "A database's job always backs up its database: change when, where or how long its backups are kept." / "A site's job always backs up its site: change when, where or how long its backups are kept." (any of `source_kind`, `source`, `host`, `stack`, `service`, `engine` changed) / "Its database was dropped: the job cannot be turned on again." |
+  | `DELETE /backup-jobs/{id}` | admins | — | 409 "It would come back while its database exists: turn it off instead." / "It would come back while its site exists: turn it off instead." |
+  | `POST /backup-jobs/{id}/run` | operators | — | as today; 409 "Its database was dropped: restore its snapshots into a new database." |
+  | `POST /backup-jobs/{id}/restores` | operators | `{"target", "snapshot", "mode": "database"}` or `{"target", "snapshot", "mode": "new_database", "name", "server"?}` | as today (a draft, previewing); 400 "Only a database's job restores into a database." / the name's rules (`ValidDatabaseName`, `ReservedPrefixProblem`); 409 "The database was dropped: restore it into a new database." / "A restore of X is under way." / "A restore test of X is under way." / "A backup of X is running: restore once it ends." / `restoreHoldMessage` / "A rotation of X's password is under way." / "A database named X exists on Y already." / "The agent of X cannot restore databases yet: update it." |
+  | `POST /backup-restores/{id}/start` | operators | `{"confirm_overwrite", "confirm_name"}` | 409 "Type the database's name to confirm that its data is replaced." / "The dump is not in this snapshot." / "The panel's password of X no longer signs in on Y: restore into a new database." / "Y has N free, and the restore needs about M." |
+  | `POST /backup-jobs/{id}/downloads` | admins | `{"target", "snapshot", "kind": "sql"}` | 201 `{"restore", "url"}`; 400 "Only a database's job downloads as SQL."; 409 offline, an old agent, or "The database's server is gone: download the dump as stored." |
+  | `POST /backup-jobs/{id}/restore-test` (new) | operators | — | 202 `{"check"}` (trigger `manual`, never retried); 400 "Only a database's job has restore tests."; 409 "The database of this job was dropped." / "No backup of X has succeeded yet." / "A restore test of X is under way." / "A restore of X is under way." / "The server X is offline: its agent runs the test." / "The agent of X cannot test restores yet: update it." / "A rotation of X's password is under way." |
+  | `PUT /settings/backup-checks` | admins | as today, and `"restore_test_schedule"` | 200 as today, and `restore_test_schedule`, `next_restore_test_at`; 400 the checks' schedule sentences (`checkOftenProblem`: at most once a day). Turning the tests off clears their retries and resolves `backup_restore_test_unverified` |
+  | `DELETE /databases/{id}` (a temporary database) | operators | — | 202 (a discard); 409 "Its restore test is still running." / "Its restore is still running." |
+
+  A start of mode `database` needs `confirm_overwrite: true` and `confirm_name` equal to `database_name`; it creates the temporary records (and for `new_database` the `databases` record, `creating`, owner `none`, and the `db_users` record with a new sealed password, `db/<name>`) and the command in one transaction; the security audit entry `backup_restore` names the database and the server. `site.*` commands of a site whose `<site>-php` a started restore stops answer "The site X is being restored from a backup: this waits until that is done."
+- **Alerts and events.**
+
+  | Rule | Key | Severity | Raised | Resolved |
+  |---|---|---|---|---|
+  | `backup_restore_test_failed` | `<job>`, on the job's server | critical | a test `failed`: "The restore test of shop on db-main failed: <error>. The snapshot 3f2a9c1b of 18 Nov 01:30 from b2 could not be restored." | an `ok` test; the job deleted, disabled, or its source gone |
+  | `backup_restore_test_unverified` | `<job>`, on the job's server | warning (`keptSeverity` keeps an open critical) | an `error` / `skipped` test after its last retry; the hourly watchdog when a job with snapshots has no `ok` test within 2 × the longest gap of the schedule (`checkGaps`) + 1 day | as above, and tests turned off |
+  | `db_temporary_left` | the temporary record's id | warning | its second failed discard | the record goes |
+  | `backup_restore` (#30) | `<host>:database:<database id>` for both new modes | critical on failure or `app_left_stopped`; a warning when the application did not stay up | as #30 | as #30 |
+
+  Events: `backup.restore_test_ok` (info), `backup.restore_test_failed` (critical), `backup.restore_test_error` (warning), `backup.restore_test_skipped` (info), `backup.job_disabled` (warning), `db.temporary_dropped` (info), `db.temporary_found` (info).
+- **Audit and secrets.** Jobs and temporary records the panel makes or deletes are attributed to `audit.System("backups","panel")`; a PATCH and a host's defaults to the requester. Database passwords exist only in the enricher's delivered `BackupDbRestore.connection.admin_password` and `password` (and `DbDatabaseDiscard.connection.admin_password`), in exec environments, and, for dumps, in the server container's own environment. The run, restore and check finishers redact the database's passwords besides the target's.
+- **UI strings** (en, cs; Czech plurals `_one` / `_few` / `_many` / `_other`, `_many` the decimal form; English `_one` / `_other`). `backups.restoreTests.status.*` and the restore steps are built at run time and listed explicitly, as `restoreKeys` does. Two keys of the design are renamed because #30 has them with other placeholders: `backups.restore.previewDbFree` (the design's `previewFree`) and `backups.restore.previewDumpMissing` (`previewMissing`). Czech says "snapshot", as the rest of cs.json does. The existing cs `db.sharedText` becomes "Obsluhuje aplikace na hostiteli {{host}} – každá se připojuje přes vlastní interní síť, bez otevřených portů a bez přístupu k ostatním aplikacím. Nová databáze se tu vytvoří i s vlastním uživatelem." (serve = obsluhovat).
+
+  | Key | en | cs |
+  |---|---|---|
+  | `db.kpiBackupsNote` (changed) | a dump of every database, each on its own | dump každé databáze zvlášť |
+  | `db.kpiBackupsNone` | no database on a shared server yet | zatím žádná databáze na sdíleném serveru |
+  | `db.kpiBackupsNoTarget` | _one "{{count}} database has no target" · _other "{{count}} databases have no target" | _one "{{count}} databáze nemá cíl" · _few "{{count}} databáze nemají cíl" · _many "{{count}} databáze nemá cíl" · _other "{{count}} databází nemá cíl" |
+  | `db.backupHint` | Backups daily {{time}} · each database on its own | Zálohy denně {{time}} · každá databáze zvlášť |
+  | `db.backupHintCron` | Backups {{schedule}} · each database on its own | Zálohy {{schedule}} · každá databáze zvlášť |
+  | `db.backupHintMixed` | Backups at several times · each database on its own | Zálohy v různých časech · každá databáze zvlášť |
+  | `db.backupHintNoTarget` | Backups have no target yet: choose one | Zálohy zatím nemají cíl: vyber ho |
+  | `db.backupSettings` | Backup settings | Nastavení záloh |
+  | `db.hostBackups.title` | Automatic backups on {{host}} | Automatické zálohy na serveru {{host}} |
+  | `db.hostBackups.note` | Every database of a shared server on {{host}}, and every PHP site there, has a backup job of its own. Each job follows these settings unless it has its own. | Každá databáze sdíleného serveru na {{host}} i každý PHP web na něm má vlastní zálohovací úlohu. Každá úloha přebírá toto nastavení, pokud nemá vlastní. |
+  | `db.hostBackups.schedule` | When (cron, UTC) | Kdy (cron, UTC) |
+  | `db.hostBackups.scheduleDefault` | Empty: daily at {{time}}, this server's own time | Prázdné: denně v {{time}}, vlastní čas tohoto serveru |
+  | `db.hostBackups.targets` | Where | Kam |
+  | `db.hostBackups.targetsNone` | No target: the jobs wait until one is chosen. | Bez cíle: úlohy počkají, než nějaký vybereš. |
+  | `db.hostBackups.retention` | Keep | Uchovat |
+  | `db.hostBackups.follow` | _one "{{count}} job follows these settings" · _other "{{count}} jobs follow these settings" | _one "Toto nastavení přebírá {{count}} úloha" · _few "Toto nastavení přebírají {{count}} úlohy" · _many "Toto nastavení přebírá {{count}} úlohy" · _other "Toto nastavení přebírá {{count}} úloh" |
+  | `db.hostBackups.saved` | _one "Saved: {{count}} job changed." · _other "Saved: {{count}} jobs changed." | _one "Uloženo: změnila se {{count}} úloha." · _few "Uloženo: změnily se {{count}} úlohy." · _many "Uloženo: změnilo se {{count}} úlohy." · _other "Uloženo: změnilo se {{count}} úloh." |
+  | `db.backupCell.ok` | OK · {{time}} | OK · {{time}} |
+  | `db.backupCell.failed` | Failed · {{time}} | Selhala · {{time}} |
+  | `db.backupCell.skipped` | Skipped · {{time}} | Vynechána · {{time}} |
+  | `db.backupCell.cancelled` | Stopped · {{time}} | Zastavena · {{time}} |
+  | `db.backupCell.running` | Backing up… | Zálohuje se… |
+  | `db.backupCell.queued` | Waiting | Čeká |
+  | `db.backupCell.never` | Not yet | Zatím ne |
+  | `db.backupCell.noTarget` | No target | Bez cíle |
+  | `db.backupCell.off` | Off | Vypnuto |
+  | `db.backupCell.viaJob` | by the job {{name}} | úlohou {{name}} |
+  | `db.backupCell.viaJobNote` | A dedicated server is backed up by its stack's job; a PostgreSQL dump of it holds its POSTGRES_DB database only. | Vyhrazený server zálohuje úloha jeho stacku; dump PostgreSQL z něj obsahuje jen databázi z POSTGRES_DB. |
+  | `db.backupCell.testFailed` | restore test failed | test obnovy selhal |
+  | `db.siteApp` | web {{name}} | web {{name}} |
+  | `db.temporary.test` | restore test of {{name}} · dropped {{when}} | test obnovy {{name}} · smaže se {{when}} |
+  | `db.temporary.scratch` | restore of {{name}} · dropped when it ends | obnova {{name}} · smaže se po jejím konci |
+  | `db.temporary.previous` | {{name}} before the restore · dropped {{when}} | {{name}} před obnovou · smaže se {{when}} |
+  | `db.temporary.orphan` | left behind · dropped {{when}} | pozůstatek · smaže se {{when}} |
+  | `db.temporary.dropping` | being dropped | maže se |
+  | `db.temporary.title` | Temporary database {{name}} | Dočasná databáze {{name}} |
+  | `db.temporary.text` | PocketCloud made this database for a restore or a restore test and drops it by itself at {{at}}. Nothing else can be done with it. | PocketCloud vytvořil tuto databázi pro obnovu nebo test obnovy a sám ji smaže v {{at}}. Nic jiného se s ní dělat nedá. |
+  | `db.temporary.drop` | Drop now | Smazat hned |
+  | `db.temporary.dropConfirm` | Drop {{name}} now? It cannot be undone. | Smazat {{name}} hned? Vrátit to nejde. |
+  | `db.temporary.dropQueued` | {{name}} is being dropped. | {{name}} se maže. |
+  | `db.backups.title` | Backups | Zálohy |
+  | `db.backups.job` | Job | Úloha |
+  | `db.backups.schedule` | When | Kdy |
+  | `db.backups.targets` | Where | Kam |
+  | `db.backups.retention` | Kept | Uchovává |
+  | `db.backups.follows` | as set for {{host}} | podle nastavení serveru {{host}} |
+  | `db.backups.own` | its own | vlastní |
+  | `db.backups.last` | Last backup | Poslední záloha |
+  | `db.backups.lastText` | {{when}} to {{target}}: dump {{size}}, {{added}} new | {{when}} do {{target}}: dump {{size}}, nových {{added}} |
+  | `db.backups.never` | none yet | zatím žádná |
+  | `db.backups.test` | Restore test | Test obnovy |
+  | `db.backups.testState.ok` | _one "Passed {{when}} · {{count}} table" · _other "Passed {{when}} · {{count}} tables" | _one "Prošel {{when}} · {{count}} tabulka" · _few "Prošel {{when}} · {{count}} tabulky" · _many "Prošel {{when}} · {{count}} tabulky" · _other "Prošel {{when}} · {{count}} tabulek" |
+  | `db.backups.testState.failed` | Failed {{when}}: {{error}} | Selhal {{when}}: {{error}} |
+  | `db.backups.testState.error` | Did not complete {{when}}: {{error}} | Nedokončil se {{when}}: {{error}} |
+  | `db.backups.testState.skipped` | Skipped {{when}}: {{error}} | Vynechán {{when}}: {{error}} |
+  | `db.backups.testState.cancelled` | Stopped {{when}} | Zastaven {{when}} |
+  | `db.backups.testState.running` | Restoring into {{name}} | Obnovuje se do {{name}} |
+  | `db.backups.testState.queued` | Waiting for its server | Čeká na svůj server |
+  | `db.backups.testNone` | None yet · next {{when}} | Zatím žádný · další {{when}} |
+  | `db.backups.testOff` | Restore tests are off | Testy obnovy jsou vypnuté |
+  | `db.backups.backupNow` | Back up now | Zálohovat teď |
+  | `db.backups.testNow` | Test the restore now | Otestovat obnovu teď |
+  | `db.backups.testQueued` | The restore test waits for its server: the newest backup goes into a temporary database, dropped two hours after the test. | Test obnovy čeká na svůj server: nejnovější záloha se obnoví do dočasné databáze, která se dvě hodiny po testu smaže. |
+  | `db.backups.restore` | Restore… | Obnovit… |
+  | `db.backups.edit` | Backup settings… | Nastavení záloh… |
+  | `db.backups.pending` | Its backup job appears once the database is ready. | Úloha záloh se objeví, až bude databáze připravená. |
+  | `db.backups.dedicated` | A dedicated server is backed up by its stack's jobs. | Vyhrazený server zálohují úlohy jeho stacku. |
+  | `db.backups.dedicatedNone` | Its stack has no backup job. | Jeho stack nemá žádnou zálohovací úlohu. |
+  | `backups.source.database` | {{tool}} · {{server}}/{{database}} | {{tool}} · {{server}}/{{database}} |
+  | `backups.source.databaseGone` | {{server}}/{{database}} · dropped | {{server}}/{{database}} · smazaná |
+  | `backups.source.site` | files of {{name}} · shared/ | soubory webu {{name}} · shared/ |
+  | `backups.source.siteClassic` | files of {{name}} | soubory webu {{name}} |
+  | `backups.sourceKind.database` | A database of a shared server | Databáze sdíleného serveru |
+  | `backups.sourceKind.site` | Files of a PHP site | Soubory PHP webu |
+  | `backups.sourceNote.database` | The server's own client dumps this one database, uncompressed, so that restic keeps only what changed. | Klient serveru vypíše tuto jednu databázi nekomprimovaně, aby restic ukládal jen změny. |
+  | `backups.sourceNote.site` | What the site keeps outside its releases; its code comes back from its releases and sources. | Co si web drží mimo vydání; kód se obnoví z vydání a zdrojů. |
+  | `backups.job.fromDatabase` | one job per database | úloha pro každou databázi |
+  | `backups.job.fromSite` | made for its site | vytvořeno pro web |
+  | `backups.job.databaseGone` | Its database was dropped: the job no longer runs, and its snapshots go into a new database. | Její databáze byla smazána: úloha už neběží a její snapshoty lze obnovit do nové databáze. |
+  | `backups.job.siteGone` | Its site was removed: the job no longer runs, and its snapshots stay. | Její web byl odstraněn: úloha už neběží a její snapshoty zůstávají. |
+  | `backups.job.automaticNote` | PocketCloud made this job for {{what}}: what it backs up and its server follow that. When, where and how long can follow {{host}}'s settings or be its own. | PocketCloud vytvořil tuto úlohu pro {{what}}: co zálohuje a na kterém serveru, určuje ono. Kdy, kam a jak dlouho může přebírat z nastavení serveru {{host}}, nebo mít vlastní. |
+  | `backups.job.follows` | As set for {{host}} | Podle nastavení serveru {{host}} |
+  | `backups.job.own` | Its own | Vlastní |
+  | `backups.job.group` | _one "Databases on {{server}} · {{count}} job" · _other "Databases on {{server}} · {{count}} jobs" | _one "Databáze na {{server}} · {{count}} úloha" · _few "Databáze na {{server}} · {{count}} úlohy" · _many "Databáze na {{server}} · {{count}} úlohy" · _other "Databáze na {{server}} · {{count}} úloh" |
+  | `backups.job.groupState` | {{ok}} of {{total}} backed up in 24 h | {{ok}} z {{total}} zálohováno za 24 h |
+  | `backups.job.groupToggle` | Show each database | Ukázat každou databázi |
+  | `backups.job.restoreTest` | Restore test: {{state}} | Test obnovy: {{state}} |
+  | `backups.restore.mode.database.label` | Back into the database | Zpět do databáze |
+  | `backups.restore.mode.database.note` | {{database}} on {{server}} is replaced by the backup. {{app}} stops for a while; the other databases on {{server}} are not touched. | Databáze {{database}} na serveru {{server}} se nahradí zálohou. {{app}} se na chvíli zastaví; ostatních databází na serveru {{server}} se obnova nedotkne. |
+  | `backups.restore.mode.new_database.label` | Into a new database | Do nové databáze |
+  | `backups.restore.mode.new_database.note` | On {{server}}, with a user and password of its own: connect it to a stack once it is ready. Nothing else changes. | Na serveru {{server}}, s vlastním uživatelem a heslem: až bude připravená, připoj ji ke stacku. Nic jiného se nezmění. |
+  | `backups.restore.databaseNoApp` | no application | žádná aplikace |
+  | `backups.restore.sqlLabel` | Download as SQL | Stáhnout jako SQL |
+  | `backups.restore.sqlNote` | Plain SQL straight to your browser, made from the backup as it streams: keep this page open until it finishes. | Čisté SQL rovnou do prohlížeče, převáděné ze zálohy za běhu: nech tuto stránku otevřenou, dokud stahování neskončí. |
+  | `backups.restore.rawLabel` | Download as stored, for pg_restore | Stáhnout tak, jak je uložená, pro pg_restore |
+  | `backups.restore.newName` | Name of the new database | Název nové databáze |
+  | `backups.restore.newNameHint` | Lowercase letters, digits and _, starting with a letter; at most 63. Its user gets the same name. | Malá písmena, číslice a _, na začátku písmeno; nejvýš 63 znaků. Stejně se bude jmenovat i její uživatel. |
+  | `backups.restore.newServer` | Database server | Databázový server |
+  | `backups.restore.previewDump` | The backup holds a dump of {{size}} | Záloha obsahuje dump o velikosti {{size}} |
+  | `backups.restore.previewTables` | _one "{{database}} has {{count}} table now" · _other "{{database}} has {{count}} tables now" | _one "{{database}} má teď {{count}} tabulku" · _few "{{database}} má teď {{count}} tabulky" · _many "{{database}} má teď {{count}} tabulky" · _other "{{database}} má teď {{count}} tabulek" |
+  | `backups.restore.previewDbFree` | {{free}} free on {{server}}; the restore needs about {{needed}} | Na serveru {{server}} je volno {{free}}; obnova potřebuje asi {{needed}} |
+  | `backups.restore.previewLowSpace` | {{server}} has too little room: restore into a new database elsewhere, or make room first. | Server {{server}} má málo místa: obnov do nové databáze jinde, nebo nejdřív uvolni místo. |
+  | `backups.restore.previewDumpMissing` | The dump is not in this snapshot. | Dump v tomto snapshotu není. |
+  | `backups.restore.previewExists` | A database named {{database}} exists on {{server}} already. | Databáze {{database}} už na serveru {{server}} existuje. |
+  | `backups.restore.previewSignIn` | The panel's password of {{user}} no longer signs in on {{server}}, and the restore runs as that user. | Heslo uživatele {{user}}, které panel zná, se už na serveru {{server}} nepřihlásí, a obnova běží pod tímto uživatelem. |
+  | `backups.restore.alsoStops` | Also stops {{names}}, whose settings use this database. | Zastaví také {{names}}, protože jejich nastavení tuto databázi používá. |
+  | `backups.restore.previous` | The data as it is now stays on {{server}} as {{name}} for 24 hours. | Současná data zůstanou na serveru {{server}} jako {{name}} 24 hodin. |
+  | `backups.restore.noPrevious` | No copy of the data as it is now stays: back up first if you may need it. | Kopie současných dat nezůstane: pokud je můžeš potřebovat, nejdřív zálohuj. |
+  | `backups.restore.confirmDatabase` | Replace the database {{database}}? | Nahradit databázi {{database}}? |
+  | `backups.restore.confirmDatabaseText` | _one "Everything {{database}} holds now is replaced by the backup of {{time}}. {{count}} container stops meanwhile and starts again." · _other "Everything {{database}} holds now is replaced by the backup of {{time}}. {{count}} containers stop meanwhile and start again." | _one "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejner." · _few "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejnery." · _many "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejneru." · _other "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejnerů." |
+  | `backups.restore.confirmType` | Type {{database}} to confirm | Pro potvrzení napiš {{database}} |
+  | `backups.restore.confirmDatabaseAction` | Replace {{database}} | Nahradit {{database}} |
+  | `backups.restore.dbGone` | The database was dropped: restore it into a new one. | Databáze byla smazána: obnov ji do nové. |
+  | `backups.restore.agentNoDatabase` | The agent of {{host}} cannot restore databases yet: update it. | Agent serveru {{host}} zatím neumí obnovovat databáze: aktualizuj ho. |
+  | `backups.restore.tablesDone` | _one "{{count}} table restored, as many as the dump has" · _other "{{count}} tables restored, as many as the dump has" | _one "Obnovena {{count}} tabulka, stejně jako v dumpu" · _few "Obnoveny {{count}} tabulky, stejně jako v dumpu" · _many "Obnoveno {{count}} tabulky, stejně jako v dumpu" · _other "Obnoveno {{count}} tabulek, stejně jako v dumpu" |
+  | `backups.restore.appLeftStopped` | {{names}} stay stopped: {{database}} holds only part of the backup. Restore again, then start them on their pages. | {{names}} zůstávají zastavené: {{database}} obsahuje jen část zálohy. Obnov znovu a pak je spusť na jejich stránkách. |
+  | `backups.restore.step.fetch` | Copy the dump to the database server | Zkopírovat dump na databázový server |
+  | `backups.restore.step.dbrestore` | Restore the database | Obnovit databázi |
+  | `backups.restore.step.swap` | Put the restored copy in place | Vyměnit za obnovenou kopii |
+  | `backups.restoreTests.title` | Restore tests | Testy obnovy |
+  | `backups.restoreTests.note` | Weekly, the newest backup of each database goes into a temporary database on its server, which is dropped two hours later. | Jednou týdně se nejnovější záloha každé databáze obnoví do dočasné databáze na jejím serveru, která se o dvě hodiny později smaže. |
+  | `backups.restoreTests.kpi` | restore tests {{ok}} / {{total}} OK · {{when}} | testy obnovy {{ok}} / {{total}} v pořádku · {{when}} |
+  | `backups.restoreTests.off` | restore tests off | testy obnovy vypnuté |
+  | `backups.restoreTests.none` | No restore test yet | Zatím žádný test obnovy |
+  | `backups.restoreTests.next` | next {{when}} | další {{when}} |
+  | `backups.restoreTests.retryAt` | next try {{time}} | další pokus {{time}} |
+  | `backups.restoreTests.schedule` | Restore tests (cron, UTC; empty turns them off) | Testy obnovy (cron, UTC; prázdné je vypne) |
+  | `backups.restoreTests.column.database` | Database | Databáze |
+  | `backups.restoreTests.column.result` | Result | Výsledek |
+  | `backups.restoreTests.column.when` | When | Kdy |
+  | `backups.restoreTests.column.snapshot` | Snapshot | Snapshot |
+  | `backups.restoreTests.column.tables` | Tables | Tabulky |
+  | `backups.restoreTests.column.took` | Took | Trvání |
+  | `backups.restoreTests.status.queued` | Waiting | Čeká |
+  | `backups.restoreTests.status.running` | Restoring | Obnovuje se |
+  | `backups.restoreTests.status.ok` | Passed | Prošel |
+  | `backups.restoreTests.status.failed` | Failed | Selhal |
+  | `backups.restoreTests.status.error` | Did not complete | Nedokončil se |
+  | `backups.restoreTests.status.skipped` | Skipped | Vynechán |
+  | `backups.restoreTests.status.cancelled` | Stopped | Zastaven |
+  | `backups.restoreTests.banner` | _one "{{count}} restore test failed: that backup could not be restored" · _other "{{count}} restore tests failed: those backups could not be restored" | _one "{{count}} test obnovy selhal: tu zálohu nešlo obnovit" · _few "{{count}} testy obnovy selhaly: ty zálohy nešlo obnovit" · _many "{{count}} testu obnovy selhalo: ty zálohy nešlo obnovit" · _other "{{count}} testů obnovy selhalo: ty zálohy nešlo obnovit" |
+  | `backups.restoreTests.bannerAction` | Show the restore tests | Ukázat testy obnovy |
+  | `alert.backup_restore_test_failed` | {{name}}: a restore test failed | {{name}}: test obnovy selhal |
+  | `alert.backup_restore_test_unverified` | {{name}}: no restore test passed lately | {{name}}: test obnovy dlouho neprošel |
+  | `alert.db_temporary_left` | {{name}}: a temporary database was not dropped | {{name}}: dočasná databáze se nesmazala |
+  | `phpSite.sharedBackup` | backed up by the job {{name}} · {{state}} | zálohuje úloha {{name}} · {{state}} |
+  | `phpSite.sharedNotBackedUp` | not backed up yet: its job comes with the first deployment | zatím se nezálohuje: úloha vznikne s prvním nasazením |
+  | `phpSite.databaseBackup` | Backup | Záloha |
+
+  The web's types follow the records: `SourceKind` and `origin` gain `"database"` and `"site"`, `RestoreMode` `"database"` and `"new_database"`, `download_kind` `"sql"`, the restore steps `"fetch"`, `"dbrestore"` and `"swap"`, and `backupAlertRules` the three rules (`backup_restore_test_failed` and `backup_restore_test_unverified` link to `/backups?job=<job>`, `db_temporary_left` to `/databases`). Temporary databases are left out of every Databáze KPI and of the navigation's count (`temporary_until = ''`).
+
 ## Diagnostics
 
 Detailed diagnostics live in a separate PocketBase plugin, `plugins/diagnostics`, registered the same way as PocketBase's own plugins (`diagnostics.MustRegister(app, diagnostics.Config{…})`). When it is disabled it adds no overhead.
