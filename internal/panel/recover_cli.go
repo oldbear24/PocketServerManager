@@ -143,12 +143,8 @@ func Recover(o RecoverOptions) error {
 		utcMinute(summary.Header.Created), manifest.PanelVersion, servers(manifest.Hosts), manifest.Audit.Seq, shortPin(manifest.CAPin))
 	fmt.Fprintln(out, "Checked it: every part opens with the kit's key, data.db passes SQLite's integrity check, and its CA opens with the kit's key.")
 
-	if o.DryRun {
-		fmt.Fprintf(out, "Dry run: nothing was written; %s and %s stay as they are.\n", dir, o.MasterKeyFile)
-		return nil
-	}
-
-	// every refusal before the first write
+	// every refusal before the first write, and before a dry run ends: a
+	// dry run that passes is a run that does not refuse for them
 	keyThere, err := keyFileHolds(o.MasterKeyFile, key)
 	if err != nil {
 		return err
@@ -165,6 +161,11 @@ func Recover(o RecoverOptions) error {
 		if _, err := os.Stat(filepath.Dir(o.EnvOut)); err != nil {
 			return fmt.Errorf("--env-out: %w", err)
 		}
+	}
+
+	if o.DryRun {
+		fmt.Fprintf(out, "Dry run: nothing was written; %s and %s stay as they are.\n", dir, o.MasterKeyFile)
+		return nil
 	}
 
 	if keyThere {

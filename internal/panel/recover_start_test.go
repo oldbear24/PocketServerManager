@@ -248,3 +248,53 @@ func waitUntil(t testing.TB, what string, condition func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestTheRestoreIsWatchedAfterARestart (#32): a restored panel started
+// again while servers are still coming back, as with a docker restart in
+// its first minute, follows them on: the panel_restored alert counts each
+// server that comes back and resolves once every one did.
+func TestTheRestoreIsWatchedAfterARestart(t *testing.T) {
+	app := testutil.NewApp(t)
+	t.Cleanup(app.Cleanup)
+	authority := caOfAnEarlierStart(t, app)
+	if err := setPanelState(app.DB(), dbx.Params{"key_id": secrets.KeyID(testutil.MasterKey), "ca_pin": authority.Pin()}); err != nil {
+		t.Fatal(err)
+	}
+	vm, node := onlineHost(t, app, "vm"), onlineHost(t, app, "node-b")
+	writeMarker(t, app.DataDir(), restoredMarker(strings.Repeat("e1", 16)))
+	first := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
+	first.Register()
+	testutil.Handler(t, app)
+	if !alertOpen(app, backup.AlertPanelRestored, backup.PanelAlertTarget) {
+		t.Fatal("no panel_restored alert after the restore")
+	}
+
+	// the panel starts again, its memory gone
+	_, again := restartedPanel(t, app, nil)
+	message := func() string {
+		alert, err := again.FindFirstRecordByFilter(schema.Alerts, "rule = 'panel_restored' && status = 'open'")
+		if err != nil {
+			return ""
+		}
+		return alert.GetString("message")
+	}
+	if got := message(); got != "The panel was restored from a backup made 2026-11-17 04:00 UTC: 0 of 2 servers are back." {
+		t.Fatalf("after the restart: %q", got)
+	}
+	reconnect := func(host *core.Record) {
+		stored, err := again.FindRecordById(schema.Hosts, host.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored.Set("status", schema.HostOnline)
+		stored.Set("stream_open", true)
+		stored.Set("connected_since", types.NowDateTime())
+		if err := again.Save(stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconnect(vm)
+	waitUntil(t, "one server back", func() bool { return strings.HasSuffix(message(), ": 1 of 2 servers are back.") })
+	reconnect(node)
+	waitUntil(t, "every server back", func() bool { return !alertOpen(again, backup.AlertPanelRestored, backup.PanelAlertTarget) })
+}

@@ -176,7 +176,6 @@ func (p *Panel) finishRestore() error {
 		return fmt.Errorf("recording the restore: %w", err)
 	}
 
-	p.restoreWatch.Store(true)
 	p.evaluatePanelRestored(true)
 	p.Log.Warn("the panel was restored from a backup", "made", made, "export", marker.ExportID, "kit", marker.KitID,
 		"audit_seq", marker.AuditSeq, "queued_cancelled", cancelled)
@@ -263,6 +262,9 @@ func (p *Panel) evaluatePanelRestored(raise bool) {
 	if !raise && !alertOpen(p.App, backup.AlertPanelRestored, backup.PanelAlertTarget) {
 		return
 	}
+	// the servers are watched as they come back while the alert is open,
+	// also after a restart: the watch is kept in memory, the alert is not
+	p.restoreWatch.Store(true)
 	var from restoreMarker
 	_ = json.Unmarshal([]byte(state.RestoredFrom), &from)
 	message := fmt.Sprintf("The panel was restored from a backup made %s: %d of %d servers are back.", from.made(), back, total)

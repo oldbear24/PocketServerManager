@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	mrand "math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -361,6 +363,75 @@ func TestRecoveryRefusesACopyOfAnotherPanel(t *testing.T) {
 	h.store(t, damaged)
 	if got := h.recover(t, "fetch", "--out", out); got.err == nil || !strings.HasPrefix(got.err.Error(), "the copy does not open with the kit's key: the panel backup is damaged") {
 		t.Errorf("a damaged copy: %v", got.err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the copy is left: %v", err)
+	}
+}
+
+// fullDisk is an output that takes room bytes, then fails as a full disk.
+type fullDisk struct{ room int }
+
+func (d *fullDisk) Write(data []byte) (int, error) {
+	if len(data) > d.room {
+		n := d.room
+		d.room = 0
+		return n, &os.PathError{Op: "write", Path: "/work/pocketcloud-panel.pcpb", Err: syscall.ENOSPC}
+	}
+	d.room -= len(data)
+	return len(data), nil
+}
+
+// TestRecoverySaysWhyACopyBrokeOff (#32): a copy that restic, the
+// repository, the network or the output cut short fails with what failed,
+// not as a copy the kit's key does not open, and leaves no file; whether
+// nothing or part of it came. What the check refused stays the error, the
+// job's failure that followed aside.
+func TestRecoverySaysWhyACopyBrokeOff(t *testing.T) {
+	h := newRecoveryHarness(t)
+	noise := make([]byte, 3<<20)
+	_, _ = io.ReadFull(mrand.NewChaCha8([32]byte{2}), noise)
+	h.store(t, exportOf(t, h.master, time.Date(2026, 11, 17, 4, 0, 0, 0, time.UTC), recoveryPin, string(noise)))
+	out := filepath.Join(h.dir, "panel.pcpb")
+	for _, cut := range []string{"0", "1000", "100000"} {
+		t.Setenv("FAKE_RESTIC_DUMP_FAIL", cut)
+		got := h.recover(t, "fetch", "--out", out)
+		if got.err == nil || !strings.Contains(got.err.Error(), "ciphertext verification failed") || strings.Contains(got.err.Error(), "kit's key") {
+			t.Errorf("restic failing after %s bytes: %v", cut, got.err)
+		}
+		if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("restic failing after %s bytes: the copy is left: %v", cut, err)
+		}
+	}
+	t.Setenv("FAKE_RESTIC_DUMP_FAIL", "")
+
+	// the standard output fills its disk after a MiB
+	kit := filepath.Join(h.dir, "kit.pckit")
+	if err := os.WriteFile(kit, []byte(h.kit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	err := h.PanelRecovery(context.Background(), []string{"fetch", "--kit", kit, "--out", "-"}, RecoveryIO{
+		Stdout: &fullDisk{room: 1 << 20}, Stderr: &stderr,
+		Getenv: func(name string) string { return map[string]string{envKitPassphrase: recoveryPassphrase}[name] },
+	})
+	if err == nil || !strings.Contains(err.Error(), "no space left on device") || strings.Contains(err.Error(), "kit's key") {
+		t.Errorf("a full disk: %v\n%s", err, stderr.String())
+	}
+
+	// a header that is none, all restic wrote before it failed
+	h.store(t, noise)
+	t.Setenv("FAKE_RESTIC_DUMP_FAIL", fmt.Sprint(panelbackup.HeaderSize))
+	if got := h.recover(t, "fetch", "--out", out); got.err == nil || got.err.Error() != "the copy does not open with the kit's key: this is no PocketCloud panel backup" {
+		t.Errorf("no copy, then restic failing: %v", got.err)
+	}
+	t.Setenv("FAKE_RESTIC_DUMP_FAIL", "")
+	// bytes after the trailer: the check stops the dump
+	whole := exportOf(t, h.master, time.Date(2026, 11, 17, 5, 0, 0, 0, time.UTC), recoveryPin, "the database")
+	h.store(t, append(slices.Clone(whole), noise...))
+	if got := h.recover(t, "fetch", "--out", out); got.err == nil || !strings.HasPrefix(got.err.Error(), "the copy does not open with the kit's key: the panel backup is incomplete") ||
+		!strings.HasSuffix(got.err.Error(), "bytes follow the trailer") {
+		t.Errorf("bytes after the trailer: %v", got.err)
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the copy is left: %v", err)

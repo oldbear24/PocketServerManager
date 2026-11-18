@@ -312,6 +312,59 @@ func TestRecoverDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// TestADryRunRefusesWhatTheRunWould (#32): a dry run checks what the run
+// checks before it writes, so that a dry run that passes is a run that
+// does not refuse: a key file of another key, a pb_data that holds a panel
+// without --replace, and an --env-out whose directory is not there; it
+// writes nothing either way, with --replace too.
+func TestADryRunRefusesWhatTheRunWould(t *testing.T) {
+	f := newRecoverFixture(t)
+	dryRun := func() (RecoverOptions, error) {
+		options := f.options(&bytes.Buffer{})
+		options.DryRun = true
+		return options, Recover(options)
+	}
+
+	other := bytes.Repeat([]byte("ab"), 32)
+	if err := os.WriteFile(f.keyFile, append(other, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dryRun(); err == nil || err.Error() != f.keyFile+" holds another master key: it opens nothing of this backup. Move it away and run recover again." {
+		t.Errorf("another key file: %v", err)
+	}
+	f.untouched(t, append(other, '\n'), nil)
+	if err := os.Remove(f.keyFile); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(f.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "data.db"), []byte("a panel of its own"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dryRun(); err == nil || !strings.HasPrefix(err.Error(), f.dir+" already holds a panel (it may have started with a CA of its own): run again with --replace to keep it as ") {
+		t.Errorf("a pb_data in use: %v", err)
+	}
+	f.untouched(t, nil, []string{"data.db"})
+	options := f.options(&bytes.Buffer{})
+	options.DryRun, options.Replace = true, true
+	if err := Recover(options); err != nil {
+		t.Errorf("a pb_data in use, with --replace: %v", err)
+	}
+	f.untouched(t, nil, []string{"data.db"})
+	if err := os.RemoveAll(f.dir); err != nil {
+		t.Fatal(err)
+	}
+
+	options = f.options(&bytes.Buffer{})
+	options.DryRun, options.EnvOut = true, filepath.Join(f.work, "nowhere", "panel.env")
+	if err := Recover(options); err == nil || !strings.HasPrefix(err.Error(), "--env-out: ") || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an --env-out nowhere: %v", err)
+	}
+	f.untouched(t, nil, nil)
+}
+
 // TestRecoverReplacesOnlyWhenAsked (#32): a pb_data that holds a panel, such
 // as one a start on empty volumes made, is refused without --replace and
 // kept as pb_data.replaced-<UTC> with it: nothing is deleted.

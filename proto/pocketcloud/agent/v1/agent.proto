@@ -312,6 +312,10 @@ message HeartbeatRequest {
   repeated SelfCheck self_checks = 7;
   // edge is the state of the edge proxy; absent when this server runs none.
   EdgeStatus edge = 8;
+  // probe asks only whether the panel knows this agent, as `pocketcloud-agent
+  // repoint` checks a panel (#32): the call is authenticated as any other,
+  // but the panel keeps nothing of it and answers with its time alone.
+  bool probe = 9;
 }
 
 // EdgeStatus is the state of a server's edge proxy, as the agent sees it.

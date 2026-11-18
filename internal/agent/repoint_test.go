@@ -34,11 +34,13 @@ type repointPanel struct {
 	known map[string]bool
 	mu    sync.Mutex
 	beats []string
+	kept  int
 }
 
 // Heartbeat answers a known host, as the panel's authentication lets it
-// through, and refuses others as it does.
-func (p *repointPanel) Heartbeat(ctx context.Context, _ *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error) {
+// through, and refuses others as it does. It counts the calls that were not
+// probes, which a panel would keep as the server's return.
+func (p *repointPanel) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error) {
 	from, _ := peer.FromContext(ctx)
 	info, ok := from.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(info.State.PeerCertificates) == 0 {
@@ -51,6 +53,9 @@ func (p *repointPanel) Heartbeat(ctx context.Context, _ *agentv1.HeartbeatReques
 	host := pki.HostIDOf(leaf)
 	p.mu.Lock()
 	p.beats = append(p.beats, host)
+	if !req.GetProbe() {
+		p.kept++
+	}
 	p.mu.Unlock()
 	if !p.known[host] {
 		return nil, status.Error(codes.PermissionDenied, "this server was removed from the panel: enroll it again")
@@ -148,9 +153,9 @@ func identityFiles(t *testing.T, state string) map[string]string {
 }
 
 // TestRepointRewritesOnlyThePanel (#32): a panel that holds this server's CA
-// and knows it gets one heartbeat; then identity.json names the new address
-// and keeps every other field, and the key and the certificates stay as
-// they are. --check changes nothing.
+// and knows it gets one heartbeat, a probe that it keeps nothing of; then
+// identity.json names the new address and keeps every other field, and the
+// key and the certificates stay as they are. --check changes nothing.
 func TestRepointRewritesOnlyThePanel(t *testing.T) {
 	ca := newTestCA(t, "PocketCloud panel root")
 	panel, address := serveRepoint(t, ca, "h1")
@@ -198,6 +203,11 @@ func TestRepointRewritesOnlyThePanel(t *testing.T) {
 	}
 	if beats := panel.heartbeats(); len(beats) != 2 || beats[0] != "h1" {
 		t.Errorf("heartbeats: %v", beats)
+	}
+	panel.mu.Lock()
+	defer panel.mu.Unlock()
+	if panel.kept != 0 {
+		t.Errorf("%d heartbeats were no probes", panel.kept)
 	}
 }
 

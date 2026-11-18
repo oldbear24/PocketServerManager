@@ -8,6 +8,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 )
 
@@ -18,7 +19,9 @@ import (
 // revoked, the panel backs itself up, one run per target of its job, with
 // the trigger change. Changes that come meanwhile wait for the same run. A
 // run of the job that is still going postpones it 10 minutes, and a change
-// run starts no sooner than 30 minutes after the one before.
+// run starts no sooner than 30 minutes after the one before. The wait is
+// kept in memory only: a start of the panel arms it again when the newest
+// change came after the newest run of the job that started.
 
 const (
 	// changeDelay is how long after a change the panel backs itself up.
@@ -68,6 +71,66 @@ func (p *Panel) registerChangeBackups() {
 	p.App.OnRecordAfterCreateSuccess(schema.Hosts).BindFunc(soon)
 	p.App.OnRecordAfterDeleteSuccess(schema.Hosts).BindFunc(soon)
 	p.App.OnRecordAfterCreateSuccess(schema.RevokedCerts).BindFunc(soon)
+}
+
+// resumeChangeBackup arms, at the panel's start, the backup after a change
+// that the panel's stop dropped before it ran: when the newest enrollment,
+// removal of a server or revocation came after the newest run of the
+// panel's job that was not skipped, as no copy made for a run may then hold
+// it. The delay and the spacing are as for any change.
+func (p *Panel) resumeChangeBackup() {
+	jobs, err := p.App.FindRecordsByFilter(schema.BackupJobs, "source_kind={:panel}", "", 1, 0, dbx.Params{"panel": schema.SourcePanel})
+	if err != nil {
+		p.Log.Error("failed to read the panel's backup job", "error", err)
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	changed, err := p.lastServerChange()
+	if err != nil {
+		p.Log.Error("failed to read the last change of the servers", "error", err)
+		return
+	}
+	if changed.IsZero() {
+		return
+	}
+	last, err := p.App.FindRecordsByFilter(schema.BackupRuns, "job={:job} && status!={:skipped}", "-created", 1, 0,
+		dbx.Params{"job": jobs[0].Id, "skipped": schema.RunSkipped})
+	if err != nil {
+		p.Log.Error("failed to read the panel's backup runs", "error", err)
+		return
+	}
+	if len(last) > 0 && !changed.After(last[0].GetDateTime("created").Time()) {
+		return
+	}
+	p.Log.Info("the panel backs itself up after a change of its servers from before it started", "job", jobs[0].Id, "changed", changed)
+	p.panelBackupSoon(p.changeDelay())
+}
+
+// lastServerChange is when a server was last enrolled or removed, or a
+// certificate revoked: a removal as the audit log keeps it.
+func (p *Panel) lastServerChange() (time.Time, error) {
+	var last time.Time
+	for _, newest := range []struct {
+		collection, filter, sort, field string
+		params                          dbx.Params
+	}{
+		{schema.Hosts, "", "-created", "created", nil},
+		{schema.RevokedCerts, "", "-created", "created", nil},
+		{schema.AuditLog, "collection={:hosts} && action={:delete}", "-seq", "at", dbx.Params{"hosts": schema.Hosts, "delete": audit.ActionDelete}},
+	} {
+		records, err := p.App.FindRecordsByFilter(newest.collection, newest.filter, newest.sort, 1, 0, newest.params)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if len(records) > 0 {
+			if at := records[0].GetDateTime(newest.field).Time(); at.After(last) {
+				last = at
+			}
+		}
+	}
+	return last, nil
 }
 
 // panelBackupSoon backs the panel up after a delay, unless such a backup is
