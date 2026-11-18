@@ -1056,3 +1056,277 @@ func TestRestoreTestsRunOnScheduleAndAlert(t *testing.T) {
 		t.Errorf("the watchdog's alert: %v", alert)
 	}
 }
+
+// TestTemporaryOrphans (#53): a database of the temporary namespace that a
+// server reports and the panel has no record of, as a panel restored from an
+// older backup may not, becomes a temporary record, which is dropped at its
+// time, and gets no job; the API makes no database of that namespace.
+func TestTemporaryOrphans(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	server := d.sharedServer("main", "postgres")
+	orphan := "pc_rt_aaaaaaaaaaaaaaa"
+	d.db.AddDatabase(server.GetString("container_ref"), orphan, "", "", "items")
+	status, out := d.send(http.MethodPost, "/api/pc/db-servers/"+server.Id+"/stats", d.operator, nil)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		t.Fatalf("the server's numbers: %d %v", status, out)
+	}
+	var record *core.Record
+	d.waitFor("the orphan's record", func() bool {
+		found, err := d.app.FindFirstRecordByFilter(schema.Databases, "name={:name}", dbx.Params{"name": orphan})
+		record = found
+		return err == nil
+	})
+	until := record.GetDateTime("temporary_until").Time()
+	if record.GetString("server") != server.Id || record.GetString("owner_kind") != "none" || until.Before(time.Now().Add(time.Hour)) || until.After(time.Now().Add(3*time.Hour)) {
+		t.Errorf("the orphan's record: %v", record.FieldsData())
+	}
+	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind}", dbx.Params{"kind": backup.EventTemporaryFound}); err != nil {
+		t.Errorf("the orphan's event: %v", err)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/databases", d.operator, map[string]any{"server": server.Id, "name": "pc_rt_bbbbbbbbbbbbbbb"}); status != http.StatusBadRequest ||
+		out["message"] != databases.ReservedPrefixProblem {
+		t.Errorf("a database of the namespace by hand: %d %v", status, out)
+	}
+
+	d.panel.SweepTemporaries(time.Now().Add(3 * time.Hour))
+	d.waitFor("the orphan to go", func() bool {
+		_, err := d.app.FindRecordById(schema.Databases, record.Id)
+		return err != nil
+	})
+	if _, there := d.db.Database(server.GetString("container_ref"), orphan); there {
+		t.Error("the orphan stays on the server")
+	}
+	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind}", dbx.Params{"kind": backup.EventTemporaryDropped}); err != nil {
+		t.Errorf("the drop's event: %v", err)
+	}
+	if jobs, err := d.app.FindRecordsByFilter(schema.BackupJobs, "origin={:origin}", "", 0, 0, dbx.Params{"origin": schema.JobDatabase}); err != nil || len(jobs) != 0 {
+		t.Errorf("a temporary database got a job: %v %v", jobs, err)
+	}
+}
+
+// drop drops a database through the panel and waits until it is gone.
+func (d *dbBackupsHarness) drop(database *core.Record) {
+	d.t.Helper()
+	status, out := d.send(http.MethodDelete, "/api/pc/databases/"+database.Id, d.operator, nil)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		d.t.Fatalf("the drop of %s: %d %v", database.GetString("name"), status, out)
+	}
+	d.waitFor("the database "+database.GetString("name")+" to go", func() bool {
+		_, err := d.app.FindRecordById(schema.Databases, database.Id)
+		return err != nil
+	})
+}
+
+// TestDroppedDatabaseKeepsItsSnapshots (#53): a dropped database's job stays,
+// disabled, with its snapshots, which no longer go back into a database but
+// into a new one; one under the old name works, and gets a job of its own.
+func TestDroppedDatabaseKeepsItsSnapshots(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	server := d.sharedServer("main", "mariadb")
+	shop := d.database(server, "shop", nil, "items", "orders")
+	job := d.jobOf("database", shop.Id)
+	run := d.backedUp(job)
+	d.drop(shop)
+
+	d.waitFor("the job to be disabled", func() bool { return !d.job(job.Id).GetBool("enabled") })
+	kept := d.job(job.Id)
+	if kept.GetString("database") != "" || kept.GetString("problem") != "Its database was dropped." || kept.GetString("name") != "main-shop" ||
+		kept.GetString("db_server_name") != "main" || kept.GetString("next_run_at") != "" {
+		t.Errorf("the dropped database's job: %v", kept.FieldsData())
+	}
+	if snapshots := d.snapshots(job.Id); len(snapshots) != 1 {
+		t.Errorf("the dropped database's snapshots: %v", snapshots)
+	}
+	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind} && data.job={:job}", dbx.Params{"kind": backup.EventJobDisabled, "job": job.Id}); err != nil {
+		t.Errorf("the job's event: %v", err)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/run", d.operator, nil); status != http.StatusConflict ||
+		out["message"] != "Its database was dropped: restore its snapshots into a new database." {
+		t.Errorf("a run of the dropped database: %d %v", status, out)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restores", d.operator, map[string]any{"target": d.disk.Id,
+		"snapshot": run.GetString("snapshot_id"), "mode": "database"}); status != http.StatusConflict || out["message"] != "The database was dropped: restore it into a new database." {
+		t.Errorf("a restore back into the dropped database: %d %v", status, out)
+	}
+
+	restore := d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "new_database", "name": "shop", "server": server.Id})
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-restores/"+restore.Id+"/start", d.operator, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	if ended := d.ended(restore.Id); ended.GetString("status") != schema.RestoreSucceeded {
+		t.Fatalf("the restore into a new shop: %v", ended.FieldsData())
+	}
+	again := d.databaseNamed(server, "shop")
+	if again.GetString("status") != "ready" {
+		t.Errorf("the new shop: %v", again.FieldsData())
+	}
+	if tables, from := d.tables(server, "shop"); !slices.Equal(tables, []string{"items", "orders"}) || from != "shop" {
+		t.Errorf("the new shop holds %v from %q", tables, from)
+	}
+	if next := d.jobOf("database", again.Id); next.Id == job.Id || next.GetString("name") != "main-shop-2" || !next.GetBool("enabled") {
+		t.Errorf("the new shop's job: %v", next.FieldsData())
+	}
+	if kept := d.job(job.Id); kept.GetBool("enabled") || kept.GetString("database") != "" {
+		t.Errorf("the old job after: %v", kept.FieldsData())
+	}
+}
+
+// TestAMovedDatabaseKeepsOneRetentionGroup (#53, AC3): a database that moves
+// to another shared server keeps its job, whose next dump is of the new
+// server and tagged with its name; the retention selects the job's
+// snapshots by its own tags and keeps them as one group, so the snapshots
+// of both servers are forgotten as one.
+func TestAMovedDatabaseKeepsOneRetentionGroup(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	old := d.sharedServer("pg", "postgres")
+	next := d.sharedServer("pg-next", "postgres")
+	shop := d.database(old, "shop", d.application("shop"), "items", "orders")
+	job := d.jobOf("database", shop.Id)
+	if status, out := d.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, d.admin, map[string]any{"retention": map[string]any{"last": 1}}); status != http.StatusOK {
+		t.Fatalf("the job's retention: %d %v", status, out)
+	}
+	d.backedUp(job)
+
+	status, out := d.send(http.MethodPost, "/api/pc/db-servers/"+old.Id+"/move", d.operator, map[string]any{"target": next.Id, "database": "shop"})
+	if status != http.StatusOK {
+		t.Fatalf("the move: %d %v", status, out)
+	}
+	move := out["move"].(map[string]any)["id"].(string)
+	d.waitForStatus(out["command"].(map[string]any)["id"].(string), schema.CommandSucceeded)
+	d.waitFor("the move to be done", func() bool {
+		found, err := d.app.FindRecordById(schema.DBMoves, move)
+		return err == nil && found.GetString("status") == schema.MoveDone
+	})
+	d.waitFor("the job to follow its database", func() bool { return d.job(job.Id).GetString("db_server_name") == "pg-next" })
+	if moved := d.jobOf("database", shop.Id); moved.Id != job.Id {
+		t.Fatalf("the moved database got another job: %v", moved.FieldsData())
+	}
+	run := d.backedUp(job)
+	command := d.command(run.GetString("command"))
+	payload := map[string]any{}
+	if err := command.UnmarshalJSONField("payload", &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["stdin_container"] != next.GetString("container_ref") || !slices.Equal(names(payload["extra_tags"]), []string{"db:shop", "dbserver:pg-next"}) {
+		t.Errorf("the run after the move: %v", payload)
+	}
+	snapshots := d.snapshots(job.Id)
+	if len(snapshots) != 1 || !slices.Contains(snapshots[0].Tags, "dbserver:pg-next") || snapshots[0].ID != run.GetString("snapshot_id") {
+		t.Errorf("the snapshots after the move: %+v", snapshots)
+	}
+	for _, line := range strings.Split(fakerestic.Calls(t, d.restic), "\n") {
+		if strings.Contains(line, " forget ") && (strings.Contains(line, "dbserver:") || strings.Contains(line, "--group-by tags")) {
+			t.Errorf("a forget by the server's tag: %q", line)
+		}
+	}
+}
+
+// TestDatabaseJobsNeedAnUpdatedAgent (#53): an agent that does not say it
+// backs up and restores single databases gets no run, restore, conversion
+// or restore test of a database's job: each is refused, saying to update
+// it, and a scheduled test is skipped.
+func TestDatabaseJobsNeedAnUpdatedAgent(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	pg := d.sharedServer("main", "postgres")
+	job := d.jobOf("database", d.database(pg, "shop", nil, "items").Id)
+	run := d.backedUp(job)
+
+	// as an agent before #53 says what it can do
+	host := d.fresh(schema.Hosts, d.host.Id)
+	host.Set("capabilities", slices.DeleteFunc(host.GetStringSlice("capabilities"), func(capability string) bool {
+		return capability == backup.CapabilityDatabase || capability == "backup.restore_test" || capability == "db.database.discard"
+	}))
+	if err := d.app.Save(host); err != nil {
+		t.Fatal(err)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/run", d.operator, nil); status != http.StatusConflict ||
+		out["message"] != "The agent of backup-node cannot back up databases one by one yet: update it." {
+		t.Errorf("a run: %d %v", status, out)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restores", d.operator, map[string]any{"target": d.disk.Id,
+		"snapshot": run.GetString("snapshot_id"), "mode": "database"}); status != http.StatusConflict || out["message"] != "The agent of backup-node cannot restore databases yet: update it." {
+		t.Errorf("a restore: %d %v", status, out)
+	}
+	if status, _, message := d.sqlDownload(job, run, d.admin); status != http.StatusConflict || message != "The agent of backup-node cannot convert dumps to SQL yet: update it." {
+		t.Errorf("a download as SQL: %d %s", status, message)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restore-test", d.operator, nil); status != http.StatusConflict ||
+		out["message"] != "The agent of backup-node cannot test restores yet: update it." {
+		t.Errorf("a restore test: %d %v", status, out)
+	}
+	schedule, slot := farSchedule(time.Now())
+	if status, out := d.send(http.MethodPut, "/api/pc/settings/backup-checks", d.admin, map[string]any{"restore_test_schedule": schedule}); status != http.StatusOK {
+		t.Fatalf("the restore tests' schedule: %d %v", status, out)
+	}
+	d.panel.RunDueRestoreTests(slot)
+	rows := d.restoreTests(job)
+	if len(rows) != 1 || rows[0].GetString("status") != schema.CheckSkipped || rows[0].GetString("command") != "" ||
+		rows[0].GetString("error") != "The agent of backup-node cannot test restores yet: update it." {
+		t.Errorf("the scheduled test: %v", rows)
+	}
+	for _, kind := range []string{"backup.restore", "backup.restore_test", "backup.dump"} {
+		if commands, err := d.app.FindRecordsByFilter(schema.Commands, "type={:type}", "", 0, 0, dbx.Params{"type": kind}); err != nil || len(commands) != 0 {
+			t.Errorf("the old agent was sent %s: %v %v", kind, commands, err)
+		}
+	}
+}
+
+// TestSiteFilesJob (#53): a PHP site gets the job <site>-files once it was
+// deployed, which backs up its shared/ read-only, without what its template
+// leaves out, tagged with the site; a site removed leaves its job disabled,
+// with its snapshots.
+func TestSiteFilesJob(t *testing.T) {
+	d := newDBBackupsHarness(t, func(engine *fakedocker.Engine) {
+		engine.AddVolume("pocketcloud-sites")
+		writeTree(t, engine.VolumeDir("pocketcloud-sites"), map[string]string{
+			"wp/shared/wp-content/uploads/a.png": "png", "wp/shared/wp-content/cache/page.html": "cached",
+			"wp/releases/1/index.php": "<?php", "wp/.build/log": "built"})
+	})
+	site := d.phpSite("wp", map[string]any{"backup_exclude": []string{"wp-content/cache"}})
+	collection, err := d.app.FindCollectionByNameOrId(schema.Deployments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment := core.NewRecord(collection)
+	deployment.Load(map[string]any{"site": site.Id, "number": 1, "status": schema.DeploymentSucceeded})
+	if err := d.app.SaveNoValidate(deployment); err != nil {
+		t.Fatal(err)
+	}
+	site.Set("active_deployment", deployment.Id)
+	if err := d.app.SaveNoValidate(site); err != nil {
+		t.Fatal(err)
+	}
+	job := d.jobOf("site", site.Id)
+	if job.GetString("name") != "wp-files" || job.GetString("source_kind") != schema.SourceSite || job.GetString("source") != "wp/shared" ||
+		job.GetString("origin") != schema.JobSite || !slices.Equal(job.GetStringSlice("targets"), []string{d.disk.Id}) {
+		t.Errorf("the site's job: %v", job.FieldsData())
+	}
+	run := d.backedUp(job)
+	jobs := d.backupJobs()
+	backupJob := jobs[len(jobs)-1]
+	for target, mount := range mounts(backupJob) {
+		if target == "/srv/sites/wp/shared" && (mount["ReadOnly"] != true || mount["Source"] != "pocketcloud-sites") ||
+			target != "/srv/sites/wp/shared" && mount["Source"] == "pocketcloud-sites" {
+			t.Errorf("the job's mount %s: %v", target, mount)
+		}
+	}
+	if mounts(backupJob)["/srv/sites/wp/shared"] == nil {
+		t.Errorf("the job's mounts: %v", mounts(backupJob))
+	}
+	if !slices.Contains(backupJob.Cmd, "/srv/sites/wp/shared/wp-content/cache") || !slices.Contains(backupJob.Cmd, "--exclude") {
+		t.Errorf("the job's command: %q", backupJob.Cmd)
+	}
+	snapshots := d.snapshots(job.Id)
+	if len(snapshots) != 1 || snapshots[0].ID != run.GetString("snapshot_id") || !slices.Equal(snapshots[0].Paths, []string{"/srv/sites/wp/shared"}) ||
+		!slices.Contains(snapshots[0].Tags, "site:wp") || len(snapshots[0].Files) != 1 || snapshots[0].Files["/srv/sites/wp/shared/wp-content/uploads/a.png"] != "png" {
+		t.Errorf("the site's snapshot: %+v", snapshots)
+	}
+
+	if err := d.app.Delete(site); err != nil {
+		t.Fatal(err)
+	}
+	d.waitFor("the job to be disabled", func() bool { return !d.job(job.Id).GetBool("enabled") })
+	if kept := d.job(job.Id); kept.GetString("problem") != "Its site was removed." || kept.GetString("site") != "" || len(d.snapshots(job.Id)) != 1 {
+		t.Errorf("the removed site's job: %v", kept.FieldsData())
+	}
+}
