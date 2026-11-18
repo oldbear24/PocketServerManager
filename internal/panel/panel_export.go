@@ -37,17 +37,20 @@ import (
 // lists the stored files the copy names; and writes them encrypted
 // (internal/panelbackup, PCPB1) into its spool, with keys derived from the
 // master key. The plain copy of the database is removed at once. Only the
-// run's carrier gets the copy, and the runs of one minute, one per target,
-// share it: a copy serves for 15 minutes, and a run that fetched one gets
-// the same again, as when its download resumes. The spool is swept at start
-// and hourly.
+// run's carrier gets the copy, and the runs started together, one per
+// target, share it: a copy serves for 15 minutes the runs that were created
+// before it read the database, never a run created after, which may exist
+// for a change the copy does not hold; and a run that fetched one gets the
+// same again, as when its download resumes. The spool is swept at start and
+// hourly.
 
 const (
 	// exportSpool is the spool of the copies, in the data dir: not
 	// PocketBase's temporary dir, which every command line of the panel
 	// empties, and left out of PocketBase's own backups.
 	exportSpool = ".pc_panel_exports"
-	// exportReuse is how long a copy serves the runs that ask for it.
+	// exportReuse is how long a copy serves the runs that ask for it, of
+	// those created before it.
 	exportReuse = 15 * time.Minute
 )
 
@@ -60,7 +63,9 @@ type panelExport struct {
 	path   string
 	size   int64
 	sha256 string
-	built  time.Time
+	// built is when it read the panel's database: it holds what the panel
+	// was then
+	built time.Time
 	// runs are the runs that fetched it
 	runs map[string]bool
 }
@@ -104,12 +109,13 @@ func (p *Panel) fetchPanelExport(hostID, runID string) (*gateway.Artifact, error
 }
 
 // panelExportOf opens the copy a run of a job gets: one it fetched before,
-// the newest while it is young, or a new one.
+// the newest while it is young and was made after the run was created, or a
+// new one.
 func (p *Panel) panelExportOf(job, run *core.Record) (*os.File, *panelExport, error) {
 	build := p.exports.builds.of(job.Id)
 	build.Lock()
 	defer build.Unlock()
-	if file, export := p.exports.reuse(job.Id, run.Id, time.Now()); file != nil {
+	if file, export := p.exports.reuse(job.Id, run.Id, run.GetDateTime("created").Time(), time.Now()); file != nil {
 		return file, export, nil
 	}
 	base := job.Id + "-" + core.GenerateDefaultRandomId()
@@ -148,9 +154,12 @@ func (x *panelExports) mark(base string, building bool) {
 	}
 }
 
-// reuse opens a copy of a job's that a run may have: one it fetched before,
-// or the newest while it is young.
-func (x *panelExports) reuse(jobID, runID string, now time.Time) (*os.File, *panelExport) {
+// reuse opens a copy of a job's that a run created at a time may have: one
+// it fetched before, or the newest while it is young, if it read the
+// database after the run was created. A copy made before holds none of what
+// changed before the run, such as the server whose enrollment a change run
+// backs up (#32).
+func (x *panelExports) reuse(jobID, runID string, created, now time.Time) (*os.File, *panelExport) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	copies := x.jobs[jobID]
@@ -161,7 +170,7 @@ func (x *panelExports) reuse(jobID, runID string, now time.Time) (*os.File, *pan
 			break
 		}
 	}
-	if pick == nil && len(copies) > 0 && now.Sub(copies[0].built) < exportReuse {
+	if pick == nil && len(copies) > 0 && now.Sub(copies[0].built) < exportReuse && copies[0].built.After(created) {
 		pick = copies[0]
 	}
 	if pick == nil {
@@ -270,7 +279,9 @@ func (p *Panel) buildPanelExport(job, run *core.Record, base string) (_ *panelEx
 		return nil, err
 	}
 
-	// one read transaction: the copy agrees with itself
+	// one read transaction: the copy agrees with itself, and holds what was
+	// written before it started
+	read := time.Now()
 	if _, err := p.App.ConcurrentDB().NewQuery("VACUUM INTO {:path}").Bind(dbx.Params{"path": plain}).Execute(); err != nil {
 		return nil, fmt.Errorf("the panel's database could not be copied: %w", err)
 	}
@@ -318,7 +329,7 @@ func (p *Panel) buildPanelExport(job, run *core.Record, base string) (_ *panelEx
 		return nil, err
 	}
 	p.Log.Info("the panel copied itself for its backup", "job", job.Id, "run", run.Id, "files", len(files), "missing", len(missing), "bytes", size)
-	return &panelExport{path: final, size: size, sha256: written, built: time.Now()}, nil
+	return &panelExport{path: final, size: size, sha256: written, built: read}, nil
 }
 
 // roomForExport refuses a copy the spool has no room for: the plain copy of

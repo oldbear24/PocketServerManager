@@ -640,11 +640,15 @@ func TestABrokenExportStreamIsResumedThenRetried(t *testing.T) {
 }
 
 // TestAPanelBackupFollowsAnEnrollment (#32): a server enrolled after the
-// panel's backup is in its next one, a change run soon after the enrollment.
+// panel's backup is in its next one, a change run soon after the enrollment,
+// though the copy of the backup before is still young.
 func TestAPanelBackupFollowsAnEnrollment(t *testing.T) {
 	// node-1 enrolls before the panel has its job: the change run that
 	// follows is due at once, and finds nothing to back up
 	r := newRecovery(t, recoverySetup{panel: func(p *panel.Panel) { p.SetChangeBackupTiming(time.Millisecond, time.Hour) }})
+	if run := r.runPanelJob(r.a); run.GetString("status") != schema.RunSucceeded {
+		t.Fatalf("the panel's backup: %v", run.FieldsData())
+	}
 	r.a.panel.SetChangeBackupTiming(300*time.Millisecond, time.Hour)
 	r.a.enrolledOn("node-2", nil)
 
@@ -668,7 +672,7 @@ func TestAPanelBackupFollowsAnEnrollment(t *testing.T) {
 	if manifest := reader.Manifest(); manifest.Hosts != 2 || manifest.Run != change.Id {
 		t.Errorf("the copy's manifest: %+v", manifest)
 	}
-	if runs := r.a.runs(r.job); len(runs) != 1 {
+	if runs := r.a.runs(r.job); len(runs) != 2 {
 		t.Errorf("%d runs", len(runs))
 	}
 }

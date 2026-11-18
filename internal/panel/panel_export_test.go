@@ -612,6 +612,97 @@ func TestTheRunsOfAMinuteShareOneExport(t *testing.T) {
 	}
 }
 
+// TestAChangeRunGetsACopyMadeAfterIt (#32): a copy serves no run created
+// after it read the database, however young it is: a change run soon after
+// a run of the job backs up the server enrolled in between, and names
+// itself; the change runs to the job's targets, created together, still
+// share one copy.
+func TestAChangeRunGetsACopyMadeAfterIt(t *testing.T) {
+	f := newExportFixture(t)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.job.Set("targets", []string{f.target.Id, nas.Id})
+	if err := f.app.Save(f.job); err != nil {
+		t.Fatal(err)
+	}
+	manifestOf := func(data []byte) panelbackup.Manifest {
+		t.Helper()
+		reader, err := panelbackup.NewReader(bytes.NewReader(data), testutil.MasterKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reader.Manifest()
+	}
+
+	first := f.deliveredRun(f.target)
+	before := f.fetch(first)
+	if manifest := manifestOf(before); manifest.Hosts != 1 || manifest.Run != first.Id {
+		t.Fatalf("the first copy: %d servers, run %s", manifest.Hosts, manifest.Run)
+	}
+	f.endRun(first, map[string]any{"status": schema.CommandSucceeded, "result": map[string]any{"snapshot_id": "4f1c2d3e"}})
+
+	// then a server enrolls, and its change run comes while the first
+	// copy is still young
+	testutil.NewHost(t, f.app, "node-2")
+	f.p.panelBackupAfterChange()
+	for range 2 {
+		f.received(f.stream)
+	}
+	changes := f.changeRuns(f.job)
+	if len(changes) != 2 {
+		t.Fatalf("%d change runs", len(changes))
+	}
+	copies := [][]byte{}
+	for _, change := range changes {
+		f.eventually("the change run's command delivered", func() bool {
+			command, err := f.app.FindRecordById(schema.Commands, f.fresh(change).GetString("command"))
+			return err == nil && command.GetString("status") == schema.CommandDispatched
+		})
+		copies = append(copies, f.fetch(change))
+	}
+	if bytes.Equal(copies[0], before) {
+		t.Fatal("the change run got the copy made before the change")
+	}
+	if manifest := manifestOf(copies[0]); manifest.Hosts != 2 || manifest.Run != changes[0].Id {
+		t.Errorf("the change run's copy: %d servers, run %s, not 2 and %s", manifest.Hosts, manifest.Run, changes[0].Id)
+	}
+	if !bytes.Equal(copies[1], copies[0]) {
+		t.Error("the change runs to the two targets got two copies")
+	}
+}
+
+// TestARunCreatedWhileACopyIsMadeGetsANewOne (#32): a copy holds what the
+// database held when it was read, so a run created while the copy is
+// written, after that read, gets a copy of its own.
+func TestARunCreatedWhileACopyIsMadeGetsANewOne(t *testing.T) {
+	f := newExportFixture(t)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.job.Set("targets", []string{f.target.Id, nas.Id})
+	if err := f.app.Save(f.job); err != nil {
+		t.Fatal(err)
+	}
+	// a stored file, which the copy reads after the database
+	f.commandWithOutput(f.idle(), []byte("an output"))
+	first := f.deliveredRun(f.target)
+
+	var late *core.Record
+	before := openStored
+	openStored = func(path string) (storedSource, error) {
+		if late == nil {
+			late = f.deliveredRun(nas)
+		}
+		return os.Open(path)
+	}
+	t.Cleanup(func() { openStored = before })
+	copied := f.fetch(first)
+	openStored = before
+	if late == nil {
+		t.Fatal("no run was created while the copy was written")
+	}
+	if again := f.fetch(late); bytes.Equal(again, copied) {
+		t.Error("a run created while the copy was written got it")
+	}
+}
+
 // TestACopyNeedsTheMasterKey (#32): a panel that did not load its master key
 // makes no copy.
 func TestACopyNeedsTheMasterKey(t *testing.T) {
