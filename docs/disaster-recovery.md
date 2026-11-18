@@ -37,7 +37,7 @@ The recovery point is the last panel backup: daily at 04:00, and 10 minutes afte
 
 ## Restore on a new machine
 
-You need the `.pckit` file, its passphrase, and Docker on the new machine. The commands use the image names of your release: `<agent image>` is the agents' image (Settings › Recovery kit and the kit's `Agent-Image` line say which), and `<panel image>` is `pocketcloud-panel` in the same registry with the same version tag. Copy the kit into the working directory as `kit.pckit`.
+You need the `.pckit` file, its passphrase, and Docker on the new machine. The commands use the image names of your release: `<agent image>` is the agents' image (the kit's `Agent-Image` line says which, and the launcher command in the restore drawer of the panel's job names it), and `<panel image>` is `pocketcloud-panel` in the same registry with the same version tag. Copy the kit into the working directory as `kit.pckit`.
 
 1. **Do not start a panel on empty volumes, and do not run `panel keygen`.** Either makes a new CA or a new key. If one ran already, step 4 says how to keep it out of the way.
 2. **Make the address lead to the new machine.** Point the DNS name at it, or give it the old IP address. Open the agents' port (9443 unless you chose another) and the UI's (8090, or 80 and 443 with your HTTPS or reverse proxy). Keep the old machine off for good: two panels with one CA would split the servers.
