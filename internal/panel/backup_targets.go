@@ -54,7 +54,7 @@ const (
 var backupCommandTypes = []string{
 	"backup.init", "backup.run", "backup.restore", "backup.snapshots",
 	"backup.browse", "backup.check", "backup.unlock", "backup.forget",
-	"backup.dump",
+	"backup.dump", "backup.restore_test",
 }
 
 // targetSecrets is what restic needs of a target.
@@ -819,11 +819,23 @@ func (p *Panel) enrichBackup(record *core.Record, command *agentv1.Command) erro
 			if err := p.checkListDelivery(record, command, target); err != nil {
 				return err
 			}
+		case command.GetBackupRestoreTest() != nil:
+			// the job's server, for the test its row names (#53)
+			if err := p.checkTestDelivery(record, command.GetBackupRestoreTest(), target); err != nil {
+				return err
+			}
 		case target.GetString("host") != record.GetString("host"):
 			return errors.New("the backup target is reached from another server")
 		}
 		if secrets, err = p.targetSecretsOf(target); err != nil {
 			return err
+		}
+		// a database restore or test restores as the database's own user, with
+		// its server's administrator beside it (#53)
+		if database, withUser := databaseOfCommand(command); database != nil {
+			if err := p.completeDatabase(record, database, withUser); err != nil {
+				return err
+			}
 		}
 		if record.GetString("type") == "backup.init" {
 			// a check sent again after a reconnect may still run with what
@@ -869,8 +881,28 @@ func backupRepository(command *agentv1.Command) *agentv1.BackupRepository {
 		return payload.BackupUnlock.GetRepository()
 	case *agentv1.Command_BackupForget:
 		return payload.BackupForget.GetRepository()
+	case *agentv1.Command_BackupRestoreTest:
+		return payload.BackupRestoreTest.GetRepository()
 	}
 	return nil
+}
+
+// databaseOfCommand is the database a backup command restores into (#53),
+// and whether its user's password goes with it: not for the preview of a
+// restore into a new database, whose user does not exist yet. A restore test
+// without one gets an empty one, which completeDatabase refuses.
+func databaseOfCommand(command *agentv1.Command) (*agentv1.BackupDbRestore, bool) {
+	switch payload := command.GetPayload().(type) {
+	case *agentv1.Command_BackupRestore:
+		database := payload.BackupRestore.GetDatabase()
+		return database, !payload.BackupRestore.GetDryRun() || database.GetMode() != backup.DbRestoreNew
+	case *agentv1.Command_BackupRestoreTest:
+		if payload.BackupRestoreTest.Database == nil {
+			payload.BackupRestoreTest.Database = &agentv1.BackupDbRestore{}
+		}
+		return payload.BackupRestoreTest.GetDatabase(), true
+	}
+	return nil, false
 }
 
 // secretsMissingMessage says what is left of a target whose secrets cannot be

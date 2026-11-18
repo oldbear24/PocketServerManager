@@ -55,6 +55,8 @@ func (p *Panel) registerDatabases() {
 	for _, commandType := range []string{
 		"db.database.create", "db.database.rotate", "db.database.drop", "db.database.clone",
 		"db.database.export", "db.stats", "db.adminer.start",
+		// the drop of temporary databases (#53): the connection only
+		"db.database.discard",
 	} {
 		p.Commands.RegisterEnricher(commandType, p.enrichDatabaseCommand)
 	}
@@ -282,47 +284,104 @@ func (p *Panel) enrichDatabaseCommand(record *core.Record, command *agentv1.Comm
 		connection = payload.DbDatabaseExport.GetConnection()
 	case *agentv1.Command_DbStats:
 		connection = payload.DbStats.GetConnection()
+	case *agentv1.Command_DbDatabaseDiscard:
+		connection = payload.DbDatabaseDiscard.GetConnection()
 	}
 	if connection == nil {
 		return errors.New("the command names no database server")
 	}
 
-	server, err := p.serverByContainer(record.GetString("host"), connection.GetContainerId())
-	if err != nil {
-		return fmt.Errorf("the database server %s is no longer known: %w", connection.GetContainerId(), err)
-	}
-
-	admin, err := p.sealed(server, "admin_password")
+	server, err := p.adminConnection(record, connection)
 	if err != nil {
 		return err
 	}
-	if admin == "" {
-		return fmt.Errorf("the panel does not know the administrator's password of %s", server.GetString("name"))
-	}
-	connection.AdminPassword = admin
 
 	if setPassword == nil || user == "" {
 		return nil
-	}
-
-	account, err := p.userOf(server, user)
-	if err != nil {
-		return fmt.Errorf("the database user %s is no longer known: %w", user, err)
 	}
 
 	field := "password"
 	if pending {
 		field = "pending_password"
 	}
-	password, err := p.sealed(account, field)
+	_, password, err := p.userSecret(server, user, field)
 	if err != nil {
 		return err
 	}
-	if password == "" {
-		return fmt.Errorf("the database user %s has no %s", user, strings.ReplaceAll(field, "_", " "))
-	}
 	setPassword(password)
 
+	return nil
+}
+
+// adminConnection adds the administrator's password to a command's
+// connection, from the server of the command's host whose container it names,
+// which it returns.
+func (p *Panel) adminConnection(record *core.Record, connection *agentv1.DbConnection) (*core.Record, error) {
+	server, err := p.serverByContainer(record.GetString("host"), connection.GetContainerId())
+	if err != nil {
+		return nil, fmt.Errorf("the database server %s is no longer known: %w", connection.GetContainerId(), err)
+	}
+
+	admin, err := p.sealed(server, "admin_password")
+	if err != nil {
+		return nil, err
+	}
+	if admin == "" {
+		return nil, fmt.Errorf("the panel does not know the administrator's password of %s", server.GetString("name"))
+	}
+	connection.AdminPassword = admin
+	return server, nil
+}
+
+// userSecret opens a secret of a database user of a server: its password, or
+// the one that waits for a rotation.
+func (p *Panel) userSecret(server *core.Record, user, field string) (*core.Record, string, error) {
+	account, err := p.userOf(server, user)
+	if err != nil {
+		return nil, "", fmt.Errorf("the database user %s is no longer known: %w", user, err)
+	}
+	password, err := p.sealed(account, field)
+	if err != nil {
+		return nil, "", err
+	}
+	if password == "" {
+		return nil, "", fmt.Errorf("the database user %s has no %s", user, strings.ReplaceAll(field, "_", " "))
+	}
+	return account, password, nil
+}
+
+// completeDatabase adds a database restore's or restore test's passwords as
+// it is delivered (#53): its server's administrator's, and its user's, the
+// one it restores as; but for the preview of a restore into a new database,
+// whose user does not exist yet (withUser false). A user whose password is
+// being rotated restores nothing: the server may hold either password. A
+// refusal leaves no password on the command.
+func (p *Panel) completeDatabase(record *core.Record, restore *agentv1.BackupDbRestore, withUser bool) (err error) {
+	if restore.GetConnection() == nil {
+		return errors.New("the command names no database server")
+	}
+	defer func() {
+		if err != nil {
+			restore.Connection.AdminPassword = ""
+			restore.Password = ""
+		}
+	}()
+	server, err := p.adminConnection(record, restore.GetConnection())
+	if err != nil {
+		return err
+	}
+	if !withUser {
+		return nil
+	}
+	user := restore.GetUser()
+	if account, err := p.userOf(server, user); err == nil && account.GetString("pending_password") != "" {
+		return fmt.Errorf("a rotation of %s's password is under way", user)
+	}
+	_, password, err := p.userSecret(server, user, "password")
+	if err != nil {
+		return err
+	}
+	restore.Password = password
 	return nil
 }
 
