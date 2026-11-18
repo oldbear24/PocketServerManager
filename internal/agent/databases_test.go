@@ -167,3 +167,39 @@ func TestADropDropsTheDatabasesTemporaryCopiesBeforeItsUser(t *testing.T) {
 		t.Errorf("the order: %q", order)
 	}
 }
+
+// moveCommand moves databases of an engine's server of the harness into
+// another container.
+func moveCommand(engine databases.Engine, target string, items ...*agentv1.DbMoveItem) *agentv1.Command {
+	to := connection(engine)
+	to.ContainerId = target
+	return &agentv1.Command{Id: "x3", Type: "db.server.move", Payload: &agentv1.Command_DbServerMove{DbServerMove: &agentv1.DbServerMove{
+		Source: connection(engine), Target: to, Databases: items, Stack: "b", DropFromSource: true}}}
+}
+
+// TestAMoveRefusesANameOfTheOtherKindOnTheTarget (#53, ISO-1): a move
+// refuses, before anything stops or is made, a user named like a database
+// the target server has, and a database named like a user it has, as the
+// review's scenario would bring b's user app beside a's database app,
+// whose user is app_user: the panel would take either for its namesake's.
+func TestAMoveRefusesANameOfTheOtherKindOnTheTarget(t *testing.T) {
+	d := newDBHarness(t)
+	for _, engine := range []databases.Engine{databases.Postgres, databases.MariaDB} {
+		target := d.db.AddServer("pcdb-a-"+engine.Name+"-1", engine.Name)
+		d.db.AddDatabase(target, "app", "app_user", "secret-of-a", "items")
+		d.db.AddDatabase(d.servers[engine.Name], "blog", "app", "secret-of-b", "posts")
+		d.db.AddDatabase(d.servers[engine.Name], "app_user", "c", "secret-of-c", "notes")
+		for _, tc := range []struct{ database, user, password, want string }{
+			{"blog", "app", "secret-of-b", "the target server already has a database named app"},
+			{"app_user", "c", "secret-of-c", "the target server already has a user named app_user"},
+		} {
+			move := moveCommand(engine, target, &agentv1.DbMoveItem{Database: tc.database, User: tc.user, Password: tc.password})
+			if _, err := d.handleServerMove(context.Background(), move, &Reporter{}); err == nil || err.Error() != tc.want {
+				t.Errorf("%s: a move of %s with %s: %v, not %q", engine.Name, tc.database, tc.user, err, tc.want)
+			}
+		}
+		if names := d.db.DatabaseNames(target); !slices.Equal(names, []string{"app"}) {
+			t.Errorf("%s: the target has %q", engine.Name, names)
+		}
+	}
+}

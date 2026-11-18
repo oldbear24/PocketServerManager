@@ -553,20 +553,29 @@ func (a *Agent) handleServerMove(ctx context.Context, command *agentv1.Command, 
 		secrets = append(secrets, item.GetPassword())
 	}
 
-	// nothing on the target may be in the way: a create would quietly reuse it
+	// nothing on the target may be in the way: a create would quietly reuse
+	// it; nor a database named like a user the move brings, or a user named
+	// like a database it brings, which would be taken for its namesake's (#53)
 	reporter.Progress("check", "Checking the target server", 5)
+	checked := map[string]bool{}
 	for _, item := range payload.GetDatabases() {
-		var output bytes.Buffer
-		check := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.ExistsSQL(engine, item.GetDatabase(), item.GetUser()))
-		if err := a.runScript(ctx, target.GetContainerId(), check, &output, secrets...); err != nil {
-			return nil, err
-		}
-		database, user := databases.ParseExists(output.String())
-		if database {
-			return nil, fmt.Errorf("the target server already has a database named %s", item.GetDatabase())
-		}
-		if user {
-			return nil, fmt.Errorf("the target server already has a user named %s", item.GetUser())
+		for _, name := range []string{item.GetDatabase(), item.GetUser()} {
+			if checked[name] {
+				continue
+			}
+			checked[name] = true
+			var output bytes.Buffer
+			check := databases.Statements(engine, target.GetAdminUser(), target.GetAdminPassword(), databases.ExistsSQL(engine, name, name))
+			if err := a.runScript(ctx, target.GetContainerId(), check, &output, secrets...); err != nil {
+				return nil, err
+			}
+			database, user := databases.ParseExists(output.String())
+			if database {
+				return nil, fmt.Errorf("the target server already has a database named %s", name)
+			}
+			if user {
+				return nil, fmt.Errorf("the target server already has a user named %s", name)
+			}
 		}
 	}
 
