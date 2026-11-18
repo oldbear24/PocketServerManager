@@ -82,6 +82,7 @@ import {
 } from "../lib/backupJobs";
 import { serverOption, type BackupTarget } from "../lib/backups";
 import { backedUpWithin, latestTest } from "../lib/databaseBackups";
+import { restoreTestsLine } from "./BackupRestoreTests";
 import { formatBytes, formatNumber } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
@@ -101,6 +102,8 @@ export function BackupSummary({
   unverified = [],
   openChecks = [],
   now,
+  tests = [],
+  testSchedule,
 }: {
   jobs: BackupJob[];
   runs: BackupRun[];
@@ -111,6 +114,9 @@ export function BackupSummary({
   /** the integrity checks queued or running */
   openChecks?: Pick<BackupCheck, "target" | "status">[];
   now: number;
+  /** the database jobs' restore tests, and their schedule (#53) */
+  tests?: BackupCheck[];
+  testSchedule?: string;
 }) {
   const { t } = useTranslation();
   const rate = successRate(runs, now);
@@ -151,14 +157,27 @@ export function BackupSummary({
             : t("backups.summary.nothingScheduled")
         }
       />
-      <IntegrityKpi summary={integritySummary(targets, unverified, openChecks)} now={now} />
+      <IntegrityKpi
+        summary={integritySummary(targets, unverified, openChecks)}
+        now={now}
+        tests={restoreTestsLine(jobs, tests, testSchedule, now, t)}
+      />
     </section>
   );
 }
 
 /** The integrity tile, as the design has it: a word and its icon, never the
- * colour alone, and the next check below; while a check runs, its target. */
-function IntegrityKpi({ summary, now }: { summary: IntegritySummary; now: number }) {
+ * colour alone, and the next check below; while a check runs, its target.
+ * A line under it says the database jobs' restore tests (#53). */
+function IntegrityKpi({
+  summary,
+  now,
+  tests = null,
+}: {
+  summary: IntegritySummary;
+  now: number;
+  tests?: string | null;
+}) {
   const { t } = useTranslation();
   let tone: "ok" | "warn" | "err" | undefined;
   let icon: ReactNode = null;
@@ -196,7 +215,22 @@ function IntegrityKpi({ summary, now }: { summary: IntegritySummary; now: number
     note = t("backups.summary.integrityChecking", { name: summary.running.name });
   }
   return (
-    <Kpi label={t("backups.summary.integrity")} value={value} tone={tone} icon={icon} note={note} />
+    <Kpi
+      label={t("backups.summary.integrity")}
+      value={value}
+      tone={tone}
+      icon={icon}
+      note={
+        tests ? (
+          <>
+            <span className="kpi-line">{note}</span>
+            <span className="kpi-line">{tests}</span>
+          </>
+        ) : (
+          note
+        )
+      }
+    />
   );
 }
 

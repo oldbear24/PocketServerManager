@@ -70,6 +70,7 @@ import type { Alert, Host } from "../lib/types";
 import { FailureBanners } from "./BackupFailures";
 import { IntegrityDrawer, IntegrityLine, openCheckOf } from "./BackupIntegrity";
 import { BackupSummary, JobDialog, JobsCard, type StackName } from "./BackupJobs";
+import { RestoreTestDrawer, RestoreTestsCard } from "./BackupRestoreTests";
 import { RecentRestores, SnapshotsCard } from "./BackupSnapshots";
 import { PanelJobSetup } from "./PanelJobDialog";
 
@@ -122,6 +123,10 @@ export function BackupsPage() {
     perPage: 500,
   });
   const tests = testList.items.filter((check) => check.kind === "restore_test");
+  const failedTests = useLiveList<Alert>("alerts", {
+    filter: "status != 'resolved' && rule = 'backup_restore_test_failed'",
+    perPage: 200,
+  });
   // each target's newest check, for the group it read and when it ended
   const lastIds = targets.items.map((target) => target.last_check).filter(Boolean);
   const lastChecks = useLiveList<BackupCheck>("backup_checks", {
@@ -132,10 +137,13 @@ export function BackupsPage() {
   });
   // how many groups a check reads the data packs in
   const settings = useLiveList<CheckSettingsRecord>("settings", {
-    fields: "id,collectionId,collectionName,backup_check_schedule,backup_check_groups",
+    fields:
+      "id,collectionId,collectionName,backup_check_schedule,backup_check_groups,restore_test_schedule",
     perPage: 1,
   });
   const groups = settings.items[0]?.backup_check_groups ?? defaultGroups;
+  // when the restore tests run (#53); undefined until known, or on an older panel
+  const testSchedule = settings.items[0]?.restore_test_schedule;
   // "new", or the id of the job being changed
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
@@ -188,6 +196,8 @@ export function BackupsPage() {
   const checked = targets.items.find((target) => target.id === params.get("check")) ?? null;
   // the output shown under the problems: a run's log, ?output=<command>
   const output = params.get("output") ?? "";
+  // a restore test whose details are shown: ?test=<check> (#53)
+  const testing = params.get("test") ?? "";
 
   const pick = (values: Record<string, string>) =>
     setParams(
@@ -235,6 +245,8 @@ export function BackupsPage() {
         unverified={unverified.items}
         openChecks={openChecks.items}
         now={now}
+        tests={tests}
+        testSchedule={testSchedule}
       />
       {(panelMissing || (isAdmin && kitOpen)) && (
         <div className="failure-banners">
@@ -277,6 +289,10 @@ export function BackupsPage() {
         canRun={canRun}
         onShowLog={(command) => pick({ output: command })}
         onDetails={(target) => pick({ check: target.id })}
+        restoreTestAlerts={failedTests.items}
+        onShowTests={() =>
+          document.getElementById("restore-tests")?.scrollIntoView?.({ behavior: "smooth" })
+        }
       />
       {output && (
         <CommandOutput
@@ -346,8 +362,26 @@ export function BackupsPage() {
               onDetails={(target) => pick({ check: target.id })}
             />
           )}
+          <RestoreTestsCard
+            jobs={jobs.items}
+            tests={tests}
+            schedule={testSchedule}
+            now={now}
+            onShow={(test) => pick({ test: test.id })}
+          />
         </div>
       </div>
+      {testing && (
+        <RestoreTestDrawer
+          key={testing}
+          id={testing}
+          jobs={jobs.items}
+          targets={targets.items}
+          now={now}
+          canRun={canRun}
+          onClose={() => pick({ test: "" })}
+        />
+      )}
       {checked && (
         <IntegrityDrawer
           key={checked.id}

@@ -260,6 +260,84 @@ export function latestTest<
   return newest;
 }
 
+const cronMacros: Record<string, string> = {
+  "@yearly": "0 0 1 1 *",
+  "@annually": "0 0 1 1 *",
+  "@monthly": "0 0 1 * *",
+  "@weekly": "0 0 * * 0",
+  "@daily": "0 0 * * *",
+  "@midnight": "0 0 * * *",
+  "@hourly": "0 * * * *",
+};
+
+/** The values a cron field allows, from min to max: *, numbers, ranges,
+ * steps and lists, as PocketBase reads them; null when it is none. */
+function cronValues(field: string, min: number, max: number): Set<number> | null {
+  const values = new Set<number>();
+  for (const part of field.split(",")) {
+    const match = /^(\*|(\d+)(?:-(\d+))?)(?:\/(\d+))?$/.exec(part);
+    if (!match) {
+      return null;
+    }
+    const from = match[1] === "*" ? min : Number(match[2]);
+    const to = match[1] === "*" ? max : match[3] !== undefined ? Number(match[3]) : from;
+    const step = match[4] !== undefined ? Number(match[4]) : 1;
+    if (from < min || to > max || from > to || step < 1) {
+      return null;
+    }
+    for (let value = from; value <= to; value += step) {
+      values.add(value);
+    }
+  }
+  return values;
+}
+
+/** The first minute after a moment that a UTC cron expression is due, as
+ * the panel's cronRule.next finds it (both day fields restricted: either
+ * day is enough), within a year; null for none, or for no expression. */
+export function nextCron(cron: string, after: number): number | null {
+  const text = cron.trim();
+  const fields = (cronMacros[text] ?? text).split(/\s+/);
+  if (fields.length !== 5) {
+    return null;
+  }
+  const minutes = cronValues(fields[0], 0, 59);
+  const hours = cronValues(fields[1], 0, 23);
+  const days = cronValues(fields[2], 1, 31);
+  const months = cronValues(fields[3], 1, 12);
+  const weekdays = cronValues(fields[4], 0, 7);
+  if (!minutes || !hours || !days || !months || !weekdays) {
+    return null;
+  }
+  if (weekdays.has(7)) {
+    weekdays.add(0);
+  }
+  const either = fields[2] !== "*" && fields[4] !== "*";
+  const dayDue = (at: Date) =>
+    either
+      ? days.has(at.getUTCDate()) || weekdays.has(at.getUTCDay())
+      : days.has(at.getUTCDate()) && weekdays.has(at.getUTCDay());
+  const minute = 60_000;
+  let at = new Date(Math.floor(after / minute) * minute + minute);
+  const limit = at.getTime() + 366 * day;
+  while (at.getTime() < limit) {
+    if (!months.has(at.getUTCMonth() + 1)) {
+      at = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1));
+    } else if (!dayDue(at)) {
+      at = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() + 1));
+    } else if (!hours.has(at.getUTCHours())) {
+      at = new Date(
+        Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), at.getUTCHours() + 1),
+      );
+    } else if (minutes.has(at.getUTCMinutes())) {
+      return at.getTime();
+    } else {
+      at = new Date(at.getTime() + minute);
+    }
+  }
+  return null;
+}
+
 /** The FNV-1a hash of a text's UTF-8 bytes, 32 bits. */
 function fnv32a(text: string): number {
   let hash = 0x811c9dc5;

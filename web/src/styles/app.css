@@ -3224,6 +3224,76 @@ td .row-actions {
   white-space: nowrap;
 }
 
+/* a tile's note in two lines: the integrity checks, then the restore tests */
+.kpi-line {
+  display: block;
+}
+
+/* the restore tests beside the targets: a database per row, its result,
+ * and when, which snapshot, how many tables and how long below (#53) */
+.restore-tests-note {
+  margin: 0;
+  padding-bottom: 0;
+}
+
+.restore-test {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.restore-test-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.restore-test-head .link-button,
+.restore-test-head .mono {
+  overflow-wrap: anywhere;
+}
+
+.restore-test-result {
+  margin-left: auto;
+}
+
+.test-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  color: var(--text-3);
+}
+
+.test-facts div {
+  display: flex;
+  gap: 4px;
+}
+
+.test-facts dt::after {
+  content: ":";
+}
+
+.test-facts dd {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.restore-test-error {
+  color: var(--warn-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the backup could not be restored */
+.restore-test-error.failed {
+  color: var(--err-text);
+}
+
 /* whether a setting of a database's job follows its server or is its own */
 .follow-switch {
   display: flex;

@@ -14,6 +14,7 @@ import {
   isTemporary,
   jobOf,
   latestTest,
+  nextCron,
   reservedName,
   stackJobOf,
   temporaryKind,
@@ -323,6 +324,44 @@ describe("a server's defaults", () => {
     expect(hostHint([], t, winter)).toBeNull();
     const cs = i18n.getFixedT("cs");
     expect(hostHint([job()], cs, winter)?.text).toBe("Zálohy denně 01:30 · každá databáze zvlášť");
+  });
+});
+
+describe("the next slot of a schedule", () => {
+  const at = (value: number | null) => (value === null ? null : new Date(value).toISOString());
+
+  it("is the next minute it is due, in UTC, as the panel's cronRule.next", () => {
+    // the restore tests' default, Wednesdays 05:20 UTC: today, later
+    expect(at(nextCron("20 5 * * 3", Date.parse("2026-11-18T05:00:00Z")))).toBe(
+      "2026-11-18T05:20:00.000Z",
+    );
+    // past it, a week on
+    expect(at(nextCron("20 5 * * 3", now))).toBe("2026-11-25T05:20:00.000Z");
+    // never the moment itself
+    expect(at(nextCron("20 5 * * 3", Date.parse("2026-11-18T05:20:00Z")))).toBe(
+      "2026-11-25T05:20:00.000Z",
+    );
+    expect(at(nextCron("*/15 * * * *", Date.parse("2026-11-18T12:07:30Z")))).toBe(
+      "2026-11-18T12:15:00.000Z",
+    );
+    expect(at(nextCron("0 1-3/2 * * *", now))).toBe("2026-11-19T01:00:00.000Z");
+    expect(at(nextCron("@daily", now))).toBe("2026-11-19T00:00:00.000Z");
+    expect(at(nextCron("0 0 1 1 *", now))).toBe("2027-01-01T00:00:00.000Z");
+    // 7 is Sunday too
+    expect(at(nextCron("0 5 * * 7", now))).toBe("2026-11-22T05:00:00.000Z");
+  });
+
+  it("takes either day when both day fields are restricted", () => {
+    // the 20th, or a Monday: Monday the 23rd comes after Friday the 20th
+    expect(at(nextCron("0 0 20 * 1", now))).toBe("2026-11-20T00:00:00.000Z");
+    expect(at(nextCron("0 0 30 * 4", now))).toBe("2026-11-19T00:00:00.000Z");
+  });
+
+  it("is none for what never comes, and for what is no schedule", () => {
+    expect(nextCron("0 0 30 2 *", now)).toBeNull();
+    for (const text of ["", "off", "61 * * * *", "* * * *", "5-1 * * * *", "*/0 * * * *"]) {
+      expect(nextCron(text, now), text).toBeNull();
+    }
   });
 });
 

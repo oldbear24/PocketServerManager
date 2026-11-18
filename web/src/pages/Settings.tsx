@@ -338,6 +338,8 @@ export function BackupChecksCard() {
   const [loaded, setLoaded] = useState(false);
   const [schedule, setSchedule] = useState("");
   const [groups, setGroups] = useState(String(defaultGroups));
+  // the restore tests' schedule (#53); null on a panel that has none
+  const [tests, setTests] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -348,6 +350,9 @@ export function BackupChecksCard() {
         if (!cancelled) {
           setSchedule(record.backup_check_schedule ?? "");
           setGroups(String(record.backup_check_groups ?? 0));
+          setTests(
+            typeof record.restore_test_schedule === "string" ? record.restore_test_schedule : null,
+          );
           setLoaded(true);
         }
       })
@@ -374,9 +379,16 @@ export function BackupChecksCard() {
     }
     setBusy(true);
     try {
-      const saved = await saveCheckSettings({ schedule: schedule.trim(), groups: parsed });
+      const saved = await saveCheckSettings({
+        schedule: schedule.trim(),
+        groups: parsed,
+        ...(tests === null ? {} : { restore_test_schedule: tests.trim() }),
+      });
       setSchedule(saved.schedule);
       setGroups(String(saved.groups));
+      if (typeof saved.restore_test_schedule === "string") {
+        setTests(saved.restore_test_schedule);
+      }
       toast.success(t("settings.backupChecksSaved"));
     } catch (err) {
       toast.error(err);
@@ -430,6 +442,28 @@ export function BackupChecksCard() {
               {t("settings.backupCheckGroupsHint")}
             </p>
           </Field>
+          {tests !== null && (
+            <Field label={t("backups.restoreTests.schedule")} htmlFor="restore-test-schedule">
+              <input
+                id="restore-test-schedule"
+                className="input mono"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="20 5 * * 3"
+                aria-describedby="restore-test-schedule-hint"
+                value={tests}
+                onChange={(event) => setTests(event.target.value)}
+              />
+              <p id="restore-test-schedule-hint" className="muted small">
+                {tests.trim() === ""
+                  ? t("backups.restoreTests.off")
+                  : cronShaped(tests) &&
+                    t("backups.job.cronReads", {
+                      text: describeCron(tests.trim(), t, zoneOffset()),
+                    })}
+              </p>
+            </Field>
+          )}
         </div>
         {off && <Banner tone="warn">{t("settings.backupChecksOff")}</Banner>}
         <div>
