@@ -10,6 +10,7 @@
 package fakerestic
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,8 +45,12 @@ const Wrong = "wrong"
 // the newest snapshot of the same host and paths. A file whose name is
 // FAKE_RESTIC_UNREADABLE cannot be read: the snapshot is saved without it,
 // with exit code 3. --stdin-from-command saves what the command printed,
-// and nothing when it fails. forget groups by tags only; a snapshot matches
-// a --tag a,b that it has every tag of, and any of several --tag. Every
+// and nothing when it fails. --exclude P leaves out what a path backed up
+// holds that P names, and all it holds (#53): P is a shell pattern of the
+// job's paths, whose * matches a / too, where restic's does not. forget
+// groups by tags, or all its snapshots as one group with an empty --group-by
+// (#53), whose JSON has the tags null, as restic 0.17.3's; a snapshot
+// matches a --tag a,b that it has every tag of, and any of several --tag. Every
 // --keep-X N keeps the newest N snapshots of a group, as --keep-last does:
 // together they keep as many as the largest. A forgotten snapshot moves to
 // the repository's forgotten directory. FAKE_RESTIC_FORGET_FAIL makes forget
@@ -104,7 +109,10 @@ const Wrong = "wrong"
 // FAKE_RESTIC_SLOW_MS waits that long before each 64 KiB. A dump that locks
 // a local repository RunJobs mounted read-only fails as a check's does; one
 // with --no-lock takes no lock (#32): neither that nor
-// FAKE_RESTIC_LOCKED_DUMP keeps it out.
+// FAKE_RESTIC_LOCKED_DUMP keeps it out. A dump of a repository Damage
+// marked fails as restic 0.17.3's of a damaged pack does: "Fatal: loading
+// tree for snapshot … failed: decrypting blob <tree/…> from … failed:
+// ciphertext verification failed", exit code 1, and writes nothing (#53).
 const script = `#!/bin/sh
 root="${FAKE_RESTIC_ROOT:?}"
 { echo "restic $*"; env | grep -E '^(RESTIC|AWS)_' | sort; echo; } >> "$root/calls"
@@ -320,12 +328,15 @@ backup)
 	tags=
 	stdin=
 	name=stdin
+	excludes=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--json|--quiet|-q) shift;;
 		--retry-lock) shift 2;;
 		--host) host=$2; shift 2;;
 		--tag) tags="$tags,$2"; shift 2;;
+		--exclude) excludes="$excludes
+$2"; shift 2;;
 		--stdin-from-command) stdin=1; shift;;
 		--stdin-filename) name=$2; shift 2;;
 		--) shift; break;;
@@ -372,6 +383,23 @@ backup)
 			echo "Fatal: all source directories/files do not exist" >&2
 			mv "$snap" "$repo/aborted/$n-$$"
 			exit 1
+		fi
+		if [ -n "$excludes" ]; then
+			# what an --exclude names is left out, with what it holds: it
+			# moves aside, out of the snapshot's files
+			mkdir "$snap/excluded"
+			(cd "$snap/files" && find . -mindepth 1 | sed 's|^\.||' | sort) | while IFS= read -r item; do
+				[ -e "$snap/files$item" ] || [ -L "$snap/files$item" ] || continue
+				printf '%s\n' "$excludes" | while IFS= read -r pattern; do
+					[ -n "$pattern" ] || continue
+					case "$item" in
+					$pattern|$pattern/*)
+						mkdir -p "$snap/excluded$(dirname "$item")"
+						mv "$snap/files$item" "$snap/excluded$item"
+						break;;
+					esac
+				done
+			done
 		fi
 		if [ -n "$FAKE_RESTIC_UNREADABLE" ]; then
 			unread=$(find "$snap/files" -type f -name "$FAKE_RESTIC_UNREADABLE")
@@ -425,15 +453,19 @@ forget)
 	shift
 	keep=0
 	filters=
+	nogroup=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--json|--quiet|-q|--prune) shift;;
 		--retry-lock) shift 2;;
 		--group-by)
-			if [ "$2" != tags ]; then
-				echo "Fatal: the fake restic groups by tags only, not $2" >&2
-				exit 1
-			fi
+			case "$2" in
+			tags) nogroup=;;
+			'') nogroup=1;;
+			*)
+				echo "Fatal: the fake restic groups by tags or not at all, not $2" >&2
+				exit 1;;
+			esac
 			shift 2;;
 		--tag) filters="$filters $2"; shift 2;;
 		--keep-last|--keep-hourly|--keep-daily|--keep-weekly|--keep-monthly|--keep-yearly)
@@ -453,11 +485,20 @@ forget)
 		echo "no policy was specified, no snapshots will be removed"
 		exit 0
 	fi
-	# each matching snapshot, newest first, after its group: its tags, sorted
+	# groupof: the group of the snapshot whose tags file is $1: its tags,
+	# sorted, or - for every snapshot with --group-by ''
+	groupof() {
+		if [ -n "$nogroup" ]; then
+			echo -
+		else
+			sort "$1" | paste -sd, -
+		fi
+	}
+	# each matching snapshot, newest first, after its group
 	groups=
 	for name in $(snapshots | sort -r); do
 		matches "$repo/snapshots/$name/tags" $filters || continue
-		groups="$groups$(sort "$repo/snapshots/$name/tags" | paste -sd, -) $name
+		groups="$groups$(groupof "$repo/snapshots/$name/tags") $name
 "
 	done
 	[ -n "$groups" ] || exit 0
@@ -466,7 +507,7 @@ forget)
 	for group in $(printf %s "$groups" | cut -d' ' -f1 | sort -u); do
 		kept=; gone=; i=0
 		for name in $(printf %s "$groups" | grep -F -- "$group " | cut -d' ' -f2); do
-			[ "$(sort "$repo/snapshots/$name/tags" | paste -sd, -)" = "$group" ] || continue
+			[ "$(groupof "$repo/snapshots/$name/tags")" = "$group" ] || continue
 			i=$((i + 1))
 			if [ "$i" -le "$keep" ]; then
 				kept="$kept${kept:+,}$(cat "$repo/snapshots/$name/json")"
@@ -477,8 +518,9 @@ forget)
 			fi
 		done
 		[ "$out" = "[" ] || out="$out,"
-		tagjson=$(printf %s "$group" | tr , '\n' | sed 's/.*/"&"/' | paste -sd, -)
-		out="$out{\"tags\":[$tagjson],\"host\":\"\",\"paths\":null,\"keep\":[$kept],\"remove\":${gone:+[}${gone:-null}${gone:+]},\"reasons\":[]}"
+		tagjson=null
+		[ -n "$nogroup" ] || tagjson="[$(printf %s "$group" | tr , '\n' | sed 's/.*/"&"/' | paste -sd, -)]"
+		out="$out{\"tags\":$tagjson,\"host\":\"\",\"paths\":null,\"keep\":[$kept],\"remove\":${gone:+[}${gone:-null}${gone:+]},\"reasons\":[]}"
 	done
 	echo "$out]"
 	if [ "$removed" -gt 0 ]; then
@@ -792,6 +834,10 @@ dump)
 		locked "$FAKE_RESTIC_LOCKED_DUMP" dump
 	fi
 	snap=$(snapshot_dir "$1") || exit 1
+	if [ -f "$repo/damaged" ]; then
+		echo "Fatal: loading tree for snapshot \"$1\" failed: decrypting blob <tree/$(hexid tree "$repo" | cut -c1-8)> from $(hexid pack "$repo" | cut -c1-8) failed: ciphertext verification failed" >&2
+		exit 1
+	fi
 	p=$2
 	at="$snap/files$p"
 	[ "$p" = / ] && at="$snap/files"
@@ -980,6 +1026,21 @@ func Snapshots(t testing.TB, root, repository string) []Snapshot {
 	return snapshots
 }
 
+// Damage marks a repository of the fake restic damaged, as a pack whose
+// bytes changed: its dumps fail with "ciphertext verification failed"
+// (#53). repository is the job's RESTIC_REPOSITORY, or a local target's
+// directory.
+func Damage(t testing.TB, root, repository string) {
+	t.Helper()
+	dir := Repository(root, repository)
+	if _, err := os.Stat(filepath.Join(dir, "config")); err != nil {
+		t.Fatalf("no repository to damage at %s: %v", repository, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "damaged"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Repository is the directory of a repository of the fake restic: a local
 // one's own, or one in its root named after the URL.
 func Repository(root, repository string) string {
@@ -1026,6 +1087,15 @@ type Tool func(ctx context.Context, args []string, env map[string]string, stdin 
 // output reaches the job's standard output as the tool writes it. A local
 // target's directory bound read-only, as a check's first pass binds it
 // (#31), cannot be locked.
+//
+// A site's files (#53) are a volume mounted read-only at /srv/sites/<dir>,
+// with its subpath, which the fake restic reads from the volume's
+// directory; on an Engine without subpaths, a bind of the volume's own
+// directory. A job whose entrypoint is pg_restore is the conversion of a
+// PostgreSQL dump to SQL (#53): it checks its flags, refuses an input that
+// is no custom archive (it does not start with PGDMP), as pg_restore does,
+// with exit code 1, and otherwise prints pg_restore's header line,
+// "-- PostgreSQL database dump", and then what it read, as it comes.
 func RunJobs(engine *fakedocker.Engine, tool Tool) {
 	RunJobsWith(engine, tool, Options{})
 }
@@ -1041,6 +1111,9 @@ type Options struct {
 // RunJobsWith is RunJobs with options.
 func RunJobsWith(engine *fakedocker.Engine, tool Tool, options Options) {
 	engine.OnJob = func(job fakedocker.Job) fakedocker.JobResult {
+		if len(job.Entrypoint) > 0 && job.Entrypoint[0] == "pg_restore" {
+			return convertDump(job)
+		}
 		if len(job.Cmd) == 0 || job.Cmd[0] != "backup-tool" {
 			return fakedocker.JobResult{Code: 1, Stderr: "error: not a backup job"}
 		}
@@ -1095,12 +1168,19 @@ func RunJobsWith(engine *fakedocker.Engine, tool Tool, options Options) {
 				if env["RESTIC_REPOSITORY"] == backup.LocalMount {
 					env["RESTIC_REPOSITORY"] = source
 				}
-			case mount["Type"] == "volume" && strings.HasPrefix(target, "/volumes/"), mount["Type"] == "bind":
+			case mount["Type"] == "volume" && (strings.HasPrefix(target, "/volumes/") || strings.HasPrefix(target, "/srv/sites/")),
+				mount["Type"] == "bind":
 				if mount["ReadOnly"] != true {
 					return fakedocker.JobResult{Code: 125, Stderr: "error: a backup job mounts " + target + " writable"}
 				}
 				if mount["Type"] == "volume" {
 					source = engine.VolumeDir(source)
+					// a site's directory of the sites volume (#53)
+					if options, _ := mount["VolumeOptions"].(map[string]any); options != nil {
+						if subpath, _ := options["Subpath"].(string); subpath != "" {
+							source = filepath.Join(source, filepath.FromSlash(subpath))
+						}
+					}
 				}
 				sources = append(sources, target+"="+source)
 			}
@@ -1174,4 +1254,38 @@ func RunJobsWith(engine *fakedocker.Engine, tool Tool, options Options) {
 		}
 		return result
 	}
+}
+
+// postgresDumpHeader is the line plain SQL from pg_restore starts with.
+const postgresDumpHeader = "--\n-- PostgreSQL database dump\n--\n\n"
+
+// convertDump is the conversion container of a PostgreSQL dump to SQL
+// (#53), as RunJobs runs it: pg_restore --file=- reads a custom archive on
+// its standard input and prints SQL; the fake prints its header and then
+// echoes what it read.
+func convertDump(job fakedocker.Job) fakedocker.JobResult {
+	if !slices.Equal(job.Entrypoint, []string{"pg_restore"}) || !slices.Contains(job.Cmd, "--file=-") {
+		return fakedocker.JobResult{Code: 1, Stderr: fmt.Sprintf("pg_restore: error: the fake converts with pg_restore --file=- only, not %q %q\n", job.Entrypoint, job.Cmd)}
+	}
+	if job.Stdin == nil {
+		return fakedocker.JobResult{Code: 1, Stderr: "pg_restore: error: input file is too short (read 0, expected 5)\n"}
+	}
+	stdin := bufio.NewReader(job.Stdin)
+	magic, err := stdin.Peek(5)
+	if err != nil || string(magic) != "PGDMP" {
+		_, _ = io.Copy(io.Discard, stdin)
+		return fakedocker.JobResult{Code: 1, Stderr: "pg_restore: error: input file does not appear to be a valid archive\n"}
+	}
+	var buffered bytes.Buffer
+	var out io.Writer = &buffered
+	if job.Stdout != nil {
+		out = job.Stdout
+	}
+	if _, err := io.WriteString(out, postgresDumpHeader); err != nil {
+		return fakedocker.JobResult{Code: 1, Stderr: "pg_restore: error: could not write to output file: " + err.Error() + "\n"}
+	}
+	if _, err := io.Copy(out, stdin); err != nil {
+		return fakedocker.JobResult{Code: 1, Stderr: "pg_restore: error: could not write to output file: " + err.Error() + "\n"}
+	}
+	return fakedocker.JobResult{Stdout: buffered.String()}
 }

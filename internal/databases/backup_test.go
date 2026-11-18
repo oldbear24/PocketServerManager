@@ -258,6 +258,12 @@ func TestTheAdminStatementsOfARestore(t *testing.T) {
 	if SettingsSQL(MariaDB, "shop") != "" {
 		t.Error("MariaDB has settings of a database")
 	}
+	if got := SessionsSQL(Postgres, "shop"); got != "SELECT COALESCE(host(client_addr), 'local') FROM pg_stat_activity WHERE datname = 'shop' AND pid <> pg_backend_pid();" {
+		t.Errorf("sessions: %s", got)
+	}
+	if got := SessionsSQL(MariaDB, "shop"); got != "SELECT SUBSTRING_INDEX(host, ':', 1) FROM information_schema.processlist WHERE db = 'shop' AND id <> CONNECTION_ID();" {
+		t.Errorf("sessions: %s", got)
+	}
 }
 
 // TestOnlyTemporaryDatabasesAreDiscarded: what drops, renames or creates a
@@ -328,6 +334,12 @@ func TestHostileNamesStayQuoted(t *testing.T) {
 	}
 	if got := SettingsSQL(Postgres, hostile); !strings.HasSuffix(got, `d.datname = 'x''); DROP DATABASE shop; -- \';`) {
 		t.Errorf("settings: %s", got)
+	}
+	if got := SessionsSQL(Postgres, hostile); !strings.Contains(got, `datname = 'x''); DROP DATABASE shop; -- \' AND`) {
+		t.Errorf("sessions: %s", got)
+	}
+	if got := SessionsSQL(MariaDB, hostile); !strings.Contains(got, `db = 'x\'); DROP DATABASE shop; -- \\' AND`) {
+		t.Errorf("sessions: %s", got)
 	}
 
 	for _, charset := range []Charset{

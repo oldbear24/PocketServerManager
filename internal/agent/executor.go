@@ -49,7 +49,11 @@ var perTypeLimits = map[string]int{
 	// a restore writes, and a download streams to a browser, for hours
 	"backup.restore": 2,
 	"backup.dump":    2,
-	"db.":            3,
+	// a restore test restores a whole database into a temporary one (#53):
+	// one at a time, and never in a restore's slots, which the longest
+	// prefix would give it
+	"backup.restore_test": 1,
+	"db.":                 3,
 	// scheduled tasks may run for hours: they never take every worker
 	"task.": 4,
 }

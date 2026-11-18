@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -42,6 +43,7 @@ func (a *Agent) registerDatabaseHandlers() {
 	x.Handle("db.database.create", a.handleDatabaseCreate)
 	x.Handle("db.database.rotate", a.handleDatabaseRotate)
 	x.Handle("db.database.drop", a.handleDatabaseDrop)
+	x.Handle("db.database.discard", a.handleDatabaseDiscard)
 	x.Handle("db.database.clone", a.handleDatabaseClone)
 	x.Handle("db.database.export", a.handleDatabaseExport)
 	x.Handle("db.network.attach", a.handleNetworkAttach)
@@ -250,6 +252,13 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 			return nil, err
 		}
 	}
+	// the database's temporary copies (#53), whose owner is its user
+	temporaries := payload.GetTemporaries()
+	for _, name := range temporaries {
+		if err := databases.ValidTemporaryName(name); err != nil {
+			return nil, err
+		}
+	}
 
 	reporter.Progress("dump", "Keeping a final dump of "+payload.GetDatabase(), 20)
 	path, err := a.dumpToFile(ctx, connection, engine, payload.GetDatabase())
@@ -263,6 +272,13 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 		return nil, fmt.Errorf("the final dump could not be stored, so nothing was dropped: %w", err)
 	}
 
+	if len(temporaries) > 0 {
+		// before the user, which PostgreSQL keeps while it owns them
+		reporter.Progress("drop", "Dropping the temporary copies of "+payload.GetDatabase(), 75)
+		if err := a.discard(ctx, connection.GetContainerId(), engine, connection, temporaries, payload.GetUser(), connection.GetAdminPassword()); err != nil {
+			return nil, fmt.Errorf("the temporary copies of %s could not be dropped, so nothing else was dropped: %w", payload.GetDatabase(), err)
+		}
+	}
 	reporter.Progress("drop", "Dropping "+payload.GetDatabase(), 80)
 	if revoke := databases.RevokeSQL(engine, payload.GetDatabase(), payload.GetUser()); payload.GetKeepUser() && revoke != "" {
 		script := databases.Statements(engine, connection.GetAdminUser(), connection.GetAdminPassword(), revoke)
@@ -277,6 +293,56 @@ func (a *Agent) handleDatabaseDrop(ctx context.Context, command *agentv1.Command
 	}
 
 	return map[string]any{"dump": id, "size_bytes": float64(size)}, nil
+}
+
+// handleDatabaseDiscard drops temporary databases of a server, and nothing
+// else (#53): every name is of the namespace pc_rt_, pc_rs_ or pc_old_. A
+// restore or restore test that holds one keeps it until it ends. On MariaDB
+// the privileges of revoke_from on them go first.
+func (a *Agent) handleDatabaseDiscard(ctx context.Context, command *agentv1.Command, reporter *Reporter) (map[string]any, error) {
+	payload := command.GetDbDatabaseDiscard()
+	connection := payload.GetConnection()
+	engine, err := connectionOf(connection)
+	if err != nil {
+		return nil, err
+	}
+	names := payload.GetNames()
+	if len(names) == 0 {
+		return nil, errors.New("the command names no temporary database to drop")
+	}
+	for _, name := range names {
+		if err := databases.ValidTemporaryName(name); err != nil {
+			return nil, err
+		}
+	}
+	if revoke := payload.GetRevokeFrom(); revoke != "" {
+		if err := validNames(engine, revoke); err != nil {
+			return nil, err
+		}
+	}
+	info, err := a.Docker.Inspect(ctx, connection.GetContainerId())
+	if dockerapi.IsNotFound(err) {
+		return nil, fmt.Errorf("the database server's container %s does not exist on this server", connection.GetContainerId())
+	} else if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(names))
+	for _, name := range names {
+		keys = append(keys, databaseClaim(info.ID, name))
+	}
+	release, err := a.claims.claim(true, keys)
+	var held *claimConflict
+	if errors.As(err, &held) {
+		return nil, sentenceError(fmt.Sprintf("A restore or a restore test still uses %s: drop it once that ends.", path.Base(held.key)))
+	} else if err != nil {
+		return nil, err
+	}
+	defer release()
+	reporter.Progress("drop", "Dropping "+strings.Join(names, ", "), 30)
+	if err := a.discard(ctx, info.ID, engine, connection, names, payload.GetRevokeFrom(), connection.GetAdminPassword()); err != nil {
+		return nil, err
+	}
+	return map[string]any{"dropped": anyList(names)}, nil
 }
 
 func (a *Agent) handleDatabaseStats(ctx context.Context, command *agentv1.Command, _ *Reporter) (map[string]any, error) {

@@ -109,9 +109,16 @@ type Job struct {
 	// Hostname is the container's hostname, as its create config set it;
 	// empty for the Engine's own, the container's short id (#31).
 	Hostname string
-	// Cmd and Env are the container's command and environment.
-	Cmd []string
-	Env []string
+	// Entrypoint, Cmd and Env are the container's entrypoint, command and
+	// environment; Entrypoint is empty for the image's own.
+	Entrypoint []string
+	Cmd        []string
+	Env        []string
+	// Image is the image the container was created from, as its create
+	// config named it.
+	Image string
+	// User is the user the container runs as, as its create config set it.
+	User string
 	// Host is the container's HostConfig.
 	Host map[string]any
 	// Files are those copied into the container before it started.
@@ -992,7 +999,7 @@ func stopJob(c *Container) {
 
 // jobOf copies what OnJob may see of a container.
 func jobOf(c *Container) Job {
-	job := Job{Name: c.Name, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
+	job := Job{Name: c.Name, Image: c.Image, Labels: maps.Clone(c.Labels), Host: c.Host, Files: maps.Clone(c.files), Stop: c.stop}
 	job.Hostname, _ = c.Config["Hostname"].(string)
 	if c.stdinR != nil {
 		job.Stdin = c.stdinR
@@ -1002,6 +1009,13 @@ func jobOf(c *Container) Job {
 		stdout.log, stderr.log = &liveLog{logs: c.logs, stream: 1}, &liveLog{logs: c.logs, stream: 2}
 	}
 	job.Stdout, job.Stderr = stdout, stderr
+	job.User, _ = c.Config["User"].(string)
+	if entrypoint, ok := c.Config["Entrypoint"].([]any); ok {
+		for _, arg := range entrypoint {
+			text, _ := arg.(string)
+			job.Entrypoint = append(job.Entrypoint, text)
+		}
+	}
 	if cmd, ok := c.Config["Cmd"].([]any); ok {
 		for _, arg := range cmd {
 			text, _ := arg.(string)

@@ -345,7 +345,9 @@ func TestALogLevelAlwaysFallsBack(t *testing.T) {
 // TestThePanelsBackupIsAlwaysAdvertised (#32): an agent always says it can
 // carry the panel's backup, backup.run.panel, next to the command types it
 // runs, as capabilities gate command types only and an older agent would
-// refuse a run's panel_export; host_shell stays the server's opt-in.
+// refuse a run's panel_export; host_shell stays the server's opt-in. So it
+// says backup.database (#53), and runs backup.restore_test and
+// db.database.discard.
 func TestThePanelsBackupIsAlwaysAdvertised(t *testing.T) {
 	for _, shell := range []bool{false, true} {
 		a, err := New(Config{StateDir: t.TempDir(), HostShell: shell}, io.Discard)
@@ -359,6 +361,16 @@ func TestThePanelsBackupIsAlwaysAdvertised(t *testing.T) {
 		}
 		if slices.Contains(a.Executor.Capabilities(), backup.CapabilityPanel) {
 			t.Errorf("the executor runs commands of the type %s", backup.CapabilityPanel)
+		}
+		// #53: the fields of per-database backups by the pseudo-capability,
+		// and their two new commands by their types
+		for _, capability := range []string{backup.CapabilityDatabase, "backup.restore_test", "db.database.discard"} {
+			if !slices.Contains(capabilities, capability) {
+				t.Errorf("the agent does not say %s: %q", capability, capabilities)
+			}
+		}
+		if slices.Contains(a.Executor.Capabilities(), backup.CapabilityDatabase) {
+			t.Errorf("the executor runs commands of the type %s", backup.CapabilityDatabase)
 		}
 	}
 }

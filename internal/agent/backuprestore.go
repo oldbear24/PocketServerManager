@@ -53,6 +53,7 @@ func (a *Agent) registerRestoreHandlers() {
 	a.Executor.Handle("backup.browse", a.handleBackupBrowse)
 	a.Executor.Handle("backup.restore", a.handleBackupRestore)
 	a.Executor.Handle("backup.dump", a.handleBackupDump)
+	a.Executor.Handle("backup.restore_test", a.handleBackupRestoreTest)
 }
 
 // commandLabels are a job's labels that name its command.
@@ -156,6 +157,8 @@ func (a *Agent) handleBackupBrowse(ctx context.Context, command *agentv1.Command
 	if err != nil {
 		return nil, err
 	}
+	// the snapshot the folder is of is a database preview's (#53)
+	delete(result, "snapshot")
 	trimList(result, "entries", maxBrowseResult)
 	return result, nil
 }
@@ -183,8 +186,8 @@ func checkRestore(command *agentv1.Command) error {
 		return fmt.Errorf("a restore names its job's tag, job: and the job's id, not %q", payload.GetJobTag())
 	case payload.GetTargetVolume() != "":
 		return errors.New("a restore goes back into a volume through its original location, not target_volume")
-	case (len(payload.GetOriginal()) > 0) == (payload.GetTargetPath() != ""):
-		return errors.New("a restore goes to its original location or to a new folder: exactly one of them")
+	case restoreTargets(payload) != 1:
+		return errors.New("a restore goes to its original location, to a new folder or into a database: exactly one of them")
 	case len(payload.GetOriginal()) > maxRestoreRoots:
 		return fmt.Errorf("a restore has at most %d folders, not %d", maxRestoreRoots, len(payload.GetOriginal()))
 	case len(payload.GetInclude()) > maxRestoreIncludes:
@@ -197,6 +200,11 @@ func checkRestore(command *agentv1.Command) error {
 		return errors.New("a restore to the original location overwrites it, and that was not confirmed")
 	case !payload.GetDryRun() && !markerName.MatchString(command.GetId()):
 		return fmt.Errorf("the command's id %q cannot name the agent's note of what it stops", command.GetId())
+	}
+	if payload.GetDatabase() != nil {
+		// a database restore restores the one file of a database's
+		// snapshot (#53)
+		return checkDatabaseRestore(command)
 	}
 	if source := payload.GetSource(); source != "" {
 		if err := checkSnapshotPath(source); err != nil {
@@ -237,6 +245,9 @@ func (a *Agent) handleBackupRestore(ctx context.Context, command *agentv1.Comman
 	}
 	if err := checkRestore(command); err != nil {
 		return nil, err
+	}
+	if payload.GetDatabase() != nil {
+		return a.restoreDatabase(ctx, command, reporter)
 	}
 	dests, notes, err := a.restoreDests(ctx, payload)
 	if err != nil {
@@ -301,7 +312,7 @@ func (a *Agent) previewRestore(ctx context.Context, command *agentv1.Command, de
 	payload := command.GetBackupRestore()
 	// a PocketCloud container that writes the destination refuses it now,
 	// and so does one another restore holds
-	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests, false)
+	users, err := a.affected(ctx, command.GetId(), stackList(payload.GetStack()), dests, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +490,7 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 	progress.report("check", "Checking the repository, the snapshot and the destination", 5, 0, 0, "")
 	// what would stop now, against what the preview showed: refused before
 	// the job starts, and again, live, once it is ready
-	users, err := a.affected(ctx, command.GetId(), payload.GetStack(), dests, false)
+	users, err := a.affected(ctx, command.GetId(), stackList(payload.GetStack()), dests, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +522,7 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 			}
 			// the users of the destination as they are now, which this
 			// restore holds from now on, until startAgain lets them go
-			users, err := a.affected(feedCtx, command.GetId(), payload.GetStack(), dests, true)
+			users, err := a.affected(feedCtx, command.GetId(), stackList(payload.GetStack()), dests, nil, true)
 			session.users = users
 			if err == nil {
 				err = checkConfirmedStops(users, payload.GetConfirmedStops())
@@ -614,6 +625,14 @@ func (a *Agent) runRestore(ctx context.Context, command *agentv1.Command, dests 
 	default:
 		return result, missingDirectory(jobErr)
 	}
+}
+
+// stackList is a restore's stack as the stacks it stops, none for none.
+func stackList(stack string) []string {
+	if stack == "" {
+		return nil
+	}
+	return []string{stack}
 }
 
 // sentenceError is an error said as a whole sentence, as the panel shows it.

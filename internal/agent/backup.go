@@ -139,6 +139,9 @@ type backupJobSpec struct {
 	// capability but DAC_OVERRIDE: the first pass of an integrity check
 	// reads the repository without a lock and writes nothing (#31)
 	repoReadOnly bool
+	// claims are data claims the job takes besides what it mounts, such as
+	// the database a dump reads (#53)
+	claims []string
 }
 
 // clockSkewed says how far the server's clock is off the panel's, as the last

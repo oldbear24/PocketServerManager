@@ -395,16 +395,21 @@ type claimConflict struct {
 }
 
 func (e *claimConflict) Error() string {
-	_, name, _ := strings.Cut(e.key, ":")
+	kind, name, _ := strings.Cut(e.key, ":")
+	if kind == "db" {
+		// a database of a server's container is said by its name (#53)
+		name = path.Base(name)
+	}
 	if e.write {
 		return fmt.Sprintf("A restore into %s is under way: back it up once it ends.", name)
 	}
 	return fmt.Sprintf("A backup of %s is running: restore when it ends.", name)
 }
 
-// backupClaimKeys are the data claims of a backup job: what it mounts.
+// backupClaimKeys are the data claims of a backup job: what it mounts, and
+// the database a dump reads (#53).
 func backupClaimKeys(job backupJobSpec) []string {
-	var keys []string
+	keys := slices.Clone(job.claims)
 	for _, mount := range job.mounts {
 		source, _ := mount["Source"].(string)
 		switch mount["Type"] {

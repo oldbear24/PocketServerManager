@@ -363,6 +363,19 @@ func SettingsSQL(engine Engine, database string) string {
 		postgresString(database) + ";"
 }
 
+// SessionsSQL lists where the sessions of a database come from, one address
+// per line, but the statement's own: an in-place restore's preview counts
+// those from outside the containers it stops. A session on the server's
+// socket says local (PostgreSQL) or localhost (MariaDB).
+func SessionsSQL(engine Engine, database string) string {
+	if engine.Name == MariaDB.Name {
+		return "SELECT SUBSTRING_INDEX(host, ':', 1) FROM information_schema.processlist WHERE db = " + mariadbString(database) +
+			" AND id <> CONNECTION_ID();"
+	}
+	return "SELECT COALESCE(host(client_addr), 'local') FROM pg_stat_activity WHERE datname = " + postgresString(database) +
+		" AND pid <> pg_backend_pid();"
+}
+
 // EndSessions ends the sessions of a database but its own, and prints how
 // many it ended. PostgreSQL terminates them in one statement. MariaDB has
 // none that ends the sessions of a database, so the script lists their ids

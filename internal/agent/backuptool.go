@@ -38,10 +38,14 @@ import (
 //	       --stdin-name FILE, the dump comes in on the tool's standard input
 //	       as the relay's frames, and the tool serves them to restic's
 //	       relay on the unix socket --relay SOCKET. The snapshot takes
-//	       --host NAME and every --tag; with any --keep-last, --keep-hourly,
-//	       --keep-daily, --keep-weekly, --keep-monthly or --keep-yearly N,
-//	       the snapshots that have every one of those tags are then
-//	       thinned out to that policy, and the repository pruned. Its
+//	       --host NAME and every --tag and --extra-tag; with any
+//	       --keep-last, --keep-hourly, --keep-daily, --keep-weekly,
+//	       --keep-monthly or --keep-yearly N, the snapshots that have every
+//	       --tag are then thinned out to that policy, grouped by their tags,
+//	       or as one group when the run has an --extra-tag, which may
+//	       change for a job (#53), and the repository pruned. --exclude P
+//	       leaves out what restic's pattern P names, which is under a
+//	       --path (#53). Its
 //	       result says what the snapshot holds, and how many snapshots
 //	       went; a snapshot saved without files restic could not read is
 //	       said too, with the error. A backup or a retention that finds
@@ -170,9 +174,11 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 	flags.Var(&noUnlock, "no-unlock", "the minutes the server's clock is off the panel's: no lock is removed")
 	host := flags.String("host", "", "the snapshot's host")
 	unlockFirst := flags.Bool("unlock", false, "restic unlock before the backup")
-	var tags, paths list
+	var tags, extraTags, paths, excludes list
 	flags.Var(&tags, "tag", "a tag of the snapshot")
+	flags.Var(&extraTags, "extra-tag", "a tag of the snapshot that the retention does not select by (#53)")
 	flags.Var(&paths, "path", "a directory to back up")
+	flags.Var(&excludes, "exclude", "a pattern of what the backup leaves out (#53)")
 	stdinName := flags.String("stdin-name", "", "the file name of the dump that comes in on standard input")
 	relay := flags.String("relay", "", "the socket the dump's relay reads from")
 	socket := flags.String("socket", "", "the backup tool's socket, for the relay")
@@ -235,7 +241,7 @@ func BackupTool(ctx context.Context, args []string, env map[string]string, stdin
 		}
 		return json.NewEncoder(stdout).Encode(result)
 	case "backup":
-		run, err := backupRunOf(*host, tags, paths, *stdinName, *relay, keep)
+		run, err := backupRunOf(*host, tags, extraTags, paths, excludes, *stdinName, *relay, keep)
 		if err != nil {
 			return err
 		}

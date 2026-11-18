@@ -184,6 +184,48 @@ func TestTheRetentionThinsOutTheJobsSnapshotsOnly(t *testing.T) {
 	}
 }
 
+// TestExtraTagsAreTheSnapshotsAndTheRetentionGoesByTheJobsTags (#53): a
+// run's extra tags are the snapshot's besides its own, and its retention
+// selects the snapshots by the job's own tags alone, as one group, so that
+// a database whose server's name changed keeps one; the excludes leave out
+// what they name. Without extra tags the arguments are #29's.
+func TestExtraTagsAreTheSnapshotsAndTheRetentionGoesByTheJobsTags(t *testing.T) {
+	env, root := backupRepository(t)
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a": "1", "cache/c": "2"})
+	run := func(args ...string) *backupRunResult {
+		t.Helper()
+		result, log, err := runBackup(t, env, nil, append([]string{"--host", "nas", "--tag", "pocketcloud", "--tag", "job:j1", "--path", dir}, args...)...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, log)
+		}
+		return result
+	}
+	if first := run("--extra-tag", "db:shop", "--extra-tag", "dbserver:old", "--exclude", dir+"/cache"); first.BytesStored != 1 || first.TotalBytes != 1 {
+		t.Errorf("the first backup: %+v", first)
+	}
+	moved := run("--extra-tag", "db:shop", "--extra-tag", "dbserver:new", "--exclude", dir+"/cache", "--keep-last", "1")
+	if moved.Forgotten != 1 || moved.BytesStored != 0 {
+		t.Errorf("after a move: %+v", moved)
+	}
+	calls := fakerestic.Calls(t, root)
+	if !strings.Contains(calls, "restic --no-cache backup --json --quiet --retry-lock 30m --host nas --tag pocketcloud,job:j1,db:shop,dbserver:new --exclude "+dir+"/cache -- "+dir+"\n") ||
+		!strings.Contains(calls, "restic --no-cache forget --json --prune --retry-lock 5m --group-by  --tag pocketcloud,job:j1 --keep-last 1\n") {
+		t.Errorf("restic ran:\n%s", calls)
+	}
+	snapshots := fakerestic.Snapshots(t, root, env["RESTIC_REPOSITORY"])
+	if len(snapshots) != 1 || !slices.Equal(snapshots[0].Tags, []string{"pocketcloud", "job:j1", "db:shop", "dbserver:new"}) ||
+		snapshots[0].Files[dir+"/a"] != "1" || len(snapshots[0].Files) != 1 {
+		t.Errorf("snapshots: %+v", snapshots)
+	}
+
+	run("--keep-last", "1")
+	if calls := fakerestic.Calls(t, root); !strings.Contains(calls, "restic --no-cache forget --json --prune --retry-lock 5m --group-by tags --tag pocketcloud,job:j1 --keep-last 1\n") ||
+		!strings.Contains(calls, "restic --no-cache backup --json --quiet --retry-lock 30m --host nas --tag pocketcloud,job:j1 -- "+dir+"\n") {
+		t.Errorf("without extra tags restic ran:\n%s", calls)
+	}
+}
+
 // resticCommands are the commands restic ran, in order, without the global
 // options.
 func resticCommands(t *testing.T, root string) []string {
@@ -595,6 +637,14 @@ func TestTheBackupOpChecksItsFlags(t *testing.T) {
 		{[]string{"--host", "nas", "--stdin-name", "../db.sql", "--relay", "/tmp/s"}, "file name cannot be"},
 		{[]string{"--host", "nas", "--path", "/srv", "--keep-last", "3"}, "without --tag it would take every other's"},
 		{[]string{"--host", "nas", "--tag", "a", "--path", "/srv", "--keep-daily", "-1"}, "not -1"},
+		// #53
+		{[]string{"--host", "nas", "--tag", "a", "--extra-tag", "db:a,b", "--path", "/srv"}, `a tag cannot be "db:a,b"`},
+		{[]string{"--host", "nas", "--tag", "a", "--extra-tag", "", "--path", "/srv"}, `a tag cannot be ""`},
+		{[]string{"--host", "nas", "--extra-tag", "db:shop", "--path", "/srv"}, "come with the job's own tags"},
+		{[]string{"--host", "nas", "--tag", "a", "--path", "/srv", "--exclude", "/srv"}, "under no directory the backup saves"},
+		{[]string{"--host", "nas", "--tag", "a", "--path", "/srv", "--exclude", "/etc/x"}, "under no directory the backup saves"},
+		{[]string{"--host", "nas", "--tag", "a", "--path", "/srv", "--exclude", "/srv/a/../../etc"}, "absolute and clean"},
+		{[]string{"--host", "nas", "--tag", "a", "--stdin-name", "db.sql", "--relay", "/tmp/s", "--exclude", "/db.sql"}, "under no directory the backup saves"},
 	} {
 		if _, _, err := runBackup(t, env, nil, tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: %v", tc.args, err)
