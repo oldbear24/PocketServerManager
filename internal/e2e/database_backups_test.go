@@ -414,6 +414,10 @@ func TestADatabaseRunDumpsOnlyItsDatabase(t *testing.T) {
 		}
 		from := len(d.db.Execs())
 		run := d.backedUp(job)
+		// restic's data_added_packed, which the agent answers as bytes_stored
+		if run.GetInt("bytes_stored") <= 0 || run.GetInt("bytes_added") <= 0 {
+			t.Errorf("the %s run's bytes: %v", engine, run.FieldsData())
+		}
 
 		command := d.command(run.GetString("command"))
 		payload := map[string]any{}
@@ -659,8 +663,8 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	if alert := d.openAlerts("backup_restore")[d.host.Id+":database:"+d.databaseNamed(server, "shop").Id]; alert == nil || alert.GetString("severity") != schema.SeverityCritical {
 		t.Errorf("the restore's alert: %v", alert)
 	}
-	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind='backup.restore_failed' && data.restore={:id}", dbx.Params{"id": restore.Id}); err != nil {
-		t.Errorf("the restore's event: %v", err)
+	if event := d.event("backup.restore_failed", "data.restore={:id}", dbx.Params{"id": restore.Id}); event.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("the restore's event: %v", event.FieldsData())
 	}
 }
 
@@ -1031,9 +1035,8 @@ func TestRestoreTestsRunOnScheduleAndAlert(t *testing.T) {
 		!strings.HasPrefix(alert.GetString("message"), "The restore test of shop on main failed: ") {
 		t.Errorf("the failed test's alert: %v", alert)
 	}
-	if event, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind} && data.check={:id}", dbx.Params{"kind": backup.EventRestoreTestFailed, "id": failed.Id}); err != nil ||
-		event.GetString("severity") != schema.SeverityCritical {
-		t.Errorf("the failed test's event: %v %v", event, err)
+	if event := d.event(backup.EventRestoreTestFailed, "data.check={:id}", dbx.Params{"id": failed.Id}); event.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("the failed test's event: %v", event.FieldsData())
 	}
 	// the next test that passes resolves it
 	if err := os.Remove(filepath.Join(fakerestic.Repository(d.restic, repository), "damaged")); err != nil {
@@ -1088,9 +1091,7 @@ func TestTemporaryOrphans(t *testing.T) {
 	if record.GetString("server") != server.Id || record.GetString("owner_kind") != "none" || until.Before(time.Now().Add(time.Hour)) || until.After(time.Now().Add(3*time.Hour)) {
 		t.Errorf("the orphan's record: %v", record.FieldsData())
 	}
-	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind}", dbx.Params{"kind": backup.EventTemporaryFound}); err != nil {
-		t.Errorf("the orphan's event: %v", err)
-	}
+	d.event(backup.EventTemporaryFound, "", nil)
 	if status, out := d.send(http.MethodPost, "/api/pc/databases", d.operator, map[string]any{"server": server.Id, "name": "pc_rt_bbbbbbbbbbbbbbb"}); status != http.StatusBadRequest ||
 		out["message"] != databases.ReservedPrefixProblem {
 		t.Errorf("a database of the namespace by hand: %d %v", status, out)
@@ -1104,12 +1105,31 @@ func TestTemporaryOrphans(t *testing.T) {
 	if _, there := d.db.Database(server.GetString("container_ref"), orphan); there {
 		t.Error("the orphan stays on the server")
 	}
-	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind}", dbx.Params{"kind": backup.EventTemporaryDropped}); err != nil {
-		t.Errorf("the drop's event: %v", err)
-	}
+	d.event(backup.EventTemporaryDropped, "", nil)
 	if jobs, err := d.app.FindRecordsByFilter(schema.BackupJobs, "origin={:origin}", "", 0, 0, dbx.Params{"origin": schema.JobDatabase}); err != nil || len(jobs) != 0 {
 		t.Errorf("a temporary database got a job: %v %v", jobs, err)
 	}
+}
+
+// event waits for an event of a kind, which a finisher logs after it kept
+// what it says, and returns it.
+func (d *dbBackupsHarness) event(kind, filter string, params dbx.Params) *core.Record {
+	d.t.Helper()
+	all := dbx.Params{"kind": kind}
+	for key, value := range params {
+		all[key] = value
+	}
+	where := "kind={:kind}"
+	if filter != "" {
+		where += " && " + filter
+	}
+	var found *core.Record
+	d.waitFor("the event "+kind, func() bool {
+		record, err := d.app.FindFirstRecordByFilter(schema.Events, where, all)
+		found = record
+		return err == nil
+	})
+	return found
 }
 
 // drop drops a database through the panel and waits until it is gone.
@@ -1128,12 +1148,37 @@ func (d *dbBackupsHarness) drop(database *core.Record) {
 // TestDroppedDatabaseKeepsItsSnapshots (#53): a dropped database's job stays,
 // disabled, with its snapshots, which no longer go back into a database but
 // into a new one; one under the old name works, and gets a job of its own.
+// The drop resolves the alerts of the database's failed restore test and
+// failed restore, which nothing would resolve later.
 func TestDroppedDatabaseKeepsItsSnapshots(t *testing.T) {
 	d := newDBBackupsHarness(t)
 	server := d.sharedServer("main", "mariadb")
 	shop := d.database(server, "shop", nil, "items", "orders")
 	job := d.jobOf("database", shop.Id)
 	run := d.backedUp(job)
+
+	// a restore test and a restore of a damaged repository fail, with alerts
+	repository := filepath.Join(d.hostRoot, d.diskDir)
+	fakerestic.Damage(t, d.restic, repository)
+	if failed := d.testNow(job); failed.GetString("status") != schema.CheckFailed {
+		t.Fatalf("the test of a damaged repository: %v", failed.FieldsData())
+	}
+	restore := d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "database"})
+	if status, out := d.startNamed(restore, "shop"); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	if ended := d.ended(restore.Id); ended.GetString("status") != schema.RestoreFailed {
+		t.Fatalf("the restore from a damaged repository: %v", ended.FieldsData())
+	}
+	restoreKey := d.host.Id + ":database:" + shop.Id
+	if d.openAlerts(backup.AlertRestoreTestFailed)[job.Id] == nil || d.openAlerts("backup_restore")[restoreKey] == nil {
+		t.Fatalf("the alerts before the drop: %v %v", d.openAlerts(backup.AlertRestoreTestFailed), d.openAlerts("backup_restore"))
+	}
+	if err := os.Remove(filepath.Join(fakerestic.Repository(d.restic, repository), "damaged")); err != nil {
+		t.Fatal(err)
+	}
+	d.settled()
+
 	d.drop(shop)
 
 	d.waitFor("the job to be disabled", func() bool { return !d.job(job.Id).GetBool("enabled") })
@@ -1145,8 +1190,10 @@ func TestDroppedDatabaseKeepsItsSnapshots(t *testing.T) {
 	if snapshots := d.snapshots(job.Id); len(snapshots) != 1 {
 		t.Errorf("the dropped database's snapshots: %v", snapshots)
 	}
-	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind} && data.job={:job}", dbx.Params{"kind": backup.EventJobDisabled, "job": job.Id}); err != nil {
-		t.Errorf("the job's event: %v", err)
+	d.event(backup.EventJobDisabled, "data.job={:job}", dbx.Params{"job": job.Id})
+	d.waitFor("the restore test's alert to be resolved", func() bool { return d.openAlerts(backup.AlertRestoreTestFailed)[job.Id] == nil })
+	if alert := d.openAlerts("backup_restore")[restoreKey]; alert != nil {
+		t.Errorf("the dropped database's restore alert stays: %v", alert.FieldsData())
 	}
 	if status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/run", d.operator, nil); status != http.StatusConflict ||
 		out["message"] != "Its database was dropped: restore its snapshots into a new database." {
@@ -1157,7 +1204,7 @@ func TestDroppedDatabaseKeepsItsSnapshots(t *testing.T) {
 		t.Errorf("a restore back into the dropped database: %d %v", status, out)
 	}
 
-	restore := d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "new_database", "name": "shop", "server": server.Id})
+	restore = d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "new_database", "name": "shop", "server": server.Id})
 	if status, out := d.send(http.MethodPost, "/api/pc/backup-restores/"+restore.Id+"/start", d.operator, map[string]any{}); status != http.StatusOK {
 		t.Fatalf("the start: %d %v", status, out)
 	}
