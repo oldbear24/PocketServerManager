@@ -854,3 +854,46 @@ func TestRestoreTestsRunOneAtATime(t *testing.T) {
 		t.Errorf("the restore tests' slots: %v", perTypeLimits)
 	}
 }
+
+// TestADumpIsStagedFromItsJobsSnapshotOnly (#53): what is staged is the one
+// file of a database job's snapshot, named as the restore names it: a
+// snapshot of two files, one whose file is another database's, or one of
+// another job, is refused before anything changes, and nothing is left in
+// the server's container.
+func TestADumpIsStagedFromItsJobsSnapshotOnly(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	shopSnapshot, _ := d.backupDatabase(t, pg, "shop")
+	d.volume(t, "two_files", map[string]string{"shop.pgdump": "PGDMP", "zz-other": "x"})
+	volumes := d.backup(t, "two_files")
+	for name, tc := range map[string]struct {
+		snapshot, database, want string
+	}{
+		"two files":      {volumes, "shop", "the snapshot holds more than one file: it is no database's dump"},
+		"another's dump": {shopSnapshot, "blog", "the snapshot holds shop.pgdump, not the dump blog.pgdump"},
+		"another job's":  {shopSnapshot, "shop", "is not one of this job's"},
+	} {
+		payload := d.replace(pg, tc.snapshot, tc.database)
+		if name == "another job's" {
+			payload.JobTag = "job:bbbbbbbbbbbbbbb"
+		}
+		if _, err := d.restore(context.Background(), "c1", payload); err == nil || !strings.HasPrefix(err.Error(), "Nothing changed in "+tc.database+": ") ||
+			!strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if files := d.engine.Files(d.servers[pg.Name]); len(files) != 0 {
+		t.Errorf("left in the server: %q", files)
+	}
+	if shop, _ := d.db.Database(d.servers[pg.Name], "shop"); !slices.Equal(shop.Tables, []string{"items", "orders"}) || shop.From != "" ||
+		len(d.db.DatabaseNames(d.servers[pg.Name])) != 2 {
+		t.Errorf("shop changed: %+v", shop)
+	}
+	// a preview of another job's snapshot
+	payload := d.replace(pg, shopSnapshot, "shop")
+	payload.DryRun, payload.Overwrite, payload.JobTag = true, false, "job:bbbbbbbbbbbbbbb"
+	if _, err := d.restore(context.Background(), "p1", payload); err == nil || err.Error() != "the snapshot "+shopSnapshot[:8]+" is not one of this job's" {
+		t.Errorf("a preview of another job's snapshot: %v", err)
+	}
+}
