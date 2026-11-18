@@ -1385,6 +1385,7 @@ describe("a database's restore in the drawer (#53)", () => {
       mode: "database",
       database: "db1",
       database_name: "shop",
+      stack_name: "shop",
       previous: "pc_old_r1aaaaaaaaaaaaa",
       roots: dbRoots,
       preview: dbPreview(),
@@ -1530,7 +1531,14 @@ describe("a database's restore in the drawer (#53)", () => {
   });
 
   it("shows what the preview found: the dump, the tables, the room, what stops and the copy kept", async () => {
-    live.records["backup_restores/r1"] = dbRecord();
+    live.records["backup_restores/r1"] = dbRecord({
+      preview: dbPreview({
+        would_stop: [
+          { name: "shop-web-1", project: "shop", service: "web" },
+          { name: "reports-app-1", project: "reports", service: "app" },
+        ],
+      }),
+    });
     showDatabase("operator", {}, { restore: "r1" });
     expect(await drawer().findByText("The backup holds a dump of 1 MB")).toBeInTheDocument();
     expect(drawer().getByText("shop has 12 tables now")).toBeInTheDocument();
@@ -1538,8 +1546,14 @@ describe("a database's restore in the drawer (#53)", () => {
       drawer().getByText("53.7 GB free on db-main; the restore needs about 10.6 MB"),
     ).toBeInTheDocument();
     expect(
-      drawer().getByText("Also stops shop-web-1, whose settings use this database."),
+      drawer().getByText("These containers stop for a while and start again:"),
     ).toBeInTheDocument();
+    expect(drawer().getByText("shop-web-1")).toBeInTheDocument();
+    // its own application stops, as its mode says; another stack is said
+    expect(
+      drawer().getByText("Also stops reports-app-1, whose settings use this database."),
+    ).toBeInTheDocument();
+    expect(drawer().queryByText(/^Also stops shop-web-1/)).not.toBeInTheDocument();
     expect(
       drawer().getByText(
         "The data as it is now stays on db-main as pc_old_r1aaaaaaaaaaaaa for 24 hours.",
@@ -1665,7 +1679,11 @@ describe("a database's restore in the drawer (#53)", () => {
       url: "/api/pc/backup-downloads/r5?token=x",
     });
     showDatabase("admin");
-    fireEvent.click(await drawer().findByRole("radio", { name: /Download/ }));
+    const choice = await drawer().findByRole("radio", { name: /Download/ });
+    // a database's download is its dump as plain SQL, no tar
+    expect(choice).toHaveTextContent(/^Download as SQL/);
+    expect(choice).not.toHaveTextContent("tar");
+    fireEvent.click(choice);
     expect(
       drawer().getByText(
         "Plain SQL straight to your browser, made from the backup as it streams: keep this page open until it finishes.",

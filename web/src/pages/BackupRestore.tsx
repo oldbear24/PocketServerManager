@@ -657,12 +657,21 @@ export function RestoreDrawer({
                       setReplace(value === "original");
                     })
                   }
-                  options={offered.map((item) => ({
-                    value: item,
-                    title: t(`backups.restore.mode.${item}.label`),
-                    note: modeNote(item, modes[item].reason),
-                    disabled: modes[item].disabled,
-                  }))}
+                  options={offered.map((item) => {
+                    // a database's download is its dump as plain SQL
+                    const sql = databaseJob && item === "download";
+                    return {
+                      value: item,
+                      title: sql
+                        ? t("backups.restore.sqlLabel")
+                        : t(`backups.restore.mode.${item}.label`),
+                      note:
+                        sql && !modes[item].reason
+                          ? t("backups.restore.sqlNote")
+                          : modeNote(item, modes[item].reason),
+                      disabled: modes[item].disabled,
+                    };
+                  })}
                 />
                 {chosen === "new_database" && (
                   <>
@@ -701,9 +710,6 @@ export function RestoreDrawer({
                       </Field>
                     )}
                   </>
-                )}
-                {databaseJob && chosen === "download" && (
-                  <p className="muted small">{t("backups.restore.sqlNote")}</p>
                 )}
                 {chosen === "path" && (
                   <>
@@ -1011,7 +1017,7 @@ export function DatabasePreview({
   expired,
   server,
 }: {
-  record: Pick<BackupRestore, "mode" | "database_name" | "previous" | "roots">;
+  record: Pick<BackupRestore, "mode" | "database_name" | "previous" | "roots" | "stack_name">;
   preview: Preview;
   expired: boolean;
   /** the database's server */
@@ -1025,6 +1031,13 @@ export function DatabasePreview({
   const replace = record.mode === "database";
   const missing = (preview.roots ?? []).some((item) => !item.in_snapshot);
   const stops = preview.would_stop ?? [];
+  // the database's own application stops, as its mode says; what else stops
+  // is another stack whose settings name the database
+  const own = new Set(root?.stop_containers ?? []);
+  const others = stops.filter(
+    (container) =>
+      !own.has(container.name) && (!record.stack_name || container.project !== record.stack_name),
+  );
   const previous = record.previous || root?.previous || "";
   // PostgreSQL keeps the data a restore in place replaced; MariaDB does not
   const postgres = (root?.engine ?? "") === "postgres" || previous !== "";
@@ -1064,11 +1077,7 @@ export function DatabasePreview({
       )}
       {stops.length > 0 && (
         <div>
-          <p>
-            {t("backups.restore.alsoStops", {
-              names: stops.map((container) => container.name).join(", "),
-            })}
-          </p>
+          <p>{t("backups.restore.previewStops")}</p>
           <ul className="chip-list restore-stops">
             {stops.map((container) => (
               <li key={container.name} className="chip">
@@ -1077,6 +1086,13 @@ export function DatabasePreview({
               </li>
             ))}
           </ul>
+          {others.length > 0 && (
+            <p className="muted small">
+              {t("backups.restore.alsoStops", {
+                names: others.map((container) => container.name).join(", "),
+              })}
+            </p>
+          )}
         </div>
       )}
       {replace &&
@@ -1147,20 +1163,25 @@ export function ConfirmDatabaseDialog({
       }}
       onCancel={onCancel}
     >
-      <p className="muted">
-        {t("backups.restore.confirmDatabaseText", { database, time, count: stops })}
-      </p>
-      <Field label={t("backups.restore.confirmType", { database })} htmlFor="restore-confirm-name">
-        <input
-          id="restore-confirm-name"
-          className="input mono"
-          autoComplete="off"
-          spellCheck={false}
-          value={typed}
-          onChange={(event) => setTyped(event.target.value)}
-        />
-      </Field>
-      {error && <Banner tone="err">{error}</Banner>}
+      <div className="dialog-form">
+        <p className="muted">
+          {t("backups.restore.confirmDatabaseText", { database, time, count: stops })}
+        </p>
+        <Field
+          label={t("backups.restore.confirmType", { database })}
+          htmlFor="restore-confirm-name"
+        >
+          <input
+            id="restore-confirm-name"
+            className="input mono"
+            autoComplete="off"
+            spellCheck={false}
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </Field>
+        {error && <Banner tone="err">{error}</Banner>}
+      </div>
     </ConfirmDialog>
   );
 }

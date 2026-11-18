@@ -3322,6 +3322,11 @@ td .row-actions {
   font-size: 12.5px;
 }
 
+/* a size stays on one line beside the App column's longer lines */
+.db-columns td.num {
+  white-space: nowrap;
+}
+
 /* whether a setting of a database's job follows its server or is its own */
 .follow-switch {
   display: flex;
