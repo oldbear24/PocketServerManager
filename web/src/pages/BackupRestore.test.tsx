@@ -1185,13 +1185,12 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
         .textContent,
     ).toBe(
       [
-        "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
-        "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE \\",
+        "docker run --rm -it \\",
         "  -v /var/run/docker.sock:/var/run/docker.sock \\",
-        "  ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c \\",
-        "  panel-recovery fetch --kit - \\",
-        "  --target backup-node --snapshot 3f9a1c2e --out - \\",
-        "  < kit.pckit > pocketcloud-panel.pcpb",
+        '  -v "$PWD":/work ghcr.io/oldbear24/pocketcloud-agent@sha256:5f1c \\',
+        "  panel-recovery fetch --kit /work/kit.pckit \\",
+        "  --target backup-node --snapshot 3f9a1c2e \\",
+        "  --out /work/pocketcloud-panel.pcpb",
       ].join("\n"),
     );
     expect(

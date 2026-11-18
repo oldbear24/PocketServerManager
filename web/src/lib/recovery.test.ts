@@ -71,6 +71,23 @@ describe("the commands of a panel's restore", () => {
       "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE",
     );
     expect(commands.launcher).toContain("-v /var/run/docker.sock:/var/run/docker.sock");
+    // the passphrase reaches a container through docker exec -e only:
+    // docker run -e keeps it in the container's configuration, where docker
+    // inspect shows it, so the launcher and recover ask at the terminal
+    const lines = Object.values(commands).flatMap((block) =>
+      block.replace(/ \\\n\s*/g, " ").split("\n"),
+    );
+    const runs = lines.filter((line) => line.startsWith("docker run "));
+    expect(runs).toHaveLength(4);
+    for (const run of runs) {
+      expect(run).not.toContain("POCKETCLOUD_KIT_PASSPHRASE");
+    }
+    expect(lines).toContainEqual(
+      expect.stringMatching(/^docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE /),
+    );
+    expect(commands.launcher).toMatch(/^docker run --rm -it /);
+    expect(commands.launcher).toContain("--kit /work/kit.pckit");
+    expect(commands.restore).toMatch(/^docker run --rm -it /);
     // the key is written by recover, and only read once the panel runs
     expect(commands.restore).toContain("-v pocketcloud-secrets:/run/secrets ");
     expect(commands.start).not.toMatch(/pocketcloud-secrets:\/run\/secrets(?!:ro)/);

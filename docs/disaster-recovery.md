@@ -41,32 +41,27 @@ You need the `.pckit` file, its passphrase, and Docker on the new machine. The c
 
 1. **Do not start a panel on empty volumes, and do not run `panel keygen`.** Either makes a new CA or a new key. If one ran already, step 4 says how to keep it out of the way.
 2. **Make the address lead to the new machine.** Point the DNS name at it, or give it the old IP address. Open the agents' port (9443 unless you chose another) and the UI's (8090, or 80 and 443 with your HTTPS or reverse proxy). Keep the old machine off for good: two panels with one CA would split the servers.
-3. **Fetch the panel's backup.** restic runs only in the agent's own hardened job container, as for every backup. First type the passphrase into the shell, without echo:
+3. **Fetch the panel's backup.** restic runs only in the agent's own hardened job container, as for every backup. Either (a) on any server that survived, through its running agent: type the passphrase into the shell without echo, then fetch:
 
    ```sh
    read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE
-   ```
-
-   Then either (a) on any server that survived, through its running agent:
-
-   ```sh
    docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent pocketcloud-agent panel-recovery fetch --kit - --target <target> --snapshot <id|latest> --out - < kit.pckit > pocketcloud-panel.pcpb
    ```
 
-   or (b) on the new machine, with the agent's image as a launcher:
+   or (b) on the new machine, with the agent's image as a launcher, which asks for the passphrase:
 
    ```sh
-   docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE -v /var/run/docker.sock:/var/run/docker.sock <agent image> panel-recovery fetch --kit - --target <target> --snapshot <id|latest> --out - < kit.pckit > pocketcloud-panel.pcpb
+   docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work <agent image> panel-recovery fetch --kit /work/kit.pckit --target <target> --snapshot <id|latest> --out /work/pocketcloud-panel.pcpb
    ```
 
-   `<target>` is the name of one of the panel job's targets; leave `--target` out for the kit's first remote target. `panel-recovery snapshots` with the same `--kit` and `--target` lists the panel's snapshots, newest first; `latest` takes the newest. A local target (a directory of a server) can only be fetched on its own server. `fetch` checks every part of the copy with the kit's key as it writes it, and on any failure exits 1 and leaves no output. Its two lines on stderr name the kit, the target and snapshot, the size and digest, and the backup's time, panel version and number of servers. The launcher mounts `docker.sock`, which is root over Docker on that machine, the same trust as an agent. Copy `pocketcloud-panel.pcpb` to the new machine's working directory if you fetched it elsewhere.
+   `POCKETCLOUD_KIT_PASSPHRASE` is for `docker exec -e` only: an exec's environment stays out of the container's configuration, but `docker run -e` stores the value there, where `docker inspect` shows it. `-it` needs a terminal; without one, leave out `-t` and add `--passphrase-file` as in step 4. `<target>` is the name of one of the panel job's targets; leave `--target` out for the kit's first remote target. `panel-recovery snapshots` with the same `--kit` and `--target` lists the panel's snapshots, newest first; `latest` takes the newest. A local target (a directory of a server) can only be fetched on its own server. `fetch` checks every part of the copy with the kit's key as it writes it, and on any failure exits 1 and leaves no output. Its two lines on stderr name the kit, the target and snapshot, the size and digest, and the backup's time, panel version and number of servers. The launcher mounts `docker.sock`, which is root over Docker on that machine, the same trust as an agent. Copy `pocketcloud-panel.pcpb` to the new machine's working directory if you fetched it elsewhere.
 4. **Restore it into the new panel's volumes:**
 
    ```sh
    docker run --rm -it -v pocketcloud:/data -v pocketcloud-secrets:/run/secrets -v "$PWD":/work <panel image> recover --kit /work/kit.pckit --from /work/pocketcloud-panel.pcpb --env-out /work/panel.env
    ```
 
-   It asks for the passphrase (or add `-e POCKETCLOUD_KIT_PASSPHRASE` after `-it` to pass the one you typed). `recover` runs before PocketBase opens anything. It checks the backup with the kit's key as it decrypts it next to pb_data, compares the backup's key and CA with the kit's, checks the database (SQLite's integrity check, migrations this panel knows, one CA whose key opens with the kit's), and only then writes the master key to `/run/secrets/pocketcloud-master-key` (kept if it is the kit's already), puts pb_data in place and writes `panel.env`: the old panel's environment and `POCKETCLOUD_EXPECT_CA_PIN`. Any refusal exits 1 and writes nothing. It ends like this:
+   It asks for the passphrase on the terminal, which `-it` needs; never give it to `docker run` with `-e` (step 3 says why). Without a terminal, as in a script, leave out `-t`, put the passphrase in a file only you can read in the working directory (`umask 077` before you write it), add `--passphrase-file /work/<that file>`, and delete the file afterwards (step 10). `recover` runs before PocketBase opens anything. It checks the backup with the kit's key as it decrypts it next to pb_data, compares the backup's key and CA with the kit's, checks the database (SQLite's integrity check, migrations this panel knows, one CA whose key opens with the kit's), and only then writes the master key to `/run/secrets/pocketcloud-master-key` (kept if it is the kit's already), puts pb_data in place and writes `panel.env`: the old panel's environment and `POCKETCLOUD_EXPECT_CA_PIN`. Any refusal exits 1 and writes nothing. It ends like this:
 
    ```
    Opened the recovery kit KIT-7Q2M-9XHC of http://192.0.2.2:8090, made 2026-11-17 10:02 UTC by admin@example.com.
@@ -96,7 +91,7 @@ You need the `.pckit` file, its passphrase, and Docker on the new machine. The c
 7. **Verify.** The CA pin in Settings › Recovery kit is the kit's (`CA-Pin` line). The block “Restored from a backup” shows “Servers back: N of N” within about two minutes, and the `panel_restored` alert resolves once every server is back. The audit log's integrity check passes and its newest security entry is “Panel restored”. Run the panel's backup job and one other job: their sealed secrets open on the new machine.
 8. **Sign in again.** Every session and link from before the disaster stopped working.
 9. **Review what the backup did not know.** A server enrolled after the backup was made is refused (“this server was removed from the panel: enroll it again”): remove its agent's volume and enroll it again. Removals and revocations made since are undone, so a revoked certificate works again: revoke or remove those servers again. Domain, edge and site changes made since are pushed back to the servers as the backup had them: make them again. Targets added since, and passwords PocketCloud made since (a new target's repository password, a rotated database password), are gone with the old machine.
-10. **Clean up.** Delete `pocketcloud-panel.pcpb` and `panel.env` wherever you put them, and `pb_data.replaced-*` once you no longer need it. Download and check a new kit if Settings asks for one.
+10. **Clean up.** Where you typed the passphrase, run `unset POCKETCLOUD_KIT_PASSPHRASE` (or close that shell), and delete any passphrase file you wrote. Delete `pocketcloud-panel.pcpb`, `panel.env` and the copies of `kit.pckit` wherever you put them (keep the kit you saved), and `pb_data.replaced-*` once you no longer need it. Download and check a new kit if Settings asks for one.
 
 ## Rolling a running panel back
 
@@ -147,9 +142,9 @@ Restore onto a machine that the agents cannot reach at their address, such as on
 panel recover --kit FILE --from FILE.pcpb [--dir DIR] [--master-key-file PATH] [--passphrase-file F] [--replace] [--env-out FILE] [--dry-run]
 ```
 
-`--dir` defaults to `$POCKETCLOUD_DATA_DIR` (`/data/pb_data` in the image), `--master-key-file` to `$POCKETCLOUD_MASTER_KEY_FILE` (`/run/secrets/pocketcloud-master-key`). The passphrase comes from `--passphrase-file`, `POCKETCLOUD_KIT_PASSPHRASE`, or a prompt without echo. Exit 0 once the backup is in place, 1 on any refusal, with nothing written. Its other refusals: “This backup's CA (pin X) is not the kit's (pin Y): use the kit of the panel that made it.”, “The backup's database fails SQLite's integrity check: …”, “The backup holds N internal CAs, not one: it is not a whole panel's database.”, “The backup's CA does not open with the kit's key: the kit is not of the panel that made it.”, “The backup's CA is not the one its manifest names (pin X): the backup is not whole.”, “The backup's database was sealed with another master key (id X) than the kit's (id Y): use the kit of the panel that made it.”, and “The master key cannot be written to <file>: mount it writable for recover.”
+`--dir` defaults to `$POCKETCLOUD_DATA_DIR` (`/data/pb_data` in the image), `--master-key-file` to `$POCKETCLOUD_MASTER_KEY_FILE` (`/run/secrets/pocketcloud-master-key`). The passphrase comes from `--passphrase-file`, `POCKETCLOUD_KIT_PASSPHRASE` (through `docker exec -e` only, never `docker run -e`), or a prompt without echo on a terminal. Exit 0 once the backup is in place, 1 on any refusal, with nothing written. Its other refusals: “This backup's CA (pin X) is not the kit's (pin Y): use the kit of the panel that made it.”, “The backup's database fails SQLite's integrity check: …”, “The backup holds N internal CAs, not one: it is not a whole panel's database.”, “The backup's CA does not open with the kit's key: the kit is not of the panel that made it.”, “The backup's CA is not the one its manifest names (pin X): the backup is not whole.”, “The backup's database was sealed with another master key (id X) than the kit's (id Y): use the kit of the panel that made it.”, and “The master key cannot be written to <file>: mount it writable for recover.”
 
-**`pocketcloud-agent panel-recovery targets|snapshots|fetch`** `--kit FILE|-` `[--passphrase-file F]` `[--target NAME]`, and for `fetch` `[--snapshot ID|latest] [--out FILE|-] [--no-verify]` (`--no-verify` only to look at a damaged copy). It never opens the agent's command store, so it runs beside a running agent. Its errors: “the passphrase does not open this kit, or the kit was changed”, “no panel snapshot of job:<id> on <target>”, “the copy does not open with the kit's key: it belongs to another panel”, and restic's own lines with the secrets masked.
+**`pocketcloud-agent panel-recovery targets|snapshots|fetch`** `--kit FILE|-` `[--passphrase-file F]` `[--target NAME]`, and for `fetch` `[--snapshot ID|latest] [--out FILE|-] [--no-verify]` (`--no-verify` only to look at a damaged copy). The passphrase comes from `--passphrase-file`, `POCKETCLOUD_KIT_PASSPHRASE` (through `docker exec -e` only), or, with `--kit FILE`, a prompt without echo on a terminal. It never opens the agent's command store, so it runs beside a running agent. Its errors: “the passphrase does not open this kit, or the kit was changed”, “no panel snapshot of job:<id> on <target>”, “the copy does not open with the kit's key: it belongs to another panel”, and restic's own lines with the secrets masked.
 
 **`pocketcloud-agent repoint --panel HOST:PORT [--check]`**, above.
 

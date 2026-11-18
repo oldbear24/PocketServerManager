@@ -146,8 +146,11 @@ function portOf(address: string): string {
  * them: fetch the snapshot with an agent (on a server, or through the
  * agent's image on the new machine), restore it into the new panel's
  * volumes, then check it and start the panel where the servers dial it.
- * The kit's passphrase is read without an echo, never written down. Lines
- * are short, as a drawer on a phone shows them. */
+ * The kit's passphrase is typed without an echo and never written down:
+ * into the shell for docker exec -e, whose environment stays out of the
+ * container's configuration, or at the launcher's prompt, as docker run -e
+ * would keep it where docker inspect shows it. Lines are short, as a
+ * drawer on a phone shows them. */
 export function recoveryCommands(values: {
   /** a snapshot's short id, or latest */
   snapshot: string;
@@ -157,24 +160,23 @@ export function recoveryCommands(values: {
   address: string;
 }): { fetch: string; launcher: string; restore: string; start: string } {
   const passphrase = "read -rs POCKETCLOUD_KIT_PASSPHRASE && export POCKETCLOUD_KIT_PASSPHRASE";
-  const fetch = [
-    "panel-recovery fetch --kit - \\",
-    `  --target ${shellWord(values.target)} --snapshot ${shellWord(values.snapshot)} --out - \\`,
-    `  < kit.pckit > ${panelFileName}`,
-  ];
+  const which = `--target ${shellWord(values.target)} --snapshot ${shellWord(values.snapshot)}`;
   const image = shellWord(values.panelImage);
   return {
     fetch: [
       passphrase,
       "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
-      `  pocketcloud-agent ${fetch.join("\n")}`,
+      "  pocketcloud-agent panel-recovery fetch --kit - \\",
+      `  ${which} --out - \\`,
+      `  < kit.pckit > ${panelFileName}`,
     ].join("\n"),
     launcher: [
-      passphrase,
-      "docker run --rm -i -e POCKETCLOUD_KIT_PASSPHRASE \\",
+      "docker run --rm -it \\",
       "  -v /var/run/docker.sock:/var/run/docker.sock \\",
-      `  ${shellWord(values.agentImage)} \\`,
-      `  ${fetch.join("\n")}`,
+      `  -v "$PWD":/work ${shellWord(values.agentImage)} \\`,
+      "  panel-recovery fetch --kit /work/kit.pckit \\",
+      `  ${which} \\`,
+      `  --out /work/${panelFileName}`,
     ].join("\n"),
     restore: [
       "docker run --rm -it -v pocketcloud:/data \\",
