@@ -822,6 +822,13 @@ code,
   right: 10px;
 }
 
+/* On a phone the first line reaches under the copy button: start below it. */
+@media (max-width: 640px) {
+  .code-block pre {
+    padding-top: 52px;
+  }
+}
+
 /* Timeline / checklist */
 .timeline {
   list-style: none;
