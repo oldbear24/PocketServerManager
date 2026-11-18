@@ -716,7 +716,10 @@
     "backup_check_unverified": "{{name}}: a backup repository is not verified",
     "recovery_kit": "The panel's recovery kit is not saved",
     "panel_backup": "The panel itself is not backed up",
-    "panel_restored": "The panel was restored from a backup: servers are reconnecting"
+    "panel_restored": "The panel was restored from a backup: servers are reconnecting",
+    "backup_restore_test_failed": "{{name}}: a restore test failed",
+    "backup_restore_test_unverified": "{{name}}: no restore test passed lately",
+    "db_temporary_left": "{{name}}: a temporary database was not dropped"
   },
   "chart": {
     "now": "now",
@@ -885,7 +888,7 @@
     "kpiDataNote": "as the servers last said",
     "kpiLargest": "largest: {{name}} {{size}}",
     "kpiBackups": "Backups in 24 h",
-    "kpiBackupsNote": "a dump of every database, with milestone M4",
+    "kpiBackupsNote": "a dump of every database, each on its own",
     "servers": "Servers",
     "noServers": "No database servers yet",
     "noServersText": "Create a shared server for the applications of a host. Database containers inside stacks show up here by themselves.",
@@ -1027,7 +1030,88 @@
     "expires": "expires {{when}}",
     "downloadDump": "Download the dump of {{name}}",
     "credentials": "Credentials",
-    "ownCredentials": "the stack {{name}} holds its users and passwords"
+    "ownCredentials": "the stack {{name}} holds its users and passwords",
+    "kpiBackupsNone": "no database on a shared server yet",
+    "kpiBackupsNoTarget_one": "{{count}} database has no target",
+    "kpiBackupsNoTarget_other": "{{count}} databases have no target",
+    "backupHint": "Backups daily {{time}} · each database on its own",
+    "backupHintCron": "Backups {{schedule}} · each database on its own",
+    "backupHintMixed": "Backups at several times · each database on its own",
+    "backupHintNoTarget": "Backups have no target yet: choose one",
+    "backupSettings": "Backup settings",
+    "hostBackups": {
+      "title": "Automatic backups on {{host}}",
+      "note": "Every database of a shared server on {{host}}, and every PHP site there, has a backup job of its own. Each job follows these settings unless it has its own.",
+      "schedule": "When (cron, UTC)",
+      "scheduleDefault": "Empty: daily at {{time}}, this server's own time",
+      "targets": "Where",
+      "targetsNone": "No target: the jobs wait until one is chosen.",
+      "retention": "Keep",
+      "follow_one": "{{count}} job follows these settings",
+      "follow_other": "{{count}} jobs follow these settings",
+      "saved_one": "Saved: {{count}} job changed.",
+      "saved_other": "Saved: {{count}} jobs changed."
+    },
+    "backupCell": {
+      "ok": "OK · {{time}}",
+      "failed": "Failed · {{time}}",
+      "skipped": "Skipped · {{time}}",
+      "cancelled": "Stopped · {{time}}",
+      "running": "Backing up…",
+      "queued": "Waiting",
+      "never": "Not yet",
+      "noTarget": "No target",
+      "off": "Off",
+      "viaJob": "by the job {{name}}",
+      "viaJobNote": "A dedicated server is backed up by its stack's job; a PostgreSQL dump of it holds its POSTGRES_DB database only.",
+      "testFailed": "restore test failed"
+    },
+    "siteApp": "web {{name}}",
+    "temporary": {
+      "test": "restore test of {{name}} · dropped {{when}}",
+      "scratch": "restore of {{name}} · dropped when it ends",
+      "previous": "{{name}} before the restore · dropped {{when}}",
+      "orphan": "left behind · dropped {{when}}",
+      "dropping": "being dropped",
+      "title": "Temporary database {{name}}",
+      "text": "PocketCloud made this database for a restore or a restore test and drops it by itself at {{at}}. Nothing else can be done with it.",
+      "drop": "Drop now",
+      "dropConfirm": "Drop {{name}} now? It cannot be undone.",
+      "dropQueued": "{{name}} is being dropped."
+    },
+    "backups": {
+      "title": "Backups",
+      "job": "Job",
+      "schedule": "When",
+      "targets": "Where",
+      "retention": "Kept",
+      "follows": "as set for {{host}}",
+      "own": "its own",
+      "last": "Last backup",
+      "lastText": "{{when}} to {{target}}: dump {{size}}, {{added}} new",
+      "never": "none yet",
+      "test": "Restore test",
+      "testState": {
+        "ok_one": "Passed {{when}} · {{count}} table",
+        "ok_other": "Passed {{when}} · {{count}} tables",
+        "failed": "Failed {{when}}: {{error}}",
+        "error": "Did not complete {{when}}: {{error}}",
+        "skipped": "Skipped {{when}}: {{error}}",
+        "cancelled": "Stopped {{when}}",
+        "running": "Restoring into {{name}}",
+        "queued": "Waiting for its server"
+      },
+      "testNone": "None yet · next {{when}}",
+      "testOff": "Restore tests are off",
+      "backupNow": "Back up now",
+      "testNow": "Test the restore now",
+      "testQueued": "The restore test waits for its server: the newest backup goes into a temporary database, dropped two hours after the test.",
+      "restore": "Restore…",
+      "edit": "Backup settings…",
+      "pending": "Its backup job appears once the database is ready.",
+      "dedicated": "A dedicated server is backed up by its stack's jobs.",
+      "dedicatedNone": "Its stack has no backup job."
+    }
   },
   "edge": {
     "title": "Edge proxy",
@@ -1915,7 +1999,10 @@
     "updatePlugins": "Plugins to add",
     "updateThemes": "Themes to add",
     "updateAddNote": "Slugs of wordpress.org, such as akismet, or addresses of ZIP files, separated by commas.",
-    "updateStarted": "The update of {{name}} is being built."
+    "updateStarted": "The update of {{name}} is being built.",
+    "sharedBackup": "backed up by the job {{name}} · {{state}}",
+    "sharedNotBackedUp": "not backed up yet: its job comes with the first deployment",
+    "databaseBackup": "Backup"
   },
   "task": {
     "every": {
@@ -2122,21 +2209,29 @@
       "stack": "volumes of stack {{name}}",
       "serviceVolumes": "volumes of service {{service}}: {{names}}",
       "db_dump": "{{tool}} · {{stack}}/{{service}}",
-      "panel": "PocketBase · SQLite copy, encrypted"
+      "panel": "PocketBase · SQLite copy, encrypted",
+      "database": "{{tool}} · {{server}}/{{database}}",
+      "databaseGone": "{{server}}/{{database}} · dropped",
+      "site": "files of {{name}} · shared/",
+      "siteClassic": "files of {{name}}"
     },
     "sourceKind": {
       "volume": "Docker volume",
       "path": "Directory on the server",
       "stack": "Volumes of a stack",
       "db_dump": "Database dump",
-      "panel": "The panel itself (pb_data)"
+      "panel": "The panel itself (pb_data)",
+      "database": "A database of a shared server",
+      "site": "Files of a PHP site"
     },
     "sourceNote": {
       "volume": "restic reads it in a job container that mounts it read-only.",
       "path": "An absolute directory of the server, mounted read-only into the job container.",
       "stack": "Every named volume of the stack, as it has them at each run.",
       "db_dump": "The service's running container makes the dump with its own tools, and restic keeps it as one file of the snapshot.",
-      "panel": "The panel copies its database and stored files and encrypts them with a key derived from the master key. The chosen server's agent backs them up with restic and never sees them unencrypted."
+      "panel": "The panel copies its database and stored files and encrypts them with a key derived from the master key. The chosen server's agent backs them up with restic and never sees them unencrypted.",
+      "database": "The server's own client dumps this one database, uncompressed, so that restic keeps only what changed.",
+      "site": "What the site keeps outside its releases; its code comes back from its releases and sources."
     },
     "engineTool": {
       "postgres": "pg_dump",
@@ -2297,7 +2392,19 @@
       "carrierOld": "{{name}}'s agent cannot back up the panel yet: update it.",
       "carrierNone": "No server's agent can back up the panel yet: update the agents.",
       "panelExists": "The panel has its backup job already.",
-      "panelLocal": "{{target}} is a directory of {{server}}: if that is the panel's machine, one failure takes the panel and its backup."
+      "panelLocal": "{{target}} is a directory of {{server}}: if that is the panel's machine, one failure takes the panel and its backup.",
+      "fromDatabase": "one job per database",
+      "fromSite": "made for its site",
+      "databaseGone": "Its database was dropped: the job no longer runs, and its snapshots go into a new database.",
+      "siteGone": "Its site was removed: the job no longer runs, and its snapshots stay.",
+      "automaticNote": "PocketCloud made this job for {{what}}: what it backs up and its server follow that. When, where and how long can follow {{host}}'s settings or be its own.",
+      "follows": "As set for {{host}}",
+      "own": "Its own",
+      "group_one": "Databases on {{server}} · {{count}} job",
+      "group_other": "Databases on {{server}} · {{count}} jobs",
+      "groupState": "{{ok}} of {{total}} backed up in 24 h",
+      "groupToggle": "Show each database",
+      "restoreTest": "Restore test: {{state}}"
     },
     "panel": {
       "dialogTitle": "Back up the panel",
@@ -2381,6 +2488,14 @@
         "download": {
           "label": "Download as a tar",
           "note": "Straight from the repository to your browser, through the panel: keep this page open until it finishes."
+        },
+        "database": {
+          "label": "Back into the database",
+          "note": "{{database}} on {{server}} is replaced by the backup. {{app}} stops for a while; the other databases on {{server}} are not touched."
+        },
+        "new_database": {
+          "label": "Into a new database",
+          "note": "On {{server}}, with a user and password of its own: connect it to a stack once it is ready. Nothing else changes."
         }
       },
       "previewNew_one": "{{count}} new file ({{size}})",
@@ -2396,7 +2511,10 @@
         "stop": "Stop the containers",
         "restore": "Restore the files",
         "start": "Start the containers",
-        "verify": "Check the containers"
+        "verify": "Check the containers",
+        "fetch": "Copy the dump to the database server",
+        "dbrestore": "Restore the database",
+        "swap": "Put the restored copy in place"
       },
       "status": {
         "previewing": "Previewing",
@@ -2504,7 +2622,35 @@
         "step4": "4 · In Settings › Recovery kit, watch the servers come back",
         "download": "Download the encrypted copy",
         "guide": "Recovery guide: docs/disaster-recovery.md"
-      }
+      },
+      "databaseNoApp": "no application",
+      "sqlLabel": "Download as SQL",
+      "sqlNote": "Plain SQL straight to your browser, made from the backup as it streams: keep this page open until it finishes.",
+      "rawLabel": "Download as stored, for pg_restore",
+      "newName": "Name of the new database",
+      "newNameHint": "Lowercase letters, digits and _, starting with a letter; at most 63. Its user gets the same name.",
+      "newServer": "Database server",
+      "previewDump": "The backup holds a dump of {{size}}",
+      "previewTables_one": "{{database}} has {{count}} table now",
+      "previewTables_other": "{{database}} has {{count}} tables now",
+      "previewDbFree": "{{free}} free on {{server}}; the restore needs about {{needed}}",
+      "previewLowSpace": "{{server}} has too little room: restore into a new database elsewhere, or make room first.",
+      "previewDumpMissing": "The dump is not in this snapshot.",
+      "previewExists": "A database named {{database}} exists on {{server}} already.",
+      "previewSignIn": "The panel's password of {{user}} no longer signs in on {{server}}, and the restore runs as that user.",
+      "alsoStops": "Also stops {{names}}, whose settings use this database.",
+      "previous": "The data as it is now stays on {{server}} as {{name}} for 24 hours.",
+      "noPrevious": "No copy of the data as it is now stays: back up first if you may need it.",
+      "confirmDatabase": "Replace the database {{database}}?",
+      "confirmDatabaseText_one": "Everything {{database}} holds now is replaced by the backup of {{time}}. {{count}} container stops meanwhile and starts again.",
+      "confirmDatabaseText_other": "Everything {{database}} holds now is replaced by the backup of {{time}}. {{count}} containers stop meanwhile and start again.",
+      "confirmType": "Type {{database}} to confirm",
+      "confirmDatabaseAction": "Replace {{database}}",
+      "dbGone": "The database was dropped: restore it into a new one.",
+      "agentNoDatabase": "The agent of {{host}} cannot restore databases yet: update it.",
+      "tablesDone_one": "{{count}} table restored, as many as the dump has",
+      "tablesDone_other": "{{count}} tables restored, as many as the dump has",
+      "appLeftStopped": "{{names}} stay stopped: {{database}} holds only part of the backup. Restore again, then start them on their pages."
     },
     "restoreFromBackup": "Restore from backup",
     "integrity": {
@@ -2654,6 +2800,36 @@
       "confirmLater": "Schedule for {{time}}",
       "busy": "Unlocking…",
       "agentNote": "The agent of {{server}} runs restic unlock, then the backup."
+    },
+    "restoreTests": {
+      "title": "Restore tests",
+      "note": "Weekly, the newest backup of each database goes into a temporary database on its server, which is dropped two hours later.",
+      "kpi": "restore tests {{ok}} / {{total}} OK · {{when}}",
+      "off": "restore tests off",
+      "none": "No restore test yet",
+      "next": "next {{when}}",
+      "retryAt": "next try {{time}}",
+      "schedule": "Restore tests (cron, UTC; empty turns them off)",
+      "column": {
+        "database": "Database",
+        "result": "Result",
+        "when": "When",
+        "snapshot": "Snapshot",
+        "tables": "Tables",
+        "took": "Took"
+      },
+      "status": {
+        "queued": "Waiting",
+        "running": "Restoring",
+        "ok": "Passed",
+        "failed": "Failed",
+        "error": "Did not complete",
+        "skipped": "Skipped",
+        "cancelled": "Stopped"
+      },
+      "banner_one": "{{count}} restore test failed: that backup could not be restored",
+      "banner_other": "{{count}} restore tests failed: those backups could not be restored",
+      "bannerAction": "Show the restore tests"
     }
   }
 }
