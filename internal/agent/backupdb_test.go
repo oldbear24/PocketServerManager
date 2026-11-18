@@ -803,11 +803,31 @@ func TestARestoreTestSaysWhyItFailed(t *testing.T) {
 		})
 	}
 
-	// a password that does not sign in
+	// a snapshot the retention forgot, and a repository that does not
+	// answer, say nothing of the backup
 	d := newDBHarness(t)
+	d.shop(databases.Postgres)
+	d.backupDatabase(t, databases.Postgres, "shop")
+	if result, err := d.handleBackupRestoreTest(context.Background(), d.testCommand(databases.Postgres, strings.Repeat("f", 64), "shop"), &Reporter{}); err == nil ||
+		result["failure"] != backup.TestRepository {
+		t.Errorf("a forgotten snapshot: %v %v", err, result["failure"])
+	}
+	d = newDBHarness(t)
+	d.shop(databases.Postgres)
+	snapshot, _ := d.backupDatabase(t, databases.Postgres, "shop")
+	command := d.testCommand(databases.Postgres, snapshot, "shop")
+	command.GetBackupRestoreTest().Repository = &agentv1.BackupRepository{TargetId: "t1", Url: d.repo.GetUrl(), Password: d.repo.GetPassword(),
+		Env: map[string]string{"AWS_ACCESS_KEY_ID": "minio-key", "AWS_SECRET_ACCESS_KEY": "wrong"}}
+	if result, err := d.handleBackupRestoreTest(context.Background(), command, &Reporter{}); err == nil || result["failure"] != backup.TestUnreachable ||
+		strings.Contains(err.Error(), "wrong") {
+		t.Errorf("a repository that does not answer: %v %v", err, result["failure"])
+	}
+
+	// a password that does not sign in
+	d = newDBHarness(t)
 	d.shop(databases.MariaDB)
-	snapshot, _ := d.backupDatabase(t, databases.MariaDB, "shop")
-	command := d.testCommand(databases.MariaDB, snapshot, "shop")
+	snapshot, _ = d.backupDatabase(t, databases.MariaDB, "shop")
+	command = d.testCommand(databases.MariaDB, snapshot, "shop")
 	command.GetBackupRestoreTest().Database.Password = "stale-pw"
 	if result, err := d.handleBackupRestoreTest(context.Background(), command, &Reporter{}); err == nil || result["failure"] != backup.TestSignIn || result["created"] != true {
 		t.Errorf("a stale password: %v %v", err, result)

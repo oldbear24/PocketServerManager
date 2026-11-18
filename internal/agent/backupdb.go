@@ -391,7 +391,8 @@ func fetchFailure(err error) string {
 	case strings.Contains(message, "repository is already locked"), strings.Contains(message, "unable to create lock"):
 		return backup.TestLocked
 	case strings.Contains(message, "the repository is gone"), strings.Contains(message, "the password is not its own"),
-		strings.Contains(message, "no matching ID found"), strings.Contains(message, "is not one of this job's"):
+		strings.Contains(message, "no matching ID found"), strings.Contains(message, "is not in the repository"),
+		strings.Contains(message, "is not one of this job's"):
 		return backup.TestRepository
 	}
 	return backup.TestUnreachable
