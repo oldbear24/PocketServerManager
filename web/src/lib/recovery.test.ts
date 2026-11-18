@@ -102,6 +102,28 @@ describe("the commands of a panel's restore", () => {
     expect(fallback.start).toContain("-p 9443:9443");
   });
 
+  it("give a cut copy no copy's name", () => {
+    const commands = recoveryCommands({
+      snapshot: "latest",
+      target: "panel-sftp",
+      agentImage: "ghcr.io/oldbear24/pocketcloud-agent:0.32.0",
+      panelImage: "ghcr.io/oldbear24/pocketcloud-panel:0.32.0",
+      address: "192.0.2.2:9443",
+    });
+    const lines = Object.values(commands).flatMap((block) =>
+      block.replace(/ \\\n\s*/g, " ").split("\n"),
+    );
+    // fetch exits 1 on a failure, but what reached the shell's > stays:
+    // it takes the copy's name only once fetch succeeded
+    const piped = lines.filter((line) => line.includes("--out - "));
+    expect(piped).toHaveLength(1);
+    expect(piped[0]).toMatch(
+      / --out - < kit\.pckit > pocketcloud-panel\.pcpb\.part && mv pocketcloud-panel\.pcpb\.part pocketcloud-panel\.pcpb$/,
+    );
+    // a file fetch writes itself, it removes on a failure
+    expect(commands.launcher).toMatch(/ --out \/work\/pocketcloud-panel\.pcpb$/);
+  });
+
   it("are the guide's, word for word", () => {
     const values = {
       snapshot: "4f1c2d3e",

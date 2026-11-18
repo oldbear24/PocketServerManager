@@ -149,8 +149,10 @@ function portOf(address: string): string {
  * The kit's passphrase is typed without an echo and never written down:
  * into the shell for docker exec -e, whose environment stays out of the
  * container's configuration, or at the launcher's prompt, as docker run -e
- * would keep it where docker inspect shows it. Lines are short, as a
- * drawer on a phone shows them. */
+ * would keep it where docker inspect shows it. A copy that comes on the
+ * standard output takes its name only once fetch succeeded, as the shell
+ * keeps what reached it. Lines are short, as a drawer on a phone shows
+ * them. */
 export function recoveryCommands(values: {
   /** a snapshot's short id, or latest */
   snapshot: string;
@@ -168,7 +170,8 @@ export function recoveryCommands(values: {
       "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
       "  pocketcloud-agent panel-recovery fetch --kit - \\",
       `  ${which} --out - \\`,
-      `  < kit.pckit > ${panelFileName}`,
+      `  < kit.pckit > ${panelFileName}.part \\`,
+      `  && mv ${panelFileName}.part ${panelFileName}`,
     ].join("\n"),
     launcher: [
       "docker run --rm -it \\",

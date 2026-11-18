@@ -1176,7 +1176,8 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
           "docker exec -i -e POCKETCLOUD_KIT_PASSPHRASE pocketcloud-agent \\",
           "  pocketcloud-agent panel-recovery fetch --kit - \\",
           "  --target backup-node --snapshot 3f9a1c2e --out - \\",
-          "  < kit.pckit > pocketcloud-panel.pcpb",
+          "  < kit.pckit > pocketcloud-panel.pcpb.part \\",
+          "  && mv pocketcloud-panel.pcpb.part pocketcloud-panel.pcpb",
         ].join("\n"),
       ),
     );
