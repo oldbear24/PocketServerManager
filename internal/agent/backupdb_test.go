@@ -1388,3 +1388,56 @@ func TestADatabaseRestoreIsStoppedUntilTheSwapOnly(t *testing.T) {
 		t.Errorf("after a stop during the swap: %+v, %s", shop, d.status("shop-web-1"))
 	}
 }
+
+// leave copies a file into a container, as a restore stages its dump, and
+// says its path.
+func (d *dbHarness) leave(t *testing.T, container, dir, name string) string {
+	t.Helper()
+	if err := d.Docker.CopyFileFrom(context.Background(), container, dir, name, strings.NewReader("dump"), 4, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir + "/" + name
+}
+
+// TestTheDumpOfAnInterruptedRestoreGoesAtTheAgentsStart (#53, D4): a
+// database restore the agent was killed during left the dump it staged in
+// the server's container, as its deferred removal never ran; the next
+// agent removes it as it finishes the restore by its marker, before it
+// takes a command, whatever the phase: a large dump left would fill the
+// server's disk. A file of another name stays.
+func TestTheDumpOfAnInterruptedRestoreGoesAtTheAgentsStart(t *testing.T) {
+	d := newDBHarness(t)
+	for _, tc := range []struct{ phase, engine string }{
+		{backup.PhaseScratch, databases.Postgres.Name},
+		{backup.PhaseStopped, databases.Postgres.Name},
+		{backup.PhaseSwapped, databases.Postgres.Name},
+		{backup.PhaseRehearsal, databases.MariaDB.Name},
+		{backup.PhaseEmptied, databases.MariaDB.Name},
+		{backup.PhaseRestored, databases.MariaDB.Name},
+	} {
+		engine, _ := databases.EngineOf(tc.engine)
+		server := d.servers[tc.engine]
+		command := "c-" + tc.phase
+		staged := d.leave(t, server, databases.StagedDir, databases.StagedName(engine, command))
+		notes := d.leave(t, server, databases.StagedDir, "pocketcloud-restore-notes.txt")
+		marker := restoreMarker{CommandID: command, RestoreID: testRestoreID, Database: &databaseMarker{
+			Container: server, Engine: tc.engine, Name: "shop", Scratch: databases.ScratchName(testRestoreID), Phase: tc.phase}}
+		if tc.engine == databases.Postgres.Name {
+			marker.Database.Previous = databases.PreviousName(testRestoreID)
+		}
+		raw, _ := json.Marshal(marker)
+		if err := os.MkdirAll(filepath.Join(d.Config.StateDir, restoreMarkers), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(d.markerPath(command), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.finishInterruptedRestores(context.Background())
+		if files := d.engine.Files(server); slices.Contains(files, staged) || !slices.Contains(files, notes) {
+			t.Errorf("%s: the files left %q", tc.phase, files)
+		}
+		if entry, ok := d.store.get(command); !ok || entry.Result["interrupted"] != true {
+			t.Errorf("%s: %+v", tc.phase, entry)
+		}
+	}
+}

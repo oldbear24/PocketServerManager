@@ -365,6 +365,35 @@ func (r *dbRun) sweep(ctx context.Context) {
 	}
 }
 
+// removeStaged removes a dump a restore or a restore test staged in a
+// server's container: a path RemoveStaged takes only.
+func (a *Agent) removeStaged(ctx context.Context, container, file string) error {
+	script, err := databases.RemoveStaged(file)
+	if err != nil {
+		return err
+	}
+	return a.runScript(ctx, container, script, io.Discard)
+}
+
+// unstageInterrupted removes the dump an interrupted database restore
+// staged in its server's container, which its deferred removal did not:
+// the agent takes no command yet, so no restore of its own needs it. A
+// process the agent before started may still read it: removing a file that
+// a process has open is safe on Linux, which keeps it for the process
+// until it closes it.
+func (a *Agent) unstageInterrupted(ctx context.Context, marker restoreMarker) {
+	engine, ok := databases.EngineOf(marker.Database.Engine)
+	if !ok || marker.Database.Container == "" {
+		return
+	}
+	file := databases.StagedDir + "/" + databases.StagedName(engine, marker.CommandID)
+	work, cancel := context.WithTimeout(ctx, stagedRemoveTimeout)
+	defer cancel()
+	if err := a.removeStaged(work, marker.Database.Container, file); err != nil {
+		a.Log.Warn("failed to remove the dump an interrupted restore staged", "container", marker.Database.Container, "file", file, "error", err)
+	}
+}
+
 // unstage removes the staged dump, whatever ended the restore.
 func (r *dbRun) unstage() {
 	if r.staged == "" {
@@ -1213,10 +1242,12 @@ func (r *dbRun) restoreNew(ctx context.Context, progress *progressThrottle, resu
 // of the dump, and what stopped stays stopped with its restart policies
 // back. During PostgreSQL's swap, whose process may have run on, the server
 // says whether it took place; when it does not say, what stopped starts
-// again, and the data before the restore is kept, as it may be there.
+// again, and the data before the restore is kept, as it may be there. The
+// dump the restore staged goes first, whatever its phase.
 func (a *Agent) finishInterruptedDatabaseRestore(ctx context.Context, session *restoreSession) {
 	marker := session.marker
 	database := marker.Database
+	a.unstageInterrupted(ctx, marker)
 	result := backup.DbRestoreResult{AppStopped: []backup.StoppedApp{}, AppStarted: []string{}, AppNotRunning: []string{},
 		StartErrors: []string{}, AppLeftStopped: []string{}, Interrupted: true}
 	for _, container := range marker.Containers {
