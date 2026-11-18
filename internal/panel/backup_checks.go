@@ -297,10 +297,12 @@ func (p *Panel) handleCheckSettings(e *core.RequestEvent) error {
 }
 
 // checksTurnedOff resolves what only checks would resolve: the alerts that a
-// target is not verified, and the retries of checks.
+// target is not verified, and the retries of integrity checks. Restore tests
+// (#53) have a schedule of their own.
 func (p *Panel) checksTurnedOff() {
 	p.resolveCheckAlerts(p.App, "", alertCheckUnverified)
-	planned, err := p.App.FindRecordsByFilter(schema.BackupChecks, "retry_at!=''", "", 0, 0)
+	planned, err := p.App.FindRecordsByFilter(schema.BackupChecks, "kind={:kind} && retry_at!=''", "", 0, 0,
+		dbx.Params{"kind": schema.CheckIntegrity})
 	if err != nil {
 		p.Log.Error("failed to read the integrity checks", "error", err)
 		return
@@ -666,7 +668,7 @@ func (p *Panel) backupCheckStarted(command *core.Record) {
 // answer, plans its retry, and alerts.
 func (p *Panel) backupCheckFinished(command *core.Record) {
 	row, err := p.checkOfCommand(command.Id)
-	if err != nil {
+	if err != nil || row.GetString("kind") != schema.CheckIntegrity {
 		return
 	}
 	if s := row.GetString("status"); s != schema.CheckQueued && s != schema.CheckRunning {
@@ -756,13 +758,14 @@ func (p *Panel) backupCheckFinished(command *core.Record) {
 	p.checkEnded(target, row, false)
 }
 
-// settleChecks heals the checks the panel lost track of, as its scheduler
-// passes: one whose command ended without its finisher, as when the panel
-// stopped in between, is kept from its command; one whose command is gone
-// did not complete.
+// settleChecks heals the integrity checks the panel lost track of, as its
+// scheduler passes: one whose command ended without its finisher, as when the
+// panel stopped in between, is kept from its command; one whose command is
+// gone did not complete. Restore tests (#53) are settled by
+// settleRestoreTests.
 func (p *Panel) settleChecks() {
-	open, err := p.App.FindRecordsByFilter(schema.BackupChecks, "status={:queued} || status={:running}", "created,id", 0, 0,
-		dbx.Params{"queued": schema.CheckQueued, "running": schema.CheckRunning})
+	open, err := p.App.FindRecordsByFilter(schema.BackupChecks, "kind={:kind} && (status={:queued} || status={:running})", "created,id", 0, 0,
+		dbx.Params{"kind": schema.CheckIntegrity, "queued": schema.CheckQueued, "running": schema.CheckRunning})
 	if err != nil {
 		p.Log.Error("failed to read the integrity checks", "error", err)
 		return
@@ -781,6 +784,9 @@ func (p *Panel) settleChecks() {
 // lostCheck ends a check whose command is gone: it did not complete, and is
 // tried again as such a check is.
 func (p *Panel) lostCheck(row *core.Record) {
+	if row.GetString("kind") != schema.CheckIntegrity {
+		return
+	}
 	target, err := p.App.FindRecordById(schema.BackupTargets, row.GetString("target"))
 	if err != nil {
 		return
@@ -889,7 +895,9 @@ func (p *Panel) noteTargetCheck(targetID string, completed *core.Record) {
 				changed = true
 			}
 		}
-		rows, err := tx.FindRecordsByFilter(schema.BackupChecks, "target={:target}", "-created,-id", 1, 0, dbx.Params{"target": targetID})
+		// a restore test (#53) is no check of the target's integrity
+		rows, err := tx.FindRecordsByFilter(schema.BackupChecks, "target={:target} && kind={:kind}", "-created,-id", 1, 0,
+			dbx.Params{"target": targetID, "kind": schema.CheckIntegrity})
 		if err != nil {
 			return err
 		}
@@ -911,7 +919,8 @@ func (p *Panel) noteTargetCheck(targetID string, completed *core.Record) {
 			}
 			status := fresh.GetString("status")
 			at := fresh.GetDateTime("finished_at")
-			if (status == schema.CheckOK || status == schema.CheckFailed) && !at.Time().Before(target.GetDateTime("integrity_at").Time()) {
+			if fresh.GetString("kind") == schema.CheckIntegrity && (status == schema.CheckOK || status == schema.CheckFailed) &&
+				!at.Time().Before(target.GetDateTime("integrity_at").Time()) {
 				set("integrity_status", status)
 				target.Set("integrity_at", at)
 				errorsText := ""
@@ -1031,8 +1040,8 @@ func (p *Panel) retryDueChecks(now time.Time) {
 	if err != nil {
 		return
 	}
-	due, err := p.App.FindRecordsByFilter(schema.BackupChecks, "retry_at!='' && retry_at<={:now}", "retry_at,id", checkRetryBatch, 0,
-		dbx.Params{"now": at.String()})
+	due, err := p.App.FindRecordsByFilter(schema.BackupChecks, "kind={:kind} && retry_at!='' && retry_at<={:now}", "retry_at,id", checkRetryBatch, 0,
+		dbx.Params{"kind": schema.CheckIntegrity, "now": at.String()})
 	if err != nil {
 		p.Log.Error("failed to read the retries of integrity checks", "error", err)
 		return
@@ -1118,12 +1127,15 @@ func (p *Panel) WatchChecks(now time.Time) {
 }
 
 // pruneBackupChecks removes the checks older than their history keeps, but
-// each target's newest one, and its newest that completed.
+// each target's newest one, and its newest that completed, of each kind and,
+// for restore tests (#53), of each job: a test never stands for a check, nor
+// one job's test for another's.
 func (p *Panel) pruneBackupChecks() {
 	cutoff := types.NowDateTime().Add(-keepBackupChecks)
 	table := schema.BackupChecks
 	newer := func(extra string) string {
-		return "SELECT 1 FROM " + table + " n WHERE n.target = " + table + ".target" + extra +
+		return "SELECT 1 FROM " + table + " n WHERE n.target = " + table + ".target" +
+			" AND n.kind = " + table + ".kind AND n.job = " + table + ".job" + extra +
 			" AND (n.created > " + table + ".created OR (n.created = " + table + ".created AND n.id > " + table + ".id))"
 	}
 	_, err := p.App.DB().NewQuery(
