@@ -35,7 +35,9 @@ func (p *Panel) restoreHoldingProject(hostID, project string) *core.Record {
 		return nil
 	}
 	for _, restore := range p.openRestores(hostID) {
-		if restore.GetString("mode") == schema.RestoreOriginal && restore.GetString("stack_name") == project {
+		// a restore of a stack's database holds it as one of its data (#53)
+		if (restore.GetString("mode") == schema.RestoreOriginal || restore.GetString("mode") == schema.RestoreDatabase) &&
+			restore.GetString("stack_name") == project {
 			return restore
 		}
 		if slices.Contains(stoppedProjects(restore), project) {
@@ -74,9 +76,14 @@ func (p *Panel) guardRestoringStack(e *core.RecordRequestEvent) error {
 		DockerID string `json:"docker_id"`
 		Name     string `json:"name"`
 		Project  string `json:"project"`
+		Site     string `json:"site"`
 	}
 	if err := e.Record.UnmarshalJSONField("payload", &payload); err != nil {
 		return e.Next()
+	}
+	// a restore of a site's database stops its PHP containers (#53)
+	if strings.HasPrefix(commandType, "site.") && p.restoreHoldingSite(host, payload.Site) != nil {
+		return e.Error(http.StatusConflict, siteRestoreMessage(payload.Site), nil)
 	}
 	switch commandType {
 	case "container.start", "container.restart", "container.remove":
@@ -128,6 +135,15 @@ func (p *Panel) restoreWriting(job *core.Record) *core.Record {
 	backedUp := []destination{}
 	project := ""
 	switch job.GetString("source_kind") {
+	case schema.SourceDatabase:
+		// a restore back into the job's database (#53)
+		for _, restore := range restores {
+			if restore.GetString("mode") == schema.RestoreDatabase && job.GetString("database") != "" &&
+				restore.GetString("database") == job.GetString("database") {
+				return restore
+			}
+		}
+		return nil
 	case schema.SourceVolume:
 		backedUp = append(backedUp, destination{volume: job.GetString("source")})
 	case schema.SourcePath:

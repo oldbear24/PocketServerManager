@@ -535,38 +535,8 @@ func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server
 
 	var database *core.Record
 	err = p.App.RunInTransaction(func(tx core.App) error {
-		collection, err := tx.FindCachedCollectionByNameOrId(schema.Databases)
-		if err != nil {
-			return err
-		}
-		database = core.NewRecord(collection)
-		database.Set("server", server.Id)
-		database.Set("name", name)
-		database.Set("status", dbCreating)
-		database.Set("owner_kind", "none")
-		if stackID != "" {
-			database.Set("owner_kind", "stack")
-			database.Set("stack", stackID)
-		}
-		if request.Site != "" {
-			database.Set("owner_kind", "site")
-			database.Set("site", request.Site)
-		}
-		if err := tx.SaveWithContext(audit.WithActor(ctx, actor), database); err != nil {
-			return err
-		}
-
-		users, err := tx.FindCachedCollectionByNameOrId(schema.DBUsers)
-		if err != nil {
-			return err
-		}
-		account := core.NewRecord(users)
-		account.Set("server", server.Id)
-		account.Set("name", name)
-		account.Set("password", databases.NewPassword())
-		account.Set("databases", []string{database.Id})
-		account.Set("secret_name", secret)
-		return tx.SaveWithContext(audit.WithActor(ctx, actor), account)
+		database, err = databaseRecordsIn(audit.WithActor(ctx, actor), tx, server, name, stackID, request.Site)
+		return err
 	})
 	if err != nil {
 		return nil, nil, err
@@ -586,6 +556,48 @@ func (p *Panel) newDatabase(ctx context.Context, request databaseRequest, server
 	}
 
 	return database, queued, nil
+}
+
+// databaseRecordsIn saves, in a transaction, the records of a new database
+// of a server, creating, and of its user, named after it, with a new password
+// and the secret db/<name>: for a stack, or a site, or nothing yet. ctx
+// carries who asked for it.
+func databaseRecordsIn(ctx context.Context, tx core.App, server *core.Record, name, stackID, siteID string) (*core.Record, error) {
+	collection, err := tx.FindCachedCollectionByNameOrId(schema.Databases)
+	if err != nil {
+		return nil, err
+	}
+	database := core.NewRecord(collection)
+	database.Set("server", server.Id)
+	database.Set("name", name)
+	database.Set("status", dbCreating)
+	database.Set("owner_kind", "none")
+	if stackID != "" {
+		database.Set("owner_kind", "stack")
+		database.Set("stack", stackID)
+	}
+	if siteID != "" {
+		database.Set("owner_kind", "site")
+		database.Set("site", siteID)
+	}
+	if err := tx.SaveWithContext(ctx, database); err != nil {
+		return nil, err
+	}
+
+	users, err := tx.FindCachedCollectionByNameOrId(schema.DBUsers)
+	if err != nil {
+		return nil, err
+	}
+	account := core.NewRecord(users)
+	account.Set("server", server.Id)
+	account.Set("name", name)
+	account.Set("password", databases.NewPassword())
+	account.Set("databases", []string{database.Id})
+	account.Set("secret_name", databases.SecretName(name))
+	if err := tx.SaveWithContext(ctx, account); err != nil {
+		return nil, err
+	}
+	return database, nil
 }
 
 func (p *Panel) handleCreateDatabase(e *core.RequestEvent) error {

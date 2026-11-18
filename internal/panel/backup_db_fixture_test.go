@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,21 @@ func (f *jobFixture) snapshotRun(job, target *core.Record, snapshot string, byte
 	return f.save(schema.BackupRuns, map[string]any{"job": job.Id, "target": target.Id, "host": job.GetString("host"),
 		"trigger": schema.RunSchedule, "status": schema.RunSucceeded, "snapshot_id": snapshot, "total_bytes": bytes,
 		"started_at": now.Add(-time.Minute), "finished_at": now})
+}
+
+// phpSite saves a PHP site of the fixture's server, which gets the edge
+// role a site needs.
+func (f *jobFixture) phpSite(name string) *core.Record {
+	f.t.Helper()
+	host := f.stored(schema.Hosts, f.host.Id)
+	if !slices.Contains(host.GetStringSlice("roles"), schema.HostRoleEdge) {
+		host.Set("roles", append(host.GetStringSlice("roles"), schema.HostRoleEdge))
+		if err := f.app.Save(host); err != nil {
+			f.t.Fatal(err)
+		}
+		f.host = host
+	}
+	return f.save(schema.Sites, map[string]any{"host": f.host.Id, "name": name, "type": schema.SitePHPApp, "source": "upload"})
 }
 
 // otherSnapshot is another snapshot's full id.

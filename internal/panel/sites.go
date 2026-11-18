@@ -988,6 +988,9 @@ func (p *Panel) handleSiteDeploy(e *core.RequestEvent) error {
 	if err != nil {
 		return err
 	}
+	if err := p.siteRestoring(e, site); err != nil {
+		return err
+	}
 	id, label := requester(e)
 	deployment, err := p.startDeployment(e.Request.Context(), site, deploymentRequest{Trigger: schema.TriggerManual, RequestedBy: id, Requester: label})
 	if errors.Is(err, errNoUpload) {
@@ -1002,6 +1005,9 @@ func (p *Panel) handleSiteDeploy(e *core.RequestEvent) error {
 func (p *Panel) handleSiteUpload(e *core.RequestEvent) error {
 	site, err := p.findSite(e)
 	if err != nil {
+		return err
+	}
+	if err := p.siteRestoring(e, site); err != nil {
 		return err
 	}
 	files, err := e.FindUploadedFiles("file")
@@ -1048,6 +1054,9 @@ func zipDigest(file *filesystem.File) (string, error) {
 func (p *Panel) handleSiteRollback(e *core.RequestEvent) error {
 	site, err := p.findSite(e)
 	if err != nil {
+		return err
+	}
+	if err := p.siteRestoring(e, site); err != nil {
 		return err
 	}
 	var body struct {
