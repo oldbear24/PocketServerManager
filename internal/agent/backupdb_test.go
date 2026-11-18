@@ -1441,3 +1441,64 @@ func TestTheDumpOfAnInterruptedRestoreGoesAtTheAgentsStart(t *testing.T) {
 		}
 	}
 }
+
+// TestTheDumpsRestoresLeftGoAtTheAgentsStart (#53, D4): a restore test the
+// agent was killed during left its dump in the server's container, with no
+// marker to say so, as may a restore into a new database; the next agent,
+// before it takes a command, removes the dumps that restores staged in
+// every running shared server's container, and those only: files of other
+// names, one deeper in /tmp, and the files of a container of another role
+// or of a server that does not run stay.
+func TestTheDumpsRestoresLeftGoAtTheAgentsStart(t *testing.T) {
+	d := newDBHarness(t)
+	pg, maria := databases.Postgres, databases.MariaDB
+	d.shop(pg)
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	// the test's removal of its dump does not run, as when the agent is
+	// killed
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		return fakedocker.ExecResult{Code: 137}, slices.Equal(call.Cmd, []string{"sh", "-c", `rm -f "$PC_FILE"`})
+	})
+	if result, err := d.handleBackupRestoreTest(context.Background(), d.testCommand(pg, snapshot, "shop"), &Reporter{}); err != nil {
+		t.Fatalf("%v\n%v", err, result["log"])
+	}
+	d.setInject(nil)
+	pgServer, mariaServer := d.servers[pg.Name], d.servers[maria.Name]
+	tested := databases.StagedDir + "/" + databases.StagedName(pg, "t1")
+	if !slices.Contains(d.engine.Files(pgServer), tested) {
+		t.Fatalf("the test left %q", d.engine.Files(pgServer))
+	}
+	gone := map[string][]string{
+		pgServer:    {tested, d.leave(t, pgServer, databases.StagedDir, databases.StagedName(pg, "k3m9x2p7q1w8e4r"))},
+		mariaServer: {d.leave(t, mariaServer, databases.StagedDir, databases.StagedName(maria, "t2"))},
+	}
+	stay := map[string][]string{}
+	for _, server := range []string{pgServer, mariaServer} {
+		for _, name := range []string{"pocketcloud-restore-notes.txt", "pocketcloud-restore-.sql", "pocketcloud-restore-t1.sql.part",
+			"pocketcloud-move-c1-0.sql", "shop.sql"} {
+			stay[server] = append(stay[server], d.leave(t, server, databases.StagedDir, name))
+		}
+		stay[server] = append(stay[server], d.leave(t, server, databases.StagedDir+"/keep", databases.StagedName(maria, "t3")))
+	}
+	site := d.container("shop-php", map[string]string{"pocketcloud.role": "site"}, "unless-stopped", 0)
+	stay[site] = []string{d.leave(t, site, databases.StagedDir, databases.StagedName(maria, "t4"))}
+	stopped := d.db.AddServer("pcdb-old-db-1", pg.Name)
+	stay[stopped] = []string{d.leave(t, stopped, databases.StagedDir, databases.StagedName(pg, "t5"))}
+	d.engine.SetStatus(stopped, "exited")
+
+	d.removeStagedDumps(context.Background())
+	for container, files := range gone {
+		for _, file := range files {
+			if slices.Contains(d.engine.Files(container), file) {
+				t.Errorf("%s is left in %s", file, container)
+			}
+		}
+	}
+	for container, files := range stay {
+		for _, file := range files {
+			if !slices.Contains(d.engine.Files(container), file) {
+				t.Errorf("%s was removed from %s", file, container)
+			}
+		}
+	}
+}

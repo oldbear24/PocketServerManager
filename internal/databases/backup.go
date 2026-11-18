@@ -543,10 +543,30 @@ func RemoveStaged(file string) (Script, error) {
 }
 
 // SweepStaged removes the dumps of restores that ended without removing
-// theirs, such as when the agent restarted: those staged more than a day
-// ago. Every restore and restore test runs it first.
+// theirs and that the agent's start did not find, such as in a container
+// that was not running then: those staged more than a day ago. Every
+// restore and restore test runs it first.
 func SweepStaged() Script {
 	return Script{Cmd: []string{"sh", "-c", `find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*' -mmin +1440 -exec rm -f {} +`}}
+}
+
+// ListStaged prints the files in StagedDir whose names begin as a staged
+// dump's, a path a line; StagedFiles keeps those that are one.
+func ListStaged() Script {
+	return Script{Cmd: []string{"sh", "-c", `exec find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*'`}}
+}
+
+// StagedFiles are the staged dumps among the lines ListStaged printed: the
+// lines that are, whole, a path a restore or a restore test stages its dump
+// as, which RemoveStaged removes; any other line is left out.
+func StagedFiles(output string) []string {
+	files := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		if stagedPattern.MatchString(line) {
+			files = append(files, line)
+		}
+	}
+	return files
 }
 
 // FreeSpace prints the room left in the server's data directory

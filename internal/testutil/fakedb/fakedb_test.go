@@ -229,6 +229,35 @@ func mustDump(t *testing.T, engine databases.Engine, name string) []string {
 	return command
 }
 
+// TestTheStagedFilesAreListed (#53, D4): ListStaged prints the files of the
+// container's /tmp whose names begin as a staged dump's, as find's -name
+// matches them, and none deeper or of another name; RemoveStaged removes
+// one.
+func TestTheStagedFilesAreListed(t *testing.T) {
+	h := newHarness(t)
+	c := h.db.AddServer("pcdb-main", databases.Postgres.Name)
+	staged := h.stage(c, databases.StagedName(databases.Postgres, "c1"), "PGDMP")
+	notes := h.stage(c, "pocketcloud-restore-notes.txt", "notes")
+	h.stage(c, "shop.sql", "-- shop")
+	if err := h.client.CopyFileFrom(context.Background(), c, "/tmp/sub", "pocketcloud-restore-c2.sql", strings.NewReader("x"), 1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := h.must(c, databases.ListStaged()); out != staged+"\n"+notes+"\n" {
+		t.Errorf("listed %q", out)
+	}
+	remove, err := databases.RemoveStaged(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.must(c, remove)
+	if out := h.must(c, databases.ListStaged()); out != notes+"\n" {
+		t.Errorf("listed after the removal %q", out)
+	}
+	if kinds := h.db.Execs(); kinds[0].Kind != KindListStaged || kinds[len(kinds)-1].Kind != KindListStaged {
+		t.Errorf("the kinds: %v", kinds)
+	}
+}
+
 // TestARestoreRunsAsTheDatabasesOwnUser (AC1): a restore signs in as the
 // database's user with its password and writes only its database; a dump
 // whose statement names another database fails on privileges, and one that

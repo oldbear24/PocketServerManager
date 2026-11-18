@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -1414,5 +1415,50 @@ func TestSiteFilesJob(t *testing.T) {
 	d.waitFor("the job to be disabled", func() bool { return !d.job(job.Id).GetBool("enabled") })
 	if kept := d.job(job.Id); kept.GetString("problem") != "Its site was removed." || kept.GetString("site") != "" || len(d.snapshots(job.Id)) != 1 {
 		t.Errorf("the removed site's job: %v", kept.FieldsData())
+	}
+}
+
+// TestAnAgentRemovesTheDumpsRestoresLeftWhenItStarts (#53, D4): the dumps
+// that restores and restore tests staged in the shared servers' containers
+// and did not remove, as when the agent was killed during one, are gone
+// once the agent that starts again is connected, which is before it takes
+// a command; files of other names stay.
+func TestAnAgentRemovesTheDumpsRestoresLeftWhenItStarts(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	servers := []*core.Record{d.sharedServer("main", "postgres"), d.sharedServer("maria", "mariadb")}
+	if err := d.agent.stop(); err != nil {
+		t.Fatal(err)
+	}
+	d.waitFor("the agent to be gone", func() bool { return !d.panel.Commands.Connected(d.host.Id) })
+	gone, stay := map[string][]string{}, map[string][]string{}
+	for i, server := range servers {
+		container := server.GetString("container_ref")
+		engine, _ := databases.EngineOf(server.GetString("engine"))
+		killed := databases.StagedName(engine, fmt.Sprintf("killed%d", i))
+		for _, name := range []string{killed, "pocketcloud-restore-notes.txt", "shop.sql"} {
+			content := "dump"
+			if err := d.agent.Docker.CopyFileFrom(context.Background(), container, databases.StagedDir, name, strings.NewReader(content), int64(len(content)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gone[container] = []string{databases.StagedDir + "/" + killed}
+		stay[container] = []string{databases.StagedDir + "/pocketcloud-restore-notes.txt", databases.StagedDir + "/shop.sql"}
+	}
+
+	d.agent = d.harness.start(d.agent.config, quickRestores)
+	d.waitFor("the agent to connect again", func() bool { return d.panel.Commands.Connected(d.host.Id) })
+	for container, files := range gone {
+		for _, file := range files {
+			if slices.Contains(d.docker.Files(container), file) {
+				t.Errorf("%s is left in %s", file, container)
+			}
+		}
+	}
+	for container, files := range stay {
+		for _, file := range files {
+			if !slices.Contains(d.docker.Files(container), file) {
+				t.Errorf("%s was removed from %s", file, container)
+			}
+		}
 	}
 }

@@ -49,7 +49,9 @@
 //   - df (FreeSpace, SetFree), the client's --sandbox (Sandbox,
 //     SetSandbox), SignIn, EndSessions (the sessions SetSessions gave a
 //     database), RemoveStaged (the file the archive PUT copied in goes),
-//     SweepStaged, and #19's Dump, Clone, RestoreFile and CountTables.
+//     SweepStaged, ListStaged (the files the archive PUT copied into /tmp
+//     whose names begin as a staged dump's, as find's -name matches them),
+//     and #19's Dump, Clone, RestoreFile and CountTables.
 //
 // Every process is noted (Execs) with its kind and the databases it named.
 package fakedb
@@ -57,6 +59,7 @@ package fakedb
 import (
 	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -80,6 +83,7 @@ const (
 	KindSandbox      = "sandbox"
 	KindRemoveStaged = "remove-staged"
 	KindSweepStaged  = "sweep-staged"
+	KindListStaged   = "list-staged"
 	KindClone        = "clone"
 	KindExportDump   = "export-dump"
 	KindRestoreFile  = "restore-file"
@@ -452,9 +456,12 @@ func (p *process) run() fakedocker.ExecResult {
 		p.kind = KindRemoveStaged
 		p.s.engine.RemoveFile(p.container, env["PC_FILE"])
 		return fakedocker.ExecResult{}
-	case strings.Contains(script, "find /tmp -maxdepth 1"):
+	case strings.Contains(script, "find /tmp -maxdepth 1") && strings.Contains(script, "-mmin "):
 		p.kind = KindSweepStaged
 		return fakedocker.ExecResult{}
+	case strings.Contains(script, "find /tmp -maxdepth 1"):
+		p.kind = KindListStaged
+		return p.listStaged()
 	case strings.Contains(script, "df -Pk"):
 		p.kind = KindFreeSpace
 		return p.freeSpace()
@@ -566,6 +573,18 @@ func (p *process) freeSpace() fakedocker.ExecResult {
 	}
 	return fakedocker.ExecResult{Stdout: "Filesystem     1024-blocks         Used    Available Capacity Mounted on\n" +
 		line("/dev/sda1", data, p.env["PC_DATA_DIR"]) + line("overlay", tmp, "/")}
+}
+
+// listStaged prints, as ListStaged's find does, the files copied into the
+// container's /tmp, not deeper, whose names begin as a staged dump's.
+func (p *process) listStaged() fakedocker.ExecResult {
+	var out strings.Builder
+	for _, file := range p.s.engine.Files(p.container) {
+		if path.Dir(file) == databases.StagedDir && strings.HasPrefix(path.Base(file), "pocketcloud-restore-") {
+			out.WriteString(file + "\n")
+		}
+	}
+	return fakedocker.ExecResult{Stdout: out.String()}
 }
 
 // postgresArchive starts a fake custom archive.

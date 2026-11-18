@@ -452,6 +452,7 @@ func TestTheScriptsOfARestore(t *testing.T) {
 		},
 		{"remove", removed, `rm -f "$PC_FILE"`, []string{"PC_FILE=/tmp/pocketcloud-restore-c1.sql"}},
 		{"sweep", SweepStaged(), `find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*' -mmin +1440 -exec rm -f {} +`, nil},
+		{"list", ListStaged(), `exec find /tmp -maxdepth 1 -type f -name 'pocketcloud-restore-*'`, nil},
 		{"free space", FreeSpace("/var/lib/postgresql/data"), `exec df -Pk -- "$PC_DATA_DIR" /tmp`, []string{"PC_DATA_DIR=/var/lib/postgresql/data"}},
 		{"sandbox", Sandbox(), wantClient + `if "$client" --help 2>/dev/null | grep -q -- '--sandbox'; then echo yes; else echo no; fi`, nil},
 	} {
@@ -487,6 +488,40 @@ func TestTheScriptsOfARestore(t *testing.T) {
 	}
 	if _, err := RemoveStaged(StagedDir + "/" + StagedName(Postgres, "k3m9x2p7q1w8e4r")); err != nil {
 		t.Errorf("a staged dump is not removed: %v", err)
+	}
+}
+
+// TestStagedFilesAreStagedDumpsOnly (#53, D4): of what ListStaged prints,
+// the lines that are whole a path a restore or a restore test stages its
+// dump as are staged dumps, and nothing else is: another name, another
+// folder, a line cut from a name with a newline in it.
+func TestStagedFilesAreStagedDumpsOnly(t *testing.T) {
+	output := strings.Join([]string{
+		"/tmp/pocketcloud-restore-k3m9x2p7q1w8e4r.pgdump",
+		"/tmp/pocketcloud-restore-c-1_a.sql",
+		"/tmp/pocketcloud-restore-notes.txt",
+		"/tmp/pocketcloud-restore-.sql",
+		"/tmp/pocketcloud-restore-c1.sql.part",
+		"/tmp/pocketcloud-restore-c 1.sql",
+		"/tmp/pocketcloud-restore-" + strings.Repeat("a", 65) + ".sql",
+		"/tmp/pocketcloud-move-c1-0.sql",
+		"/tmp/sub/pocketcloud-restore-c1.sql",
+		"/var/tmp/pocketcloud-restore-c1.sql",
+		" /tmp/pocketcloud-restore-c2.sql",
+		"/tmp/pocketcloud-restore-c3.sql ",
+		"",
+	}, "\n")
+	want := []string{"/tmp/pocketcloud-restore-k3m9x2p7q1w8e4r.pgdump", "/tmp/pocketcloud-restore-c-1_a.sql"}
+	if files := StagedFiles(output); !slices.Equal(files, want) {
+		t.Errorf("the staged dumps of %q: %q, want %q", output, files, want)
+	}
+	if files := StagedFiles(""); files == nil || len(files) != 0 {
+		t.Errorf("the staged dumps of nothing: %#v", files)
+	}
+	for _, file := range StagedFiles(output) {
+		if _, err := RemoveStaged(file); err != nil {
+			t.Errorf("%s is not removed: %v", file, err)
+		}
 	}
 }
 

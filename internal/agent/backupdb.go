@@ -358,7 +358,8 @@ func (r *dbRun) discard(ctx context.Context, names []string, revokeFrom string) 
 }
 
 // sweep removes the dumps restores left in the container more than a day
-// ago, as when the agent restarted during one.
+// ago that the agent's start did not remove (removeStagedDumps), as in a
+// container that was not running then.
 func (r *dbRun) sweep(ctx context.Context) {
 	if _, err := r.run(ctx, databases.SweepStaged()); err != nil {
 		fmt.Fprintln(r.out, "Old dumps of restores could not be removed:", err)
@@ -373,6 +374,55 @@ func (a *Agent) removeStaged(ctx context.Context, container, file string) error 
 		return err
 	}
 	return a.runScript(ctx, container, script, io.Discard)
+}
+
+// removeStagedDumps removes, as the agent starts and before it takes a
+// command, the dumps that restores and restore tests staged in the running
+// containers of shared servers (pocketcloud.role=db) and did not remove, as
+// when the agent was killed during one: the restore's deferred removal did
+// not run then. Before the agent takes a command no restore of its own
+// runs, and one agent serves the engine, so no restore can still need such
+// a dump. Only a file whose path is, whole, a staged dump's
+// (databases.StagedFiles) goes; SweepStaged, at the start of each restore,
+// still removes those of a day ago that this missed. A process the agent
+// before started in the container, such as a restore that ran on, may
+// still read the file: removing a file that a process has open is safe on
+// Linux, which keeps it for the process until it closes it, and frees its
+// room then.
+func (a *Agent) removeStagedDumps(ctx context.Context) {
+	containers, err := a.Docker.Containers(ctx)
+	if err != nil {
+		a.Log.Warn("failed to look for the dumps restores staged", "error", err)
+		return
+	}
+	for _, container := range containers {
+		if container.Labels["pocketcloud.role"] != "db" || container.State != "running" {
+			continue
+		}
+		name := container.ID
+		if len(container.Names) > 0 {
+			name = strings.TrimPrefix(container.Names[0], "/")
+		}
+		a.removeStagedIn(ctx, container.ID, name)
+	}
+}
+
+// removeStagedIn removes the staged dumps of one server's container.
+func (a *Agent) removeStagedIn(ctx context.Context, container, name string) {
+	ctx, cancel := context.WithTimeout(ctx, stagedRemoveTimeout)
+	defer cancel()
+	var listed bytes.Buffer
+	if err := a.runScript(ctx, container, databases.ListStaged(), &listed); err != nil {
+		a.Log.Warn("failed to look for the dumps restores staged", "container", name, "error", err)
+		return
+	}
+	for _, file := range databases.StagedFiles(listed.String()) {
+		if err := a.removeStaged(ctx, container, file); err != nil {
+			a.Log.Warn("failed to remove a dump a restore staged", "container", name, "file", file, "error", err)
+			continue
+		}
+		a.Log.Info("removed a dump a restore staged and left", "container", name, "file", file)
+	}
 }
 
 // unstageInterrupted removes the dump an interrupted database restore
