@@ -67,8 +67,10 @@ func (p *Panel) lostRestoreTest(row *core.Record) {
 }
 
 // retryDueRestoreTests starts the retries of restore tests that are due: of
-// a job that still has a test to start, on a server that is not offline,
-// with no test of the job under way.
+// a job that still has a test to start, with no test of the job under way.
+// A retry on a server that is offline is an attempt too: a skipped test,
+// tried again within checkRetryAt's attempts and never past the next slot,
+// so that the job is unverified once its last attempt was skipped.
 func (p *Panel) retryDueRestoreTests(now time.Time) {
 	at, err := types.ParseDateTime(now.UTC())
 	if err != nil {
@@ -90,9 +92,6 @@ func (p *Panel) retryDueRestoreTests(now time.Time) {
 		switch {
 		case problem != nil:
 			p.setFields(row, map[string]any{"retry_at": ""})
-			continue
-		case p.offline(plan.host):
-			p.setFields(row, map[string]any{"retry_at": now.UTC().Add(time.Hour)})
 			continue
 		case p.databaseTestOpen(plan.server, plan.database.GetString("name")) != nil:
 			// the test under way says how the backup is
@@ -133,7 +132,8 @@ func (p *Panel) testSnapshotText(row *core.Record) string {
 // a test that found the backup could not be restored raises
 // backup_restore_test_failed; one that could not tell, once it is not tried
 // again (retried says such a test is), backup_restore_test_unverified; a test
-// that passed resolves both.
+// that passed resolves the second, and the first once no target of the job
+// is still broken (settleFailedTestAlert).
 func (p *Panel) restoreTestEnded(before *core.Record, retried bool) {
 	row, err := p.App.FindRecordById(schema.BackupChecks, before.Id)
 	if err != nil {
@@ -153,11 +153,12 @@ func (p *Panel) restoreTestEnded(before *core.Record, retried bool) {
 	reason := sentenceText(row.GetString("error"))
 	switch row.GetString("status") {
 	case schema.CheckOK:
-		p.resolveTestAlerts(p.App, job.Id, backup.AlertRestoreTestFailed, backup.AlertRestoreTestUnverified)
+		p.resolveTestAlerts(p.App, job.Id, backup.AlertRestoreTestUnverified)
+		p.settleFailedTestAlert(p.App, job)
 		message := cutText(fmt.Sprintf("%s passed: %d tables restored, as many as the dump has.", what, row.GetInt("tables_restored")), 2048)
 		events.Log(p.App, host, backup.EventRestoreTestOK, schema.SeverityInfo, message, data)
 	case schema.CheckFailed:
-		message := cutText(fmt.Sprintf("%s failed: %s The snapshot %s could not be restored.", what, reason, p.testSnapshotText(row)), 2048)
+		message := p.failedTestMessage(job, row)
 		p.raiseTestAlert(job, backup.AlertRestoreTestFailed, schema.SeverityCritical, message)
 		p.resolveTestAlerts(p.App, job.Id, backup.AlertRestoreTestUnverified)
 		events.Log(p.App, host, backup.EventRestoreTestFailed, schema.SeverityCritical, message, data)
@@ -173,6 +174,58 @@ func (p *Panel) restoreTestEnded(before *core.Record, retried bool) {
 			p.raiseTestAlert(job, backup.AlertRestoreTestUnverified, schema.SeverityWarning, message)
 		}
 		events.Log(p.App, host, backup.EventRestoreTestSkipped, schema.SeverityInfo, message, data)
+	}
+}
+
+// failedTestMessage says that a restore test found its backup could not be
+// restored, naming the snapshot and its target.
+func (p *Panel) failedTestMessage(job, row *core.Record) string {
+	what := fmt.Sprintf("The restore test of %s on %s", row.GetString("database_name"), job.GetString("db_server_name"))
+	return cutText(fmt.Sprintf("%s failed: %s The snapshot %s could not be restored.", what, sentenceText(row.GetString("error")), p.testSnapshotText(row)), 2048)
+}
+
+// brokenTarget is the newest failed restore test of a job on a target that
+// is still broken, if any: one of the job's targets whose newest test that
+// told, ok or failed, failed. A test of one target says nothing of another.
+func brokenTarget(app core.App, job *core.Record) *core.Record {
+	var newest *core.Record
+	for _, target := range job.GetStringSlice("targets") {
+		tests, err := app.FindRecordsByFilter(schema.BackupChecks,
+			"kind={:kind} && job={:job} && target={:target} && (status={:ok} || status={:failed})", "-created,-id", 1, 0,
+			dbx.Params{"kind": schema.CheckRestoreTest, "job": job.Id, "target": target, "ok": schema.CheckOK, "failed": schema.CheckFailed})
+		if err != nil || len(tests) == 0 || tests[0].GetString("status") != schema.CheckFailed {
+			continue
+		}
+		if newest == nil || tests[0].GetDateTime("created").After(newest.GetDateTime("created")) {
+			newest = tests[0]
+		}
+	}
+	return newest
+}
+
+// settleFailedTestAlert resolves a job's open backup_restore_test_failed
+// once no target of the job is still broken, as after a test of the broken
+// target passed, or after that target left the job. While one is, the alert
+// stays, about that target's newest failed test: a test that passed on
+// another target does not resolve it.
+func (p *Panel) settleFailedTestAlert(app core.App, job *core.Record) {
+	open, err := app.FindRecordsByFilter(schema.Alerts, "rule={:rule} && target={:job} && status!={:resolved}", "", 1, 0,
+		dbx.Params{"rule": backup.AlertRestoreTestFailed, "job": job.Id, "resolved": schema.AlertResolved})
+	if err != nil || len(open) == 0 {
+		return
+	}
+	broken := brokenTarget(app, job)
+	if broken == nil {
+		if err := events.ResolveAlert(app, backup.AlertRestoreTestFailed, job.Id); err != nil {
+			p.Log.Error("failed to resolve an alert", "rule", backup.AlertRestoreTestFailed, "error", err)
+		}
+		return
+	}
+	if message := p.failedTestMessage(job, broken); open[0].GetString("message") != message {
+		open[0].Set("message", message)
+		if err := app.Save(open[0]); err != nil {
+			p.Log.Error("failed to keep an alert", "rule", backup.AlertRestoreTestFailed, "error", err)
+		}
 	}
 }
 

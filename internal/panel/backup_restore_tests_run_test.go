@@ -85,10 +85,10 @@ func testAnswer(t *testing.T, result backup.RestoreTestResult) map[string]any {
 // TestRestoreTestsStartInTheirSlot (#53, P7, AC2): at the slot of the
 // restore tests' schedule, every enabled database job with a snapshot gets
 // one test, queued, with its temporary database's record and its command,
-// which holds no secret, waits 12 hours, drops the server's earlier copies
-// whose tests ended, and orders with the server's other tests; a second pass
-// of the slot starts none; a slot missed while the panel was down less than
-// a day ago is caught up once.
+// which holds no secret and no copy to drop, waits 12 hours, and orders with
+// the server's other tests; delivered, it drops the server's earlier copies
+// whose tests ended; a second pass of the slot starts none; a slot missed
+// while the panel was down less than a day ago is caught up once.
 func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	f := newDBFixture(t, databases.Postgres.Name)
 	f.host.Set("status", schema.HostOnline)
@@ -145,7 +145,7 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	payload := f.payloadOfTest(command)
 	raw := mustString(t, command.Get("payload"))
 	if command.GetString("type") != "backup.restore_test" || command.GetString("resource") != "db-test:db-main-db-1" ||
-		!slices.Equal(payload.GetDropBefore(), []string{earlier.GetString("name")}) || payload.GetDatabase().GetUser() != "shop" ||
+		len(payload.GetDropBefore()) != 0 || payload.GetDatabase().GetUser() != "shop" ||
 		strings.Contains(raw, adminSecretPG) || strings.Contains(raw, userSecretShop) || strings.Contains(raw, "repo-password") ||
 		command.GetString("label") != "Test the restore of shop on db-main" || command.GetString("requested_label") != "schedule" {
 		t.Errorf("the command: %v %s", command.FieldsData(), raw)
@@ -155,8 +155,8 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	}
 	mshopRows := f.testsOf(mshopJob)
 	blogRows := f.testsOf(blogJob)
-	if blogPayload := f.payloadOfTest(f.stored(schema.Commands, blogRows[0].GetString("command"))); !slices.Equal(blogPayload.GetDropBefore(), []string{earlier.GetString("name")}) {
-		t.Errorf("blog's test drops %v", blogPayload.GetDropBefore())
+	if blogPayload := f.payloadOfTest(f.stored(schema.Commands, blogRows[0].GetString("command"))); len(blogPayload.GetDropBefore()) != 0 {
+		t.Errorf("blog's test is stored dropping %v", blogPayload.GetDropBefore())
 	}
 	if mshopCommand := f.stored(schema.Commands, mshopRows[len(mshopRows)-1].GetString("command")); mshopCommand.GetString("resource") != "db-test:maria-db-1" {
 		t.Errorf("MariaDB's test orders with %q", mshopCommand.GetString("resource"))
@@ -164,8 +164,14 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 
 	// the tests of a server run one at a time
 	stream := f.dbAgent()
-	got := []string{f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest().GetDatabase().GetConnection().GetContainerId(),
-		f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest().GetDatabase().GetConnection().GetContainerId()}
+	got := []string{}
+	for range 2 {
+		test := f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest()
+		got = append(got, test.GetDatabase().GetConnection().GetContainerId())
+		if test.GetDatabase().GetConnection().GetContainerId() == "db-main-db-1" && !slices.Equal(test.GetDropBefore(), []string{earlier.GetString("name")}) {
+			t.Errorf("the first test of db-main drops %v", test.GetDropBefore())
+		}
+	}
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"db-main-db-1", "maria-db-1"}) || !f.quiet(stream) {
 		t.Errorf("delivered at once: %v", got)
@@ -175,6 +181,71 @@ func TestRestoreTestsStartInTheirSlot(t *testing.T) {
 	f.p.RunDueRestoreTests(slot.Add(40 * time.Second))
 	if rows := f.testsOf(blogJob); len(rows) != 1 {
 		t.Errorf("%d tests of one slot", len(rows))
+	}
+}
+
+// TestTheTestsOfASlotDropEachOthersCopies (#53, P7, AC2): the tests of
+// one server queued at one slot run one after another, and each drops the
+// copy of the test before it, which had ended by the time it was delivered:
+// a server keeps its newest test copy only. A copy whose test's command
+// ended counts, though its finisher has not kept the test yet; one whose
+// test still runs does not.
+func TestTheTestsOfASlotDropEachOthersCopies(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	f.host.Set("status", schema.HostOnline)
+	if err := f.app.Save(f.host); err != nil {
+		t.Fatal(err)
+	}
+	blog, _ := f.addDatabase(f.server, "blog", "user-secret-blog", nil)
+	blogJob := f.dbJob(blog)
+	f.snapshotRun(blogJob, f.target, otherSnapshot, 2048)
+	slot := parseCronRule(farSchedule()).next(time.Now())
+	f.p.RunDueRestoreTests(slot.Add(20 * time.Second))
+	shopRows, blogRows := f.testsOf(f.job), f.testsOf(blogJob)
+	if len(shopRows) != 1 || len(blogRows) != 1 {
+		t.Fatalf("%d and %d tests at the slot", len(shopRows), len(blogRows))
+	}
+
+	stream := f.dbAgent()
+	first := f.receivedOf(stream, "backup.restore_test")
+	if test := first.GetBackupRestoreTest(); test.GetCheckId() != shopRows[0].Id || len(test.GetDropBefore()) != 0 {
+		t.Fatalf("the first test: %v", test)
+	}
+	if !f.quiet(stream) {
+		t.Fatal("blog's test was delivered while shop's ran")
+	}
+	shopCopy := shopRows[0].GetString("temporary")
+	// while shop's test runs, a delivery of blog's would leave its copy
+	if dropped := earlierTestCopies(f.app, f.server, blogRows[0].GetString("temporary")); len(dropped) != 0 {
+		t.Errorf("a running test's copy would be dropped: %v", dropped)
+	}
+	// its command ended, and its finisher has not kept it yet
+	running := f.fresh(f.stored(schema.Commands, first.GetId()))
+	running.Set("status", schema.CommandDispatched)
+	if err := f.app.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	running.Load(map[string]any{"status": schema.CommandSucceeded, "started_at": time.Now().UTC().Add(-time.Minute), "finished_at": time.Now().UTC(),
+		"result": testAnswer(t, backup.RestoreTestResult{Status: backup.RestoreTestOK, Tables: 2, TablesExpected: 2, Created: true})})
+	if err := f.app.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	if dropped := earlierTestCopies(f.app, f.server, blogRows[0].GetString("temporary")); !slices.Equal(dropped, []string{shopCopy}) {
+		t.Errorf("the copy of a test whose command ended: %v", dropped)
+	}
+	f.p.restoreTestFinished(f.fresh(running))
+	if kept := f.fresh(shopRows[0]); kept.GetString("status") != schema.CheckOK {
+		t.Fatalf("shop's test: %v", kept.FieldsData())
+	}
+	if copied, err := f.p.databaseOf(f.server, shopCopy); err != nil || copied.GetString("status") != dbReady {
+		t.Fatalf("shop's copy stays its two hours: %v %v", copied, err)
+	}
+
+	// blog's test, delivered now, drops shop's copy
+	f.p.Commands.Kick(f.host.Id)
+	second := f.receivedOf(stream, "backup.restore_test").GetBackupRestoreTest()
+	if second.GetCheckId() != blogRows[0].Id || !slices.Equal(second.GetDropBefore(), []string{shopCopy}) {
+		t.Errorf("blog's test drops %v", second.GetDropBefore())
 	}
 }
 
@@ -261,6 +332,73 @@ func TestRestoreTestsGoRoundTheTargets(t *testing.T) {
 	if err != nil || len(slotted) != 1 {
 		t.Errorf("%d tests of one slot (%v)", len(slotted), err)
 	}
+}
+
+// TestABrokenTargetKeepsTheFailedAlert (#53, P7, AC2): a job's
+// backup_restore_test_failed stays while a target of the job is still
+// broken, its newest test that told having failed: a test that passes on
+// another target, as the next test goes round to, leaves it, naming the
+// broken target; a test of that target that passes resolves it, and so
+// does the last broken target leaving the job. The alert stays keyed by the
+// job, which the web links to and the watchdog reads.
+func TestABrokenTargetKeepsTheFailedAlert(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.setTest(f.job, map[string]any{"targets": []string{f.target.Id, nas.Id}})
+	f.snapshotRun(f.job, nas, otherSnapshot, 10)
+	test := func(target *core.Record, passes bool) {
+		t.Helper()
+		row, command := f.startedTest(f.job, schema.RunManual)
+		if row.GetString("target") != target.Id {
+			t.Fatalf("the test reads %s, not %s", row.GetString("target"), target.GetString("name"))
+		}
+		fields := map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime().Add(-time.Minute),
+			"result": testAnswer(t, backup.RestoreTestResult{Status: backup.RestoreTestOK, Tables: 1, TablesExpected: 1, Created: true})}
+		if !passes {
+			fields = map[string]any{"status": schema.CommandFailed, "error": "restic: ciphertext verification failed", "started_at": types.NowDateTime().Add(-time.Minute),
+				"result": testAnswer(t, backup.RestoreTestResult{Failure: backup.TestDamaged, Created: true})}
+		}
+		f.endTest(row, command, fields)
+		time.Sleep(5 * time.Millisecond)
+	}
+	about := func(step, target string) {
+		t.Helper()
+		alert := f.openAlert(backup.AlertRestoreTestFailed, f.job.Id)
+		if target == "" {
+			if alert != nil {
+				t.Errorf("%s: the alert stays: %s", step, alert.GetString("message"))
+			}
+			return
+		}
+		if alert == nil || alert.GetString("severity") != schema.SeverityCritical || !strings.HasSuffix(alert.GetString("message"), " from "+target+" could not be restored.") {
+			t.Errorf("%s: the alert is %v, not about %s", step, alert, target)
+		}
+	}
+
+	test(f.target, false)
+	about("b2 failed", "b2")
+	test(nas, true)
+	about("nas passed after b2 failed", "b2")
+	f.p.WatchRestoreTests(time.Now().AddDate(3, 0, 0))
+	if alert := f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id); alert != nil {
+		t.Errorf("the watchdog warns of a job with its failed alert: %v", alert.FieldsData())
+	}
+	test(f.target, true)
+	about("b2 passed", "")
+
+	test(nas, false)
+	about("nas failed", "nas")
+	test(f.target, false)
+	about("b2 failed too", "b2")
+	// an admin takes the targets out of the job
+	if status, body := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+f.job.Id, f.admin, map[string]any{"targets": []string{nas.Id}}); status != http.StatusOK {
+		t.Fatalf("b2 out of the job: %d %v", status, body)
+	}
+	about("b2 left the job", "nas")
+	if status, body := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+f.job.Id, f.admin, map[string]any{"targets": []string{}}); status != http.StatusOK {
+		t.Fatalf("nas out of the job: %d %v", status, body)
+	}
+	about("nas left the job too", "")
 }
 
 // TestARestoreTestThatCannotStartIsSkipped (#53, P7): a job whose server is
@@ -455,6 +593,27 @@ func TestTheEndOfARestoreTest(t *testing.T) {
 	f.p.restoreTestFinished(f.fresh(command))
 	if events := f.eventsOf(backup.EventRestoreTestOK); len(events) != 1 {
 		t.Errorf("%d ok events", len(events))
+	}
+}
+
+// TestARestoreTestItsAgentRestartedUnderIsInterrupted (#53, P7): a test
+// whose agent restarted while it ran, which answers only the agent's
+// sentence, did not complete with the class interrupted, and is tried again;
+// a test that failed otherwise without a class keeps none.
+func TestARestoreTestItsAgentRestartedUnderIsInterrupted(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	row, command := f.startedTest(f.job, schema.RunSchedule)
+	interrupted := f.endTest(row, command, map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime().Add(-time.Minute),
+		"error": "The agent restarted while running this command, so it may be incomplete."})
+	if interrupted.GetString("status") != schema.CheckError || interrupted.GetString("failure") != backup.TestInterrupted || interrupted.GetDateTime("retry_at").IsZero() {
+		t.Errorf("a test its agent restarted under: %v", interrupted.FieldsData())
+	}
+	f.setTest(interrupted, map[string]any{"retry_at": ""})
+	row, command = f.startedTest(f.job, schema.RunSchedule)
+	other := f.endTest(row, command, map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime().Add(-time.Minute),
+		"error": "the stream broke"})
+	if other.GetString("status") != schema.CheckError || other.GetString("failure") != "" {
+		t.Errorf("a test that failed otherwise: %v", other.FieldsData())
 	}
 }
 
@@ -796,10 +955,14 @@ func TestRetriesOfRestoreTestsWait(t *testing.T) {
 	f.p.SetStarted(now.Add(-time.Hour))
 	offline := due()
 	f.p.retryDueRestoreTests(now)
-	if kept := f.fresh(offline); !kept.GetDateTime("retry_at").Time().Equal(now.Add(time.Hour)) {
+	if kept := f.fresh(offline); !kept.GetDateTime("retry_at").IsZero() {
 		t.Errorf("a retry of an offline server: %v", kept.FieldsData())
 	}
-	f.setTest(offline, map[string]any{"retry_at": ""})
+	skipped, err := f.app.FindFirstRecordByFilter(schema.BackupChecks, "retry_of={:prev}", map[string]any{"prev": offline.Id})
+	if err != nil || skipped.GetString("status") != schema.CheckSkipped || skipped.GetInt("attempt") != 2 || skipped.GetDateTime("retry_at").IsZero() {
+		t.Fatalf("the retry of an offline server is no skipped attempt: %v %v", skipped, err)
+	}
+	f.setTest(skipped, map[string]any{"retry_at": ""})
 	f.setTest(f.host, map[string]any{"status": schema.HostOnline})
 
 	open := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckRunning})
@@ -822,7 +985,47 @@ func TestRetriesOfRestoreTestsWait(t *testing.T) {
 	if kept := f.fresh(dropped); !kept.GetDateTime("retry_at").IsZero() {
 		t.Errorf("a retry of a dropped database: %v", kept.FieldsData())
 	}
-	if rows := f.testsOf(f.job); len(rows) != 5 {
+	if rows := f.testsOf(f.job); len(rows) != 6 {
 		t.Errorf("%d tests: a retry started", len(rows))
+	}
+}
+
+// TestRetriesOfRestoreTestsOnAnOfflineServerEnd (#53, P7): a retry that is
+// due while its server is offline is an attempt of its own, a skipped test
+// with the next attempt number, tried again after the next pause; after the
+// last attempt nothing is tried again, and the job is unverified.
+func TestRetriesOfRestoreTestsOnAnOfflineServerEnd(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	now := time.Now().UTC().Truncate(time.Minute)
+	f.p.SetStarted(now.Add(-time.Hour))
+	f.setTest(f.host, map[string]any{"status": schema.HostOffline})
+	row := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckError, "attempt": 1, "retry_at": now.Add(-time.Minute)})
+	for attempt := 2; ; attempt++ {
+		at := row.GetDateTime("retry_at").Time()
+		f.p.retryDueRestoreTests(at)
+		next, err := f.app.FindFirstRecordByFilter(schema.BackupChecks, "retry_of={:prev}", map[string]any{"prev": row.Id})
+		if err != nil || next.GetString("status") != schema.CheckSkipped || next.GetInt("attempt") != attempt ||
+			next.GetString("trigger") != schema.RunRetry || !strings.HasPrefix(next.GetString("error"), "The server node-1 was offline at ") {
+			t.Fatalf("attempt %d: %v %v", attempt, next, err)
+		}
+		if !f.fresh(row).GetDateTime("retry_at").IsZero() {
+			t.Fatalf("attempt %d left the retry before it", attempt)
+		}
+		row = next
+		if row.GetDateTime("retry_at").IsZero() {
+			break
+		}
+		if attempt >= maxCheckAttempts {
+			t.Fatalf("attempt %d is tried again: %v", attempt, row.FieldsData())
+		}
+		if f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id) != nil {
+			t.Fatalf("unverified before the last attempt %d", attempt)
+		}
+	}
+	if row.GetInt("attempt") != maxCheckAttempts {
+		t.Errorf("the retries ended at attempt %d", row.GetInt("attempt"))
+	}
+	if alert := f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id); alert == nil || alert.GetString("severity") != schema.SeverityWarning {
+		t.Errorf("no unverified alert after the last attempt %d: %v", row.GetInt("attempt"), alert)
 	}
 }

@@ -525,6 +525,11 @@ func (p *Panel) deployRevision(ctx context.Context, stack, revision *core.Record
 	if p.restoreHolding(stack) != nil {
 		return nil, &deployRejection{Message: restoreHoldMessage(stack.GetString("name"))}
 	}
+	// or recreate the database server a restore or a restore test runs in
+	// (#53)
+	if held := p.serverStackHeld(stack); held != "" {
+		return nil, &deployRejection{Message: held}
+	}
 
 	result := stacks.Validate(ctx, stack.GetString("name"), compose, env, secretKeysOf(stack))
 	if !result.Valid {

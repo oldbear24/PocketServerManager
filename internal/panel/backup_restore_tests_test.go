@@ -1,8 +1,10 @@
 package panel
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
@@ -16,7 +18,7 @@ import (
 
 // linkedTest saves a queued restore test of the fixture's job with its
 // command, as the panel queues one, and is the row and the command.
-func (f *dbFixture) linkedTest(fields map[string]any, dropBefore ...string) (*core.Record, *core.Record) {
+func (f *dbFixture) linkedTest(fields map[string]any) (*core.Record, *core.Record) {
 	f.t.Helper()
 	row := f.testRow(f.job, f.target, fields)
 	row.Set("temporary", databases.TestDatabaseName(row.Id))
@@ -26,7 +28,6 @@ func (f *dbFixture) linkedTest(fields map[string]any, dropBefore ...string) (*co
 	}
 	payload := restoreTestPayload(row, f.server, f.user.GetString("name"))
 	payload.Repository = &agentv1.BackupRepository{TargetId: f.target.Id, Url: "s3:https://s3.example.com/backups/node"}
-	payload.DropBefore = dropBefore
 	command := f.command(f.host.Id, &agentv1.Command{Payload: &agentv1.Command_BackupRestoreTest{BackupRestoreTest: payload}})
 	row.Set("command", command.Id)
 	if err := f.app.Save(row); err != nil {
@@ -40,13 +41,19 @@ func (f *dbFixture) linkedTest(fields map[string]any, dropBefore ...string) (*co
 // server administrator's and the database user's passwords as it is
 // delivered to the job's server, when it is what its row builds: into the
 // container of the database's server as it is now, as the database's own
-// user, dropping earlier test copies only. It gets none when it is forged,
+// user, and stored with no copy to drop, as what it drops is worked out as
+// it is delivered: the earlier test copies of the server whose tests ended,
+// never its own nor any other database. It gets none when it is forged,
 // changed, from a target being added, for a row that does not wait for it,
 // started by someone who is no operator any more, or while the user's
 // password is being rotated.
 func TestARestoreTestGetsItsSecretsAtDeliveryOnly(t *testing.T) {
 	f := newDBFixture(t, databases.Postgres.Name)
-	_, command := f.linkedTest(nil, "pc_rt_aaaaaaaaaaaaaaa")
+	ended := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckOK})
+	earlier := f.temporary(databases.TestDatabaseName(ended.Id), time.Now().UTC().Add(time.Hour), map[string]any{"status": dbReady})
+	f.temporary(databases.ScratchName("sssssssssssssss"), time.Now().UTC().Add(time.Hour), nil)
+	row, command := f.linkedTest(nil)
+	f.temporary(row.GetString("temporary"), time.Now().UTC().Add(time.Hour), map[string]any{"status": dbCreating})
 	stored := f.stored(schema.Commands, command.Id)
 	raw := mustJSON(t, stored.Get("payload"))
 	for _, secret := range []string{adminSecretPG, userSecretShop, "repo-password-b2", "the-secret-key"} {
@@ -61,9 +68,10 @@ func TestARestoreTestGetsItsSecretsAtDeliveryOnly(t *testing.T) {
 	test := delivered.GetBackupRestoreTest()
 	if err != nil || test.GetRepository().GetPassword() != "repo-password-b2" || test.GetDatabase().GetConnection().GetAdminPassword() != adminSecretPG ||
 		test.GetDatabase().GetPassword() != userSecretShop || test.GetDatabase().GetUser() != "shop" || test.GetDatabase().GetFile() != "shop.pgdump" ||
-		test.GetDatabase().GetMode() != backup.DbRestoreTest {
+		test.GetDatabase().GetMode() != backup.DbRestoreTest || !slices.Equal(test.GetDropBefore(), []string{earlier.GetString("name")}) {
 		t.Fatalf("delivered: %v %v", delivered, err)
 	}
+	f.setTest(row, map[string]any{"status": schema.CheckOK})
 
 	refused := func(name string, command *core.Record, reason string) {
 		t.Helper()
@@ -106,8 +114,8 @@ func TestARestoreTestGetsItsSecretsAtDeliveryOnly(t *testing.T) {
 	refused("another server's local target", fromDisk, "a local target is a directory of its own server: only that server restores from it")
 	_ = local
 
-	// changed: another user, another container, a database outside the
-	// test's copies to drop, the row's own copy to drop
+	// changed: another user, another container; any copy to drop, which
+	// only the delivery adds
 	for name, change := range map[string]func(*agentv1.BackupRestoreTest){
 		"another user":         func(p *agentv1.BackupRestoreTest) { p.Database.User = "blog" },
 		"another database":     func(p *agentv1.BackupRestoreTest) { p.Database.Database = "shop" },
@@ -115,6 +123,7 @@ func TestARestoreTestGetsItsSecretsAtDeliveryOnly(t *testing.T) {
 		"another container":    func(p *agentv1.BackupRestoreTest) { p.Database.Connection.ContainerId = "blog-db-1" },
 		"another file":         func(p *agentv1.BackupRestoreTest) { p.Database.File = "blog.pgdump" },
 		"another mode":         func(p *agentv1.BackupRestoreTest) { p.Database.Mode = backup.DbRestoreReplace },
+		"a test copy to drop":  func(p *agentv1.BackupRestoreTest) { p.DropBefore = []string{earlier.GetString("name")} },
 		"a scratch to drop":    func(p *agentv1.BackupRestoreTest) { p.DropBefore = []string{"pc_rs_aaaaaaaaaaaaaaa"} },
 		"a database to drop":   func(p *agentv1.BackupRestoreTest) { p.DropBefore = []string{"blog"} },
 		"its own copy to drop": func(p *agentv1.BackupRestoreTest) { p.DropBefore = []string{p.Database.Database} },
@@ -123,11 +132,7 @@ func TestARestoreTestGetsItsSecretsAtDeliveryOnly(t *testing.T) {
 		payload := f.payloadOfTest(linked)
 		change(payload)
 		f.setPayload(linked, &agentv1.Command{Payload: &agentv1.Command_BackupRestoreTest{BackupRestoreTest: payload}})
-		reason := "the command differs from the restore test"
-		if strings.HasSuffix(name, "to drop") {
-			reason = "the command drops more than earlier test copies"
-		}
-		refused(name, linked, reason)
+		refused(name, linked, "the command differs from the restore test")
 		_ = row
 	}
 

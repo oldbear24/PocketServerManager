@@ -65,12 +65,19 @@ func (p *Panel) registerRestoreTests() {
 		return e.Next()
 	})
 	// whatever the job was before: a record the panel made in memory has
-	// no original to compare with
+	// no original to compare with. A broken target that left the job, as
+	// one taken out of it or removed, keeps its failed alert no longer.
 	p.App.OnRecordAfterUpdateSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
 		job := e.Record
 		gone := job.GetString("origin") == schema.JobDatabase && job.GetString("database") == ""
-		if !job.GetBool("enabled") || gone {
+		left := slices.ContainsFunc(job.Original().GetStringSlice("targets"), func(target string) bool {
+			return !slices.Contains(job.GetStringSlice("targets"), target)
+		})
+		switch {
+		case !job.GetBool("enabled") || gone:
 			p.resolveTestAlerts(e.App, job.Id, backup.AlertRestoreTestFailed, backup.AlertRestoreTestUnverified)
+		case left:
+			p.settleFailedTestAlert(e.App, job)
 		}
 		return e.Next()
 	})
@@ -405,9 +412,9 @@ func (p *Panel) startRestoreTest(job *core.Record, start testStart) (*core.Recor
 		if err := tx.SaveWithContext(audit.WithActor(context.Background(), dbActor), copied); err != nil {
 			return err
 		}
+		// the earlier copies it drops are worked out as it is delivered
 		payload := restoreTestPayload(row, plan.server, plan.user.GetString("name"))
 		payload.Repository = repository
-		payload.DropBefore = earlierTestCopies(tx, plan.server, copied.Id)
 		// delivered once the transaction committed, with its row
 		command, err := p.Commands.CreateIn(context.Background(), tx, commands.Options{
 			Host: plan.host.Id, Label: cutText(fmt.Sprintf("Test the restore of %s on %s", name, plan.server.GetString("name")), 255),
@@ -435,10 +442,14 @@ func (p *Panel) startRestoreTest(job *core.Record, start testStart) (*core.Recor
 }
 
 // earlierTestCopies are the copies of a server's earlier restore tests that
-// ended, which a new test drops before it restores: a server holds its
-// newest test copy only.
+// ended, which a test drops before it restores. They are worked out as the
+// test is delivered, not as it was queued: its ordering key has let every
+// test of the server queued before it end by then, those of its own slot
+// too, so a server keeps its newest test copy only. A test ended once its
+// row or its command did, as its finisher may still be keeping it. self is
+// the test's own copy.
 func earlierTestCopies(app core.App, server *core.Record, self string) []string {
-	records, err := app.FindRecordsByFilter(schema.Databases, "server={:server} && id!={:self} && status!={:dropping}", "name", 0, 0,
+	records, err := app.FindRecordsByFilter(schema.Databases, "server={:server} && name!={:self} && status!={:dropping}", "name", 0, 0,
 		dbx.Params{"server": server.Id, "self": self, "dropping": dbDropping})
 	if err != nil {
 		return nil
@@ -449,8 +460,7 @@ func earlierTestCopies(app core.App, server *core.Record, self string) []string 
 		if !ok || prefix != databases.TemporaryTest || !isTemporary(record) {
 			continue
 		}
-		if row, err := app.FindRecordById(schema.BackupChecks, id); err == nil &&
-			(row.GetString("status") == schema.CheckQueued || row.GetString("status") == schema.CheckRunning) {
+		if row, err := app.FindRecordById(schema.BackupChecks, id); err == nil && testRunning(app, row) {
 			continue
 		}
 		names = append(names, record.GetString("name"))
@@ -459,6 +469,16 @@ func earlierTestCopies(app core.App, server *core.Record, self string) []string 
 		return nil
 	}
 	return names
+}
+
+// testRunning tells whether a restore test may still restore into its copy:
+// its row is open, and its command is there and not final.
+func testRunning(app core.App, row *core.Record) bool {
+	if s := row.GetString("status"); s != schema.CheckQueued && s != schema.CheckRunning {
+		return false
+	}
+	command, err := app.FindRecordById(schema.Commands, row.GetString("command"))
+	return err == nil && !commandFinal(command)
 }
 
 // handleRestoreTest tests a database job's restore now, as an operator asks:
@@ -571,11 +591,17 @@ func (p *Panel) restoreTestFinished(command *core.Record) {
 		}
 	}
 	message = strings.TrimPrefix(message, "failed to prepare the command: ")
+	// an agent that restarted under the test answers its own sentence and
+	// nothing else: the test was interrupted, as its class says
+	failure := result.Failure
+	if failure == "" && status == schema.CheckError && strings.HasPrefix(command.GetString("error"), agentRestarted) {
+		failure = backup.TestInterrupted
+	}
 
 	hide := p.testSecrets(row)
 	fields := map[string]any{
 		"status": status, "finished_at": finished, "error": cutText(sentenceText(backup.Redact(message, hide...)), 4096),
-		"log": cutTail(backup.Redact(result.Log, hide...), maxRunLog), "failure": cutText(result.Failure, 32),
+		"log": cutTail(backup.Redact(result.Log, hide...), maxRunLog), "failure": cutText(failure, 32),
 		"tables_expected": result.TablesExpected, "tables_restored": result.Tables,
 	}
 	if result.Bytes > 0 {

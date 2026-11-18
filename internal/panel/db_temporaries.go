@@ -355,6 +355,27 @@ func (p *Panel) dropTemporary(e *core.RequestEvent, database *core.Record) error
 	return e.JSON(http.StatusAccepted, map[string]any{"database": database.Id, "command": command})
 }
 
+// serverRestoreMessage says that a server waits while a restore of one of
+// its databases, or a restore test, is under way on it, and what then.
+func serverRestoreMessage(server *core.Record, then string) string {
+	return fmt.Sprintf("A restore or a restore test on %s is under way: %s.", server.GetString("name"), then)
+}
+
+// serverStackHeld says why a shared server's own stack waits, if it does:
+// a restore of one of its databases, or a restore test, runs in its
+// container, which a deploy, an update or a stack's command would recreate
+// or stop under it.
+func (p *Panel) serverStackHeld(stack *core.Record) string {
+	if stack.GetString("source") != stackSourceDBServer {
+		return ""
+	}
+	server, err := p.App.FindFirstRecordByFilter(schema.DBServers, "stack={:stack}", dbx.Params{"stack": stack.Id})
+	if err != nil || !p.openOnServer(server) {
+		return ""
+	}
+	return serverRestoreMessage(server, "this waits until it ends")
+}
+
 // openOnServer says whether a restore of a database, or a restore test, of a
 // server is queued or running.
 func (p *Panel) openOnServer(server *core.Record) bool {
