@@ -157,7 +157,7 @@ func TestABackupRunMountsItsVolumesReadOnly(t *testing.T) {
 	log, _ := result["log"].(string)
 	if result["snapshot_id"] != snapshot.ID || result["files_new"] != int64(3) || result["files_changed"] != int64(0) ||
 		result["bytes_added"] != int64(15) || result["total_bytes"] != int64(15) || result["forgotten"] != int64(0) ||
-		result["refused"] != nil || result["retention_error"] != nil || len(result) != 7 {
+		result["refused"] != nil || result["retention_error"] != nil || result["bytes_stored"] != int64(15) || len(result) != 8 {
 		t.Errorf("the result: %v", result)
 	}
 	if !strings.Contains(log, "Saved the snapshot "+snapshot.ID[:8]) || !strings.Contains(log, "Applying the retention: keep last 3, daily 7") ||
