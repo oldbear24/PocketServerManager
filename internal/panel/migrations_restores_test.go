@@ -31,6 +31,10 @@ func bootMigrationPanel(t *testing.T) *core.BaseApp {
 	})
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
+	// what the panel would do later, such as the removal of a site's files
+	// that a migration reverted, does not run on the app cleared after the
+	// test
+	t.Cleanup(p.later.stop)
 	// as the panel's start does, for the targets' sealed fields
 	if err := p.loadMasterKey(); err != nil {
 		t.Fatal(err)

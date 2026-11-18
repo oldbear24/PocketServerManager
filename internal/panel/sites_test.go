@@ -17,6 +17,7 @@ func TestADeploymentSettledWithoutItsResultKeepsWhatIsKnown(t *testing.T) {
 	t.Cleanup(app.Cleanup)
 	p := New(app, &Config{MasterKey: testutil.MasterKey}, testUI)
 	p.Register()
+	t.Cleanup(p.later.stop)
 	testutil.Handler(t, app)
 
 	host := testutil.NewHost(t, app, "edge-1")

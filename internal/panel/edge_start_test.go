@@ -30,6 +30,7 @@ func TestAStartingPanelRefreshesItsEdges(t *testing.T) {
 
 	p := New(app, &Config{MasterKey: testutil.MasterKey, GRPCAddr: "127.0.0.1:0"}, testUI)
 	p.Register()
+	t.Cleanup(p.later.stop)
 	testutil.Handler(t, app)
 
 	deadline := time.Now().Add(5 * time.Second)
