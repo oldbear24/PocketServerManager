@@ -34,12 +34,12 @@ type dbFixture struct {
 // agent restores databases.
 func newDBFixture(t *testing.T, engine string) *dbFixture {
 	t.Helper()
-	// the panel's own schedulers pass at the start of a minute, and settle
-	// what the tests leave open: the tests' passes come first
-	if now := time.Now(); now.Second() > 45 {
-		time.Sleep(now.Truncate(time.Minute).Add(time.Minute + time.Second).Sub(now))
-	}
 	f := &dbFixture{jobFixture: newJobFixture(t)}
+	// the panel's own schedulers, which pass at the start of each minute,
+	// would settle what the tests leave open and start what is due: the
+	// tests make every pass themselves (rather than wait for a minute's
+	// start, which a test under the race detector may outlast anyway)
+	f.app.Cron().Stop()
 	// restore tests whose slots the panel's own scheduler never meets
 	settings, err := f.p.settingsRecord()
 	if err != nil {
