@@ -1814,9 +1814,11 @@ function RestoreProgress({
       } else if (index === at) {
         state = ended ? "failed" : "active";
       }
-      // the agent starts the application again however the restore ended
+      // the agent starts the application again however the restore ended,
+      // but after MariaDB's database was emptied it leaves it stopped (#53)
       if (ended && item === "start" && (record.app_stopped?.length ?? 0) > 0) {
-        state = record.app_problem ? "failed" : "done";
+        const leftStopped = record.mode === "database" && record.partial;
+        state = record.app_problem || leftStopped ? "failed" : "done";
       }
     }
     return { id: item, state, title: t(`backups.restore.step.${item}`) };

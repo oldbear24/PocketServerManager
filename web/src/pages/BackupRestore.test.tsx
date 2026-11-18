@@ -1762,6 +1762,7 @@ describe("a database's restore in the drawer (#53)", () => {
       previous: "",
       roots: [{ ...dbRoots[0], engine: "mariadb", previous: "" }],
       error: "The restore failed after shop was emptied.",
+      app_stopped: [{ id: "a1", name: "shop-web-1" }],
     });
     live.records["commands/c1"] = command({
       host: "h1",
@@ -1776,5 +1777,7 @@ describe("a database's restore in the drawer (#53)", () => {
     ).toBeInTheDocument();
     const steps = within(drawer().getByRole("list", { name: "Steps of the restore" }));
     expect(steps.queryByText("Put the restored copy in place")).not.toBeInTheDocument();
+    // its application is not started again
+    expect(steps.getByText("Start the containers").closest("li")).toHaveClass("failed");
   });
 });
