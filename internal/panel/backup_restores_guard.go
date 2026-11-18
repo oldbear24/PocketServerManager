@@ -68,7 +68,9 @@ func restoreHoldMessage(name string) string {
 // guardRestoringStack refuses, while a restore holds a stack, the API's
 // commands of the stack and the starts, restarts and removals of its
 // containers; and of any container a started restore stops, whichever
-// stack it is in.
+// stack it is in. A shared server's own stack, and every command of its
+// containers, wait while a restore of one of its databases or a restore
+// test runs in its container (#53).
 func (p *Panel) guardRestoringStack(e *core.RecordRequestEvent) error {
 	commandType := e.Record.GetString("type")
 	host := e.Record.GetString("host")
@@ -84,6 +86,14 @@ func (p *Panel) guardRestoringStack(e *core.RecordRequestEvent) error {
 	// a restore of a site's database stops its PHP containers (#53)
 	if strings.HasPrefix(commandType, "site.") && p.restoreHoldingSite(host, payload.Site) != nil {
 		return e.Error(http.StatusConflict, siteRestoreMessage(payload.Site), nil)
+	}
+	if strings.HasPrefix(commandType, "container.") && payload.DockerID != "" {
+		if container, err := p.App.FindFirstRecordByFilter(schema.Containers, "host={:host} && docker_id={:id}",
+			dbx.Params{"host": host, "id": payload.DockerID}); err == nil {
+			if held := p.serverProjectHeld(host, container.GetString("project")); held != "" {
+				return e.Error(http.StatusConflict, held, nil)
+			}
+		}
 	}
 	switch commandType {
 	case "container.start", "container.restart", "container.remove":
@@ -108,8 +118,24 @@ func (p *Panel) guardRestoringStack(e *core.RecordRequestEvent) error {
 		if p.restoreHoldingProject(host, project) != nil {
 			return e.Error(http.StatusConflict, restoreHoldMessage(project), nil)
 		}
+		if held := p.serverProjectHeld(host, project); held != "" {
+			return e.Error(http.StatusConflict, held, nil)
+		}
 	}
 	return e.Next()
+}
+
+// serverProjectHeld says why a Compose project of a server waits, if it is a
+// shared database server's own stack that serverStackHeld holds.
+func (p *Panel) serverProjectHeld(hostID, project string) string {
+	if project == "" {
+		return ""
+	}
+	stack, err := p.App.FindFirstRecordByFilter(schema.Stacks, "host={:host} && name={:name}", dbx.Params{"host": hostID, "name": project})
+	if err != nil {
+		return ""
+	}
+	return p.serverStackHeld(stack)
 }
 
 // restoreStops tells whether a started restore of a server stops a

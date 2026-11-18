@@ -169,6 +169,10 @@ func (p *Panel) handleUpdateServer(e *core.RequestEvent) error {
 	if move := p.moveOfServer(server); move != nil {
 		return e.Error(http.StatusConflict, "Databases are moving into or out of this server: update it once that is done.", nil)
 	}
+	// its container is recreated: not under a restore or a restore test (#53)
+	if p.openOnServer(server) {
+		return e.Error(http.StatusConflict, serverRestoreMessage(server, "update the server once it ends"), nil)
+	}
 	if status := server.GetString("status"); status != dbReady && status != dbFailed {
 		return e.BadRequestError("The server is busy.", nil)
 	}
@@ -432,7 +436,7 @@ func (p *Panel) handleRemoveServer(e *core.RequestEvent) error {
 	// its temporary databases go with it; not while a restore or a restore
 	// test of it is under way (#53)
 	if p.openOnServer(server) {
-		return e.Error(http.StatusConflict, fmt.Sprintf("A restore or a restore test on %s is under way: remove the server once it ends.", server.GetString("name")), nil)
+		return e.Error(http.StatusConflict, serverRestoreMessage(server, "remove the server once it ends"), nil)
 	}
 	count, err := p.App.CountRecords(schema.Databases, dbx.HashExp{"server": server.Id, "temporary_until": ""})
 	if err != nil {

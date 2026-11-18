@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
@@ -731,6 +732,75 @@ func TestARestoreOfADatabaseHoldsWhatUsesIt(t *testing.T) {
 		"host": f.host.Id, "type": "site.remove", "payload": map[string]any{"site": "wp"}})
 	if status != http.StatusConflict || body["message"] != "The site wp is being restored from a backup: this waits until that is done." {
 		t.Errorf("a site's command through the API: %d %v", status, body["message"])
+	}
+}
+
+// TestAServerWaitsForARestoreInIt (#53, P5): while a restore of one of a
+// shared server's databases, or a restore test, runs in the server's
+// container, an update of the server, a deploy of its own stack, its stack's
+// commands and its containers' commands are refused with the sentence of
+// the server's removal, and nothing is queued that would recreate or stop
+// the container; once they ended, the update goes ahead.
+func TestAServerWaitsForARestoreInIt(t *testing.T) {
+	f := newDBFixture(t, databases.MariaDB.Name)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	_, superuser := testutil.NewSuperuser(t, f.app)
+	own := f.stored(schema.Stacks, f.server.GetString("stack"))
+	f.setTest(own, map[string]any{"compose_yaml": "services:\n  db:\n    image: mariadb:11.8\n"})
+	f.save(schema.Containers, map[string]any{"host": f.host.Id, "docker_id": "c-maria", "name": "maria-db-1", "project": "maria"})
+	deploys := func() int {
+		t.Helper()
+		count, err := f.app.CountRecords(schema.Commands, dbx.HashExp{"type": "stack.deploy", "host": f.host.Id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int(count)
+	}
+	update := "/api/pc/db-servers/" + f.server.Id + "/update"
+	held := "A restore or a restore test on maria is under way: this waits until it ends."
+	refused := func(step string) {
+		t.Helper()
+		before := deploys()
+		if status, body := f.send(http.MethodPost, update, operator, nil); status != http.StatusConflict ||
+			body["message"] != "A restore or a restore test on maria is under way: update the server once it ends." {
+			t.Errorf("%s: the update: %d %v", step, status, body["message"])
+		}
+		if status, body := f.send(http.MethodPost, "/api/pc/stacks/"+own.Id+"/deploy", operator, map[string]any{}); status != http.StatusUnprocessableEntity || body["message"] != held {
+			t.Errorf("%s: a deploy of its stack: %d %v", step, status, body["message"])
+		}
+		for _, command := range []map[string]any{
+			{"type": "stack.restart", "payload": map[string]any{"name": "maria"}},
+			{"type": "stack.down", "payload": map[string]any{"name": "maria"}},
+			{"type": "container.restart", "payload": map[string]any{"docker_id": "c-maria"}},
+			{"type": "container.stop", "payload": map[string]any{"docker_id": "c-maria"}},
+		} {
+			command["host"] = f.host.Id
+			if status, body := f.send(http.MethodPost, "/api/collections/commands/records", superuser, command); status != http.StatusConflict || body["message"] != held {
+				t.Errorf("%s: %s: %d %v", step, command["type"], status, body["message"])
+			}
+		}
+		if deploys() != before {
+			t.Errorf("%s: a deploy of the server was queued", step)
+		}
+	}
+
+	// a restore back into shop
+	restore, _ := f.databaseRestore(schema.RestoreDatabase, false)
+	refused("a restore of shop")
+	f.setTest(restore, map[string]any{"status": schema.RestoreSucceeded})
+
+	// a restore test of shop, its copy on the server
+	row := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckRunning})
+	f.setTest(row, map[string]any{"temporary": databases.TestDatabaseName(row.Id)})
+	f.temporary(databases.TestDatabaseName(row.Id), time.Now().UTC().Add(time.Hour), map[string]any{"status": dbCreating})
+	refused("a restore test of shop")
+	f.setTest(row, map[string]any{"status": schema.CheckOK})
+
+	// the update needs the server's agent, which the refusals do not ask for
+	f.dbAgent()
+	before := deploys()
+	if status, body := f.send(http.MethodPost, update, operator, nil); status != http.StatusOK || deploys() != before+1 {
+		t.Errorf("the update once they ended: %d %v", status, body["message"])
 	}
 }
 
