@@ -39,6 +39,7 @@ import {
   restoreEnded,
   restoresApi,
   restoreSteps,
+  stepsOf,
   restoreTone,
   snapshotRoots,
   snapshotSources,
@@ -1395,7 +1396,12 @@ function RestoreProgress({
   const current = step || last.current;
   const stops =
     (record.preview?.would_stop?.length ?? 0) > 0 || (record.app_stopped?.length ?? 0) > 0;
-  const steps = restoreSteps.filter((item) => stops || (item !== "stop" && item !== "start"));
+  // PostgreSQL's restore in place puts its restored copy in place (#53)
+  const swaps =
+    record.mode === "database" && Boolean(record.previous || record.roots?.[0]?.previous);
+  const steps = stepsOf(record.mode).filter(
+    (item) => (stops || (item !== "stop" && item !== "start")) && (swaps || item !== "swap"),
+  );
   const at = current ? steps.indexOf(current as (typeof steps)[number]) : -1;
   const cancelling =
     !ended &&
