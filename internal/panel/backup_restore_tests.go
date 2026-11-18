@@ -3,6 +3,7 @@ package panel
 import (
 	"errors"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"google.golang.org/protobuf/proto"
 
@@ -20,6 +21,20 @@ import (
 // temporary database's schedule: the panel drops it two hours after the test,
 // or the next test of the server does. See "Per-database backups and restore
 // tests (#53)" in docs/architecture.md.
+
+// databaseTestOpen is the restore test of a database of a server that is
+// queued or running, if any. A database's name is its server's host's only:
+// its secret is found by it.
+func (p *Panel) databaseTestOpen(server *core.Record, name string) *core.Record {
+	rows, err := p.App.FindRecordsByFilter(schema.BackupChecks,
+		"kind={:kind} && host={:host} && database_name={:name} && (status={:queued} || status={:running})", "", 1, 0,
+		dbx.Params{"kind": schema.CheckRestoreTest, "host": server.GetString("host"), "name": name,
+			"queued": schema.CheckQueued, "running": schema.CheckRunning})
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	return rows[0]
+}
 
 // testSubject is what a database job's restore test restores: the job's
 // database, its server and the user it restores as.

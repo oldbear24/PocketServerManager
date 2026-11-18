@@ -633,11 +633,26 @@ func lowerFirst(text string) string {
 
 // restoreRoot is a root of a restore to the original location, as a record
 // keeps it: a path of the snapshot and the volume or directory of the server
-// it goes back into.
+// it goes back into. A database restore (#53) has one root, the plan the
+// route worked out: the dump's path, the shared server's container, engine
+// and administrator, the database it writes and the user it restores as, its
+// scratch copy and, in place on PostgreSQL, the copy of the data before it,
+// and what it stops besides the owner stack.
 type restoreRoot struct {
 	Source string `json:"source"`
 	Volume string `json:"volume,omitempty"`
 	Path   string `json:"path,omitempty"`
+
+	Container      string   `json:"container,omitempty"`
+	Engine         string   `json:"engine,omitempty"`
+	AdminUser      string   `json:"admin_user,omitempty"`
+	Database       string   `json:"database,omitempty"`
+	User           string   `json:"user,omitempty"`
+	Scratch        string   `json:"scratch,omitempty"`
+	Previous       string   `json:"previous,omitempty"`
+	StopProjects   []string `json:"stop_projects,omitempty"`
+	StopContainers []string `json:"stop_containers,omitempty"`
+	Site           string   `json:"site,omitempty"`
 }
 
 // restorePreview is what the panel reads of an agent's preview.

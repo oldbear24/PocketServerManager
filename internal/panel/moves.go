@@ -651,6 +651,11 @@ func (p *Panel) planSharedMove(plan *movePlan, name string) error {
 		if item.GetString("status") != dbReady {
 			return fmt.Errorf("the database %s is not ready", name)
 		}
+		// its temporary copies belong to its user, who moves, and a restore
+		// or a restore test makes them (#53)
+		if copies := p.temporaryCopies(plan.source, item); len(copies) > 0 {
+			return fmt.Errorf("drop the temporary copies of %s first, or wait until %s UTC", name, latestUntil(copies).Format("2006-01-02 15:04"))
+		}
 		account, err := p.ownerOf(plan.source, item)
 		if err != nil {
 			return fmt.Errorf("the database %s has no user the panel knows", name)

@@ -3,6 +3,7 @@ package panel
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func TestARestoreStartsWithAPreview(t *testing.T) {
 	}
 	restore := f.stored(schema.BackupRestores, body["id"].(string))
 	roots := rootsOf(restore)
-	if len(roots) != 1 || roots[0] != (restoreRoot{Source: "/volumes/app_data", Volume: "app_data"}) || restore.GetString("stack_name") != "app" ||
+	if len(roots) != 1 || !reflect.DeepEqual(roots[0], restoreRoot{Source: "/volumes/app_data", Volume: "app_data"}) || restore.GetString("stack_name") != "app" ||
 		restore.GetString("host") != f.host.Id || restore.GetString("requested_by") != operator.Id || !restore.GetBool("replace") ||
 		restore.GetString("label") != "data ← b2 · 3f9a1c2e → original location" {
 		t.Errorf("the draft: %v", restore.FieldsData())

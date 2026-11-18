@@ -67,6 +67,8 @@ func (p *Panel) registerDatabases() {
 	p.Commands.OnFinish("db.database.drop", p.databaseDropFinished)
 	p.Commands.OnFinish("db.stats", p.databaseStatsFinished)
 	p.Commands.OnFinish("stack.deploy", p.serverDeployFinished)
+	// the temporary databases of restores and restore tests (#53)
+	p.registerTemporaries()
 
 	// a shared server's stack goes with its server, not while databases live on it
 	p.App.OnRecordDeleteRequest(schema.Stacks).BindFunc(func(e *core.RecordRequestEvent) error {
@@ -537,10 +539,11 @@ func (p *Panel) databaseRotateFinished(record *core.Record) {
 
 func (p *Panel) databaseDropFinished(record *core.Record) {
 	var payload struct {
-		Connection commandConnection `json:"connection"`
-		Database   string            `json:"database"`
-		User       string            `json:"user"`
-		KeepUser   bool              `json:"keep_user"`
+		Connection  commandConnection `json:"connection"`
+		Database    string            `json:"database"`
+		User        string            `json:"user"`
+		KeepUser    bool              `json:"keep_user"`
+		Temporaries []string          `json:"temporaries"`
 	}
 	if payloadInto(record, &payload) != nil {
 		return
@@ -551,14 +554,31 @@ func (p *Panel) databaseDropFinished(record *core.Record) {
 		return
 	}
 
-	if record.GetString("status") != schema.CommandSucceeded {
+	// the database's temporary copies went first, or stay to be dropped
+	// by the sweep (#53)
+	ctx := audit.WithActor(context.Background(), dbActor)
+	succeeded := record.GetString("status") == schema.CommandSucceeded
+	for _, name := range payload.Temporaries {
+		copied, err := p.databaseOf(server, name)
+		if err != nil || !isTemporary(copied) {
+			continue
+		}
+		if succeeded {
+			if err := p.App.DeleteWithContext(ctx, copied); err != nil {
+				p.Log.Error("failed to remove a temporary database", "database", copied.Id, "error", err)
+			}
+			continue
+		}
+		p.setFields(copied, map[string]any{"status": dbReady})
+	}
+
+	if !succeeded {
 		database.Set("status", dbReady)
 		database.Set("last_error", "The database was not dropped: "+record.GetString("error"))
 		p.saveAs(database)
 		return
 	}
 
-	ctx := audit.WithActor(context.Background(), dbActor)
 	stackID := database.GetString("stack")
 
 	if account, err := p.userOf(server, payload.User); err == nil && !payload.KeepUser {
@@ -660,6 +680,9 @@ func (p *Panel) databaseStatsFinished(record *core.Record) {
 	// reports, and forgets what it no longer does
 	if server.GetString("kind") == schema.DBServerDedicated {
 		records = p.syncDedicatedDatabases(server, records, result)
+	} else {
+		// a temporary database the panel has no record of is dropped (#53)
+		p.adoptTemporaries(server, records, result)
 	}
 
 	for _, database := range records {
@@ -702,8 +725,9 @@ func (p *Panel) syncDedicatedDatabases(server *core.Record, records []*core.Reco
 	}
 
 	for name := range result.Databases {
-		// only names PocketCloud could also create are taken over
-		if known[name] || databases.ValidDatabaseName(engine, name) != nil {
+		// only names PocketCloud could also create are taken over, never one
+		// of its temporary databases' (#53)
+		if known[name] || databases.ValidDatabaseName(engine, name) != nil || databases.ReservedPrefix(name) != nil {
 			continue
 		}
 		stats := result.Databases[name]
