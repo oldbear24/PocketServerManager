@@ -12,6 +12,7 @@ import {
   formatSnapshotTime,
   modesFor,
   needsConfirm,
+  offeredModes,
   openDownloadFrame,
   openRestoreFilter,
   pathCrumbs,
@@ -22,11 +23,13 @@ import {
   restoreKeys,
   restoreModes,
   restorePathProblem,
+  roomEnough,
   restoresApi,
   restoreStatuses,
   snapshotRoots,
   snapshotSources,
   startedRestoresFilter,
+  stepsOf,
   validRestorePath,
   type RestorePreview,
 } from "./backupRestores";
@@ -222,19 +225,25 @@ describe("the modes of a restore", () => {
   const local = { kind: "local" as const, host: "h1" };
   const volume = { source_kind: "volume" as const, host: "h2" };
 
+  const notDatabase = { disabled: true, reason: "notDatabase" };
+
   it("gives an operator the original location only", () => {
     expect(modesFor(remote, volume, "operator")).toEqual({
       original: { disabled: false },
       path: { disabled: true, reason: "admin" },
       download: { disabled: true, reason: "admin" },
+      database: notDatabase,
+      new_database: notDatabase,
     });
   });
 
-  it("gives an admin every mode", () => {
+  it("gives an admin every mode of files", () => {
     expect(modesFor(remote, volume, "admin")).toEqual({
       original: { disabled: false },
       path: { disabled: false },
       download: { disabled: false },
+      database: notDatabase,
+      new_database: notDatabase,
     });
   });
 
@@ -268,6 +277,101 @@ describe("the modes of a restore", () => {
       disabled: true,
       reason: "admin",
     });
+  });
+
+  describe("of a database's job (#53)", () => {
+    const shop = { source_kind: "database" as const, host: "h1", database: "d1" };
+    const able = { capabilities: ["backup.restore", "backup.database"] };
+
+    it("gives an operator the database and a new one, an admin a folder and a download too", () => {
+      expect(modesFor(remote, shop, "operator", able)).toEqual({
+        original: { disabled: true, reason: "database" },
+        path: { disabled: true, reason: "admin" },
+        download: { disabled: true, reason: "admin" },
+        database: { disabled: false },
+        new_database: { disabled: false },
+      });
+      expect(modesFor(remote, shop, "admin", able)).toEqual({
+        original: { disabled: true, reason: "database" },
+        path: { disabled: false },
+        download: { disabled: false },
+        database: { disabled: false },
+        new_database: { disabled: false },
+      });
+      const viewer = modesFor(remote, shop, "viewer", able);
+      expect(viewer.database).toEqual({ disabled: true, reason: "role" });
+      expect(viewer.new_database).toEqual({ disabled: true, reason: "role" });
+    });
+
+    it("restores a dropped database into a new one only", () => {
+      const gone = modesFor(remote, { ...shop, database: "" }, "admin", able);
+      expect(gone.database).toEqual({ disabled: true, reason: "dbGone" });
+      expect(gone.new_database).toEqual({ disabled: false });
+    });
+
+    it("waits for an agent that restores databases", () => {
+      for (const host of [{ capabilities: ["backup.restore"] }, { capabilities: null }]) {
+        const modes = modesFor(remote, shop, "admin", host);
+        expect(modes.database).toEqual({ disabled: true, reason: "agent" });
+        expect(modes.new_database).toEqual({ disabled: true, reason: "agent" });
+        // a folder and a download need no new agent
+        expect(modes.path).toEqual({ disabled: false });
+      }
+      // a dropped database says so first
+      expect(modesFor(remote, { ...shop, database: "" }, "admin", {}).database.reason).toBe(
+        "dbGone",
+      );
+    });
+
+    it("restores from a local target of the database's own server only", () => {
+      const other = modesFor({ kind: "local", host: "h2" }, shop, "admin", able);
+      expect(other.database).toEqual({ disabled: true, reason: "local" });
+      expect(other.new_database).toEqual({ disabled: true, reason: "local" });
+      expect(modesFor(local, shop, "admin", able).database).toEqual({ disabled: false });
+    });
+
+    it("offers the database first, then a new one, a folder and a download", () => {
+      expect(offeredModes(shop)).toEqual(["database", "new_database", "path", "download"]);
+      expect(offeredModes(volume)).toEqual(["original", "path", "download"]);
+    });
+  });
+});
+
+describe("a database's restore (#53)", () => {
+  it("is confirmed when it replaces the database, not into a new one", () => {
+    expect(needsConfirm(null, "database")).toBe(true);
+    expect(needsConfirm(preview(), "database")).toBe(true);
+    expect(needsConfirm(null, "new_database")).toBe(false);
+  });
+
+  it("takes its steps in its own order", () => {
+    expect(stepsOf("database")).toEqual([
+      "check",
+      "fetch",
+      "dbrestore",
+      "stop",
+      "swap",
+      "start",
+      "verify",
+    ]);
+    expect(stepsOf("original")).toEqual(["check", "stop", "restore", "start", "verify"]);
+  });
+
+  it("needs the room of the data and of /tmp", () => {
+    expect(roomEnough({})).toBe(true);
+    expect(roomEnough({ free: { data: 10, tmp: 10 }, needed: { data: 10, tmp: 10 } })).toBe(true);
+    expect(roomEnough({ free: { data: 9, tmp: 10 }, needed: { data: 10, tmp: 1 } })).toBe(false);
+    expect(roomEnough({ free: { data: 10, tmp: 0 }, needed: { data: 1, tmp: 1 } })).toBe(false);
+  });
+
+  it("starts with the typed name, and without one as before", async () => {
+    const send = vi.spyOn(pb, "send").mockResolvedValue({ id: "r1" });
+    await restoresApi.start("r1", true, "shop");
+    await restoresApi.start("r2", true);
+    expect(send.mock.calls.map((call) => call[1]?.body)).toEqual([
+      { confirm_overwrite: true, confirm_name: "shop" },
+      { confirm_overwrite: true },
+    ]);
   });
 });
 
@@ -350,6 +454,9 @@ describe("the targets of a job's snapshots", () => {
       { job: "j1", status: "queued", mode: "download", command: "" },
       { job: "j1", status: "failed", mode: "original", command: "" },
       { job: "j1", status: "failed", mode: "path", command: "" },
+      // a database's preview that failed (#53)
+      { job: "j1", status: "failed", mode: "database", command: "" },
+      { job: "j1", status: "failed", mode: "new_database", command: "" },
     ]);
     const listed = records.filter((record) => matchesFilter(record, startedRestoresFilter("j1")));
     expect(listed).toEqual(records.filter((record) => !draftRecord(record)));
@@ -357,9 +464,10 @@ describe("the targets of a job's snapshots", () => {
       false,
     );
     // the restore under way is one that writes
+    const writes = ["original", "path", "database", "new_database"].flatMap((mode) => [mode, mode]);
     expect(
       records.filter((record) => matchesFilter(record, openRestoreFilter("j1"))).map((r) => r.mode),
-    ).toEqual(["original", "original", "path", "path", "original", "original", "path", "path"]);
+    ).toEqual([...writes, ...writes]);
   });
 });
 
@@ -375,7 +483,7 @@ function has(tree: Tree, key: string): boolean {
 
 describe("the keys a restore builds", () => {
   it("every mode, step and status key exists in both languages", () => {
-    expect(restoreKeys).toHaveLength(3 * 2 + 5 + 8);
+    expect(restoreKeys).toHaveLength(5 * 2 + 8 + 8);
     expect(restoreKeys.filter((key) => !has(en, key))).toEqual([]);
     expect(restoreKeys.filter((key) => !has(cs, key))).toEqual([]);
   });

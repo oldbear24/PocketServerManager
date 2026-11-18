@@ -41,7 +41,29 @@ describe("the backup alerts", () => {
       "backup_check_failed",
       "backup_check_unverified",
       "panel_backup",
+      "backup_restore_test_failed",
+      "backup_restore_test_unverified",
+      "db_temporary_left",
     ]);
+  });
+
+  it("link a job's restore test alerts to the job, and a temporary database to Databáze (#53)", () => {
+    for (const rule of ["backup_restore_test_failed", "backup_restore_test_unverified"]) {
+      expect(alertLink({ ...alert, rule, target: "j7" })).toBe("/backups?job=j7");
+      expect(alertLink({ ...alert, rule, target: "" })).toBe("/backups");
+    }
+    expect(alertLink({ ...alert, rule: "db_temporary_left", target: "d9" })).toBe("/databases");
+  });
+
+  it("say the restore tests' alerts in the UI's language (#53)", () => {
+    const en = i18n.getFixedT("en");
+    const cs = i18n.getFixedT("cs");
+    const failed = { ...alert, rule: "backup_restore_test_failed", target: "j7" };
+    expect(alertText(en, failed, "db-main")).toBe("db-main: a restore test failed");
+    expect(alertText(cs, failed, "db-main")).toBe("db-main: test obnovy selhal");
+    expect(alertText(cs, { ...failed, rule: "db_temporary_left" }, "nas")).toBe(
+      "nas: dočasná databáze se nesmazala",
+    );
   });
 
   it("link the panel's own backup to its setup, and its kit and restore to Settings (#32)", () => {

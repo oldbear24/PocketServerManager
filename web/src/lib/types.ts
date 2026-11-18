@@ -68,6 +68,12 @@ export type Host = RecordModel & {
   /** the address its agent dials the panel at, as its stream said it (#32);
    * empty until it connected to a panel that records it */
   panel_address?: string;
+  /** the defaults of its databases' and sites' backup jobs (#53): cron in
+   * UTC ("" for the panel's own), the targets, and the retention (null for
+   * 7 daily, 4 weekly, 6 monthly) */
+  auto_backup_schedule?: string;
+  auto_backup_targets?: string[] | null;
+  auto_backup_retention?: Record<string, number> | null;
 };
 
 export type CommandStatus =

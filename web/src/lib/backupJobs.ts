@@ -6,10 +6,13 @@ import { pb } from "./pb";
 import type { Command, Host } from "./types";
 
 /** What a job backs up (#29): the panel itself too (#32), whose job's host is
- * the carrier, the server whose agent uploads the panel's encrypted copy. */
-export type SourceKind = "volume" | "path" | "stack" | "db_dump" | "panel";
+ * the carrier, the server whose agent uploads the panel's encrypted copy; a
+ * database of a shared server, dumped on its own, and a PHP site's shared/
+ * (#53), whose jobs the panel makes. */
+export type SourceKind = "volume" | "path" | "stack" | "db_dump" | "panel" | "database" | "site";
 
-/** The kinds the job's dialog offers; the panel's job has a dialog of its own. */
+/** The kinds the job's dialog offers; the panel's job has a dialog of its own,
+ * and the jobs of databases and sites come with them. */
 export const sourceKinds: SourceKind[] = ["volume", "path", "stack", "db_dump"];
 
 /** What an agent that can carry the panel's backup advertises (#32). */
@@ -51,10 +54,23 @@ export type BackupJob = RecordModel & {
   schedule: string;
   retention: Partial<Retention> | null;
   enabled: boolean;
-  origin: "manual" | "label";
+  /** who made it: a person, a stack's label, or the panel for a database of
+   * a shared server or a PHP site (#53) */
+  origin: JobOrigin;
   /** of a label's job, what its labels set besides its source: any of
    * "schedule", "targets" and "retention". The panel refuses to change them. */
   label_sets?: string[] | null;
+  /** of a database's job, the databases record; "" once it was dropped (#53) */
+  database?: string;
+  /** of a site's job, the sites record; "" once the site was removed */
+  site?: string;
+  /** of a database's job, its server's name, kept after a drop */
+  db_server_name?: string;
+  /** of a database's or a site's job, what it set for itself; the rest
+   * follows its server's defaults */
+  own_settings?: OwnSetting[] | null;
+  /** when a run of it last succeeded */
+  last_success_at?: string;
   /** a label's job whose label is gone: kept, but it no longer runs */
   label_removed: boolean;
   /** what keeps the job from running, as the panel says it */
@@ -63,6 +79,36 @@ export type BackupJob = RecordModel & {
   last_run_at: string;
   last_status: RunStatus | "";
 };
+
+/** Who made a job (#53: the panel, for a database or a site). */
+export type JobOrigin = "manual" | "label" | "database" | "site";
+
+/** What a database's or a site's job may set for itself, instead of following
+ * its server's defaults. */
+export type OwnSetting = "schedule" | "targets" | "retention";
+
+export const ownSettings: OwnSetting[] = ["schedule", "targets", "retention"];
+
+/** Whether the panel made a job for a database or a site (#53): its source
+ * and server follow that, and no one adds one or changes its kind. */
+export function automaticJob(job: Pick<BackupJob, "origin">): boolean {
+  return job.origin === "database" || job.origin === "site";
+}
+
+/** Whether what a job backs up is gone: a label's label, a database that was
+ * dropped, or a site that was removed. The job and its snapshots stay, but it
+ * no longer runs. */
+export function sourceGone(
+  job: Pick<BackupJob, "label_removed"> & Partial<Pick<BackupJob, "origin" | "database" | "site">>,
+): boolean {
+  if (job.origin === "database") {
+    return !job.database;
+  }
+  if (job.origin === "site") {
+    return !job.site;
+  }
+  return job.label_removed;
+}
 
 /** One run of a job, to one target. */
 export type BackupRun = RecordModel & {
@@ -178,8 +224,19 @@ export type NewBackupJob = {
   enabled: boolean;
 };
 
-/** What changes on a job: only what was changed. */
-export type BackupJobChange = Partial<NewBackupJob>;
+/** What changes on a job: only what was changed. A database's or a site's
+ * job takes `follow` too: the settings that follow its server's defaults
+ * again (#53). */
+export type BackupJobChange = Partial<NewBackupJob> & { follow?: OwnSetting[] };
+
+/** A server's defaults for the jobs of its databases and sites (#53): the
+ * schedule, cron in UTC ("" for the panel's own, daily at night), the
+ * targets, and the retention (null for 7 daily, 4 weekly and 6 monthly). */
+export type HostBackupDefaults = {
+  schedule: string;
+  targets: string[];
+  retention: Partial<Retention> | null;
+};
 
 export const jobsApi = {
   add: (body: NewBackupJob) => pb.send<BackupJob>("/api/pc/backup-jobs", { method: "POST", body }),
@@ -193,6 +250,18 @@ export const jobsApi = {
   /** a run per target, now; a target whose run before is still going is left out */
   run: (id: string) =>
     pb.send<{ runs: string[] }>(`/api/pc/backup-jobs/${id}/run`, { method: "POST" }),
+
+  /** a restore test of a database's job, now (#53): it waits for its server */
+  restoreTest: (id: string) =>
+    pb.send<{ check: unknown }>(`/api/pc/backup-jobs/${id}/restore-test`, { method: "POST" }),
+
+  /** a server's defaults, which every database's and site's job of it takes
+   * where it sets nothing itself (#53) */
+  hostDefaults: (host: string, body: HostBackupDefaults) =>
+    pb.send<{ host: unknown; jobs_changed: number }>(`/api/pc/hosts/${host}/auto-backups`, {
+      method: "PUT",
+      body,
+    }),
 
   /** tries a failed run again (#31): `run` is the new run, started now; for a
    * lock restic does not count as stale yet, `retry_at` is when it starts */
@@ -672,18 +741,19 @@ type IssueRun = Pick<BackupRun, "id" | "job" | "target" | "status" | "created"> 
 /** The runs a banner is about: of each job and target, the newest run of
  * those that ran or will, when it failed or is a retry that is queued or
  * running; newest first. A run that never ran, as the slot skipped while the
- * run before waited on a lock, leaves that run's failure standing. A label's
- * job whose label is gone, and a target the job no longer backs up to, have
- * none: no retry could start. */
+ * run before waited on a lock, leaves that run's failure standing. A job
+ * whose label, database or site is gone, and a target the job no longer
+ * backs up to, have none: no retry could start. */
 export function failedRuns<R extends IssueRun>(
-  jobs: Pick<BackupJob, "id" | "targets" | "label_removed">[],
+  jobs: (Pick<BackupJob, "id" | "targets" | "label_removed"> &
+    Partial<Pick<BackupJob, "origin" | "database" | "site">>)[],
   runs: R[],
 ): R[] {
   const known = new Map(jobs.map((job) => [job.id, job]));
   const newest = new Map<string, R>();
   for (const run of runs) {
     const job = known.get(run.job);
-    if (!job || job.label_removed || !(job.targets ?? []).includes(run.target) || neverRan(run)) {
+    if (!job || sourceGone(job) || !(job.targets ?? []).includes(run.target) || neverRan(run)) {
       continue;
     }
     const key = `${run.job}:${run.target}`;

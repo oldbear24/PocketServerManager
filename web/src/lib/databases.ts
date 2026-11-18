@@ -32,8 +32,12 @@ export type Database = RecordModel & {
   name: string;
   owner_kind: "none" | "stack" | "site" | "";
   stack: string;
+  /** the PHP site whose database it is (#50) */
+  site?: string;
   size_bytes: number;
   connections: number;
+  /** a temporary database of a restore or a restore test (#53), which the
+   * panel drops at this time; "" for any other */
   temporary_until: string;
   status: string;
   last_error: string;
@@ -64,6 +68,8 @@ export type DbNetwork = RecordModel & {
   server: string;
   name: string;
   stack: string;
+  /** the PHP site on this network (#50) */
+  site?: string;
   /** The names of the application's old database service, which the server answers to. */
   aliases: string[] | null;
 };
