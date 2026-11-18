@@ -25,7 +25,8 @@ import (
 // restore of the stack's server, queued or running, to the original location
 // of the stack's Compose project, or whose preview stops a container of the
 // project, whatever its mode and its stack: a restore of a folder or of a
-// volume that the stack mounts stops the stack's containers as well.
+// volume that the stack mounts stops the stack's containers as well; or a
+// restore of a database whose plan stops the project.
 func (p *Panel) restoreHolding(stack *core.Record) *core.Record {
 	return p.restoreHoldingProject(stack.GetString("host"), stack.GetString("name"))
 }
@@ -41,6 +42,11 @@ func (p *Panel) restoreHoldingProject(hostID, project string) *core.Record {
 			return restore
 		}
 		if slices.Contains(stoppedProjects(restore), project) {
+			return restore
+		}
+		// the other stacks whose env names a database's secret, which its
+		// plan stops whether or not they ran at the preview (#53)
+		if root, ok := databaseRoot(restore); ok && slices.Contains(root.StopProjects, project) {
 			return restore
 		}
 	}

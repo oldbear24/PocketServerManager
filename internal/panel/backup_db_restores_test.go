@@ -804,6 +804,48 @@ func TestAServerWaitsForARestoreInIt(t *testing.T) {
 	}
 }
 
+// TestARestoreOfADatabaseHoldsTheStacksItStops (#53, P5): a restore back
+// into a database holds every other stack its plan stops, those whose env
+// names the database's secret, though one was stopped at the preview and
+// its preview says nothing of it: neither its deploys nor its commands run
+// until the restore ended. A stack the plan does not stop is not held.
+func TestARestoreOfADatabaseHoldsTheStacksItStops(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	_, superuser := testutil.NewSuperuser(t, f.app)
+	compose := "services:\n  web:\n    image: nginx:1.27\n"
+	reports := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "reports", "compose_yaml": compose,
+		"env": "DB_PASSWORD=${secret:db/shop}\n", "status": "stopped"})
+	other := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "other", "compose_yaml": compose})
+	if using := f.p.projectsUsing(f.host.Id, f.user, "shop", "shop"); len(using) != 1 || using[0] != "reports" {
+		t.Fatalf("the stacks that use shop: %v", using)
+	}
+	restore := f.restore(f.job, map[string]any{"mode": schema.RestoreDatabase, "status": schema.RestoreRunning, "overwrite": true,
+		"database": f.database.Id, "database_name": "shop", "stack_name": "shop",
+		"preview": map[string]any{"would_stop": []any{map[string]any{"name": "shop-web-1", "project": "shop", "service": "web"}}},
+		"roots": []restoreRoot{{Source: "/shop.pgdump", Container: f.server.GetString("container_ref"), Engine: f.server.GetString("engine"),
+			AdminUser: f.server.GetString("admin_user"), Database: "shop", User: "shop", StopProjects: []string{"reports"}}}})
+
+	if holding := f.p.restoreHolding(reports); holding == nil || holding.Id != restore.Id {
+		t.Errorf("the hold of reports: %v", holding)
+	}
+	want := restoreHoldMessage("reports")
+	if status, body := f.send(http.MethodPost, "/api/pc/stacks/"+reports.Id+"/deploy", operator, map[string]any{}); status != http.StatusBadRequest || body["message"] != want {
+		t.Errorf("a deploy of reports: %d %v", status, body["message"])
+	}
+	if status, body := f.send(http.MethodPost, "/api/collections/commands/records", superuser, map[string]any{
+		"host": f.host.Id, "type": "stack.restart", "payload": map[string]any{"name": "reports"}}); status != http.StatusConflict || body["message"] != want {
+		t.Errorf("a command of reports: %d %v", status, body["message"])
+	}
+	if holding := f.p.restoreHolding(other); holding != nil {
+		t.Errorf("a stack the restore does not stop is held: %v", holding.FieldsData())
+	}
+	f.setTest(restore, map[string]any{"status": schema.RestoreSucceeded})
+	if holding := f.p.restoreHolding(reports); holding != nil {
+		t.Errorf("reports is held after the restore: %v", holding.FieldsData())
+	}
+}
+
 // sqlDownloads is a download fixture of a database fixture: a served panel
 // and the agent of the fixture's server.
 func (f *dbFixture) sqlDownloads() *downloadFixture {
