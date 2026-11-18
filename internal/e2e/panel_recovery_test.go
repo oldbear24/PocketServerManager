@@ -688,12 +688,42 @@ func TestAPanelBackupFollowsAnEnrollment(t *testing.T) {
 func TestARepointCheckChangesNothingOnThePanel(t *testing.T) {
 	h := newHarnessWithDiagnostics(t)
 	running, host := h.enrolled("vm")
+	// the agent's self-checks come with a heartbeat after it connected,
+	// and the events of those that failed after them: in before it stops,
+	// so that none is logged after what the test counts
+	h.waitFor("the agent's self-checks", func() bool {
+		checks := []struct {
+			OK      bool `json:"ok"`
+			Skipped bool `json:"skipped"`
+		}{}
+		if err := h.host(host.Id).UnmarshalJSONField("self_checks", &checks); err != nil || len(checks) == 0 {
+			return false
+		}
+		failed := 0
+		for _, check := range checks {
+			if !check.OK && !check.Skipped {
+				failed++
+			}
+		}
+		logged, err := h.app.CountRecords(schema.Events, dbx.HashExp{"host": host.Id, "kind": "agent.self_check_failed"})
+		return err == nil && int(logged) >= failed
+	})
 	if err := running.stop(); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	h.waitFor("the stream to close", func() bool {
 		closed, err := h.app.CountRecords(schema.Events, dbx.HashExp{"host": host.Id, "kind": "connection.disconnected"})
 		return err == nil && closed > 0 && !h.host(host.Id).GetBool("stream_open")
+	})
+	// a heartbeat the agent sent before it stopped may still be handled:
+	// the server is seen no more
+	seen := h.host(host.Id).GetString("last_seen")
+	h.waitFor("the agent's last heartbeat", func() bool {
+		time.Sleep(300 * time.Millisecond)
+		now := h.host(host.Id).GetString("last_seen")
+		quiet := now == seen
+		seen = now
+		return quiet
 	})
 	// as the first start after a restore leaves a server
 	if _, err := h.app.DB().Update(schema.Hosts, dbx.Params{"status": schema.HostOffline, "stream_open": false,
