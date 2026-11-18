@@ -591,11 +591,17 @@ func (p *Panel) restoreTestFinished(command *core.Record) {
 		}
 	}
 	message = strings.TrimPrefix(message, "failed to prepare the command: ")
+	// an agent that restarted under the test answers its own sentence and
+	// nothing else: the test was interrupted, as its class says
+	failure := result.Failure
+	if failure == "" && status == schema.CheckError && strings.HasPrefix(command.GetString("error"), agentRestarted) {
+		failure = backup.TestInterrupted
+	}
 
 	hide := p.testSecrets(row)
 	fields := map[string]any{
 		"status": status, "finished_at": finished, "error": cutText(sentenceText(backup.Redact(message, hide...)), 4096),
-		"log": cutTail(backup.Redact(result.Log, hide...), maxRunLog), "failure": cutText(result.Failure, 32),
+		"log": cutTail(backup.Redact(result.Log, hide...), maxRunLog), "failure": cutText(failure, 32),
 		"tables_expected": result.TablesExpected, "tables_restored": result.Tables,
 	}
 	if result.Bytes > 0 {

@@ -596,6 +596,27 @@ func TestTheEndOfARestoreTest(t *testing.T) {
 	}
 }
 
+// TestARestoreTestItsAgentRestartedUnderIsInterrupted (#53, P7): a test
+// whose agent restarted while it ran, which answers only the agent's
+// sentence, did not complete with the class interrupted, and is tried again;
+// a test that failed otherwise without a class keeps none.
+func TestARestoreTestItsAgentRestartedUnderIsInterrupted(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	row, command := f.startedTest(f.job, schema.RunSchedule)
+	interrupted := f.endTest(row, command, map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime().Add(-time.Minute),
+		"error": "The agent restarted while running this command, so it may be incomplete."})
+	if interrupted.GetString("status") != schema.CheckError || interrupted.GetString("failure") != backup.TestInterrupted || interrupted.GetDateTime("retry_at").IsZero() {
+		t.Errorf("a test its agent restarted under: %v", interrupted.FieldsData())
+	}
+	f.setTest(interrupted, map[string]any{"retry_at": ""})
+	row, command = f.startedTest(f.job, schema.RunSchedule)
+	other := f.endTest(row, command, map[string]any{"status": schema.CommandFailed, "started_at": types.NowDateTime().Add(-time.Minute),
+		"error": "the stream broke"})
+	if other.GetString("status") != schema.CheckError || other.GetString("failure") != "" {
+		t.Errorf("a test that failed otherwise: %v", other.FieldsData())
+	}
+}
+
 // TestRetriesOfRestoreTestsComeBeforeTheNextSlot (#53, P7): a test is not
 // tried again past the next slot of the schedule, which tests it anyway.
 func TestRetriesOfRestoreTestsComeBeforeTheNextSlot(t *testing.T) {
