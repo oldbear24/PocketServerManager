@@ -59,6 +59,23 @@ type restoreMarker struct {
 	CommandID  string            `json:"command_id"`
 	RestoreID  string            `json:"restore_id"`
 	Containers []markedContainer `json:"containers"`
+	// Database is a database restore's, which an agent that restarted
+	// finishes by its phase (#53)
+	Database *databaseMarker `json:"database,omitempty"`
+}
+
+// databaseMarker is where a database restore in place was (#53): its
+// server's container, the database, its copies, and its phase
+// (backup.Phase*), written before each step.
+type databaseMarker struct {
+	Container string `json:"container"`
+	Engine    string `json:"engine"`
+	Name      string `json:"name"`
+	Scratch   string `json:"scratch"`
+	Previous  string `json:"previous"`
+	Phase     string `json:"phase"`
+	Charset   string `json:"charset"`
+	Collation string `json:"collation"`
 }
 
 // markedContainer is a container a restore stopped, with the restart policy
@@ -89,18 +106,24 @@ type restoreUser struct {
 	dependsOn                  []string
 }
 
+// siteContainerName is a PHP site's container a database restore stops by
+// its name (#53), though it is PocketCloud's: <site>-php or <site>-worker.
+var siteContainerName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*-(php|worker)$`)
+
 // affected are the running containers a restore stops, dependents first:
-// those of stack, and those that mount a destination volume, or a folder of
-// the server read-write that holds a destination or is in one, as it is
-// named or where its symbolic links lead. A container that reads a folder
-// above a destination, such as a node exporter that mounts / read-only,
-// runs on. A PocketCloud container that writes a destination refuses the
-// restore, and so does one another restore holds, stopped or started again
-// (#30): each container has one restore that stops it and starts it again.
-// With claim, the restore commandID holds those it returns, which it then
-// stops, at the moment it lists them: no other restore claims or lets go of
-// a container in between.
-func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []restoreDest, claim bool) ([]restoreUser, error) {
+// those of the stacks, and those that mount a destination volume, or a
+// folder of the server read-write that holds a destination or is in one, as
+// it is named or where its symbolic links lead, and those named, which a
+// database restore stops (#53). A container that reads a folder above a
+// destination, such as a node exporter that mounts / read-only, runs on. A
+// PocketCloud container that writes a destination refuses the restore, and
+// every other one runs on, but for a site's <site>-php and <site>-worker
+// that are named: a database server's container never stops. So does one
+// another restore holds, stopped or started again (#30): each container has
+// one restore that stops it and starts it again. With claim, the restore
+// commandID holds those it returns, which it then stops, at the moment it
+// lists them: no other restore claims or lets go of a container in between.
+func (a *Agent) affected(ctx context.Context, commandID string, stacks []string, dests []restoreDest, named []string, claim bool) ([]restoreUser, error) {
 	a.restoring.mu.Lock()
 	defer a.restoring.mu.Unlock()
 	containers, err := a.Docker.Containers(ctx)
@@ -126,16 +149,20 @@ func (a *Agent) affected(ctx context.Context, commandID, stack string, dests []r
 			continue
 		}
 		uses, writes := usesDests(container, dests, resolve)
-		inStack := stack != "" && container.Labels[composeProjectLabel] == stack
-		if !uses && !inStack {
+		project := container.Labels[composeProjectLabel]
+		inStack := project != "" && slices.Contains(stacks, project)
+		name := strings.TrimPrefix(firstName(container), "/")
+		byName := slices.Contains(named, name) && siteContainerName.MatchString(name)
+		if !uses && !inStack && !byName {
 			continue
 		}
-		name := strings.TrimPrefix(firstName(container), "/")
 		if role := container.Labels["pocketcloud.role"]; role != "" {
 			if writes {
 				return nil, fmt.Errorf("%s is a PocketCloud container (%s) that writes the destination: restore elsewhere", name, role)
 			}
-			continue
+			if !byName || role != "site" {
+				continue
+			}
 		}
 		if owner := a.restoring.held[container.ID].owner; owner != "" && owner != commandID {
 			return nil, sentenceError(name + " is stopped by another restore under way: restore once it ends.")
@@ -400,6 +427,37 @@ func (s *restoreSession) startAgain(verify bool) restoreStart {
 	return result
 }
 
+// putBack puts the restart policies of what the session stopped back, and
+// starts none of them, as a database restore that failed once its database
+// was emptied leaves its application (#53): stopped, until someone
+// restores again. It says the containers left stopped, and what failed; the
+// marker goes once the Engine answered for every container.
+func (s *restoreSession) putBack() (left, problems []string) {
+	defer s.a.restoring.release(s.marker.CommandID, s.users)
+	left, problems = []string{}, []string{}
+	ctx, cancel := context.WithTimeout(context.Background(), restoreStartTimeout)
+	defer cancel()
+	answered := true
+	for _, container := range s.stopped {
+		policy := container.RestartPolicy
+		err := s.a.Docker.UpdateRestartPolicy(ctx, container.ID, policy.Name, policy.MaxRetry)
+		var engine *dockerapi.Error
+		switch {
+		case err == nil:
+			left = append(left, container.Name)
+		case dockerapi.IsNotFound(err):
+		default:
+			left = append(left, container.Name)
+			problems = append(problems, fmt.Sprintf("the restart policy of %s stays no: %v", container.Name, err))
+			answered = answered && errors.As(err, &engine)
+		}
+	}
+	if answered {
+		s.removeMarker()
+	}
+	return left, problems
+}
+
 // removeMarker removes the session's marker.
 func (s *restoreSession) removeMarker() {
 	if err := os.Remove(s.a.markerPath(s.marker.CommandID)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -443,6 +501,11 @@ func (a *Agent) finishInterruptedRestores(ctx context.Context) {
 			continue
 		}
 		session := &restoreSession{a: a, marker: marker, stopped: marker.Containers}
+		if marker.Database != nil {
+			// a database restore goes by where it was (#53)
+			a.finishInterruptedDatabaseRestore(session)
+			continue
+		}
 		started := session.startAgain(false)
 		a.Log.Warn("a restore was interrupted: its containers were started again", "command", marker.CommandID, "started", started.started, "errors", started.errors)
 		result := map[string]any{"interrupted": true, "app_started": anyList(started.started), "start_errors": anyList(started.errors)}

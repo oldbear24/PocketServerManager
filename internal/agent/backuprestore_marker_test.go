@@ -19,7 +19,7 @@ func TestTheMarkerNamesAContainerBeforeItStops(t *testing.T) {
 	block := make(chan struct{})
 	h.engine.BlockOn["POST /containers/"+id+"/stop"] = block
 	session := &restoreSession{a: h.Agent, marker: restoreMarker{CommandID: "c1", RestoreID: "r1"}}
-	users, err := h.affected(context.Background(), "c1", "", []restoreDest{{volume: "app_data"}}, false)
+	users, err := h.affected(context.Background(), "c1", nil, []restoreDest{{volume: "app_data"}}, nil, false)
 	if err != nil || len(users) != 1 {
 		t.Fatalf("%v %v", users, err)
 	}

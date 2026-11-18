@@ -929,7 +929,7 @@ func TestAnAgentRestartStartsTheAppAndSettlesTheCommand(t *testing.T) {
 	}
 	// the restore stopped them, and the agent went
 	session := &restoreSession{a: h.Agent, marker: restoreMarker{CommandID: "c1", RestoreID: "r1"}}
-	users, err := h.affected(context.Background(), "c1", "", []restoreDest{{volume: "app_data"}}, false)
+	users, err := h.affected(context.Background(), "c1", nil, []restoreDest{{volume: "app_data"}}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,14 +1051,14 @@ func TestAContainerHasOneRestoreThatStopsIt(t *testing.T) {
 
 	// two restores that both saw it running as they checked: the first to
 	// claim it, as its job is ready, holds it, and the other's go is refused
-	users, err := h.affected(context.Background(), "c4", "", []restoreDest{{volume: "vol1"}}, true)
+	users, err := h.affected(context.Background(), "c4", nil, []restoreDest{{volume: "vol1"}}, nil, true)
 	if err != nil || len(users) != 1 || !h.restoring.holds(id) {
 		t.Fatalf("the first claim: %v %v", users, err)
 	}
-	if _, err := h.affected(context.Background(), "c5", "", []restoreDest{{volume: "vol2"}}, true); err == nil || err.Error() != want {
+	if _, err := h.affected(context.Background(), "c5", nil, []restoreDest{{volume: "vol2"}}, nil, true); err == nil || err.Error() != want {
 		t.Errorf("the second claim: %v", err)
 	}
-	if again, err := h.affected(context.Background(), "c4", "", []restoreDest{{volume: "vol1"}}, true); err != nil || len(again) != 1 {
+	if again, err := h.affected(context.Background(), "c4", nil, []restoreDest{{volume: "vol1"}}, nil, true); err != nil || len(again) != 1 {
 		t.Errorf("the first restore again: %v %v", again, err)
 	}
 	h.restoring.release("c4", users)

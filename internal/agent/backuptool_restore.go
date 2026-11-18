@@ -423,6 +423,17 @@ type lsResult struct {
 	Files   int       `json:"files"`
 	Offset  int       `json:"offset"`
 	Entries []lsEntry `json:"entries"`
+	// Snapshot is the snapshot listed: a database restore's preview says
+	// its time and paths, and checks its tags (#53)
+	Snapshot *lsSnapshot `json:"snapshot,omitempty"`
+}
+
+// lsSnapshot is the snapshot restic ls lists, as its first line says it.
+type lsSnapshot struct {
+	ID    string    `json:"id"`
+	Time  time.Time `json:"time"`
+	Paths []string  `json:"paths"`
+	Tags  []string  `json:"tags"`
 }
 
 // lsEntry is one entry of a folder.
@@ -465,7 +476,14 @@ func (r restic) ls(ctx context.Context, id, dir string, offset, limit int, match
 	var tooMany bool
 	code, said, err := r.lines(ctx, func(line []byte) {
 		var node resticNode
-		if tooMany || json.Unmarshal(line, &node) != nil || !node.node() {
+		if tooMany || json.Unmarshal(line, &node) != nil {
+			return
+		}
+		if !node.node() {
+			var snapshot lsSnapshot
+			if (node.MessageType == "snapshot" || node.StructType == "snapshot") && json.Unmarshal(line, &snapshot) == nil {
+				result.Snapshot = &snapshot
+			}
 			return
 		}
 		if node.Path == dir {
