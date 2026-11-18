@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -218,15 +219,42 @@ func (e *Engine) receiveArchive(w http.ResponseWriter, r *http.Request, containe
 	w.WriteHeader(http.StatusOK)
 }
 
-// File returns a file that was copied into a container, or nil.
+// File returns a file that was copied into a container, named by its name
+// or id, or nil.
 func (e *Engine) File(name, file string) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	for _, container := range e.containers {
-		if container.Name == name {
-			return container.files[file]
-		}
+	if container := e.find(name); container != nil {
+		return container.files[file]
 	}
 	return nil
+}
+
+// Files lists the files copied into a container, named by its name or id,
+// that are still there, sorted.
+func (e *Engine) Files(name string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	container := e.find(name)
+	if container == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(container.files))
+}
+
+// RemoveFile removes a file copied into a container, named by its name or
+// id, as a process in it would, and says whether it was there.
+func (e *Engine) RemoveFile(name, file string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	container := e.find(name)
+	if container == nil {
+		return false
+	}
+	_, there := container.files[file]
+	delete(container.files, file)
+	return there
 }
