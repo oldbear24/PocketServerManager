@@ -73,6 +73,12 @@ func TestADiscardDropsTemporaryDatabasesOnly(t *testing.T) {
 	if len(d.db.Execs()) != asked {
 		t.Errorf("the server was asked: %+v", d.db.Execs()[asked:])
 	}
+	// refused before the server's container is looked at
+	gone := discardCommand(maria, "", "shop")
+	gone.GetDbDatabaseDiscard().Connection.ContainerId = "gone"
+	if _, err := d.handleDatabaseDiscard(context.Background(), gone, &Reporter{}); err == nil || !strings.Contains(err.Error(), "is not one of PocketCloud's temporary databases") {
+		t.Errorf("a name outside the namespace: %v", err)
+	}
 
 	// a test that holds its copy
 	release, err := d.claims.claim(true, []string{databaseClaim(server, test)})
