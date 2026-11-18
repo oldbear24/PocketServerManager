@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -736,7 +737,247 @@ func TestAnInterruptedDatabaseRestoreFinishesByItsPhase(t *testing.T) {
 	}
 }
 
-// testCommand is a restore test, as the panel sends it.
+// TestAnAgentThatRestartedDuringTheSwapAsksTheServer (#53, A1): the swap's
+// process runs on in the server's container when the agent restarts, and
+// may commit: once it can have ended, the server says whether the copy took
+// the database's place. Done, the restore succeeded, and the data before it
+// stays, closed; not done, nothing changed; when the server does not say,
+// the restore says neither, and keeps the data before it. What stopped
+// starts again in each case.
+func TestAnAgentThatRestartedDuringTheSwapAsksTheServer(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	server := d.servers[pg.Name]
+	started := time.Now().UTC().Add(-time.Second).Truncate(time.Second)
+	for _, tc := range []struct {
+		name, id string
+		// on is what the server holds of shop's restore when the agent
+		// starts; inFlight commits the swap while the agent waits
+		on       []string
+		inFlight bool
+		silent   bool
+		state    string
+		message  string
+	}{
+		{name: "done", id: "ddddddddddddddd", on: []string{"shop", "pc_old_"}, state: stateSucceeded},
+		{name: "in flight", id: "fffffffffffffff", on: []string{"shop", "pc_rs_"}, inFlight: true, state: stateSucceeded},
+		{name: "not done", id: "nnnnnnnnnnnnnnn", on: []string{"shop", "pc_rs_"}, state: stateFailed,
+			message: "Nothing changed in shop: the agent restarted during the restore. It started the application again (1 of 1 containers)."},
+		{name: "silent", id: "sssssssssssssss", on: []string{"shop", "pc_rs_"}, silent: true, state: stateFailed,
+			message: "The restore of shop may have gone through: the agent restarted while it put the copy in place, and the server did not say whether the copy took its place " +
+				"(the database server's client failed with exit code 2: psql: error: the database system is starting up). If it did, the data before it stays a day as pc_old_%s. " +
+				"It started the application again (1 of 1 containers)."},
+	} {
+		id := tc.id
+		scratch, previous := databases.ScratchName(id), databases.PreviousName(id)
+		for _, name := range tc.on {
+			switch name {
+			case "shop":
+				d.db.AddDatabase(server, "shop", "shop", shopPassword, "items")
+			case "pc_old_":
+				d.db.AddDatabase(server, previous, "shop", shopPassword, "items")
+			case "pc_rs_":
+				d.db.AddDatabase(server, scratch, "shop", shopPassword, "items", "orders")
+			}
+		}
+		waited := settleSwapsWith(t, func(time.Time) {
+			if tc.inFlight {
+				swap, _ := databases.SwapSQL("shop", scratch, previous)
+				script := databases.Statements(pg, pg.AdminUser, "", swap)
+				d.db.Answer(&fakedocker.ExecCall{Container: server, Cmd: script.Cmd, Env: script.Env}, nil)
+			}
+		})
+		d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+			if tc.silent {
+				return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: the database system is starting up\n"}, true
+			}
+			return fakedocker.ExecResult{}, false
+		})
+		name := "app-" + strings.ReplaceAll(tc.name, " ", "-")
+		app := d.container(name, nil, "no", 0)
+		d.engine.SetStatus(app, "exited")
+		command := "c-" + id
+		marker := restoreMarker{CommandID: command, RestoreID: id,
+			Containers: []markedContainer{{ID: app, Name: name, RestartPolicy: restartPolicy{Name: "unless-stopped"}}},
+			Database: &databaseMarker{Container: server, Engine: pg.Name, Name: "shop", Scratch: scratch, Previous: previous,
+				Phase: backup.PhaseSwapping, AdminUser: pg.AdminUser, SwapStarted: started}}
+		raw, _ := json.Marshal(marker)
+		if err := os.MkdirAll(filepath.Join(d.Config.StateDir, restoreMarkers), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(d.markerPath(command), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.finishInterruptedRestores(context.Background())
+		d.setInject(nil)
+
+		entry, _ := d.store.get(command)
+		message := tc.message
+		if strings.Contains(message, "%s") {
+			message = fmt.Sprintf(message, id)
+		}
+		if entry.State != tc.state || entry.Error != message || entry.Result["interrupted"] != true {
+			t.Errorf("%s: %s %q\nwant %s %q", tc.name, entry.State, entry.Error, tc.state, message)
+		}
+		if keeps := tc.state == stateSucceeded || tc.silent; keeps != (entry.Result["previous"] == previous) {
+			t.Errorf("%s: previous %v", tc.name, entry.Result["previous"])
+		}
+		if len(*waited) != 1 || !(*waited)[0].Equal(started) {
+			t.Errorf("%s: waited for the swap begun at %v, not %v", tc.name, *waited, started)
+		}
+		if d.status(name) != "running" || d.policy(t, name).Name != "unless-stopped" {
+			t.Errorf("%s: the application is %s, %v", tc.name, d.status(name), d.policy(t, name))
+		}
+		before, there := d.db.Database(server, previous)
+		if tc.state == stateSucceeded && (!there || !before.Closed) {
+			t.Errorf("%s: the data before the restore: %+v %v", tc.name, before, there)
+		}
+		if _, err := os.Stat(d.markerPath(command)); !os.IsNotExist(err) {
+			t.Errorf("%s: the marker is left", tc.name)
+		}
+	}
+}
+
+// settleSwapsWith makes the agent's wait for a swap it lost sight of call
+// settle instead, and note the time it was given.
+func settleSwapsWith(t *testing.T, settle func(started time.Time)) *[]time.Time {
+	var mu sync.Mutex
+	waited := &[]time.Time{}
+	keep := swapSettled
+	swapSettled = func(_ context.Context, started time.Time) {
+		mu.Lock()
+		*waited = append(*waited, started)
+		mu.Unlock()
+		if settle != nil {
+			settle(started)
+		}
+	}
+	t.Cleanup(func() { swapSettled = keep })
+	return waited
+}
+
+// isSwap says whether a process is the swap of PostgreSQL's copy.
+func isSwap(call *fakedocker.ExecCall) bool {
+	return slices.ContainsFunc(call.Env, func(item string) bool {
+		return strings.HasPrefix(item, "PC_SQL=") && strings.Contains(item, " RENAME TO ")
+	})
+}
+
+// committed is a swap's process cut after its COMMIT, as when its last
+// statement failed.
+func committed(call *fakedocker.ExecCall) *fakedocker.ExecCall {
+	cut := &fakedocker.ExecCall{ID: call.ID, Container: call.Container, Cmd: call.Cmd}
+	for _, item := range call.Env {
+		if sql, ok := strings.CutPrefix(item, "PC_SQL="); ok {
+			before, _, _ := strings.Cut(sql, "COMMIT;")
+			item = "PC_SQL=" + before + "COMMIT;"
+		}
+		cut.Env = append(cut.Env, item)
+	}
+	return cut
+}
+
+// TestASwapThatTookPlaceDespiteAnErrorSucceeds (#53, A1): a swap whose
+// process fails after its COMMIT, as when its last statement fails, put the
+// copy in place: the server says so, and the restore succeeded, keeps the
+// data before it, closed, and starts the application again. A process whose
+// stream broke may still run: the agent waits for it before it asks. When
+// the server does not say, the restore says neither that it went through
+// nor that nothing changed, and keeps the data before it.
+func TestASwapThatTookPlaceDespiteAnErrorSucceeds(t *testing.T) {
+	d := newDBHarness(t)
+	pg := databases.Postgres
+	d.shop(pg)
+	server := d.servers[pg.Name]
+	snapshot, _ := d.backupDatabase(t, pg, "shop")
+	d.app("shop-web-1", "shop")
+	previous := databases.PreviousName(testRestoreID)
+	waited := settleSwapsWith(t, nil)
+
+	// the swap's last statement fails after the COMMIT; the marker said
+	// it was under way, as the administrator, from when
+	var during databaseMarker
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		if !isSwap(call) {
+			return fakedocker.ExecResult{}, false
+		}
+		var marker restoreMarker
+		if raw, err := os.ReadFile(d.markerPath("c1")); err == nil && json.Unmarshal(raw, &marker) == nil && marker.Database != nil {
+			during = *marker.Database
+		}
+		d.db.Answer(committed(call), nil)
+		return fakedocker.ExecResult{Code: 3, Stderr: "ERROR:  canceling statement due to lock timeout\n"}, true
+	})
+	result, err := d.restore(context.Background(), "c1", d.replace(pg, snapshot, "shop", "shop-web-1"))
+	if err != nil || result["previous"] != previous || result["files_restored"] != float64(1) {
+		t.Fatalf("a swap whose last statement failed: %v %v", err, result)
+	}
+	shop, _ := d.db.Database(server, "shop")
+	before, there := d.db.Database(server, previous)
+	if shop.From != "shop" || !there || !before.Closed || slices.Contains(d.db.DatabaseNames(server), databases.ScratchName(testRestoreID)) {
+		t.Errorf("after: shop %+v, previous %+v, databases %q", shop, before, d.db.DatabaseNames(server))
+	}
+	if d.status("shop-web-1") != "running" || len(*waited) != 0 {
+		t.Errorf("the application is %s; waited for the swap %v", d.status("shop-web-1"), *waited)
+	}
+	if during.Phase != backup.PhaseSwapping || during.AdminUser != pg.AdminUser || time.Since(during.SwapStarted) > time.Minute {
+		t.Errorf("the marker during the swap: %+v", during)
+	}
+	if log, _ := result["log"].(string); !strings.Contains(log, "Putting the copy in place failed after it took place") {
+		t.Errorf("the log:\n%s", log)
+	}
+
+	// the swap's stream breaks while its process runs on, and commits
+	d.db.AddDatabase(server, "shop", "shop", shopPassword, "items", "orders")
+	other := func(id string) *agentv1.BackupRestore {
+		payload := d.replace(pg, snapshot, "shop", "shop-web-1")
+		payload.RestoreId, payload.Database.Scratch, payload.Database.Previous = id, databases.ScratchName(id), databases.PreviousName(id)
+		return payload
+	}
+	var swap *fakedocker.ExecCall
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		if !isSwap(call) {
+			return fakedocker.ExecResult{}, false
+		}
+		swap = call
+		d.engine.Fail("/exec/"+call.ID+"/json", "connection reset by peer")
+		return fakedocker.ExecResult{}, true
+	})
+	waited = settleSwapsWith(t, func(time.Time) {
+		d.engine.Fail("/exec/"+swap.ID+"/json", "")
+		d.db.Answer(swap, nil)
+	})
+	result, err = d.restore(context.Background(), "c2", other("sssssssssssssss"))
+	if err != nil || result["previous"] != databases.PreviousName("sssssssssssssss") || len(*waited) != 1 || (*waited)[0].IsZero() {
+		t.Fatalf("a swap whose stream broke: %v %v, waited %v", err, result, *waited)
+	}
+	if shop, _ := d.db.Database(server, "shop"); shop.From != "shop" || d.status("shop-web-1") != "running" {
+		t.Errorf("after: shop %+v, the application %s", shop, d.status("shop-web-1"))
+	}
+
+	// the swap fails, and the server does not say whether it took place
+	d.db.AddDatabase(server, "shop", "shop", shopPassword, "items", "orders")
+	d.setInject(func(call *fakedocker.ExecCall) (fakedocker.ExecResult, bool) {
+		switch {
+		case isSwap(call):
+			return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: server closed the connection unexpectedly\n"}, true
+		case slices.ContainsFunc(call.Env, func(item string) bool { return strings.Contains(item, "FROM pg_database WHERE datname") }):
+			return fakedocker.ExecResult{Code: 2, Stderr: "psql: error: the database system is starting up\n"}, true
+		}
+		return fakedocker.ExecResult{}, false
+	})
+	result, err = d.restore(context.Background(), "c3", other("uuuuuuuuuuuuuuu"))
+	want := "The restore of shop may have gone through: putting the copy in place failed (the server's client failed with exit code 2: " +
+		"psql: error: server closed the connection unexpectedly), and the server did not say whether the copy took its place " +
+		"(the database server's client failed with exit code 2: psql: error: the database system is starting up). " +
+		"If it did, the data before it stays a day as pc_old_uuuuuuuuuuuuuuu."
+	if err == nil || err.Error() != want || result["previous"] != databases.PreviousName("uuuuuuuuuuuuuuu") {
+		t.Errorf("a swap the server says nothing of:\n%v\nwant\n%s\n%v", err, want, result["previous"])
+	}
+	if d.status("shop-web-1") != "running" {
+		t.Errorf("the application is %s", d.status("shop-web-1"))
+	}
+}
 func (d *dbHarness) testCommand(engine databases.Engine, snapshot, database string, dropBefore ...string) *agentv1.Command {
 	return &agentv1.Command{Id: "t1", Type: "backup.restore_test", Payload: &agentv1.Command_BackupRestoreTest{BackupRestoreTest: &agentv1.BackupRestoreTest{
 		Repository: d.repo, SnapshotId: snapshot, JobTag: testJobTag, CheckId: testCheckID, DropBefore: dropBefore,

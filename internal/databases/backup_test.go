@@ -310,6 +310,13 @@ func TestOnlyTemporaryDatabasesAreDiscarded(t *testing.T) {
 	refused("a swap of PostgreSQL's own database", err)
 	_, err = SwapSQL(`shop"; DROP DATABASE "blog`, scratch, previous)
 	refused("a swap of a hostile name", err)
+	for _, name := range []string{"shop", scratch, testCopy, `pc_old_aaaaaaaaaaaaaaa"; DROP DATABASE "blog`} {
+		_, err = ClosePreviousSQL(name)
+		refused("a close of "+name, err)
+	}
+	if got, err := ClosePreviousSQL(previous); err != nil || got != `ALTER DATABASE "pc_old_aaaaaaaaaaaaaaa" WITH ALLOW_CONNECTIONS false;` {
+		t.Errorf("the close of the data before a restore: %v %s", err, got)
+	}
 	for _, name := range []string{"mysql", "information_schema", scratch, "Shop", "shop`; DROP DATABASE `blog"} {
 		_, err = RecreateSQL(name, Charset{})
 		refused("a recreation of "+name, err)

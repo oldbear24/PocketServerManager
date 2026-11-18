@@ -54,11 +54,28 @@ const (
 	// stagedRemoveTimeout bounds the removal of a staged dump, which runs
 	// whatever ended the restore.
 	stagedRemoveTimeout = time.Minute
+	// swapSettleTime is how long the server's client may still be putting
+	// PostgreSQL's copy in place after the agent lost sight of it: each
+	// statement of the swap waits 10 s at most for a lock, and a rename 5 s
+	// for the sessions that end.
+	swapSettleTime = time.Minute
 )
 
 // swapWait is how long the agent waits before it tries the swap again;
 // tests shorten it.
 var swapWait = 2 * time.Second
+
+// swapSettled waits until a swap begun at started, whose process the agent
+// lost sight of, has ended in the server's container, or ctx ends; tests
+// replace it.
+var swapSettled = func(ctx context.Context, started time.Time) {
+	timer := time.NewTimer(time.Until(started.Add(swapSettleTime)))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
 
 // stopProject is the name of a stack a database restore stops besides its
 // own.
@@ -743,7 +760,7 @@ func (r *dbRun) restore(ctx context.Context, payload *agentv1.BackupRestore) (ma
 			return nil, err
 		}
 		session.marker.Database = &databaseMarker{Container: r.container, Engine: r.engine.Name, Name: database,
-			Scratch: r.db.GetScratch(), Previous: r.db.GetPrevious()}
+			Scratch: r.db.GetScratch(), Previous: r.db.GetPrevious(), AdminUser: r.db.GetConnection().GetAdminUser()}
 		if r.engine.Name == databases.Postgres.Name {
 			runErr = r.replacePostgres(jobCtx, payload, session, progress, &result)
 		} else {
@@ -905,7 +922,16 @@ func (r *dbRun) replacePostgres(ctx context.Context, payload *agentv1.BackupRest
 	if err != nil {
 		return undo(err)
 	}
+	var tried time.Time
 	for try := 1; ; try++ {
+		// the swap's process runs on in the server's container whatever
+		// happens to the agent: one that restarts from here asks the server
+		// whether it took place
+		tried = time.Now().UTC()
+		session.marker.Database.SwapStarted = tried
+		if err := writePhase(session, backup.PhaseSwapping); err != nil {
+			return undo(err)
+		}
 		_, err = r.sql(work, swap)
 		if err == nil || try == swapTries || !strings.Contains(err.Error(), "is being accessed by other users") {
 			break
@@ -914,7 +940,21 @@ func (r *dbRun) replacePostgres(ctx context.Context, payload *agentv1.BackupRest
 		time.Sleep(swapWait)
 	}
 	if err != nil {
-		return undo(err)
+		// the swap may have committed before what failed, such as its
+		// last statement or the process's stream: the server says
+		swapped, checkErr := r.swapTookPlace(work, tried, err)
+		switch {
+		case checkErr != nil:
+			result.Previous = previous
+			return swapUnknown(database, previous, fmt.Sprintf("putting the copy in place failed (%s)", strings.TrimSuffix(err.Error(), ".")), checkErr)
+		case !swapped:
+			return undo(err)
+		}
+		fmt.Fprintf(r.out, "Putting the copy in place failed after it took place: %v\n", err)
+		admin, password := r.admin()
+		if closeErr := r.a.closePrevious(work, r.container, admin, password, previous, r.secrets...); closeErr != nil {
+			fmt.Fprintf(r.out, "%s could not be closed to connections: %v\n", previous, closeErr)
+		}
 	}
 	result.Previous = previous
 	if err := writePhase(session, backup.PhaseSwapped); err != nil {
@@ -922,6 +962,66 @@ func (r *dbRun) replacePostgres(ctx context.Context, payload *agentv1.BackupRest
 	}
 	fmt.Fprintf(r.out, "%s is the backup now; the data before it is %s\n", database, previous)
 	return nil
+}
+
+// swapTookPlace says whether the swap whose process failed with err took
+// place. A process the agent lost sight of, as when its stream broke, may
+// still run in the server's container: the agent waits for its end first.
+func (r *dbRun) swapTookPlace(ctx context.Context, tried time.Time, err error) (bool, error) {
+	var client *clientError
+	if !errors.As(err, &client) {
+		swapSettled(ctx, tried)
+	}
+	user, password := r.admin()
+	return r.a.swapTookPlace(ctx, r.container, user, password, r.db.GetScratch(), r.db.GetPrevious(), r.secrets...)
+}
+
+// swapTookPlace asks a PostgreSQL server whether a restore's swap took
+// place. One transaction renames the database to previous and the copy to
+// the database, so previous there and the copy's name gone say it did, and
+// previous not there that it did not; anything else, or a server that does
+// not answer, leaves it open, and the error says why.
+func (a *Agent) swapTookPlace(ctx context.Context, container, admin, password, scratch, previous string, secrets ...string) (bool, error) {
+	exists := func(name string) (bool, error) {
+		var out strings.Builder
+		statements := databases.Statements(databases.Postgres, admin, password, databases.ExistsSQL(databases.Postgres, name, admin))
+		if err := a.runScript(ctx, container, statements, &out, secrets...); err != nil {
+			return false, err
+		}
+		there, _ := databases.ParseExists(out.String())
+		return there, nil
+	}
+	before, err := exists(previous)
+	if err != nil || !before {
+		return false, err
+	}
+	copied, err := exists(scratch)
+	switch {
+	case err != nil:
+		return false, err
+	case copied:
+		return false, fmt.Errorf("both %s and %s are on the server", scratch, previous)
+	}
+	return true, nil
+}
+
+// closePrevious closes the data before a swap that took place to
+// connections, as the swap's last statement would have.
+func (a *Agent) closePrevious(ctx context.Context, container, admin, password, previous string, secrets ...string) error {
+	sql, err := databases.ClosePreviousSQL(previous)
+	if err != nil {
+		return err
+	}
+	return a.runScript(ctx, container, databases.Statements(databases.Postgres, admin, password, sql), io.Discard, secrets...)
+}
+
+// swapUnknown is the end of a PostgreSQL restore in place whose swap failed
+// and may have taken place all the same, which the server did not say: the
+// data before it, if it is there, is kept, so it says neither that the
+// restore went through nor that nothing changed.
+func swapUnknown(database, previous, what string, err error) error {
+	return sentenceError(fmt.Sprintf("The restore of %s may have gone through: %s, and the server did not say whether the copy took its place (%s). If it did, the data before it stays a day as %s.",
+		database, what, strings.TrimSuffix(err.Error(), "."), previous))
 }
 
 // replaceMariaDB restores a MariaDB database in place: a rehearsal into a
@@ -1076,8 +1176,10 @@ func (r *dbRun) restoreNew(ctx context.Context, progress *progressThrottle, resu
 // MariaDB's database holds the whole dump, the restore went through, and
 // what stopped starts again; a MariaDB database that was emptied holds part
 // of the dump, and what stopped stays stopped with its restart policies
-// back.
-func (a *Agent) finishInterruptedDatabaseRestore(session *restoreSession) {
+// back. During PostgreSQL's swap, whose process may have run on, the server
+// says whether it took place; when it does not say, what stopped starts
+// again, and the data before the restore is kept, as it may be there.
+func (a *Agent) finishInterruptedDatabaseRestore(ctx context.Context, session *restoreSession) {
 	marker := session.marker
 	database := marker.Database
 	result := backup.DbRestoreResult{AppStopped: []backup.StoppedApp{}, AppStarted: []string{}, AppNotRunning: []string{},
@@ -1085,26 +1187,36 @@ func (a *Agent) finishInterruptedDatabaseRestore(session *restoreSession) {
 	for _, container := range marker.Containers {
 		result.AppStopped = append(result.AppStopped, backup.StoppedApp{ID: container.ID, Name: container.Name})
 	}
+	phase, unknown := database.Phase, error(nil)
+	if phase == backup.PhaseSwapping {
+		phase, unknown = a.swapPhase(ctx, database)
+	}
 	state, message := stateFailed, ""
-	switch database.Phase {
-	case backup.PhaseEmptied:
+	startedAgain := func() string {
+		started := session.startAgain(false)
+		result.AppStarted, result.StartErrors = started.started, started.errors
+		if len(marker.Containers) == 0 {
+			return ""
+		}
+		return fmt.Sprintf(" It started the application again (%d of %d containers).", len(started.started), len(marker.Containers))
+	}
+	switch {
+	case unknown != nil:
+		again := startedAgain()
+		result.Previous = database.Previous
+		message = swapUnknown(database.Name, database.Previous, "the agent restarted while it put the copy in place", unknown).Error() + again
+	case phase == backup.PhaseEmptied:
 		left, problems := session.putBack()
 		result.Partial, result.AppLeftStopped, result.StartErrors = true, left, problems
 		message = "The agent restarted during the restore. " + emptiedError(database.Name, left).Error()
-	case backup.PhaseSwapped, backup.PhaseRestored:
-		started := session.startAgain(false)
-		result.AppStarted, result.StartErrors = started.started, started.errors
+	case phase == backup.PhaseSwapped, phase == backup.PhaseRestored:
+		startedAgain()
 		result.FilesRestored, result.Previous = 1, database.Previous
 		state = stateSucceeded
 	default:
-		started := session.startAgain(false)
-		result.AppStarted, result.StartErrors = started.started, started.errors
-		message = fmt.Sprintf("Nothing changed in %s: the agent restarted during the restore.", database.Name)
-		if len(marker.Containers) > 0 {
-			message += fmt.Sprintf(" It started the application again (%d of %d containers).", len(started.started), len(marker.Containers))
-		}
+		message = fmt.Sprintf("Nothing changed in %s: the agent restarted during the restore.", database.Name) + startedAgain()
 	}
-	a.Log.Warn("a database restore was interrupted", "command", marker.CommandID, "phase", database.Phase, "state", state)
+	a.Log.Warn("a database restore was interrupted", "command", marker.CommandID, "phase", database.Phase, "found", phase, "state", state)
 	answer, err := backup.ResultMap(result)
 	if err != nil {
 		answer = map[string]any{"interrupted": true}
@@ -1112,6 +1224,30 @@ func (a *Agent) finishInterruptedDatabaseRestore(session *restoreSession) {
 	if err := a.store.setState(marker.CommandID, state, message, answer); err != nil {
 		a.Log.Error("failed to store a command state", "command", marker.CommandID, "error", err)
 	}
+}
+
+// swapPhase is where an interrupted swap of PostgreSQL's copy is, as the
+// server says once the swap's process can have ended: swapped, or stopped
+// when it did not take place. The marker keeps no password: the
+// administrator signs in on the server's local socket, which trusts it, as
+// a dump does.
+func (a *Agent) swapPhase(ctx context.Context, database *databaseMarker) (string, error) {
+	swapSettled(ctx, database.SwapStarted)
+	admin := database.AdminUser
+	if admin == "" {
+		admin = databases.Postgres.AdminUser
+	}
+	swapped, err := a.swapTookPlace(ctx, database.Container, admin, "", database.Scratch, database.Previous)
+	switch {
+	case err != nil:
+		return backup.PhaseSwapping, err
+	case !swapped:
+		return backup.PhaseStopped, nil
+	}
+	if err := a.closePrevious(ctx, database.Container, admin, "", database.Previous); err != nil {
+		a.Log.Warn("the data before a restore could not be closed to connections", "database", database.Previous, "error", err)
+	}
+	return backup.PhaseSwapped, nil
 }
 
 // checkRestoreTest checks what a restore test asks, before anything of the

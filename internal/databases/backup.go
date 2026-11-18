@@ -274,6 +274,10 @@ func SwapSQL(database, scratch, previous string) (string, error) {
 	if strings.TrimPrefix(scratch, TemporaryScratch) != strings.TrimPrefix(previous, TemporaryPrevious) {
 		return "", fmt.Errorf("%s and %s are not of one restore", scratch, previous)
 	}
+	closing, err := ClosePreviousSQL(previous)
+	if err != nil {
+		return "", err
+	}
 	return strings.Join([]string{
 		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (" + postgresString(database) + ", " +
 			postgresString(scratch) + ") AND pid <> pg_backend_pid();",
@@ -282,8 +286,18 @@ func SwapSQL(database, scratch, previous string) (string, error) {
 		"ALTER DATABASE " + postgresIdent(database) + " RENAME TO " + postgresIdent(previous) + ";",
 		"ALTER DATABASE " + postgresIdent(scratch) + " RENAME TO " + postgresIdent(database) + ";",
 		"COMMIT;",
-		"ALTER DATABASE " + postgresIdent(previous) + " WITH ALLOW_CONNECTIONS false;",
+		closing,
 	}, "\n"), nil
+}
+
+// ClosePreviousSQL closes the data before a PostgreSQL restore in place to
+// connections, as SwapSQL does once the swap committed. The agent runs it on
+// its own when the swap's process failed after the commit.
+func ClosePreviousSQL(previous string) (string, error) {
+	if err := temporaryOf(previous, TemporaryPrevious); err != nil {
+		return "", err
+	}
+	return "ALTER DATABASE " + postgresIdent(previous) + " WITH ALLOW_CONNECTIONS false;", nil
 }
 
 // RecreateSQL empties a MariaDB database for an in-place restore: it drops
