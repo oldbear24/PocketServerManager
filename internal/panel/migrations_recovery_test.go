@@ -40,8 +40,9 @@ func checkRecoverySchema(t *testing.T, app core.App) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if field := jobs.Fields.GetByName("source_kind").(*core.SelectField); !field.Required ||
-		!slices.Equal(field.Values, []string{schema.SourceVolume, schema.SourcePath, schema.SourceStack, schema.SourceDump, schema.SourcePanel}) {
+	// #53's migration adds its kinds after these
+	if field := jobs.Fields.GetByName("source_kind").(*core.SelectField); !field.Required || len(field.Values) < 5 ||
+		!slices.Equal(field.Values[:5], []string{schema.SourceVolume, schema.SourcePath, schema.SourceStack, schema.SourceDump, schema.SourcePanel}) {
 		t.Errorf("a job's source_kind takes %v", field.Values)
 	}
 	if schema.SourcePanel != "panel" || schema.RunChange != "change" || schema.RecoveryKits != "recovery_kits" || schema.PanelTable != "_pc_panel" {

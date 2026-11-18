@@ -32,7 +32,8 @@ func checkFieldTypes(t *testing.T, collection *core.Collection, want map[string]
 		return
 	}
 	for _, field := range collection.Fields {
-		if _, ok := want[field.GetName()]; !ok && !slices.Contains([]string{"id", "created", "updated"}, field.GetName()) {
+		if _, ok := want[field.GetName()]; !ok && !slices.Contains([]string{"id", "created", "updated"}, field.GetName()) &&
+			!slices.Contains(laterFields[collection.Name], field.GetName()) {
 			t.Errorf("%s has a field %s no part expects", collection.Name, field.GetName())
 		}
 	}
@@ -124,10 +125,16 @@ func checkChecksSchema(t *testing.T, app core.App) {
 	if textField(t, checks, "retry_of").Pattern != "^[a-z0-9]*$" {
 		t.Error("retry_of takes more than an id")
 	}
+	// one check per target and slot; #53's migration makes it one per kind,
+	// target, job and slot, as a target's restore tests share its slots
+	slot := "UNIQUE INDEX idx_backup_checks_slot ON backup_checks (target, scheduled_at) WHERE scheduled_at != ''"
+	if checks.Fields.GetByName("job") != nil {
+		slot = "UNIQUE INDEX idx_backup_checks_slot ON backup_checks (kind, target, job, scheduled_at) WHERE scheduled_at != ''"
+	}
 	checkIndexes(t, app, schema.BackupChecks,
 		"INDEX idx_backup_checks_target ON backup_checks (target, created)",
 		"INDEX idx_backup_checks_command ON backup_checks (command)",
-		"UNIQUE INDEX idx_backup_checks_slot ON backup_checks (target, scheduled_at) WHERE scheduled_at != ''",
+		slot,
 		"UNIQUE INDEX idx_backup_checks_retry_of ON backup_checks (retry_of) WHERE retry_of != ''",
 		"INDEX idx_backup_checks_retry_at ON backup_checks (status, retry_at)",
 	)

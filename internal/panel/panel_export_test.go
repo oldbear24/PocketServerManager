@@ -232,7 +232,7 @@ func TestTheExportIsConsistentWhileThePanelWrites(t *testing.T) {
 	manifest := summary.Manifest
 	if summary.Header.KeyID != secrets.KeyID(testutil.MasterKey) || manifest.KeyID != summary.Header.KeyID ||
 		manifest.CAPin != f.p.Authority.Pin() || manifest.Job != f.job.Id || manifest.Run != run.Id || manifest.Hosts != 5 ||
-		manifest.Migration != "1772000000_panel_recovery.go" || manifest.Storage != panelbackup.StorageLocal ||
+		manifest.Migration != databaseBackupsMigration || manifest.Storage != panelbackup.StorageLocal ||
 		fmt.Sprint(manifest.AgentsDial) != "[{192.0.2.2:9443 2} {panel.example.com:9443 1}]" || manifest.Audit.Seq == 0 {
 		t.Errorf("the manifest: %+v", manifest)
 	}

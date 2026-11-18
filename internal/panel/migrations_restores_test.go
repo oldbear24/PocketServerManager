@@ -119,7 +119,8 @@ func checkRestoresSchema(t *testing.T, app core.App) {
 		}
 	}
 	for _, field := range restores.Fields {
-		if _, ok := want[field.GetName()]; !ok && !slices.Contains([]string{"id", "created", "updated"}, field.GetName()) {
+		if _, ok := want[field.GetName()]; !ok && !slices.Contains([]string{"id", "created", "updated"}, field.GetName()) &&
+			!slices.Contains(laterFields[schema.BackupRestores], field.GetName()) {
 			t.Errorf("backup_restores has a field %s no part expects", field.GetName())
 		}
 	}
@@ -130,12 +131,13 @@ func checkRestoresSchema(t *testing.T, app core.App) {
 			t.Errorf("%s is not a required relation removed with its record", name)
 		}
 	}
+	// #30's values first; #53's migration adds its own after them
 	for name, values := range map[string][]string{
 		"status":        schema.RestoreStates,
 		"mode":          {schema.RestoreOriginal, schema.RestorePath, schema.RestoreDownload},
 		"download_kind": {schema.DownloadDir, schema.DownloadFile},
 	} {
-		if field, ok := restores.Fields.GetByName(name).(*core.SelectField); !ok || !slices.Equal(field.Values, values) {
+		if field, ok := restores.Fields.GetByName(name).(*core.SelectField); !ok || len(field.Values) < len(values) || !slices.Equal(field.Values[:len(values)], values) {
 			t.Errorf("%s takes %v", name, restores.Fields.GetByName(name))
 		}
 	}
