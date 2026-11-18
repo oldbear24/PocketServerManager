@@ -733,7 +733,7 @@ func TestARunOfThePanelIsRefusedWhenItIsNotOne(t *testing.T) {
 		change func(*agentv1.BackupRun)
 		want   string
 	}{
-		{func(b *agentv1.BackupRun) { b.Volumes = []string{"here"} }, "a backup run backs up volumes, directories, a dump or the panel: exactly one of them"},
+		{func(b *agentv1.BackupRun) { b.Volumes = []string{"here"} }, "a backup run backs up volumes, directories, a dump, the panel or a site's files: exactly one of them"},
 		{func(b *agentv1.BackupRun) { b.Paths = []string{"/srv"} }, "exactly one of them"},
 		{func(b *agentv1.BackupRun) { b.StdinCommand = []string{"pg_dump"} }, "exactly one of them"},
 		{func(b *agentv1.BackupRun) { b.PanelExport = "panel-export:short" }, `"panel-export:short" names no copy of the panel`},
