@@ -510,6 +510,14 @@ func TestEveryEndOfACheckIsKept(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// a connected agent answers a command the queue sent it, once
+			// the queue kept it as sent: an answer before that, as the
+			// queue saves it, could be undone by the queue's save
+			if test.connected {
+				if got := f.received(stream); got.GetId() != command.Id {
+					t.Fatalf("the agent got %s, not the check's command %s", got.GetId(), command.Id)
+				}
+			}
 			// the agent cancelled it once it had waited its time
 			if _, ok := test.fields["expires_at"]; ok {
 				command.Set("expires_at", test.fields["expires_at"])
