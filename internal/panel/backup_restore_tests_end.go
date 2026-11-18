@@ -67,8 +67,10 @@ func (p *Panel) lostRestoreTest(row *core.Record) {
 }
 
 // retryDueRestoreTests starts the retries of restore tests that are due: of
-// a job that still has a test to start, on a server that is not offline,
-// with no test of the job under way.
+// a job that still has a test to start, with no test of the job under way.
+// A retry on a server that is offline is an attempt too: a skipped test,
+// tried again within checkRetryAt's attempts and never past the next slot,
+// so that the job is unverified once its last attempt was skipped.
 func (p *Panel) retryDueRestoreTests(now time.Time) {
 	at, err := types.ParseDateTime(now.UTC())
 	if err != nil {
@@ -90,9 +92,6 @@ func (p *Panel) retryDueRestoreTests(now time.Time) {
 		switch {
 		case problem != nil:
 			p.setFields(row, map[string]any{"retry_at": ""})
-			continue
-		case p.offline(plan.host):
-			p.setFields(row, map[string]any{"retry_at": now.UTC().Add(time.Hour)})
 			continue
 		case p.databaseTestOpen(plan.server, plan.database.GetString("name")) != nil:
 			// the test under way says how the backup is

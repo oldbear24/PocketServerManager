@@ -934,10 +934,14 @@ func TestRetriesOfRestoreTestsWait(t *testing.T) {
 	f.p.SetStarted(now.Add(-time.Hour))
 	offline := due()
 	f.p.retryDueRestoreTests(now)
-	if kept := f.fresh(offline); !kept.GetDateTime("retry_at").Time().Equal(now.Add(time.Hour)) {
+	if kept := f.fresh(offline); !kept.GetDateTime("retry_at").IsZero() {
 		t.Errorf("a retry of an offline server: %v", kept.FieldsData())
 	}
-	f.setTest(offline, map[string]any{"retry_at": ""})
+	skipped, err := f.app.FindFirstRecordByFilter(schema.BackupChecks, "retry_of={:prev}", map[string]any{"prev": offline.Id})
+	if err != nil || skipped.GetString("status") != schema.CheckSkipped || skipped.GetInt("attempt") != 2 || skipped.GetDateTime("retry_at").IsZero() {
+		t.Fatalf("the retry of an offline server is no skipped attempt: %v %v", skipped, err)
+	}
+	f.setTest(skipped, map[string]any{"retry_at": ""})
 	f.setTest(f.host, map[string]any{"status": schema.HostOnline})
 
 	open := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckRunning})
@@ -960,7 +964,47 @@ func TestRetriesOfRestoreTestsWait(t *testing.T) {
 	if kept := f.fresh(dropped); !kept.GetDateTime("retry_at").IsZero() {
 		t.Errorf("a retry of a dropped database: %v", kept.FieldsData())
 	}
-	if rows := f.testsOf(f.job); len(rows) != 5 {
+	if rows := f.testsOf(f.job); len(rows) != 6 {
 		t.Errorf("%d tests: a retry started", len(rows))
+	}
+}
+
+// TestRetriesOfRestoreTestsOnAnOfflineServerEnd (#53, P7): a retry that is
+// due while its server is offline is an attempt of its own, a skipped test
+// with the next attempt number, tried again after the next pause; after the
+// last attempt nothing is tried again, and the job is unverified.
+func TestRetriesOfRestoreTestsOnAnOfflineServerEnd(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	now := time.Now().UTC().Truncate(time.Minute)
+	f.p.SetStarted(now.Add(-time.Hour))
+	f.setTest(f.host, map[string]any{"status": schema.HostOffline})
+	row := f.testRow(f.job, f.target, map[string]any{"status": schema.CheckError, "attempt": 1, "retry_at": now.Add(-time.Minute)})
+	for attempt := 2; ; attempt++ {
+		at := row.GetDateTime("retry_at").Time()
+		f.p.retryDueRestoreTests(at)
+		next, err := f.app.FindFirstRecordByFilter(schema.BackupChecks, "retry_of={:prev}", map[string]any{"prev": row.Id})
+		if err != nil || next.GetString("status") != schema.CheckSkipped || next.GetInt("attempt") != attempt ||
+			next.GetString("trigger") != schema.RunRetry || !strings.HasPrefix(next.GetString("error"), "The server node-1 was offline at ") {
+			t.Fatalf("attempt %d: %v %v", attempt, next, err)
+		}
+		if !f.fresh(row).GetDateTime("retry_at").IsZero() {
+			t.Fatalf("attempt %d left the retry before it", attempt)
+		}
+		row = next
+		if row.GetDateTime("retry_at").IsZero() {
+			break
+		}
+		if attempt >= maxCheckAttempts {
+			t.Fatalf("attempt %d is tried again: %v", attempt, row.FieldsData())
+		}
+		if f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id) != nil {
+			t.Fatalf("unverified before the last attempt %d", attempt)
+		}
+	}
+	if row.GetInt("attempt") != maxCheckAttempts {
+		t.Errorf("the retries ended at attempt %d", row.GetInt("attempt"))
+	}
+	if alert := f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id); alert == nil || alert.GetString("severity") != schema.SeverityWarning {
+		t.Errorf("no unverified alert after the last attempt %d: %v", row.GetInt("attempt"), alert)
 	}
 }
