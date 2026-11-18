@@ -29,13 +29,13 @@ export type CheckRepair = {
   other: boolean;
 };
 
-/** One check of a target's repository. #53's restore tests will share the
- * collection, as kind restore_test. */
+/** One check of a target's repository, or a restore test of a database's
+ * job from it (#53, kind restore_test). */
 export type BackupCheck = RecordModel & {
   created: string;
   updated: string;
   target: string;
-  /** the target's server, whose agent ran it */
+  /** the target's server, whose agent ran it; of a restore test, the job's */
   host: string;
   kind: "integrity" | "restore_test";
   trigger: "schedule" | "manual" | "retry";
@@ -66,11 +66,79 @@ export type BackupCheck = RecordModel & {
   attempt: number;
   retry_of: string;
   retry_at: string;
+  /** of a restore test (#53): the database's job */
+  job?: string;
+  /** the database it restored, by its name then */
+  database_name?: string;
+  /** the full id of the snapshot restored */
+  snapshot_id?: string;
+  /** the temporary database it restored into, pc_rt_<its id> */
+  temporary?: string;
+  /** the tables of the dump, and those restored */
+  tables_expected?: number;
+  tables_restored?: number;
+  /** the dump's size */
+  dump_bytes?: number;
+  /** why it failed or did not complete, a class of the agent's */
+  failure?: string;
 };
 
 /** What lists read of a check: never its errors or its log, which can be long. */
 export const checkFields =
   "id,collectionId,collectionName,created,updated,target,host,kind,trigger,status,scheduled_at,started_at,finished_at,duration_ms,subset,packs_read,packs_total,confirmed,unconfirmed,errors_more,repair,notes,lock,error,command,attempt,retry_of,retry_at";
+
+/** What lists read of a restore test (#53): never its log. */
+export const restoreTestFields =
+  "id,collectionId,collectionName,created,updated,target,host,kind,trigger,status,scheduled_at,started_at,finished_at,duration_ms,error,command,attempt,retry_of,retry_at,job,database_name,snapshot_id,temporary,tables_expected,tables_restored,dump_bytes,failure";
+
+/** The restore tests, newest first, as the pages list them. */
+export const restoreTestsFilter = "kind = 'restore_test'";
+
+/** The states of a restore test: queued, running, then ok (restored, with as
+ * many tables as the dump has), failed (the backup could not be restored),
+ * error (it did not complete, as when a target could not be reached),
+ * skipped (it never started) or cancelled. */
+export type RestoreTestStatus = Exclude<CheckStatus, "suspect">;
+
+export const restoreTestStatuses: RestoreTestStatus[] = [
+  "queued",
+  "running",
+  "ok",
+  "failed",
+  "error",
+  "skipped",
+  "cancelled",
+];
+
+/** The keys a restore test's status is shown with, which the code builds. */
+export const restoreTestKeys = restoreTestStatuses.map(
+  (status) => `backups.restoreTests.status.${status}`,
+);
+
+/** The tone of a restore test's pill: a failed test is the backup's failure,
+ * one that did not complete or was skipped says nothing of it. */
+export function restoreTestTone(status: CheckStatus): "ok" | "err" | "warn" | "info" | "off" {
+  switch (status) {
+    case "ok":
+      return "ok";
+    case "failed":
+      return "err";
+    case "error":
+    case "suspect":
+    case "skipped":
+      return "warn";
+    case "queued":
+    case "running":
+      return "info";
+    default:
+      return "off";
+  }
+}
+
+/** Whether a check has ended. */
+export function checkEnded(check: Pick<BackupCheck, "status">): boolean {
+  return check.status !== "queued" && check.status !== "running";
+}
 
 /** When the panel tries a check again: the retry_at of one that ended error,
  * suspect, or skipped while its server was away; "" when no retry is planned,
@@ -211,13 +279,16 @@ export function nextGroup(target: Pick<BackupTarget, "integrity_group">, groups:
 }
 
 /** The checks' settings: the schedule, cron in UTC ("" turns them off), and
- * how many groups the data packs are read in (0 the structure only). */
-export type CheckSettings = { schedule: string; groups: number };
+ * how many groups the data packs are read in (0 the structure only); and the
+ * restore tests' schedule (#53), cron in UTC ("" turns them off). */
+export type CheckSettings = { schedule: string; groups: number; restore_test_schedule?: string };
 
 /** The checks' settings as the settings record keeps them, which viewers read. */
 export type CheckSettingsRecord = RecordModel & {
   backup_check_schedule: string;
   backup_check_groups: number;
+  /** from #53; absent on an older panel */
+  restore_test_schedule?: string;
 };
 
 /** The most groups restic 0.17 reads the packs in. */
@@ -232,10 +303,11 @@ export function parseGroups(text: string): number | null {
   return /^\d{1,3}$/.test(value) && Number(value) <= maxGroups ? Number(value) : null;
 }
 
-/** Saves the checks' settings; the panel answers with them and the next check. */
+/** Saves the checks' settings; the panel answers with them and the next check
+ * (and, from #53, the next restore test). */
 export function saveCheckSettings(body: Partial<CheckSettings>) {
-  return pb.send<CheckSettings & { next_check_at: string }>("/api/pc/settings/backup-checks", {
-    method: "PUT",
-    body,
-  });
+  return pb.send<CheckSettings & { next_check_at: string; next_restore_test_at?: string }>(
+    "/api/pc/settings/backup-checks",
+    { method: "PUT", body },
+  );
 }

@@ -26,8 +26,9 @@ import type { BackupTarget } from "../lib/backups";
 import { formatRelative, parseDate } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { useLiveRecord } from "../lib/realtime";
-import type { Command, Host } from "../lib/types";
+import type { Alert, Command, Host } from "../lib/types";
 import i18n from "../i18n";
+import { RestoreTestBanner } from "./BackupRestoreTests";
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -64,6 +65,8 @@ export function FailureBanners({
   canRun,
   onShowLog,
   onDetails,
+  restoreTestAlerts = [],
+  onShowTests = () => {},
 }: {
   jobs: BackupJob[];
   runs: BackupRun[];
@@ -76,9 +79,16 @@ export function FailureBanners({
   onShowLog: (command: string) => void;
   /** shows a target's integrity checks */
   onDetails: (target: BackupTarget) => void;
+  /** the open alerts that a database job's restore test failed (#53) */
+  restoreTestAlerts?: Pick<Alert, "rule" | "status">[];
+  /** shows the restore tests */
+  onShowTests?: () => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const failedTests = restoreTestAlerts.some(
+    (alert) => alert.rule === "backup_restore_test_failed" && alert.status !== "resolved",
+  );
 
   const banners: ReactNode[] = [
     ...targets
@@ -86,6 +96,9 @@ export function FailureBanners({
       .map((target) => (
         <IntegrityBanner key={`check-${target.id}`} target={target} onDetails={onDetails} />
       )),
+    ...(failedTests
+      ? [<RestoreTestBanner key="restore-tests" alerts={restoreTestAlerts} onShow={onShowTests} />]
+      : []),
     ...failedRuns(jobs, runs).flatMap((run) => {
       const job = jobs.find((item) => item.id === run.job);
       if (!job) {

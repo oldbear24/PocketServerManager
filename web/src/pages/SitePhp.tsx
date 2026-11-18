@@ -8,6 +8,9 @@ import { useToast } from "../components/toast";
 import { Banner, Button, Card, ConfirmDialog, Field, StatusPill } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import { restoreTestFields, type BackupCheck } from "../lib/backupChecks";
+import { runFields, type BackupJob, type BackupRun } from "../lib/backupJobs";
+import { backupCell, cellTime, runsSinceDays } from "../lib/databaseBackups";
 import { serverLabel, type Database, type DbServer } from "../lib/databases";
 import { formatBytes, formatDuration, formatNumber, formatTime } from "../lib/format";
 import { pb } from "../lib/pb";
@@ -23,8 +26,9 @@ import {
   type SitePhp,
   type SitePhpChange,
 } from "../lib/php";
-import { useLiveList, useLiveRecord } from "../lib/realtime";
+import { useLiveList, useLiveRecord, useNow } from "../lib/realtime";
 import type { Site, SiteRequests } from "../lib/sites";
+import { DatabaseBackupCell } from "./DatabaseBackups";
 
 /** PHP sites (#50): what the page of one shows besides a static site's, from
  * its settings, its PHP-FPM's status and its database. */
@@ -47,7 +51,64 @@ export type PhpSiteData = {
   database: Database | null;
   dbServer: DbServer | null;
   versions: PhpVersions | null;
+  /** its backups (#53); absent where nothing loads them */
+  backups?: SiteBackups;
 };
+
+/** A PHP site's backups (#53): the job of its shared/ and its database's
+ * job, their runs of two days and more, and the database's restore tests. */
+export type SiteBackups = {
+  siteJob: BackupJob | null;
+  databaseJob: BackupJob | null;
+  runs: BackupRun[];
+  tests: BackupCheck[];
+  now: number;
+};
+
+/** The jobs the panel made for a site and its database, with their runs
+ * and the database's restore tests. */
+function useSiteBackups(site: string, database: string, enabled: boolean): SiteBackups {
+  const now = useNow(30_000);
+  const jobs = useLiveList<BackupJob>("backup_jobs", {
+    filter: pb.filter(
+      "(origin = 'site' && site = {:site}) || (origin = 'database' && database = {:database} && database != '')",
+      { site, database },
+    ),
+    perPage: 10,
+    enabled,
+  });
+  const siteJob = jobs.items.find((job) => job.origin === "site" && job.site === site) ?? null;
+  const databaseJob = database
+    ? (jobs.items.find((job) => job.origin === "database" && job.database === database) ?? null)
+    : null;
+  const ids = [siteJob?.id, databaseJob?.id].filter((id): id is string => Boolean(id));
+  const runs = useLiveList<BackupRun>("backup_runs", {
+    filter: pb.filter(
+      `created >= {:since} && (${ids.map((_, index) => `job = {:job${index}}`).join(" || ")})`,
+      {
+        since: runsSinceDays(now, 2),
+        ...Object.fromEntries(ids.map((id, index) => [`job${index}`, id])),
+      },
+    ),
+    fields: runFields,
+    perPage: 100,
+    enabled: enabled && ids.length > 0,
+  });
+  const tests = useLiveList<BackupCheck>("backup_checks", {
+    filter: pb.filter("kind = 'restore_test' && job = {:job}", { job: databaseJob?.id ?? "" }),
+    fields: restoreTestFields,
+    sort: "-created",
+    perPage: 5,
+    enabled: enabled && databaseJob !== null,
+  });
+  return {
+    siteJob,
+    databaseJob,
+    runs: runs.items.filter((run) => ids.includes(run.job)),
+    tests: tests.items.filter((check) => check.kind === "restore_test"),
+    now,
+  };
+}
 
 /** A PHP site's settings, live, and what its server says of its PHP-FPM. */
 export function usePhpSite(site: Site, enabled = true): PhpSiteData {
@@ -62,6 +123,7 @@ export function usePhpSite(site: Site, enabled = true): PhpSiteData {
     settings?.database || undefined,
   );
   const { record: dbServer } = useLiveRecord<DbServer>("db_servers", database?.server || undefined);
+  const backups = useSiteBackups(site.id, settings?.database ?? "", enabled);
   const [status, setStatus] = useState<PhpStatus | null>(null);
   const [statusError, setStatusError] = useState("");
   const [versions, setVersions] = useState<PhpVersions | null>(null);
@@ -135,6 +197,7 @@ export function usePhpSite(site: Site, enabled = true): PhpSiteData {
     database: settings?.database ? database : null,
     dbServer: settings?.database ? dbServer : null,
     versions,
+    backups,
   };
 }
 
@@ -778,6 +841,19 @@ export function PhpDatabaseCard({ data }: { data: PhpSiteData }) {
           <dd className="mono">{t("phpSite.dbUserValue", { name: database.name })}</dd>
           <dt>{t("phpSite.dbPassword")}</dt>
           <dd className="mono">{t("phpSite.dbPasswordValue")}</dd>
+          {data.backups && (
+            <>
+              <dt>{t("phpSite.databaseBackup")}</dt>
+              <dd>
+                <DatabaseBackupCell
+                  job={data.backups.databaseJob}
+                  runs={data.backups.runs}
+                  checks={data.backups.tests}
+                  now={data.backups.now}
+                />
+              </dd>
+            </>
+          )}
         </dl>
       ) : (
         <p className="muted">
@@ -825,7 +901,29 @@ export function PhpSharedCard({ data }: { data: PhpSiteData }) {
           {t("phpSite.noBackup")} <span className="mono">{elsewhere.join(", ")}</span>
         </p>
       )}
+      {data.backups && <SharedBackupLine backups={data.backups} />}
     </Card>
+  );
+}
+
+/** Which job backs up a site's shared/, and how its last backup went; or
+ * that none does before the site's first deployment (#53). */
+function SharedBackupLine({ backups }: { backups: SiteBackups }) {
+  const { t } = useTranslation();
+  const job = backups.siteJob;
+  if (!job) {
+    return <p className="muted small">{t("phpSite.sharedNotBackedUp")}</p>;
+  }
+  const cell = backupCell(job, backups.runs);
+  return (
+    <p className="small shared-backup">
+      <Link to={`/backups?job=${job.id}`}>
+        {t("phpSite.sharedBackup", {
+          name: job.name,
+          state: t(`db.backupCell.${cell.state}`, { time: cellTime(cell.at, backups.now) }),
+        })}
+      </Link>
+    </p>
   );
 }
 

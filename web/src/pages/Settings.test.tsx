@@ -154,6 +154,36 @@ describe("the integrity checks of backups in Settings (#31)", () => {
     await screen.findByText("The integrity checks were saved.");
   });
 
+  it("sets when the restore tests run, and turns them off (#53)", async () => {
+    card(settings({ restore_test_schedule: "20 5 * * 3" }));
+    const tests = await screen.findByLabelText("Restore tests (cron, UTC; empty turns them off)");
+    expect(tests).toHaveValue("20 5 * * 3");
+    expect(screen.getByText("In your time: Wednesdays 14:20.")).toBeInTheDocument();
+    fireEvent.change(tests, { target: { value: "" } });
+    expect(screen.getByText("restore tests off")).toBeInTheDocument();
+
+    const saved = vi.spyOn(pb, "send").mockResolvedValue({
+      schedule: "0 5 * * 0",
+      groups: 20,
+      restore_test_schedule: "",
+      next_check_at: "2026-11-22 05:00:00.000Z",
+      next_restore_test_at: "",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(saved).toHaveBeenCalledWith("/api/pc/settings/backup-checks", {
+      method: "PUT",
+      body: { schedule: "0 5 * * 0", groups: 20, restore_test_schedule: "" },
+    });
+    await screen.findByText("The integrity checks were saved.");
+    expect(tests).toHaveValue("");
+  });
+
+  it("asks for no restore test schedule of a panel that has none", async () => {
+    card();
+    await screen.findByLabelText("Groups");
+    expect(screen.queryByLabelText(/^Restore tests/)).not.toBeInTheDocument();
+  });
+
   it("holds back groups restic does not take", async () => {
     card();
     const groups = await screen.findByLabelText("Groups");

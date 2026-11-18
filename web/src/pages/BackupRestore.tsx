@@ -2,6 +2,7 @@ import { ArrowUp, Download, File, Folder, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import i18n from "../i18n";
 import { CommandOutput } from "../components/CommandOutput";
 import { CommandStatusPill, ContainerStatePill } from "../components/status";
 import { useToast } from "../components/toast";
@@ -30,6 +31,7 @@ import {
   joinPath,
   modesFor,
   needsConfirm,
+  offeredModes,
   openDownloadFrame,
   parentPath,
   pathCrumbs,
@@ -39,7 +41,9 @@ import {
   restoreEnded,
   restoresApi,
   restoreSteps,
+  stepsOf,
   restoreTone,
+  roomEnough,
   snapshotRoots,
   snapshotSources,
   underPath,
@@ -54,10 +58,14 @@ import {
   type SnapshotEntry,
 } from "../lib/backupRestores";
 import type { BackupTarget } from "../lib/backups";
+import { reservedName } from "../lib/databaseBackups";
+import { databaseNamePattern, type Database, type DbServer } from "../lib/databases";
 import { formatBytes, formatDateTime, formatNumber, parseDate } from "../lib/format";
 import { useMounted } from "../lib/mounted";
-import { useLiveRecord, useNow } from "../lib/realtime";
+import { pb } from "../lib/pb";
+import { useLiveList, useLiveRecord, useNow } from "../lib/realtime";
 import { panelFileName } from "../lib/recovery";
+import type { Site } from "../lib/sites";
 import type { Command, Host } from "../lib/types";
 import { describeSource, type StackName } from "./BackupJobs";
 import { ServerField } from "./Backups";
@@ -139,6 +147,9 @@ export function RestoreDrawer({
   const [local, setLocal] = useState<BackupRestore | null>(null);
   const [frameError, setFrameError] = useState("");
   const frame = useRef<HTMLIFrameElement | null>(null);
+  // a new database's name, and its server when the job's database was dropped (#53)
+  const [newName, setNewName] = useState("");
+  const [newServer, setNewServer] = useState("");
 
   const live = useLiveRecord<BackupRestore>("backup_restores", recordId ?? undefined);
   const record = newer(live.record, local?.id === recordId ? local : null);
@@ -155,6 +166,9 @@ export function RestoreDrawer({
     setSnapshotId(record.snapshot_id);
     setMode(record.mode);
     setReplace(record.replace);
+    if (record.mode === "new_database") {
+      setNewName(record.database_name ?? "");
+    }
     if (record.mode === "path") {
       setHost(record.host);
       setFolder(record.path);
@@ -190,17 +204,54 @@ export function RestoreDrawer({
     restoresApi.snapshots(job!.id, target!.id, refresh),
   );
   const snapshot = listing.data?.snapshots.find((item) => item.id === snapshotId) ?? null;
-  const modes = job ? modesFor(target, job, user?.role) : null;
+  const jobHost = hosts.find((item) => item.id === job?.host);
+  const modes = job ? modesFor(target, job, user?.role, jobHost) : null;
   // the panel's own backup restores nowhere here: the drawer gives its steps
   const panelJob = job?.source_kind === "panel";
+  // a database's job (#53): into its database, a new one, a folder or a download
+  const databaseJob = job?.source_kind === "database";
+  const offered = job ? offeredModes(job) : [];
   const chosen: RestoreMode | "" =
-    mode !== "" && modes && !modes[mode].disabled
+    mode !== "" && modes && offered.includes(mode) && !modes[mode].disabled
       ? mode
       : modes
-        ? ((["original", "path", "download"] as RestoreMode[]).find(
-            (item) => !modes[item].disabled,
-          ) ?? "")
+        ? (offered.find((item) => !modes[item].disabled) ?? "")
         : "";
+  // what a database's restore names: the database, its server and its application
+  const dbName = databaseJob ? (job?.source ?? "") : "";
+  const dbServerName = databaseJob ? job?.db_server_name || "–" : "";
+  const { record: dbRecord } = useLiveRecord<Database>(
+    "databases",
+    databaseJob && job?.database ? job.database : undefined,
+  );
+  const { record: dbSite } = useLiveRecord<Site>("sites", dbRecord?.site || undefined);
+  const appName =
+    (dbRecord?.stack && stacks.find((item) => item.id === dbRecord.stack)?.name) ||
+    dbSite?.name ||
+    "";
+  // a dropped database goes into a new one on a shared server of its engine there
+  const dbGone = databaseJob && !job?.database;
+  const newServers = useLiveList<DbServer>("db_servers", {
+    filter: pb.filter("host = {:host} && kind = 'shared'", { host: job?.host ?? "" }),
+    sort: "name",
+    enabled: dbGone && chosen === "new_database",
+  }).items.filter(
+    (item) =>
+      item.host === job?.host &&
+      item.kind === "shared" &&
+      item.engine === (job?.engine === "mysql" ? "mariadb" : "postgres"),
+  );
+  const newServerValue = newServers.some((item) => item.id === newServer)
+    ? newServer
+    : (newServers[0]?.id ?? "");
+  const newNameProblem =
+    newName.trim() === ""
+      ? ""
+      : reservedName(newName.trim())
+        ? t("backups.restore.newNameReserved")
+        : databaseNamePattern.test(newName.trim())
+          ? ""
+          : t("db.databaseNameInvalid");
   const roots = snapshotRoots(snapshot?.paths ?? record?.preview?.snapshot.paths ?? []);
   // the snapshot's folder a new folder takes: one that holds every pick
   const sourceOptions = ["/", ...roots].filter((root) =>
@@ -242,7 +293,9 @@ export function RestoreDrawer({
     snapshot !== null &&
     chosen !== "" &&
     (chosen !== "path" || (hostValue !== "" && folder.trim() !== "" && !folderInvalid)) &&
-    (chosen !== "download" || picks.length <= 1);
+    (chosen !== "download" || picks.length <= 1) &&
+    (chosen !== "new_database" ||
+      (newName.trim() !== "" && newNameProblem === "" && (!dbGone || newServerValue !== "")));
 
   const preview = async () => {
     if (!ready || busy) {
@@ -254,14 +307,28 @@ export function RestoreDrawer({
       if (record && draft) {
         await restoresApi.discard(record.id).catch(() => undefined);
       }
-      const created = await restoresApi.create(job!.id, {
-        target: target!.id,
-        snapshot: snapshot!.id,
-        mode: chosen as "original" | "path",
-        ...(chosen === "path" ? { host: hostValue, path: folder.trim(), source: sourceValue } : {}),
-        ...(picks.length > 0 ? { include: picks.map((pick) => pick.path) } : {}),
-        replace: replaceOn,
-      });
+      const created = await restoresApi.create(
+        job!.id,
+        chosen === "database" || chosen === "new_database"
+          ? {
+              target: target!.id,
+              snapshot: snapshot!.id,
+              mode: chosen,
+              ...(chosen === "new_database"
+                ? { name: newName.trim(), ...(dbGone ? { server: newServerValue } : {}) }
+                : {}),
+            }
+          : {
+              target: target!.id,
+              snapshot: snapshot!.id,
+              mode: chosen as "original" | "path",
+              ...(chosen === "path"
+                ? { host: hostValue, path: folder.trim(), source: sourceValue }
+                : {}),
+              ...(picks.length > 0 ? { include: picks.map((pick) => pick.path) } : {}),
+              replace: replaceOn,
+            },
+      );
       if (mounted.current) {
         synced.current = created.id;
         setLocal(created);
@@ -282,7 +349,7 @@ export function RestoreDrawer({
     }
   };
 
-  const begin = async (confirm: boolean) => {
+  const begin = async (confirm: boolean, typed?: string) => {
     if (!record || busy) {
       return;
     }
@@ -290,7 +357,11 @@ export function RestoreDrawer({
     setError("");
     setConfirmError("");
     try {
-      const queued = await restoresApi.start(record.id, confirm);
+      // only a restore back into a database sends the name typed
+      const queued =
+        typed === undefined
+          ? await restoresApi.start(record.id, confirm)
+          : await restoresApi.start(record.id, confirm, typed);
       toast.success(t("backups.restore.started", { job: job?.name ?? "" }));
       if (mounted.current) {
         setLocal(queued);
@@ -312,7 +383,7 @@ export function RestoreDrawer({
     }
   };
 
-  const download = async (path: string, kind: "dir" | "file") => {
+  const download = async (path: string, kind: "dir" | "file" | "sql") => {
     if (!job || !target || !snapshot || busy) {
       return;
     }
@@ -320,12 +391,13 @@ export function RestoreDrawer({
     setError("");
     setFrameError("");
     try {
-      const answer = await restoresApi.download(job.id, {
-        target: target.id,
-        snapshot: snapshot.id,
-        path,
-        kind,
-      });
+      // a database's dump as SQL needs no path: the panel knows its file (#53)
+      const answer = await restoresApi.download(
+        job.id,
+        kind === "sql"
+          ? { target: target.id, snapshot: snapshot.id, kind }
+          : { target: target.id, snapshot: snapshot.id, path, kind },
+      );
       frame.current = openDownloadFrame(
         answer.url,
         t("backups.restore.downloadFrame", { name: answer.restore.download_name || path }),
@@ -537,34 +609,39 @@ export function RestoreDrawer({
               brief={!record}
             />
             <fieldset className="dialog-fieldset" disabled={busy}>
-              <section aria-labelledby="restore-what">
-                <h3 id="restore-what" className="drawer-heading">
-                  {t("backups.restore.what")}
-                </h3>
-                {picks.length === 0 ? (
-                  <p>{t("backups.restore.whole")}</p>
-                ) : (
-                  <ul className="chip-list restore-picks">
-                    {picks.map((pick) => (
-                      <li key={pick.path} className="chip">
-                        <span className="mono">{pick.path}</span>
-                        <IconButton
-                          bare
-                          aria-label={t("backups.restore.removePick", { path: pick.path })}
-                          onClick={() =>
-                            changed(() => setPicks(picks.filter((item) => item.path !== pick.path)))
-                          }
-                        >
-                          <X size={13} aria-hidden="true" />
-                        </IconButton>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <Button size="small" onClick={() => setView("browse")}>
-                  {t("backups.restore.choose")}
-                </Button>
-              </section>
+              {!databaseJob && (
+                // a database's snapshot holds its one dump: nothing to pick
+                <section aria-labelledby="restore-what">
+                  <h3 id="restore-what" className="drawer-heading">
+                    {t("backups.restore.what")}
+                  </h3>
+                  {picks.length === 0 ? (
+                    <p>{t("backups.restore.whole")}</p>
+                  ) : (
+                    <ul className="chip-list restore-picks">
+                      {picks.map((pick) => (
+                        <li key={pick.path} className="chip">
+                          <span className="mono">{pick.path}</span>
+                          <IconButton
+                            bare
+                            aria-label={t("backups.restore.removePick", { path: pick.path })}
+                            onClick={() =>
+                              changed(() =>
+                                setPicks(picks.filter((item) => item.path !== pick.path)),
+                              )
+                            }
+                          >
+                            <X size={13} aria-hidden="true" />
+                          </IconButton>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <Button size="small" onClick={() => setView("browse")}>
+                    {t("backups.restore.choose")}
+                  </Button>
+                </section>
+              )}
               <section aria-labelledby="restore-where" className="dialog-form">
                 <h3 id="restore-where" className="drawer-heading">
                   {t("backups.restore.where")}
@@ -580,13 +657,60 @@ export function RestoreDrawer({
                       setReplace(value === "original");
                     })
                   }
-                  options={(["original", "path", "download"] as RestoreMode[]).map((item) => ({
-                    value: item,
-                    title: t(`backups.restore.mode.${item}.label`),
-                    note: modeNote(item, modes[item].reason),
-                    disabled: modes[item].disabled,
-                  }))}
+                  options={offered.map((item) => {
+                    // a database's download is its dump as plain SQL
+                    const sql = databaseJob && item === "download";
+                    return {
+                      value: item,
+                      title: sql
+                        ? t("backups.restore.sqlLabel")
+                        : t(`backups.restore.mode.${item}.label`),
+                      note:
+                        sql && !modes[item].reason
+                          ? t("backups.restore.sqlNote")
+                          : modeNote(item, modes[item].reason),
+                      disabled: modes[item].disabled,
+                    };
+                  })}
                 />
+                {chosen === "new_database" && (
+                  <>
+                    <Field
+                      label={t("backups.restore.newName")}
+                      htmlFor="restore-new-name"
+                      error={newNameProblem || undefined}
+                    >
+                      <input
+                        id="restore-new-name"
+                        className="input mono"
+                        autoComplete="off"
+                        spellCheck={false}
+                        maxLength={63}
+                        placeholder={`${dbName}_restored`}
+                        aria-invalid={newNameProblem !== ""}
+                        value={newName}
+                        onChange={(event) => changed(() => setNewName(event.target.value))}
+                      />
+                      <p className="muted small">{t("backups.restore.newNameHint")}</p>
+                    </Field>
+                    {dbGone && (
+                      <Field label={t("backups.restore.newServer")} htmlFor="restore-new-server">
+                        <select
+                          id="restore-new-server"
+                          className="input"
+                          value={newServerValue}
+                          onChange={(event) => changed(() => setNewServer(event.target.value))}
+                        >
+                          {newServers.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
+                  </>
+                )}
                 {chosen === "path" && (
                   <>
                     <ServerField
@@ -640,7 +764,7 @@ export function RestoreDrawer({
                 {chosen === "download" && picks.length > 1 && (
                   <p className="field-error">{t("backups.restore.downloadOne")}</p>
                 )}
-                {chosen !== "download" && (
+                {(chosen === "original" || chosen === "path") && (
                   <div>
                     <label className="check-line">
                       <input
@@ -677,12 +801,29 @@ export function RestoreDrawer({
                 {t("backups.restore.previewFailed", { error: record.error })}
               </Banner>
             )}
-            {previewed && <RestorePreview preview={record.preview!} expired={expired} />}
+            {previewed &&
+              (record.mode === "database" || record.mode === "new_database" ? (
+                <DatabasePreview
+                  record={record}
+                  preview={record.preview!}
+                  expired={expired}
+                  server={dbServerName}
+                />
+              ) : (
+                <RestorePreview preview={record.preview!} expired={expired} />
+              ))}
           </>
         )}
         {error && <Banner tone="err">{error}</Banner>}
       </>
     );
+    // what the panel's start refuses from a database's preview: the dump is
+    // not in the snapshot, the user's password no longer signs in, the room
+    // is short, or the new name is taken
+    const refused =
+      previewed && (record.mode === "database" || record.mode === "new_database")
+        ? databaseRefusal(record.mode, record.preview!)
+        : false;
     if (panelJob) {
       // an admin downloads the encrypted copy, a valid input of panel recover
       actions = (
@@ -698,6 +839,29 @@ export function RestoreDrawer({
               {t("backups.restore.panel.download")}
             </Button>
           )}
+        </>
+      );
+    } else if (chosen === "download" && databaseJob) {
+      // a database's dump as plain SQL; PostgreSQL's as stored too, for pg_restore
+      actions = (
+        <>
+          {cancel}
+          {job?.engine === "postgres" && (
+            <Button
+              disabled={!ready || busy}
+              onClick={() => void download(`/${dbName}.pgdump`, "file")}
+            >
+              {t("backups.restore.rawLabel")}
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            disabled={!ready || busy}
+            onClick={() => void download("", "sql")}
+          >
+            <Download size={15} aria-hidden="true" />
+            {t("backups.restore.sqlLabel")}
+          </Button>
         </>
       );
     } else if (chosen === "download") {
@@ -719,7 +883,7 @@ export function RestoreDrawer({
           {cancel}
           <Button
             variant="primary"
-            disabled={busy}
+            disabled={busy || refused}
             onClick={() => (needs ? (setConfirmError(""), setConfirming(true)) : void begin(false))}
           >
             {needs ? t("backups.restore.start") : t("backups.restore.startNow")}
@@ -749,7 +913,20 @@ export function RestoreDrawer({
       actions={actions}
     >
       {body}
-      {record && record.preview && (
+      {record && record.preview && record.mode === "database" && (
+        <ConfirmDatabaseDialog
+          open={confirming}
+          database={record.database_name || dbName}
+          // a whole date reads well in the sentence, as "today" would not in Czech
+          time={formatDateTime(record.preview.snapshot.time || record.snapshot_time)}
+          stops={record.preview.would_stop?.length ?? 0}
+          busy={busy}
+          error={confirmError}
+          onCancel={() => setConfirming(false)}
+          onConfirm={(typed) => void begin(true, typed)}
+        />
+      )}
+      {record && record.preview && record.mode !== "database" && (
         <ConfirmOverwriteDialog
           open={confirming}
           dest={destinationOf(record)}
@@ -781,14 +958,232 @@ export function RestoreDrawer({
     if (reason === "admin") {
       return t("backups.restore.adminOnly");
     }
+    if (reason === "dbGone") {
+      return t("backups.restore.dbGone");
+    }
+    if (reason === "agent") {
+      return t("backups.restore.agentNoDatabase", { host: server(job?.host) });
+    }
     if (item === "original" && job) {
       return t("backups.restore.mode.original.note", {
         what: describeSource(job, stacks, t),
         host: server(job.host),
       });
     }
+    if (item === "database") {
+      // "no application" begins a sentence of the note
+      const app = appName || capitalized(t("backups.restore.databaseNoApp"));
+      return t("backups.restore.mode.database.note", {
+        database: dbName,
+        server: dbServerName,
+        app,
+      });
+    }
+    if (item === "new_database") {
+      return t("backups.restore.mode.new_database.note", { server: dbServerName });
+    }
     return t(`backups.restore.mode.${item}.note`);
   }
+}
+
+/** A text with its first letter in capitals, as the language writes it. */
+function capitalized(text: string): string {
+  const language = i18n.language || "en";
+  return `${text.charAt(0).toLocaleUpperCase(language)}${text.slice(1)}`;
+}
+
+/** Whether the panel's start refuses a database's restore from its preview:
+ * the dump is not in the snapshot, the panel's password of the user no
+ * longer signs in (back into the database), the room is short, or a
+ * database or user of the new name exists already. */
+export function databaseRefusal(mode: RestoreMode, preview: Preview): boolean {
+  const missing = (preview.roots ?? []).some((root) => !root.in_snapshot);
+  const database = preview.database;
+  if (missing || !roomEnough(preview)) {
+    return true;
+  }
+  if (mode === "database") {
+    return database ? !database.sign_in : false;
+  }
+  return database ? database.exists || database.user_exists : false;
+}
+
+/** What a database's preview found (#53): the dump's size, the tables the
+ * database has now, the room it needs, what keeps it from starting, what
+ * stops, and whether the data as it is now stays. */
+export function DatabasePreview({
+  record,
+  preview,
+  expired,
+  server,
+}: {
+  record: Pick<BackupRestore, "mode" | "database_name" | "previous" | "roots" | "stack_name">;
+  preview: Preview;
+  expired: boolean;
+  /** the database's server */
+  server: string;
+}) {
+  const { t } = useTranslation();
+  const root = record.roots?.[0];
+  const database = record.database_name || root?.database || "";
+  const user = root?.user || database;
+  const found = preview.database;
+  const replace = record.mode === "database";
+  const missing = (preview.roots ?? []).some((item) => !item.in_snapshot);
+  const stops = preview.would_stop ?? [];
+  // the database's own application stops, as its mode says; what else stops
+  // is another stack whose settings name the database
+  const own = new Set(root?.stop_containers ?? []);
+  const others = stops.filter(
+    (container) =>
+      !own.has(container.name) && (!record.stack_name || container.project !== record.stack_name),
+  );
+  const previous = record.previous || root?.previous || "";
+  // PostgreSQL keeps the data a restore in place replaced; MariaDB does not
+  const postgres = (root?.engine ?? "") === "postgres" || previous !== "";
+  return (
+    <section className="restore-preview" aria-labelledby="restore-preview-title">
+      <h3 id="restore-preview-title" className="drawer-heading">
+        {t("backups.restore.preview")}
+      </h3>
+      {expired && <Banner tone="warn">{t("backups.restore.previewExpired")}</Banner>}
+      {missing ? (
+        <Banner tone="err">{t("backups.restore.previewDumpMissing")}</Banner>
+      ) : (
+        <p className="preview-sentence">
+          {t("backups.restore.previewDump", { size: formatBytes(preview.total_bytes) })}
+        </p>
+      )}
+      {replace && found?.exists && (
+        <p>{t("backups.restore.previewTables", { database, count: found.tables })}</p>
+      )}
+      {!replace && found && (found.exists || found.user_exists) && (
+        <Banner tone="err">{t("backups.restore.previewExists", { database, server })}</Banner>
+      )}
+      {replace && found && !found.sign_in && (
+        <Banner tone="err">{t("backups.restore.previewSignIn", { user, server })}</Banner>
+      )}
+      {preview.free && preview.needed && (
+        <p className="muted small">
+          {t("backups.restore.previewDbFree", {
+            free: formatBytes(preview.free.data),
+            server,
+            needed: formatBytes(preview.needed.data),
+          })}
+        </p>
+      )}
+      {!roomEnough(preview) && (
+        <Banner tone="err">{t("backups.restore.previewLowSpace", { server })}</Banner>
+      )}
+      {stops.length > 0 && (
+        <div>
+          <p>{t("backups.restore.previewStops")}</p>
+          <ul className="chip-list restore-stops">
+            {stops.map((container) => (
+              <li key={container.name} className="chip">
+                <span className="mono">{container.name}</span>{" "}
+                <ContainerStatePill state="running" health="" />
+              </li>
+            ))}
+          </ul>
+          {others.length > 0 && (
+            <p className="muted small">
+              {t("backups.restore.alsoStops", {
+                names: others.map((container) => container.name).join(", "),
+              })}
+            </p>
+          )}
+        </div>
+      )}
+      {replace &&
+        (postgres ? (
+          <p className="muted small">
+            {t("backups.restore.previous", { server, name: previous || "pc_old_…" })}
+          </p>
+        ) : (
+          <Banner tone="warn">{t("backups.restore.noPrevious")}</Banner>
+        ))}
+      {(found?.settings ?? []).length > 0 && (
+        <p className="muted small mono">{(found?.settings ?? []).join(", ")}</p>
+      )}
+      {(preview.notes ?? []).map((note) => (
+        <p key={note} className="muted small">
+          {note}
+        </p>
+      ))}
+    </section>
+  );
+}
+
+/** Asks to confirm that a restore replaces a database: its button stays
+ * disabled until the database's name is typed, and the panel checks the
+ * name again. */
+export function ConfirmDatabaseDialog({
+  open,
+  database,
+  time,
+  stops,
+  busy,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  database: string;
+  time: string;
+  /** the containers that stop meanwhile */
+  stops: number;
+  busy: boolean;
+  error: string;
+  onConfirm: (typed: string) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [typed, setTyped] = useState("");
+  // each time it opens, the field starts empty
+  const [opened, setOpened] = useState(open);
+  if (open !== opened) {
+    setOpened(open);
+    if (open) {
+      setTyped("");
+    }
+  }
+  const matches = database !== "" && typed === database;
+  return (
+    <ConfirmDialog
+      open={open}
+      danger
+      title={t("backups.restore.confirmDatabase", { database })}
+      confirmLabel={t("backups.restore.confirmDatabaseAction", { database })}
+      confirmDisabled={!matches || busy}
+      onConfirm={() => {
+        if (matches) {
+          onConfirm(typed);
+        }
+      }}
+      onCancel={onCancel}
+    >
+      <div className="dialog-form">
+        <p className="muted">
+          {t("backups.restore.confirmDatabaseText", { database, time, count: stops })}
+        </p>
+        <Field
+          label={t("backups.restore.confirmType", { database })}
+          htmlFor="restore-confirm-name"
+        >
+          <input
+            id="restore-confirm-name"
+            className="input mono"
+            autoComplete="off"
+            spellCheck={false}
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </Field>
+        {error && <Banner tone="err">{error}</Banner>}
+      </div>
+    </ConfirmDialog>
+  );
 }
 
 /** Of two copies of a record, the one saved last; the second, an answer to
@@ -1395,7 +1790,12 @@ function RestoreProgress({
   const current = step || last.current;
   const stops =
     (record.preview?.would_stop?.length ?? 0) > 0 || (record.app_stopped?.length ?? 0) > 0;
-  const steps = restoreSteps.filter((item) => stops || (item !== "stop" && item !== "start"));
+  // PostgreSQL's restore in place puts its restored copy in place (#53)
+  const swaps =
+    record.mode === "database" && Boolean(record.previous || record.roots?.[0]?.previous);
+  const steps = stepsOf(record.mode).filter(
+    (item) => (stops || (item !== "stop" && item !== "start")) && (swaps || item !== "swap"),
+  );
   const at = current ? steps.indexOf(current as (typeof steps)[number]) : -1;
   const cancelling =
     !ended &&
@@ -1414,9 +1814,11 @@ function RestoreProgress({
       } else if (index === at) {
         state = ended ? "failed" : "active";
       }
-      // the agent starts the application again however the restore ended
+      // the agent starts the application again however the restore ended,
+      // but after MariaDB's database was emptied it leaves it stopped (#53)
       if (ended && item === "start" && (record.app_stopped?.length ?? 0) > 0) {
-        state = record.app_problem ? "failed" : "done";
+        const leftStopped = record.mode === "database" && record.partial;
+        state = record.app_problem || leftStopped ? "failed" : "done";
       }
     }
     return { id: item, state, title: t(`backups.restore.step.${item}`) };
@@ -1429,6 +1831,15 @@ function RestoreProgress({
   const notRunning = Array.isArray(command?.result?.app_not_running)
     ? (command!.result!.app_not_running as string[])
     : [];
+  // a database's restore (#53): the tables it restored, and what stays
+  // stopped when MariaDB's restore failed after the database was emptied
+  const database = record.mode === "database" || record.mode === "new_database";
+  const tables =
+    record.tables ||
+    (typeof command?.result?.tables === "number" ? (command.result.tables as number) : 0);
+  const leftStopped = Array.isArray(command?.result?.app_left_stopped)
+    ? (command!.result!.app_left_stopped as string[])
+    : (record.app_stopped ?? []).map((item) => item.name);
 
   const stop = async () => {
     setAsking(false);
@@ -1481,13 +1892,16 @@ function RestoreProgress({
       {cancelling && <Banner tone="info">{t("backups.restore.stopping")}</Banner>}
       {record.status === "succeeded" && (
         <Banner tone="ok">
-          {t("backups.restore.done", {
-            count: record.files_restored,
-            size:
-              formatBytes(record.bytes_restored) === "–"
-                ? "0 B"
-                : formatBytes(record.bytes_restored),
-          })}
+          {database
+            ? // a sentence of its own, as the containers' after it
+              `${t("backups.restore.tablesDone", { count: tables })}.`
+            : t("backups.restore.done", {
+                count: record.files_restored,
+                size:
+                  formatBytes(record.bytes_restored) === "–"
+                    ? "0 B"
+                    : formatBytes(record.bytes_restored),
+              })}
           {(record.app_stopped?.length ?? 0) > 0 && !record.app_problem && (
             <> {t("backups.restore.appRunning")}</>
           )}
@@ -1509,7 +1923,18 @@ function RestoreProgress({
           )}
         </Banner>
       )}
-      {ended && record.partial && <Banner tone="warn">{t("backups.restore.partial")}</Banner>}
+      {ended &&
+        record.partial &&
+        (database ? (
+          <Banner tone="err">
+            {t("backups.restore.appLeftStopped", {
+              names: leftStopped.join(", ") || "–",
+              database: record.database_name || record.roots?.[0]?.database || "",
+            })}
+          </Banner>
+        ) : (
+          <Banner tone="warn">{t("backups.restore.partial")}</Banner>
+        ))}
       {ended && record.app_problem && (
         <Banner tone="warn">
           {notRunning.length > 0

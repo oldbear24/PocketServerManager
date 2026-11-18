@@ -758,7 +758,10 @@
     "backup_check_unverified": "{{name}}: repozitář záloh není ověřený",
     "recovery_kit": "Záchranná sada panelu není uložená",
     "panel_backup": "Samotný panel se nezálohuje",
-    "panel_restored": "Panel byl obnoven ze zálohy: servery se znovu připojují"
+    "panel_restored": "Panel byl obnoven ze zálohy: servery se znovu připojují",
+    "backup_restore_test_failed": "{{name}}: test obnovy selhal",
+    "backup_restore_test_unverified": "{{name}}: test obnovy dlouho neprošel",
+    "db_temporary_left": "{{name}}: dočasná databáze se nesmazala"
   },
   "chart": {
     "now": "teď",
@@ -939,7 +942,7 @@
     "kpiDataNote": "podle posledního hlášení serverů",
     "kpiLargest": "největší: {{name}} {{size}}",
     "kpiBackups": "Zálohy za 24 h",
-    "kpiBackupsNote": "dump každé databáze zvlášť, s milníkem M4",
+    "kpiBackupsNote": "dump každé databáze zvlášť",
     "servers": "Servery",
     "noServers": "Zatím žádné databázové servery",
     "noServersText": "Vytvoř sdílený server pro aplikace jednoho hostitele. Databázové kontejnery ve stackách se tu objeví samy.",
@@ -1028,7 +1031,7 @@
     "statsQueued": "Server se ptá na svá čísla.",
     "refreshStats": "Načíst čísla znovu",
     "sharedTitle": "Sdílený server",
-    "sharedText": "Slouží aplikacím na hostiteli {{host}} – každá se připojuje přes vlastní interní síť, bez otevřených portů a bez přístupu k ostatním aplikacím. Nová databáze se tu vytvoří i s vlastním uživatelem.",
+    "sharedText": "Obsluhuje aplikace na hostiteli {{host}} – každá se připojuje přes vlastní interní síť, bez otevřených portů a bez přístupu k ostatním aplikacím. Nová databáze se tu vytvoří i s vlastním uživatelem.",
     "dedicatedTitle": "Vyhrazený server",
     "dedicatedText": "Běží uvnitř stacku aplikace, na jeho síti.",
     "moveTitle": "Sloučit do sdíleného serveru",
@@ -1085,7 +1088,96 @@
     "expires": "vyprší {{when}}",
     "downloadDump": "Stáhnout dump databáze {{name}}",
     "credentials": "Přístup",
-    "ownCredentials": "uživatele a hesla drží stack {{name}}"
+    "ownCredentials": "uživatele a hesla drží stack {{name}}",
+    "kpiBackupsNone": "zatím žádná databáze na sdíleném serveru",
+    "kpiBackupsNoTarget_one": "{{count}} databáze nemá cíl",
+    "kpiBackupsNoTarget_few": "{{count}} databáze nemají cíl",
+    "kpiBackupsNoTarget_many": "{{count}} databáze nemá cíl",
+    "kpiBackupsNoTarget_other": "{{count}} databází nemá cíl",
+    "backupHint": "Zálohy denně {{time}} · každá databáze zvlášť",
+    "backupHintCron": "Zálohy {{schedule}} · každá databáze zvlášť",
+    "backupHintMixed": "Zálohy v různých časech · každá databáze zvlášť",
+    "backupHintNoTarget": "Zálohy zatím nemají cíl: vyber ho",
+    "backupSettings": "Nastavení záloh",
+    "hostBackups": {
+      "title": "Automatické zálohy na serveru {{host}}",
+      "note": "Každá databáze sdíleného serveru na {{host}} i každý PHP web na něm má vlastní zálohovací úlohu. Každá úloha přebírá toto nastavení, pokud nemá vlastní.",
+      "schedule": "Kdy (cron, UTC)",
+      "scheduleDefault": "Prázdné: denně v {{time}}, vlastní čas tohoto serveru",
+      "targets": "Kam",
+      "targetsNone": "Bez cíle: úlohy počkají, než nějaký vybereš.",
+      "retention": "Uchovat",
+      "follow_one": "Toto nastavení přebírá {{count}} úloha",
+      "follow_few": "Toto nastavení přebírají {{count}} úlohy",
+      "follow_many": "Toto nastavení přebírá {{count}} úlohy",
+      "follow_other": "Toto nastavení přebírá {{count}} úloh",
+      "saved_one": "Uloženo: změnila se {{count}} úloha.",
+      "saved_few": "Uloženo: změnily se {{count}} úlohy.",
+      "saved_many": "Uloženo: změnilo se {{count}} úlohy.",
+      "saved_other": "Uloženo: změnilo se {{count}} úloh."
+    },
+    "backupCell": {
+      "ok": "OK · {{time}}",
+      "failed": "Selhala · {{time}}",
+      "skipped": "Vynechána · {{time}}",
+      "cancelled": "Zastavena · {{time}}",
+      "running": "Zálohuje se…",
+      "queued": "Čeká",
+      "never": "Zatím ne",
+      "noTarget": "Bez cíle",
+      "off": "Vypnuto",
+      "viaJob": "úlohou {{name}}",
+      "viaJobNote": "Vyhrazený server zálohuje úloha jeho stacku; dump PostgreSQL z něj obsahuje jen databázi z POSTGRES_DB.",
+      "testFailed": "test obnovy selhal"
+    },
+    "siteApp": "web {{name}}",
+    "temporary": {
+      "test": "test obnovy {{name}} · smaže se {{when}}",
+      "scratch": "obnova {{name}} · smaže se po jejím konci",
+      "previous": "{{name}} před obnovou · smaže se {{when}}",
+      "orphan": "pozůstatek · smaže se {{when}}",
+      "dropping": "maže se",
+      "title": "Dočasná databáze {{name}}",
+      "text": "PocketCloud vytvořil tuto databázi pro obnovu nebo test obnovy a sám ji smaže v {{at}}. Nic jiného se s ní dělat nedá.",
+      "drop": "Smazat hned",
+      "dropConfirm": "Smazat {{name}} hned? Vrátit to nejde.",
+      "dropQueued": "{{name}} se maže."
+    },
+    "backups": {
+      "title": "Zálohy",
+      "job": "Úloha",
+      "schedule": "Kdy",
+      "targets": "Kam",
+      "retention": "Uchovává",
+      "follows": "podle nastavení serveru {{host}}",
+      "own": "vlastní",
+      "last": "Poslední záloha",
+      "lastText": "{{when}} do {{target}}: dump {{size}}, nových {{added}}",
+      "never": "zatím žádná",
+      "test": "Test obnovy",
+      "testState": {
+        "ok_one": "Prošel {{when}} · {{count}} tabulka",
+        "ok_few": "Prošel {{when}} · {{count}} tabulky",
+        "ok_many": "Prošel {{when}} · {{count}} tabulky",
+        "ok_other": "Prošel {{when}} · {{count}} tabulek",
+        "failed": "Selhal {{when}}: {{error}}",
+        "error": "Nedokončil se {{when}}: {{error}}",
+        "skipped": "Vynechán {{when}}: {{error}}",
+        "cancelled": "Zastaven {{when}}",
+        "running": "Obnovuje se do {{name}}",
+        "queued": "Čeká na svůj server"
+      },
+      "testNone": "Zatím žádný · další {{when}}",
+      "testOff": "Testy obnovy jsou vypnuté",
+      "backupNow": "Zálohovat teď",
+      "testNow": "Otestovat obnovu teď",
+      "testQueued": "Test obnovy čeká na svůj server: nejnovější záloha se obnoví do dočasné databáze, která se dvě hodiny po testu smaže.",
+      "restore": "Obnovit…",
+      "edit": "Nastavení záloh…",
+      "pending": "Úloha záloh se objeví, až bude databáze připravená.",
+      "dedicated": "Vyhrazený server zálohují úlohy jeho stacku.",
+      "dedicatedNone": "Jeho stack nemá žádnou zálohovací úlohu."
+    }
   },
   "edge": {
     "title": "Edge proxy",
@@ -2007,7 +2099,10 @@
     "updatePlugins": "Přidat pluginy",
     "updateThemes": "Přidat šablony",
     "updateAddNote": "Názvy z wordpress.org, např. akismet, nebo adresy ZIP souborů, oddělené čárkami.",
-    "updateStarted": "Aktualizace se sestavuje: {{name}}."
+    "updateStarted": "Aktualizace se sestavuje: {{name}}.",
+    "sharedBackup": "zálohuje úloha {{name}} · {{state}}",
+    "sharedNotBackedUp": "zatím se nezálohuje: úloha vznikne s prvním nasazením",
+    "databaseBackup": "Záloha"
   },
   "task": {
     "every": {
@@ -2228,21 +2323,29 @@
       "stack": "svazky stacku {{name}}",
       "serviceVolumes": "svazky služby {{service}}: {{names}}",
       "db_dump": "{{tool}} · {{stack}}/{{service}}",
-      "panel": "PocketBase · kopie SQLite, šifrovaná"
+      "panel": "PocketBase · kopie SQLite, šifrovaná",
+      "database": "{{tool}} · {{server}}/{{database}}",
+      "databaseGone": "{{server}}/{{database}} · smazaná",
+      "site": "soubory webu {{name}} · shared/",
+      "siteClassic": "soubory webu {{name}}"
     },
     "sourceKind": {
       "volume": "Svazek Dockeru",
       "path": "Složka na serveru",
       "stack": "Svazky stacku",
       "db_dump": "Výpis databáze",
-      "panel": "Samotný panel (pb_data)"
+      "panel": "Samotný panel (pb_data)",
+      "database": "Databáze sdíleného serveru",
+      "site": "Soubory PHP webu"
     },
     "sourceNote": {
       "volume": "restic ho čte v kontejneru úlohy, který ho připojí jen pro čtení.",
       "path": "Absolutní cesta ke složce serveru, do kontejneru úlohy připojená jen pro čtení.",
       "stack": "Všechny pojmenované svazky stacku, jak je má v době běhu.",
       "db_dump": "Výpis udělá běžící kontejner služby vlastními nástroji a restic ho uloží jako jeden soubor snapshotu.",
-      "panel": "Panel zkopíruje svou databázi a uložené soubory a zašifruje je klíčem odvozeným z hlavního klíče. Agent zvoleného serveru je zálohuje resticem a nezašifrované je nikdy neuvidí."
+      "panel": "Panel zkopíruje svou databázi a uložené soubory a zašifruje je klíčem odvozeným z hlavního klíče. Agent zvoleného serveru je zálohuje resticem a nezašifrované je nikdy neuvidí.",
+      "database": "Klient serveru vypíše tuto jednu databázi nekomprimovaně, aby restic ukládal jen změny.",
+      "site": "Co si web drží mimo vydání; kód se obnoví z vydání a zdrojů."
     },
     "engineTool": {
       "postgres": "pg_dump",
@@ -2411,7 +2514,21 @@
       "carrierOld": "Agent serveru {{name}} zatím neumí zálohovat panel: aktualizuj ho.",
       "carrierNone": "Agent žádného serveru zatím neumí zálohovat panel: aktualizuj agenty.",
       "panelExists": "Panel už svou úlohu zálohy má.",
-      "panelLocal": "{{target}} je složka serveru {{server}}: pokud je to stroj panelu, jedna havárie vezme panel i jeho zálohu."
+      "panelLocal": "{{target}} je složka serveru {{server}}: pokud je to stroj panelu, jedna havárie vezme panel i jeho zálohu.",
+      "fromDatabase": "úloha pro každou databázi",
+      "fromSite": "vytvořeno pro web",
+      "databaseGone": "Její databáze byla smazána: úloha už neběží a její snapshoty lze obnovit do nové databáze.",
+      "siteGone": "Její web byl odstraněn: úloha už neběží a její snapshoty zůstávají.",
+      "automaticNote": "PocketCloud vytvořil tuto úlohu pro {{what}}: co zálohuje a na kterém serveru, určuje ono. Kdy, kam a jak dlouho může přebírat z nastavení serveru {{host}}, nebo mít vlastní.",
+      "follows": "Podle nastavení serveru {{host}}",
+      "own": "Vlastní",
+      "group_one": "Databáze na {{server}} · {{count}} úloha",
+      "group_few": "Databáze na {{server}} · {{count}} úlohy",
+      "group_many": "Databáze na {{server}} · {{count}} úlohy",
+      "group_other": "Databáze na {{server}} · {{count}} úloh",
+      "groupState": "{{ok}} z {{total}} zálohováno za 24 h",
+      "groupToggle": "Ukázat každou databázi",
+      "restoreTest": "Test obnovy: {{state}}"
     },
     "panel": {
       "dialogTitle": "Záloha panelu",
@@ -2503,6 +2620,14 @@
         "download": {
           "label": "Stáhnout jako tar",
           "note": "Přímo z repozitáře do prohlížeče, přes panel: nech tuto stránku otevřenou, dokud stahování neskončí."
+        },
+        "database": {
+          "label": "Zpět do databáze",
+          "note": "Databáze {{database}} na serveru {{server}} se nahradí zálohou. {{app}} se na chvíli zastaví; ostatních databází na serveru {{server}} se obnova nedotkne."
+        },
+        "new_database": {
+          "label": "Do nové databáze",
+          "note": "Na serveru {{server}}, s vlastním uživatelem a heslem: až bude připravená, připoj ji ke stacku. Nic jiného se nezmění."
         }
       },
       "previewNew_one": "{{count}} nový soubor ({{size}})",
@@ -2526,7 +2651,10 @@
         "stop": "Zastavení kontejnerů",
         "restore": "Obnova souborů",
         "start": "Spuštění kontejnerů",
-        "verify": "Kontrola kontejnerů"
+        "verify": "Kontrola kontejnerů",
+        "fetch": "Zkopírovat dump na databázový server",
+        "dbrestore": "Obnovit databázi",
+        "swap": "Vyměnit za obnovenou kopii"
       },
       "status": {
         "previewing": "Připravuje se náhled",
@@ -2642,7 +2770,42 @@
         "step4": "4 · V Nastavení › Záchranná sada sleduj, jak se servery vracejí",
         "download": "Stáhnout šifrovanou kopii",
         "guide": "Návod k obnově: docs/disaster-recovery.md"
-      }
+      },
+      "databaseNoApp": "žádná aplikace",
+      "sqlLabel": "Stáhnout jako SQL",
+      "sqlNote": "Čisté SQL rovnou do prohlížeče, převáděné ze zálohy za běhu: nech tuto stránku otevřenou, dokud stahování neskončí.",
+      "rawLabel": "Stáhnout tak, jak je uložená, pro pg_restore",
+      "newName": "Název nové databáze",
+      "newNameHint": "Malá písmena, číslice a _, na začátku písmeno; nejvýš 63 znaků. Stejně se bude jmenovat i její uživatel.",
+      "newNameReserved": "Názvy začínající pc_rt_, pc_rs_ nebo pc_old_ patří dočasným databázím PocketCloudu.",
+      "newServer": "Databázový server",
+      "previewDump": "Záloha obsahuje dump o velikosti {{size}}",
+      "previewTables_one": "{{database}} má teď {{count}} tabulku",
+      "previewTables_few": "{{database}} má teď {{count}} tabulky",
+      "previewTables_many": "{{database}} má teď {{count}} tabulky",
+      "previewTables_other": "{{database}} má teď {{count}} tabulek",
+      "previewDbFree": "Na serveru {{server}} je volno {{free}}; obnova potřebuje asi {{needed}}",
+      "previewLowSpace": "Server {{server}} má málo místa: obnov do nové databáze jinde, nebo nejdřív uvolni místo.",
+      "previewDumpMissing": "Dump v tomto snapshotu není.",
+      "previewExists": "Databáze {{database}} už na serveru {{server}} existuje.",
+      "previewSignIn": "Heslo uživatele {{user}}, které panel zná, se už na serveru {{server}} nepřihlásí, a obnova běží pod tímto uživatelem.",
+      "alsoStops": "Zastaví také {{names}}, protože jejich nastavení tuto databázi používá.",
+      "previous": "Současná data zůstanou na serveru {{server}} jako {{name}} 24 hodin.",
+      "noPrevious": "Kopie současných dat nezůstane: pokud je můžeš potřebovat, nejdřív zálohuj.",
+      "confirmDatabase": "Nahradit databázi {{database}}?",
+      "confirmDatabaseText_one": "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejner.",
+      "confirmDatabaseText_few": "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejnery.",
+      "confirmDatabaseText_many": "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejneru.",
+      "confirmDatabaseText_other": "Vše, co databáze {{database}} teď obsahuje, nahradí záloha z {{time}}. Mezitím se zastaví a znovu spustí {{count}} kontejnerů.",
+      "confirmType": "Pro potvrzení napiš {{database}}",
+      "confirmDatabaseAction": "Nahradit {{database}}",
+      "dbGone": "Databáze byla smazána: obnov ji do nové.",
+      "agentNoDatabase": "Agent serveru {{host}} zatím neumí obnovovat databáze: aktualizuj ho.",
+      "tablesDone_one": "Obnovena {{count}} tabulka, stejně jako v dumpu",
+      "tablesDone_few": "Obnoveny {{count}} tabulky, stejně jako v dumpu",
+      "tablesDone_many": "Obnoveno {{count}} tabulky, stejně jako v dumpu",
+      "tablesDone_other": "Obnoveno {{count}} tabulek, stejně jako v dumpu",
+      "appLeftStopped": "{{names}} zůstávají zastavené: {{database}} obsahuje jen část zálohy. Obnov znovu a pak je spusť na jejich stránkách."
     },
     "restoreFromBackup": "Obnovit ze zálohy",
     "integrity": {
@@ -2800,6 +2963,38 @@
       "confirmLater": "Naplánovat na {{time}}",
       "busy": "Odemykám…",
       "agentNote": "restic unlock a pak zálohu spustí agent serveru {{server}}."
+    },
+    "restoreTests": {
+      "title": "Testy obnovy",
+      "note": "Jednou týdně se nejnovější záloha každé databáze obnoví do dočasné databáze na jejím serveru, která se o dvě hodiny později smaže.",
+      "kpi": "testy obnovy {{ok}} / {{total}} v pořádku · {{when}}",
+      "off": "testy obnovy vypnuté",
+      "none": "Zatím žádný test obnovy",
+      "next": "další {{when}}",
+      "retryAt": "další pokus {{time}}",
+      "schedule": "Testy obnovy (cron, UTC; prázdné je vypne)",
+      "column": {
+        "database": "Databáze",
+        "result": "Výsledek",
+        "when": "Kdy",
+        "snapshot": "Snapshot",
+        "tables": "Tabulky",
+        "took": "Trvání"
+      },
+      "status": {
+        "queued": "Čeká",
+        "running": "Obnovuje se",
+        "ok": "Prošel",
+        "failed": "Selhal",
+        "error": "Nedokončil se",
+        "skipped": "Vynechán",
+        "cancelled": "Zastaven"
+      },
+      "banner_one": "{{count}} test obnovy selhal: tu zálohu nešlo obnovit",
+      "banner_few": "{{count}} testy obnovy selhaly: ty zálohy nešlo obnovit",
+      "banner_many": "{{count}} testu obnovy selhalo: ty zálohy nešlo obnovit",
+      "banner_other": "{{count}} testů obnovy selhalo: ty zálohy nešlo obnovit",
+      "bannerAction": "Ukázat testy obnovy"
     }
   }
 }

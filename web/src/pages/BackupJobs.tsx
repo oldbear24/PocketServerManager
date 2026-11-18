@@ -1,4 +1,12 @@
-import { AlertTriangle, CheckCircle2, Pencil, Trash2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Pencil,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import type { RecordModel } from "pocketbase";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,15 +22,18 @@ import {
   Field,
   IconButton,
   Kpi,
+  SegmentedControl,
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import {
   formatCheckMoment,
   integritySummary,
+  restoreTestTone,
   type BackupCheck,
   type IntegritySummary,
 } from "../lib/backupChecks";
 import {
+  automaticJob,
   cronPreset,
   cronShaped,
   describeCron,
@@ -37,6 +48,7 @@ import {
   lastRun,
   maxAttempts,
   nextJob,
+  ownSettings,
   parseKeep,
   parseTime,
   presetCron,
@@ -47,6 +59,7 @@ import {
   runsSince,
   sameRetention,
   shortError,
+  sourceGone,
   sourceKinds,
   successPercent,
   successRate,
@@ -59,6 +72,7 @@ import {
   type BackupRun,
   type DumpEngine,
   type NewBackupJob,
+  type OwnSetting,
   type Retention,
   type RetentionKey,
   type RunStatus,
@@ -67,6 +81,8 @@ import {
   type StripDay,
 } from "../lib/backupJobs";
 import { serverOption, type BackupTarget } from "../lib/backups";
+import { backedUpWithin, latestTest } from "../lib/databaseBackups";
+import { restoreTestsLine } from "./BackupRestoreTests";
 import { formatBytes, formatNumber } from "../lib/format";
 import { useMounted } from "../lib/mounted";
 import { pb } from "../lib/pb";
@@ -86,6 +102,8 @@ export function BackupSummary({
   unverified = [],
   openChecks = [],
   now,
+  tests = [],
+  testSchedule,
 }: {
   jobs: BackupJob[];
   runs: BackupRun[];
@@ -96,6 +114,9 @@ export function BackupSummary({
   /** the integrity checks queued or running */
   openChecks?: Pick<BackupCheck, "target" | "status">[];
   now: number;
+  /** the database jobs' restore tests, and their schedule (#53) */
+  tests?: BackupCheck[];
+  testSchedule?: string;
 }) {
   const { t } = useTranslation();
   const rate = successRate(runs, now);
@@ -136,14 +157,27 @@ export function BackupSummary({
             : t("backups.summary.nothingScheduled")
         }
       />
-      <IntegrityKpi summary={integritySummary(targets, unverified, openChecks)} now={now} />
+      <IntegrityKpi
+        summary={integritySummary(targets, unverified, openChecks)}
+        now={now}
+        tests={restoreTestsLine(jobs, tests, testSchedule, now, t)}
+      />
     </section>
   );
 }
 
 /** The integrity tile, as the design has it: a word and its icon, never the
- * colour alone, and the next check below; while a check runs, its target. */
-function IntegrityKpi({ summary, now }: { summary: IntegritySummary; now: number }) {
+ * colour alone, and the next check below; while a check runs, its target.
+ * A line under it says the database jobs' restore tests (#53). */
+function IntegrityKpi({
+  summary,
+  now,
+  tests = null,
+}: {
+  summary: IntegritySummary;
+  now: number;
+  tests?: string | null;
+}) {
   const { t } = useTranslation();
   let tone: "ok" | "warn" | "err" | undefined;
   let icon: ReactNode = null;
@@ -181,7 +215,22 @@ function IntegrityKpi({ summary, now }: { summary: IntegritySummary; now: number
     note = t("backups.summary.integrityChecking", { name: summary.running.name });
   }
   return (
-    <Kpi label={t("backups.summary.integrity")} value={value} tone={tone} icon={icon} note={note} />
+    <Kpi
+      label={t("backups.summary.integrity")}
+      value={value}
+      tone={tone}
+      icon={icon}
+      note={
+        tests ? (
+          <>
+            <span className="kpi-line">{note}</span>
+            <span className="kpi-line">{tests}</span>
+          </>
+        ) : (
+          note
+        )
+      }
+    />
   );
 }
 
@@ -291,10 +340,53 @@ export function describeSource(job: BackupJob, stacks: StackName[], t: Translate
     case "panel":
       text = t("backups.source.panel");
       break;
+    case "database": {
+      // a dropped database's job keeps its server's name and the database's
+      const server = job.db_server_name || "–";
+      text = job.database
+        ? t("backups.source.database", {
+            tool: job.engine ? t(`backups.engineTool.${job.engine}`) : "–",
+            server,
+            database: job.source,
+          })
+        : t("backups.source.databaseGone", { server, database: job.source });
+      break;
+    }
+    case "site": {
+      // a classic site's job backs up its directory, as its source says
+      const [name, dir = ""] = job.source.split("/");
+      text = t(dir === "shared" ? "backups.source.site" : "backups.source.siteClassic", { name });
+      break;
+    }
     default:
       text = job.source;
   }
-  return job.origin === "label" ? `${text} · ${t("backups.job.fromLabel")}` : text;
+  switch (job.origin) {
+    case "label":
+      return `${text} · ${t("backups.job.fromLabel")}`;
+    case "database":
+      return `${text} · ${t("backups.job.fromDatabase")}`;
+    case "site":
+      return `${text} · ${t("backups.job.fromSite")}`;
+    default:
+      return text;
+  }
+}
+
+/** Why a job no longer runs, as its row says it: its label, database or
+ * site is gone; "" while it is there. */
+function goneText(job: BackupJob, t: Translate): string {
+  if (!sourceGone(job)) {
+    return "";
+  }
+  switch (job.origin) {
+    case "database":
+      return t("backups.job.databaseGone");
+    case "site":
+      return t("backups.job.siteGone");
+    default:
+      return t("backups.job.labelRemoved");
+  }
 }
 
 /** How the job's last runs went: the newest per target, the worst first;
@@ -385,6 +477,163 @@ function failureWord(run: Pick<BackupRun, "status" | "failure">, t: Translate): 
   return run.status === "failed" && run.failure ? t(`backups.runFailure.${run.failure}`) : "";
 }
 
+/** The group a database's job is listed in: its server's name, kept after
+ * the database was dropped (#53). */
+function groupKey(job: Pick<BackupJob, "db_server_name">): string {
+  return job.db_server_name || "–";
+}
+
+/** The database jobs of one server, listed as one row. */
+type JobGroup = { kind: "group"; key: string; jobs: BackupJob[] };
+
+type JobEntry = JobGroup | { kind: "job"; job: BackupJob; grouped: boolean };
+
+/** The rows of the jobs' table, in the jobs' order: each job, but the
+ * database jobs of a server as one row where the first of them is, followed
+ * by each of them while the group is open. */
+export function jobEntries(jobs: BackupJob[], open: ReadonlySet<string>): JobEntry[] {
+  const groups = new Map<string, JobGroup>();
+  for (const job of jobs) {
+    if (job.origin !== "database") {
+      continue;
+    }
+    const key = groupKey(job);
+    const group = groups.get(key);
+    if (group) {
+      group.jobs.push(job);
+    } else {
+      groups.set(key, { kind: "group", key, jobs: [job] });
+    }
+  }
+  const entries: JobEntry[] = [];
+  const listed = new Set<string>();
+  for (const job of jobs) {
+    if (job.origin !== "database") {
+      entries.push({ kind: "job", job, grouped: false });
+      continue;
+    }
+    const key = groupKey(job);
+    if (listed.has(key)) {
+      continue;
+    }
+    listed.add(key);
+    const group = groups.get(key)!;
+    entries.push(group);
+    if (open.has(key)) {
+      entries.push(
+        ...group.jobs.map((item) => ({ kind: "job" as const, job: item, grouped: true })),
+      );
+    }
+  }
+  return entries;
+}
+
+const runRank: Record<RunStatus, number> = {
+  failed: 0,
+  skipped: 1,
+  cancelled: 2,
+  running: 3,
+  queued: 4,
+  succeeded: 5,
+};
+
+/** A server's database jobs in one row (#53): how many, how many backed up
+ * within a day, the worst of their last runs, and their 14 days summed, a
+ * day the colour of its worst run. Its button shows each database. */
+function JobGroupRow({
+  group,
+  runsByJob,
+  targets,
+  hosts,
+  now,
+  open,
+  onToggle,
+}: {
+  group: JobGroup;
+  runsByJob: Map<string, BackupRun[]>;
+  targets: BackupTarget[];
+  hosts: Host[];
+  now: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { t } = useTranslation();
+  const offset = zoneOffset(new Date(now));
+  const live = group.jobs.filter((job) => !sourceGone(job));
+  const runs = group.jobs.flatMap((job) => runsByJob.get(job.id) ?? []);
+  const done = live.filter((job) => backedUpWithin(job, runsByJob.get(job.id) ?? [], now)).length;
+  let worst: BackupRun | null = null;
+  for (const job of live) {
+    const last = lastRun(job, runsByJob.get(job.id) ?? []);
+    if (
+      last &&
+      (!worst ||
+        runRank[last.status] < runRank[worst.status] ||
+        (runRank[last.status] === runRank[worst.status] && last.created > worst.created))
+    ) {
+      worst = last;
+    }
+  }
+  const servers = [...new Set(group.jobs.map((job) => job.host))]
+    .map((id) => hosts.find((host) => host.id === id)?.name ?? "–")
+    .join(", ");
+  const names = [...new Set(live.flatMap((job) => job.targets ?? []))]
+    .map((id) => targets.find((target) => target.id === id)?.name)
+    .filter(Boolean);
+  const schedules = [...new Set(live.map((job) => job.schedule.trim()))];
+  return (
+    <tr className="job-group">
+      <td className="job-cell">
+        <div className="job-name">
+          {t("backups.job.group", { server: group.key, count: group.jobs.length })}
+        </div>
+        <div className="job-source">
+          {t("backups.job.groupState", { ok: done, total: live.length })}
+        </div>
+      </td>
+      <td className="job-where">
+        <span className="mono job-host">{servers}</span>
+        {" → "}
+        {names.length > 0 ? (
+          names.join(" + ")
+        ) : (
+          <span className="warn-text">{t("backups.job.noTarget")}</span>
+        )}
+      </td>
+      <td className="job-schedule">
+        {schedules.length === 1 ? describeCron(schedules[0], t, offset) : "–"}
+      </td>
+      <td className="job-last">
+        {worst ? (
+          <div className={`run-status ${statusClass[worst.status]}`}>
+            {t("backups.job.lastRunAt", {
+              status: t(`backups.runStatus.${worst.status}`),
+              time: formatMoment(runMoment(worst), now),
+            })}
+          </div>
+        ) : (
+          <span className="faint">{t("backups.job.neverRun")}</span>
+        )}
+      </td>
+      <td>
+        <DayStrip days={runStrip(runs, now)} />
+      </td>
+      <td className="job-actions">
+        <div className="row-actions">
+          <Button size="small" aria-expanded={open} onClick={onToggle}>
+            {open ? (
+              <ChevronUp size={14} aria-hidden="true" />
+            ) : (
+              <ChevronDown size={14} aria-hidden="true" />
+            )}
+            {t("backups.job.groupToggle")}
+          </Button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 /** The jobs as the design lists them, with what each backs up, where to,
  * when and how long, its last run and its last 14 days. */
 export function JobsCard({
@@ -402,6 +651,7 @@ export function JobsCard({
   onSelect,
   onAdd,
   onEdit,
+  tests = [],
 }: {
   jobs: BackupJob[];
   runs: BackupRun[];
@@ -419,6 +669,8 @@ export function JobsCard({
   onSelect?: (job: BackupJob) => void;
   onAdd: () => void;
   onEdit: (job: BackupJob) => void;
+  /** the restore tests of database jobs (#53) */
+  tests?: BackupCheck[];
 }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -426,6 +678,32 @@ export function JobsCard({
   const [removing, setRemoving] = useState<BackupJob | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const offset = zoneOffset(new Date(now));
+  // the database servers whose jobs are shown one by one (#53); the group of
+  // the job picked opens, as when an alert links to it
+  const groupOf = (id: string | undefined) => {
+    const job = jobs.find((item) => item.id === id);
+    return job && job.origin === "database" ? groupKey(job) : null;
+  };
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => {
+    const key = groupOf(selected);
+    return new Set(key === null ? [] : [key]);
+  });
+  const [opened, setOpened] = useState(selected);
+  if (selected !== opened) {
+    setOpened(selected);
+    const key = groupOf(selected);
+    if (key !== null && !open.has(key)) {
+      setOpen(new Set(open).add(key));
+    }
+  }
+  const toggle = (key: string) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (!next.delete(key)) {
+        next.add(key);
+      }
+      return next;
+    });
 
   const runsByJob = useMemo(() => {
     const grouped = new Map<string, BackupRun[]>();
@@ -514,17 +792,40 @@ export function JobsCard({
             </tr>
           </thead>
           <tbody>
-            {jobs.map((job) => {
+            {jobEntries(jobs, open).map((entry) => {
+              if (entry.kind === "group") {
+                return (
+                  <JobGroupRow
+                    key={`group:${entry.key}`}
+                    group={entry}
+                    runsByJob={runsByJob}
+                    targets={targets}
+                    hosts={hosts}
+                    now={now}
+                    open={open.has(entry.key)}
+                    onToggle={() => toggle(entry.key)}
+                  />
+                );
+              }
+              const job = entry.job;
               const jobRuns = runsByJob.get(job.id) ?? [];
               const names = (job.targets ?? [])
                 .map((id) => targets.find((target) => target.id === id)?.name)
                 .filter(Boolean);
               const server = hosts.find((host) => host.id === job.host)?.name ?? "–";
               const source = describeSource(job, stacks, t);
-              const runnable = !job.label_removed && names.length > 0;
-              const removable = job.origin !== "label" || job.label_removed;
+              const gone = sourceGone(job);
+              const runnable = !gone && names.length > 0;
+              // a job someone added; one that came with a label, a database or
+              // a site once that is gone
+              const removable = job.origin === "manual" || gone;
               const picked = onSelect !== undefined && selected === job.id;
-              const classes = [job.label_removed && "job-removed", picked && "job-selected"]
+              const test = job.origin === "database" ? latestTest(tests, job.id) : null;
+              const classes = [
+                gone && "job-removed",
+                picked && "job-selected",
+                entry.grouped && "job-grouped",
+              ]
                 .filter(Boolean)
                 .join(" ");
               return (
@@ -546,12 +847,10 @@ export function JobsCard({
                     <div className="job-source" title={source}>
                       {source}
                     </div>
-                    {job.problem && !job.label_removed && (
-                      <div className="job-problem">{job.problem}</div>
-                    )}
-                    {job.label_removed && (
+                    {job.problem && !gone && <div className="job-problem">{job.problem}</div>}
+                    {gone && (
                       <div className="job-problem">
-                        <span>{t("backups.job.labelRemoved")}</span>
+                        <span>{goneText(job, t)}</span>
                         {isAdmin && (
                           <Button
                             size="small"
@@ -588,7 +887,7 @@ export function JobsCard({
                   <td className="job-schedule">
                     <div>
                       {describeCron(job.schedule, t, offset)}
-                      {!job.enabled && !job.label_removed && (
+                      {!job.enabled && !gone && (
                         <span className="faint">{` · ${t("backups.job.paused")}`}</span>
                       )}
                     </div>
@@ -598,6 +897,13 @@ export function JobsCard({
                   </td>
                   <td className="job-last">
                     <LastRun job={job} runs={jobRuns} targets={targets} now={now} />
+                    {test && (
+                      <div className={`run-test ${restoreTestTone(test.status)}`}>
+                        {t("backups.job.restoreTest", {
+                          state: t(`backups.restoreTests.status.${test.status}`),
+                        })}
+                      </div>
+                    )}
                   </td>
                   <td>
                     <DayStrip days={runStrip(jobRuns, now)} />
@@ -611,8 +917,8 @@ export function JobsCard({
                           title={
                             runnable
                               ? undefined
-                              : job.label_removed
-                                ? t("backups.job.labelRemoved")
+                              : gone
+                                ? goneText(job, t)
                                 : t("backups.job.cannotRun")
                           }
                           disabled={!runnable || starting.has(job.id)}
@@ -621,7 +927,7 @@ export function JobsCard({
                           {starting.has(job.id) ? t("backups.job.starting") : t("backups.job.run")}
                         </Button>
                       )}
-                      {isAdmin && !job.label_removed && (
+                      {isAdmin && !gone && (
                         <IconButton
                           bare
                           aria-label={t("backups.job.editName", { name: job.name })}
@@ -630,7 +936,7 @@ export function JobsCard({
                           <Pencil size={15} aria-hidden="true" />
                         </IconButton>
                       )}
-                      {isAdmin && removable && !job.label_removed && (
+                      {isAdmin && removable && !gone && (
                         <IconButton
                           bare
                           aria-label={t("backups.job.removeName", { name: job.name })}
@@ -732,15 +1038,16 @@ export function ServerJobsCard({ host }: { host: Host }) {
           <tbody>
             {jobs.items.map((job) => {
               const source = describeSource(job, stacks.items, t);
-              // one whose label is gone says so under its name
+              // one whose label, database or site is gone says so under its name
+              const gone = sourceGone(job);
               let next: ReactNode = "–";
-              if (!job.enabled && !job.label_removed) {
+              if (!job.enabled && !gone) {
                 next = <span className="faint">{t("backups.job.paused")}</span>;
               } else if (job.enabled && job.next_run_at) {
                 next = <span className="mono">{formatMoment(job.next_run_at, now)}</span>;
               }
               return (
-                <tr key={job.id} className={job.label_removed ? "job-removed" : undefined}>
+                <tr key={job.id} className={gone ? "job-removed" : undefined}>
                   <td className="job-cell">
                     <Link className="job-name" to={`/backups?job=${job.id}`}>
                       {job.name}
@@ -748,10 +1055,8 @@ export function ServerJobsCard({ host }: { host: Host }) {
                     <div className="job-source" title={source}>
                       {source}
                     </div>
-                    {(job.label_removed || job.problem) && (
-                      <div className="job-problem">
-                        {job.label_removed ? t("backups.job.labelRemoved") : job.problem}
-                      </div>
+                    {(gone || job.problem) && (
+                      <div className="job-problem">{gone ? goneText(job, t) : job.problem}</div>
                     )}
                   </td>
                   <td className="job-last">
@@ -786,9 +1091,9 @@ const scheduleModes: ScheduleMode[] = ["hourly", "daily", "weekly", "custom"];
 const weekdays = [1, 2, 3, 4, 5, 6, 0];
 
 /** What the retention fields hold, as typed: empty keeps nothing of that kind. */
-type KeepForm = Record<RetentionKey, string>;
+export type KeepForm = Record<RetentionKey, string>;
 
-function keepForm(retention: Retention): KeepForm {
+export function keepForm(retention: Retention): KeepForm {
   const form = {} as KeepForm;
   for (const key of retentionKeys) {
     form[key] = retention[key] > 0 ? String(retention[key]) : "";
@@ -796,8 +1101,180 @@ function keepForm(retention: Retention): KeepForm {
   return form;
 }
 
+/** The retention the fields hold, or null while one of them is no number
+ * the panel takes. */
+export function parsedRetention(keep: KeepForm): Retention | null {
+  const parsed = {} as Record<RetentionKey, number | null>;
+  for (const key of retentionKeys) {
+    parsed[key] = parseKeep(keep[key]);
+  }
+  return retentionKeys.every((key) => parsed[key] !== null)
+    ? fullRetention(parsed as Partial<Retention>)
+    : null;
+}
+
+/** The targets a job backs up to, as boxes to tick; a local target of
+ * another server cannot be ticked. */
+export function TargetPicker({
+  label,
+  targets,
+  chosen,
+  onChange,
+  fits,
+  serverName,
+  disabled,
+  none,
+  children,
+}: {
+  label: string;
+  targets: BackupTarget[];
+  chosen: string[];
+  onChange: (update: (current: string[]) => string[]) => void;
+  fits: (target: BackupTarget) => boolean;
+  serverName: (id: string) => string;
+  disabled?: boolean;
+  /** what it says while none is ticked */
+  none: string;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const selected = targets.filter((target) => chosen.includes(target.id) && fits(target));
+  return (
+    <fieldset className="job-targets" disabled={disabled}>
+      <legend className="field-label">{label}</legend>
+      {targets.length === 0 ? (
+        <p className="muted small">{t("backups.job.noTargets")}</p>
+      ) : (
+        targets.map((target) => {
+          const fit = fits(target);
+          return (
+            <label key={target.id} className="check-line">
+              <input
+                type="checkbox"
+                disabled={!fit}
+                checked={fit && chosen.includes(target.id)}
+                onChange={(event) =>
+                  onChange((current) =>
+                    event.target.checked
+                      ? [...current, target.id]
+                      : current.filter((id) => id !== target.id),
+                  )
+                }
+              />
+              <span>
+                {target.name}
+                {!fit && (
+                  <span className="faint small">
+                    {" · "}
+                    {t("backups.job.localOnly", { server: serverName(target.host) })}
+                  </span>
+                )}
+              </span>
+            </label>
+          );
+        })
+      )}
+      {targets.length > 0 && selected.length === 0 && <p className="warn-text small">{none}</p>}
+      {children}
+    </fieldset>
+  );
+}
+
+/** How many snapshots of each kind a job keeps, a field per kind. */
+export function RetentionFields({
+  id,
+  label,
+  keep,
+  onChange,
+  disabled,
+  children,
+}: {
+  /** the fields' ids start with it */
+  id: string;
+  label: string;
+  keep: KeepForm;
+  onChange: (update: (current: KeepForm) => KeepForm) => void;
+  disabled?: boolean;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const retention = parsedRetention(keep);
+  return (
+    <fieldset className="job-retention-fields" disabled={disabled}>
+      <legend className="field-label">{label}</legend>
+      <div className="keep-grid">
+        {retentionKeys.map((key) => (
+          <Field key={key} label={t(`backups.keep.${key}`)} htmlFor={`${id}-${key}`}>
+            <input
+              id={`${id}-${key}`}
+              className="input"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={10000}
+              step={1}
+              placeholder="0"
+              value={keep[key]}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, [key]: event.target.value }))
+              }
+            />
+          </Field>
+        ))}
+      </div>
+      {retention ? (
+        <p className="muted small">
+          {t("backups.job.retentionHint", { keeps: describeRetention(retention, t) })}
+        </p>
+      ) : (
+        <p className="field-error">{t("backups.job.retentionInvalid")}</p>
+      )}
+      {children}
+    </fieldset>
+  );
+}
+
+/** Whether a setting of a database's or a site's job follows its server's
+ * defaults or is its own (#53). */
+function FollowSwitch({
+  label,
+  own,
+  host,
+  onChange,
+}: {
+  label: string;
+  own: boolean;
+  host: string;
+  onChange: (own: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const follows = t("backups.job.follows", { host });
+  return (
+    <div className="follow-switch">
+      <SegmentedControl
+        // its field has the setting's name: the group says the choice too
+        label={`${label}: ${follows} / ${t("backups.job.own")}`}
+        value={own ? "own" : "follows"}
+        onChange={(value) => onChange(value === "own")}
+        options={[
+          { value: "follows", label: t("backups.job.follows", { host }) },
+          { value: "own", label: t("backups.job.own") },
+        ]}
+      />
+    </div>
+  );
+}
+
+/** What the panel made a job for, as its note names it: the database on its
+ * server, or the site. */
+function automaticWhat(job: Pick<BackupJob, "origin" | "source" | "db_server_name">): string {
+  return job.origin === "database" && job.db_server_name
+    ? `${job.db_server_name}/${job.source}`
+    : job.source;
+}
+
 /** As the label's default: 7 daily, 4 weekly and 6 monthly snapshots. */
-const defaultRetention: Retention = {
+export const defaultRetention: Retention = {
   last: 0,
   hourly: 0,
   daily: 7,
@@ -837,11 +1314,23 @@ export function JobDialog({
   const toast = useToast();
   const mounted = useMounted();
   const fromLabel = job?.origin === "label";
+  // a database's or a site's job (#53): its source and server follow that,
+  // and each of when, where and how long follows its server or is its own
+  const automatic = job !== null && automaticJob(job);
+  const [owned, setOwned] = useState<Record<OwnSetting, boolean>>(() => {
+    const own = job?.own_settings ?? [];
+    return {
+      schedule: own.includes("schedule"),
+      targets: own.includes("targets"),
+      retention: own.includes("retention"),
+    };
+  });
+  const follows = (field: OwnSetting) => automatic && !owned[field];
   // what the job's labels set, as they set it
   const labelSets = fromLabel ? (job?.label_sets ?? []) : [];
-  const scheduleLocked = labelSets.includes("schedule");
-  const targetsLocked = labelSets.includes("targets");
-  const retentionLocked = labelSets.includes("retention");
+  const scheduleLocked = labelSets.includes("schedule") || follows("schedule");
+  const targetsLocked = labelSets.includes("targets") || follows("targets");
+  const retentionLocked = labelSets.includes("retention") || follows("retention");
   // presets are in local time now; the panel keeps UTC
   const [offset] = useState(() => zoneOffset());
   const [initial] = useState<SchedulePreset | null>(() =>
@@ -874,7 +1363,8 @@ export function JobDialog({
 
   const usesStack = kind === "stack" || kind === "db_dump";
   const stackRecord = stacks.find((item) => item.id === stack);
-  const jobHost = fromLabel ? (job?.host ?? "") : usesStack ? (stackRecord?.host ?? "") : host;
+  const jobHost =
+    fromLabel || automatic ? (job?.host ?? "") : usesStack ? (stackRecord?.host ?? "") : host;
   const serverName = (id: string) => hosts.find((item) => item.id === id)?.name ?? "–";
 
   const volumes = useLiveList<Volume>("volumes", {
@@ -922,12 +1412,9 @@ export function JobDialog({
           : "";
   const scheduleValid = mode === "custom" ? cronShaped(cron) : preset !== null;
 
-  const parsedKeep = {} as Record<RetentionKey, number | null>;
-  for (const key of retentionKeys) {
-    parsedKeep[key] = parseKeep(keep[key]);
-  }
-  const keepValid = retentionKeys.every((key) => parsedKeep[key] !== null);
-  const retention = fullRetention(parsedKeep as Partial<Retention>);
+  const parsed = parsedRetention(keep);
+  const keepValid = parsed !== null;
+  const retention = parsed ?? fullRetention(null);
 
   const volumeInvalid = kind === "volume" && source.trim() !== "" && !validVolume(source);
   const pathInvalid = kind === "path" && source.trim() !== "" && !validPath(source);
@@ -1012,6 +1499,26 @@ export function JobDialog({
     }
     if (body.enabled !== job.enabled) {
       change.enabled = body.enabled;
+    }
+    if (automatic) {
+      // a setting made its own is sent though it is the same, so that it
+      // stays when the server's defaults change; one that follows again is
+      // named in follow, and the panel copies the server's
+      const own = job.own_settings ?? [];
+      if (owned.targets && !own.includes("targets")) {
+        change.targets = body.targets;
+      }
+      if (owned.schedule && !own.includes("schedule")) {
+        change.schedule = body.schedule;
+      }
+      if (owned.retention && !own.includes("retention")) {
+        change.retention = body.retention;
+      }
+      const follow = ownSettings.filter((field) => own.includes(field) && !owned[field]);
+      if (follow.length > 0) {
+        change.follow = follow;
+      }
+      return change;
     }
     if (fromLabel) {
       return change;
@@ -1112,7 +1619,7 @@ export function JobDialog({
             />
           </Field>
 
-          {fromLabel && job ? (
+          {(fromLabel || automatic) && job ? (
             <>
               <dl className="facts">
                 <dt>{t("backups.job.source")}</dt>
@@ -1120,7 +1627,14 @@ export function JobDialog({
                 <dt>{t("backups.server")}</dt>
                 <dd>{serverName(job.host)}</dd>
               </dl>
-              <p className="muted small">{t("backups.job.labelNote")}</p>
+              <p className="muted small">
+                {automatic
+                  ? t("backups.job.automaticNote", {
+                      what: automaticWhat(job),
+                      host: serverName(job.host),
+                    })
+                  : t("backups.job.labelNote")}
+              </p>
             </>
           ) : (
             <>
@@ -1320,46 +1834,37 @@ export function JobDialog({
             </>
           )}
 
-          <fieldset className="job-targets" disabled={targetsLocked}>
-            <legend className="field-label">{t("backups.job.targets")}</legend>
-            {targets.length === 0 ? (
-              <p className="muted small">{t("backups.job.noTargets")}</p>
-            ) : (
-              targets.map((target) => {
-                const fit = fits(target);
-                return (
-                  <label key={target.id} className="check-line">
-                    <input
-                      type="checkbox"
-                      disabled={!fit}
-                      checked={fit && chosen.includes(target.id)}
-                      onChange={(event) =>
-                        setChosen((current) =>
-                          event.target.checked
-                            ? [...current, target.id]
-                            : current.filter((id) => id !== target.id),
-                        )
-                      }
-                    />
-                    <span>
-                      {target.name}
-                      {!fit && (
-                        <span className="faint small">
-                          {" · "}
-                          {t("backups.job.localOnly", { server: serverName(target.host) })}
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                );
-              })
+          {automatic && (
+            <FollowSwitch
+              label={t("backups.job.targets")}
+              own={owned.targets}
+              host={serverName(jobHost)}
+              onChange={(own) => setOwned((current) => ({ ...current, targets: own }))}
+            />
+          )}
+          <TargetPicker
+            label={t("backups.job.targets")}
+            targets={targets}
+            chosen={chosen}
+            onChange={setChosen}
+            fits={fits}
+            serverName={serverName}
+            disabled={targetsLocked}
+            none={t("backups.job.noTargetChosen")}
+          >
+            {labelSets.includes("targets") && (
+              <p className="muted small">{t("backups.job.labelSets.targets")}</p>
             )}
-            {targets.length > 0 && selected.length === 0 && (
-              <p className="warn-text small">{t("backups.job.noTargetChosen")}</p>
-            )}
-            {targetsLocked && <p className="muted small">{t("backups.job.labelSets.targets")}</p>}
-          </fieldset>
+          </TargetPicker>
 
+          {automatic && (
+            <FollowSwitch
+              label={t("backups.job.schedule")}
+              own={owned.schedule}
+              host={serverName(jobHost)}
+              onChange={(own) => setOwned((current) => ({ ...current, schedule: own }))}
+            />
+          )}
           <div className="form-grid">
             <Field label={t("backups.job.schedule")} htmlFor="job-schedule">
               <select
@@ -1471,41 +1976,29 @@ export function JobDialog({
               </p>
             )
           )}
-          {scheduleLocked && <p className="muted small">{t("backups.job.labelSets.schedule")}</p>}
+          {labelSets.includes("schedule") && (
+            <p className="muted small">{t("backups.job.labelSets.schedule")}</p>
+          )}
 
-          <fieldset className="job-retention-fields" disabled={retentionLocked}>
-            <legend className="field-label">{t("backups.job.retention")}</legend>
-            <div className="keep-grid">
-              {retentionKeys.map((key) => (
-                <Field key={key} label={t(`backups.keep.${key}`)} htmlFor={`job-keep-${key}`}>
-                  <input
-                    id={`job-keep-${key}`}
-                    className="input"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={10000}
-                    step={1}
-                    placeholder="0"
-                    value={keep[key]}
-                    onChange={(event) =>
-                      setKeep((current) => ({ ...current, [key]: event.target.value }))
-                    }
-                  />
-                </Field>
-              ))}
-            </div>
-            {keepValid ? (
-              <p className="muted small">
-                {t("backups.job.retentionHint", { keeps: describeRetention(retention, t) })}
-              </p>
-            ) : (
-              <p className="field-error">{t("backups.job.retentionInvalid")}</p>
-            )}
-            {retentionLocked && (
+          {automatic && (
+            <FollowSwitch
+              label={t("backups.job.retention")}
+              own={owned.retention}
+              host={serverName(jobHost)}
+              onChange={(own) => setOwned((current) => ({ ...current, retention: own }))}
+            />
+          )}
+          <RetentionFields
+            id="job-keep"
+            label={t("backups.job.retention")}
+            keep={keep}
+            onChange={setKeep}
+            disabled={retentionLocked}
+          >
+            {labelSets.includes("retention") && (
               <p className="muted small">{t("backups.job.labelSets.retention")}</p>
             )}
-          </fieldset>
+          </RetentionFields>
 
           <label className="check-line">
             <input

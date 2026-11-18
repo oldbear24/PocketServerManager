@@ -3192,6 +3192,152 @@ td .row-actions {
   color: var(--warn-text);
 }
 
+/* a database job's restore test (#53): red only when the backup could not be
+ * restored; the word says it, the colour repeats it */
+.run-test {
+  max-width: 170px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-test.err {
+  color: var(--err-text);
+}
+
+.run-test.warn {
+  color: var(--warn-text);
+}
+
+/* a server's database jobs in one row, and each of them under it */
+.job-group td {
+  background: var(--surface-2);
+}
+
+.job-grouped td:first-child {
+  padding-left: 34px;
+}
+
+.job-group .row-actions .button {
+  white-space: nowrap;
+}
+
+/* a tile's note in two lines: the integrity checks, then the restore tests */
+.kpi-line {
+  display: block;
+}
+
+/* the restore tests beside the targets: a database per row, its result,
+ * and when, which snapshot, how many tables and how long below (#53) */
+.restore-tests-note {
+  margin: 0;
+  padding-bottom: 0;
+}
+
+.restore-test {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.restore-test-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.restore-test-head .link-button,
+.restore-test-head .mono {
+  overflow-wrap: anywhere;
+}
+
+.restore-test-result {
+  margin-left: auto;
+}
+
+.test-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  color: var(--text-3);
+}
+
+.test-facts div {
+  display: flex;
+  gap: 4px;
+}
+
+.test-facts dt::after {
+  content: ":";
+}
+
+.test-facts dd {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.restore-test-error {
+  color: var(--warn-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the backup could not be restored */
+.restore-test-error.failed {
+  color: var(--err-text);
+}
+
+/* a database's Backup cell (#53): its pill links to the job; a failed restore
+ * test says so in a small red line after it */
+.db-backup-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.db-backup-link {
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.db-backup-test {
+  font-size: 12px;
+  color: var(--err-text);
+}
+
+.db-backup-cell .cell-sub {
+  flex-basis: 100%;
+}
+
+/* a temporary database's line in the App column */
+.db-temporary {
+  font-size: 12.5px;
+}
+
+/* a size stays on one line beside the App column's longer lines */
+.db-columns td.num {
+  white-space: nowrap;
+}
+
+/* whether a setting of a database's job follows its server or is its own */
+.follow-switch {
+  display: flex;
+  margin-bottom: -6px;
+}
+
+.follow-switch .segmented {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
 /* a server's jobs, on its page: what, how the last run went, when next;
  * three columns, which a phone shows nearly whole */
 .server-jobs {

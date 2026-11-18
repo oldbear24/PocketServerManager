@@ -6,6 +6,7 @@ import { dayKey, lastDays, type BackupJob, type BackupRun } from "./backupJobs";
 import type { BackupTarget } from "./backups";
 import { formatBytes, formatNumber, parseDate } from "./format";
 import { pb, type Role } from "./pb";
+import type { Host } from "./types";
 
 /** A snapshot of a job in one target, as the panel lists it (#30). */
 export type BackupSnapshot = {
@@ -65,9 +66,29 @@ export type SnapshotFolder = {
 /** The panel asked an agent and is waiting for it: ask again shortly. */
 export type Pending = { pending: true };
 
-export type RestoreMode = "original" | "path" | "download";
+/** Where a restore goes: back where it came from, into a new folder, as a
+ * download, or, of a database's job (#53), back into the database or into a
+ * new one. */
+export type RestoreMode = "original" | "path" | "download" | "database" | "new_database";
 
-export const restoreModes: RestoreMode[] = ["original", "path", "download"];
+export const restoreModes: RestoreMode[] = [
+  "original",
+  "path",
+  "download",
+  "database",
+  "new_database",
+];
+
+/** The modes the drawer offers a job, in order: a database's job goes into a
+ * database first. */
+export function offeredModes(job: Pick<BackupJob, "source_kind">): RestoreMode[] {
+  return job.source_kind === "database"
+    ? ["database", "new_database", "path", "download"]
+    : ["original", "path", "download"];
+}
+
+/** What an agent that restores single databases advertises (#53). */
+export const databaseCapability = "backup.database";
 
 export type RestoreStatus =
   | "previewing"
@@ -90,14 +111,68 @@ export const restoreStatuses: RestoreStatus[] = [
   "expired",
 ];
 
-/** The steps of a real restore, as its agent reports them. */
-export const restoreSteps = ["check", "stop", "restore", "start", "verify"] as const;
+/** The steps of a real restore, as its agent reports them: of files, and
+ * those of a database (#53). */
+export const restoreSteps = [
+  "check",
+  "stop",
+  "restore",
+  "start",
+  "verify",
+  "fetch",
+  "dbrestore",
+  "swap",
+] as const;
 
 export type RestoreStep = (typeof restoreSteps)[number];
 
+/** The steps of a restore in the order it takes them: a database's dump is
+ * copied to its server and restored before anything stops, and PostgreSQL's
+ * restored copy is put in place while its application is stopped. */
+export function stepsOf(mode: RestoreMode): RestoreStep[] {
+  return mode === "database" || mode === "new_database"
+    ? ["check", "fetch", "dbrestore", "stop", "swap", "start", "verify"]
+    : ["check", "stop", "restore", "start", "verify"];
+}
+
 /** A root of a restore to the original location: a snapshot path, and the
- * volume or directory of the job's server it goes back into. */
-export type RestoreRoot = { source: string; volume?: string; path?: string };
+ * volume or directory of the job's server it goes back into; of a database's
+ * restore (#53), its plan: the server's container, the database, its user,
+ * the temporary copies and what stops. */
+export type RestoreRoot = {
+  source: string;
+  volume?: string;
+  path?: string;
+  container?: string;
+  engine?: string;
+  admin_user?: string;
+  database?: string;
+  user?: string;
+  scratch?: string;
+  previous?: string;
+  stop_projects?: string[] | null;
+  stop_containers?: string[] | null;
+  site?: string;
+};
+
+/** What a database's preview found of it (#53): whether it and its user
+ * exist, its size and tables now, the sessions from outside what stops,
+ * whether the panel's password of its user signs in, its settings a
+ * restore does not carry, and whether MariaDB's client sandboxes. */
+export type DbPreview = {
+  exists: boolean;
+  user_exists: boolean;
+  size_bytes: number;
+  tables: number;
+  connections_other: number;
+  sign_in: boolean;
+  settings: string[] | null;
+  sandbox: boolean;
+};
+
+/** The room of a database's server, in bytes: where its data lives, and /tmp,
+ * where the dump is copied. */
+export type Space = { data: number; tmp: number };
 
 /** What the preview found for a root. */
 export type PreviewRoot = {
@@ -129,11 +204,24 @@ export type RestorePreview = {
   samples: { new: string[] | null; updated: string[] | null; deleted: string[] | null };
   /** the paths of each action left out of the samples */
   truncated: PerAction;
-  would_stop: { name: string; project: string }[] | null;
+  would_stop: { name: string; project: string; service?: string }[] | null;
   total_files: number;
   total_bytes: number;
   notes: string[] | null;
+  /** of a database's restore (#53) */
+  database?: DbPreview | null;
+  free?: Space | null;
+  needed?: Space | null;
 };
+
+/** Whether a database's server has the room its restore needs. */
+export function roomEnough(preview: Pick<RestorePreview, "free" | "needed">): boolean {
+  const { free, needed } = preview;
+  if (!free || !needed) {
+    return true;
+  }
+  return free.data >= needed.data && free.tmp >= needed.tmp;
+}
 
 /** A restore or a download of a job's snapshot: the plan, the preview, and
  * the history. Operators read it; only the panel's routes write it. */
@@ -179,7 +267,14 @@ export type BackupRestore = RecordModel & {
   error: string;
   log: string;
   download_name: string;
-  download_kind: "dir" | "file" | "";
+  /** sql: a database's dump as plain SQL (#53) */
+  download_kind: "dir" | "file" | "sql" | "";
+  /** of a database's restore (#53): the databases record, its name, the
+   * PostgreSQL copy of the data it replaced, and the tables it restored */
+  database?: string;
+  database_name?: string;
+  previous?: string;
+  tables?: number;
 };
 
 /** A restore as the panel takes it: a preview of it is queued at once. */
@@ -187,7 +282,10 @@ export type NewRestore = {
   target: string;
   /** the full id */
   snapshot: string;
-  mode: "original" | "path";
+  mode: "original" | "path" | "database" | "new_database";
+  /** new_database: its name, and the server, when the database was dropped */
+  name?: string;
+  server?: string;
   /** path mode: the server and its folder */
   host?: string;
   path?: string;
@@ -198,11 +296,13 @@ export type NewRestore = {
   replace?: boolean;
 };
 
+/** A download: a folder or a file of the snapshot, or a database's dump as
+ * plain SQL, which needs no path (#53). */
 export type NewDownload = {
   target: string;
   snapshot: string;
-  path: string;
-  kind: "dir" | "file";
+  path?: string;
+  kind: "dir" | "file" | "sql";
 };
 
 /** The record a restore route answers with: the record itself, or, as the
@@ -260,12 +360,18 @@ export const restoresApi = {
     ),
 
   /** starts a previewed restore; one that overwrites needs `confirm` (409
-   * without it) */
-  start: async (id: string, confirm: boolean) =>
+   * without it), and one back into a database the database's name typed */
+  start: async (id: string, confirm: boolean, confirmName?: string) =>
     recordOf(
       await pb.send<BackupRestore | { restore: BackupRestore }>(
         `/api/pc/backup-restores/${id}/start`,
-        { method: "POST", body: { confirm_overwrite: confirm } },
+        {
+          method: "POST",
+          body:
+            confirmName === undefined
+              ? { confirm_overwrite: confirm }
+              : { confirm_overwrite: confirm, confirm_name: confirmName },
+        },
       ),
     ),
 
@@ -569,8 +675,12 @@ export function existingEntries(preview: RestorePreview): { count: number; cappe
  * the original location, and elsewhere when the destination holds anything,
  * or the restore would change or delete a file. */
 export function needsConfirm(preview: RestorePreview | null, mode: RestoreMode): boolean {
-  if (mode === "original") {
+  if (mode === "original" || mode === "database") {
     return true;
+  }
+  if (mode === "new_database") {
+    // the panel refuses a name that is taken
+    return false;
   }
   if (!preview) {
     return true;
@@ -691,34 +801,65 @@ const rank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 /** Whether a restore mode can be used, and if not, why. */
 export type ModeState = {
   disabled: boolean;
-  reason?: "dump" | "local" | "role" | "admin" | "panel";
+  /** database: a database's job goes back into its database instead;
+   * notDatabase: only a database's job restores into one; dbGone: its
+   * database was dropped; agent: its server's agent cannot yet (#53) */
+  reason?:
+    "dump" | "local" | "role" | "admin" | "panel" | "database" | "notDatabase" | "dbGone" | "agent";
 };
 
 /** The modes a person may restore a job's snapshot with from a target: the
  * original location for an operator, but not for a database dump, nor from a
  * local target of another server, nor of the panel itself, which is restored
  * on a machine of its own with its recovery kit (#32); a new folder or a
- * download for an admin only. The panel decides; this only hides what it
- * would refuse. */
+ * download for an admin only. A database's job (#53) goes back into its
+ * database, unless it was dropped, or into a new one, for an operator whose
+ * job's server has an agent that restores databases. The panel decides; this
+ * only hides what it would refuse. */
 export function modesFor(
   target: Pick<BackupTarget, "kind" | "host"> | null | undefined,
-  job: Pick<BackupJob, "source_kind" | "host">,
+  job: Pick<BackupJob, "source_kind" | "host"> & Partial<Pick<BackupJob, "database">>,
   role: Role | null | undefined,
+  host?: Pick<Host, "capabilities"> | null,
 ): Record<RestoreMode, ModeState> {
   const level = role ? rank[role] : -1;
   const admin = level >= rank.admin;
+  const foreign = target?.kind === "local" && target.host !== job.host;
   let original: ModeState = { disabled: false };
   if (job.source_kind === "panel") {
     original = { disabled: true, reason: "panel" };
   } else if (job.source_kind === "db_dump") {
     original = { disabled: true, reason: "dump" };
-  } else if (target?.kind === "local" && target.host !== job.host) {
+  } else if (job.source_kind === "database") {
+    original = { disabled: true, reason: "database" };
+  } else if (foreign) {
     original = { disabled: true, reason: "local" };
   } else if (level < rank.operator) {
     original = { disabled: true, reason: "role" };
   }
+  let database: ModeState = { disabled: true, reason: "notDatabase" };
+  let fresh: ModeState = { disabled: true, reason: "notDatabase" };
+  if (job.source_kind === "database") {
+    // an agent too old says no capabilities: it restores no database either
+    const unable = host ? !(host.capabilities ?? []).includes(databaseCapability) : false;
+    const shared: ModeState = foreign
+      ? { disabled: true, reason: "local" }
+      : unable
+        ? { disabled: true, reason: "agent" }
+        : level < rank.operator
+          ? { disabled: true, reason: "role" }
+          : { disabled: false };
+    database = !job.database ? { disabled: true, reason: "dbGone" } : { ...shared };
+    fresh = { ...shared };
+  }
   const elsewhere: ModeState = admin ? { disabled: false } : { disabled: true, reason: "admin" };
-  return { original, path: { ...elsewhere }, download: { ...elsewhere } };
+  return {
+    original,
+    path: { ...elsewhere },
+    download: { ...elsewhere },
+    database,
+    new_database: fresh,
+  };
 }
 
 /** The keys a restore's mode, step or status is shown with, which the code

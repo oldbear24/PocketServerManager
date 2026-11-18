@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import i18n from "../i18n";
 import {
+  checkEnded,
   checkFields,
   checkRetryAt,
   czechAt,
@@ -10,6 +11,10 @@ import {
   nextGroup,
   parseGroups,
   parseSubset,
+  restoreTestFields,
+  restoreTestKeys,
+  restoreTestStatuses,
+  restoreTestTone,
   saveCheckSettings,
 } from "./backupChecks";
 import type { BackupTarget } from "./backups";
@@ -269,5 +274,61 @@ describe("a check's retry", () => {
       expect(checkRetryAt({ status, retry_at: at })).toBe("");
     }
     expect(checkRetryAt(null)).toBe("");
+  });
+});
+
+describe("a restore test (#53)", () => {
+  it("has a key for every status, in both languages", () => {
+    expect(restoreTestKeys).toEqual([
+      "backups.restoreTests.status.queued",
+      "backups.restoreTests.status.running",
+      "backups.restoreTests.status.ok",
+      "backups.restoreTests.status.failed",
+      "backups.restoreTests.status.error",
+      "backups.restoreTests.status.skipped",
+      "backups.restoreTests.status.cancelled",
+    ]);
+    for (const language of ["en", "cs"]) {
+      for (const key of restoreTestKeys) {
+        expect(i18n.exists(key, { lng: language }), `${language} ${key}`).toBe(true);
+      }
+    }
+  });
+
+  it("is red only when the backup could not be restored", () => {
+    expect(restoreTestStatuses.map((status) => restoreTestTone(status))).toEqual([
+      "info",
+      "info",
+      "ok",
+      "err",
+      "warn",
+      "warn",
+      "off",
+    ]);
+  });
+
+  it("is read in lists without its log, with what the cards show", () => {
+    const fields = restoreTestFields.split(",");
+    expect(fields).not.toContain("log");
+    for (const field of [
+      "job",
+      "database_name",
+      "snapshot_id",
+      "temporary",
+      "tables_expected",
+      "tables_restored",
+      "dump_bytes",
+      "failure",
+      "retry_at",
+      "duration_ms",
+    ]) {
+      expect(fields).toContain(field);
+    }
+  });
+
+  it("ends when it is neither queued nor running", () => {
+    expect(checkEnded({ status: "queued" })).toBe(false);
+    expect(checkEnded({ status: "running" })).toBe(false);
+    expect(checkEnded({ status: "error" })).toBe(true);
   });
 });

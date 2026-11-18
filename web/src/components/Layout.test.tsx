@@ -103,6 +103,38 @@ describe("the Backups item of the navigation", () => {
     };
     expect(backups().querySelector(".nav-dot")).toHaveClass("err");
   });
+
+  it("is marked by a restore test that failed or went unverified, and a temporary database left (#53)", () => {
+    live.lists = {
+      alerts: [alert({ rule: "backup_restore_test_failed", target: "j1", severity: "critical" })],
+    };
+    expect(backups().querySelector(".nav-dot")).toHaveClass("err");
+    document.body.innerHTML = "";
+    live.lists = {
+      alerts: [
+        alert({ rule: "backup_restore_test_unverified", target: "j1", severity: "warning" }),
+        alert({ id: "a2", rule: "db_temporary_left", target: "d9", severity: "warning" }),
+      ],
+    };
+    const link = backups();
+    expect(link.querySelector(".nav-dot")).toHaveClass("warn");
+    expect(within(link).getByText("2 open alerts")).toBeInTheDocument();
+  });
+});
+
+describe("the Databases item of the navigation (#53)", () => {
+  it("counts no temporary database of a restore or a restore test", () => {
+    const database = (id: string, temporary_until = "") => ({ id, name: id, temporary_until });
+    live.lists = {
+      databases: [
+        database("shop"),
+        database("blog"),
+        database("pc_rt_abcdefghijklmno", "2026-11-18 14:00:00.000Z"),
+      ],
+    };
+    backups();
+    expect(screen.getByRole("link", { name: /^Databases/ })).toHaveTextContent("2");
+  });
 });
 
 describe("a section's dot", () => {

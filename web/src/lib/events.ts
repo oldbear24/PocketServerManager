@@ -47,7 +47,9 @@ export const domainAlertRules = [
 
 /** The rules of the alerts about backups, which link there and mark it in
  * the navigation (#29, #31, #32): a job's to a target, keyed "<job>:<target>",
- * a target's repository, keyed by the target, and the panel's own backup. */
+ * a target's repository, keyed by the target, and the panel's own backup;
+ * a database job's restore tests, keyed by the job, and a temporary database
+ * that was not dropped, keyed by its record (#53). */
 export const backupAlertRules = [
   "backup_failed",
   "backup_skipped",
@@ -55,12 +57,16 @@ export const backupAlertRules = [
   "backup_check_failed",
   "backup_check_unverified",
   "panel_backup",
+  "backup_restore_test_failed",
+  "backup_restore_test_unverified",
+  "db_temporary_left",
 ];
 
 /** Where an alert is fixed: the certificate or the DNS provider it is about
  * on Domains & TLS, a job's runs to a target or a target's integrity checks
  * on Backups, the panel's own backup there and its recovery kit in Settings
- * (#32), or its server. */
+ * (#32), a database job's restore tests on Backups and a temporary database
+ * on Databáze (#53), or its server. */
 export function alertLink(alert: Alert): string | null {
   switch (alert.rule) {
     case "certificate_failed":
@@ -84,6 +90,11 @@ export function alertLink(alert: Alert): string | null {
     case "backup_check_failed":
     case "backup_check_unverified":
       return alert.target ? `/backups?check=${encodeURIComponent(alert.target)}` : "/backups";
+    case "backup_restore_test_failed":
+    case "backup_restore_test_unverified":
+      return alert.target ? `/backups?job=${encodeURIComponent(alert.target)}` : "/backups";
+    case "db_temporary_left":
+      return "/databases";
     case "recovery_kit":
     case "panel_restored":
       return "/settings#recovery-kit";

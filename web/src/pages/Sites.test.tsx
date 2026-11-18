@@ -291,6 +291,98 @@ describe("the sites page", () => {
     await waitFor(() => expect(settings).toHaveBeenLastCalledWith("s2", { php_version: "8.5" }));
   });
 
+  it("says which jobs back up a PHP site's shared/ and its database (#53)", async () => {
+    signInAs("viewer");
+    lists.sites = [{ ...site, id: "s2", name: "shop", type: "php", active_deployment: "d5" }];
+    lists.hosts = [{ id: "h1", name: "vps-wedos", roles: ["docker", "edge"], status: "online" }];
+    lists.site_php = [phpSettings];
+    lists.deployments = [deployment({ id: "d5", site: "s2", number: 23, php_version: "8.4" })];
+    records["databases/db1"] = { id: "db1", server: "srv1", name: "shop", size_bytes: 412_000_000 };
+    const job = {
+      host: "h1",
+      targets: ["t1"],
+      enabled: true,
+      label_removed: false,
+      last_status: "",
+      last_run_at: "",
+    };
+    lists.backup_jobs = [
+      { ...job, id: "j1", name: "shop-files", origin: "site", site: "s2", source_kind: "site" },
+      {
+        ...job,
+        id: "j2",
+        name: "db-main-shop",
+        origin: "database",
+        database: "db1",
+        source_kind: "database",
+      },
+    ];
+    lists.backup_runs = [
+      {
+        id: "r1",
+        job: "j2",
+        target: "t1",
+        status: "succeeded",
+        created: "2026-11-05 00:30:00.000Z",
+        finished_at: "2026-11-05 00:31:00.000Z",
+      },
+      {
+        id: "r2",
+        job: "j1",
+        target: "t1",
+        status: "failed",
+        created: "2026-11-05 00:30:00.000Z",
+        finished_at: "2026-11-05 00:30:30.000Z",
+      },
+    ];
+    lists.backup_checks = [
+      {
+        id: "c1",
+        kind: "restore_test",
+        job: "j2",
+        status: "failed",
+        created: "2026-11-04 05:20:00.000Z",
+      },
+    ];
+    const pending = () => new Promise<never>(() => {});
+    vi.spyOn(sitesApi, "requests").mockImplementation(pending);
+    vi.spyOn(phpApi, "status").mockImplementation(pending);
+    vi.spyOn(phpApi, "versions").mockImplementation(pending);
+    vi.spyOn(phpApi, "mail").mockImplementation(pending);
+    renderAt("/sites/s2");
+
+    const time = (value: string) =>
+      new Intl.DateTimeFormat("en", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).format(new Date(value));
+    const shared = screen.getByRole("link", { name: /^backed up by the job shop-files · / });
+    expect(shared).toHaveTextContent(
+      `backed up by the job shop-files · Failed · ${time("2026-11-05T00:30:30Z")}`,
+    );
+    expect(shared).toHaveAttribute("href", "/backups?job=j1");
+    const database = screen.getByText("Backup").nextElementSibling as HTMLElement;
+    expect(within(database).getByText(`OK · ${time("2026-11-05T00:31:00Z")}`)).toBeInTheDocument();
+    expect(within(database).getByText("restore test failed")).toBeInTheDocument();
+  });
+
+  it("says a PHP site's shared/ is not backed up before its first deployment (#53)", () => {
+    signInAs("viewer");
+    lists.sites = [{ ...site, id: "s2", name: "shop", type: "php", active_deployment: "" }];
+    lists.hosts = [{ id: "h1", name: "vps-wedos", roles: ["docker", "edge"], status: "online" }];
+    lists.site_php = [{ ...phpSettings, database: "", state: "stopped" }];
+    lists.deployments = [];
+    const pending = () => new Promise<never>(() => {});
+    vi.spyOn(sitesApi, "requests").mockImplementation(pending);
+    vi.spyOn(phpApi, "versions").mockImplementation(pending);
+    vi.spyOn(phpApi, "mail").mockImplementation(pending);
+    renderAt("/sites/s2");
+    expect(
+      screen.getByText("not backed up yet: its job comes with the first deployment"),
+    ).toBeInTheDocument();
+  });
+
   it("updates WordPress in a new release, and rolls back one that broke the site (#52)", async () => {
     signInAs("operator");
     lists.sites = [
