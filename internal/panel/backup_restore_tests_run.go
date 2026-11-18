@@ -387,6 +387,13 @@ func (p *Panel) startRestoreTest(job *core.Record, start testStart) (*core.Recor
 			}
 			return tx.Save(row)
 		}
+		// read again in the transaction: two starts at once start one test
+		if open, err := tx.FindRecordsByFilter(schema.BackupChecks,
+			"kind={:kind} && host={:host} && database_name={:name} && (status={:queued} || status={:running})", "", 1, 0,
+			dbx.Params{"kind": schema.CheckRestoreTest, "host": plan.host.Id, "name": name,
+				"queued": schema.CheckQueued, "running": schema.CheckRunning}); err != nil || len(open) > 0 {
+			return errCheckOpen
+		}
 		// the copy's record is its schedule, from the start
 		collection, err := tx.FindCachedCollectionByNameOrId(schema.Databases)
 		if err != nil {
@@ -414,7 +421,9 @@ func (p *Panel) startRestoreTest(job *core.Record, start testStart) (*core.Recor
 		return tx.Save(row)
 	})
 	switch {
-	case uniqueViolation(err):
+	case errors.Is(err, errCheckOpen) && start.refuse:
+		return nil, &targetProblem{http.StatusConflict, fmt.Sprintf("A restore test of %s is under way.", name)}
+	case uniqueViolation(err), errors.Is(err, errCheckOpen):
 		return nil, errCheckTaken
 	case err != nil:
 		return nil, err

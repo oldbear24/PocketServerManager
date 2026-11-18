@@ -1,10 +1,12 @@
 package panel
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -741,6 +743,42 @@ func TestARestoreTestThePanelMissedIsSettled(t *testing.T) {
 	f.p.RunDueRestoreTests(time.Now())
 	if events := f.eventsOf(backup.EventRestoreTestError); len(events) != 1 {
 		t.Errorf("%d error events after a second pass", len(events))
+	}
+}
+
+// TestTwoTestsAtOnceStartOne (#53, P7): requests that start a database's
+// test at once start one, and the others are told one is under way.
+func TestTwoTestsAtOnceStartOne(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	operator, _ := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	f.dbAgent()
+	var group sync.WaitGroup
+	refused := make(chan error, 16)
+	ready := make(chan struct{})
+	for range 16 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-ready
+			if _, err := f.p.startRestoreTest(f.job, testStart{trigger: schema.RunManual, requestedBy: operator.Id, requester: "operator@example.com", refuse: true}); err != nil {
+				refused <- err
+			}
+		}()
+	}
+	close(ready)
+	group.Wait()
+	close(refused)
+	if rows := f.testsOf(f.job); len(rows) != 1 || rows[0].GetString("command") == "" {
+		for _, row := range rows {
+			t.Logf("a test: %v", row.FieldsData())
+		}
+		t.Errorf("%d tests started at once", len(rows))
+	}
+	for err := range refused {
+		var problem *targetProblem
+		if !errors.As(err, &problem) || problem.message != "A restore test of shop is under way." {
+			t.Errorf("a start refused with %v", err)
+		}
 	}
 }
 
