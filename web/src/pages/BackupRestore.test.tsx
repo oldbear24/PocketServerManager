@@ -1754,6 +1754,33 @@ describe("a database's restore in the drawer (#53)", () => {
     ).toBeInTheDocument();
   });
 
+  it("rehearses MariaDB's restore before the stop, and restores after it", async () => {
+    live.records["backup_restores/r1"] = dbRecord({
+      status: "running",
+      command: "c1",
+      previous: "",
+      roots: [{ ...dbRoots[0], engine: "mariadb", previous: "" }],
+    });
+    live.records["commands/c1"] = command({
+      host: "h1",
+      progress: { step: "dbrestore", percent: 75, done: 0, total: 0, unit: "bytes" },
+    });
+    showDatabase("operator", { engine: "mysql" }, { restore: "r1" });
+    const steps = within(await drawer().findByRole("list", { name: "Steps of the restore" }));
+    expect(steps.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Check the snapshot",
+      "Copy the dump to the database server",
+      "Rehearse the restore in a copy",
+      "Stop the containers",
+      "Restore the database",
+      "Start the containers",
+      "Check the containers",
+    ]);
+    // the restore after the stop: what stopped stays done
+    expect(steps.getByText("Stop the containers").closest("li")).toHaveClass("done");
+    expect(steps.getByText("Restore the database").closest("li")).toHaveClass("active");
+  });
+
   it("says what stays stopped when MariaDB's restore failed after emptying the database", async () => {
     live.records["backup_restores/r1"] = dbRecord({
       status: "failed",

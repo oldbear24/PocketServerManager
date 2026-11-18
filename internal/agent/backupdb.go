@@ -974,7 +974,7 @@ func (r *dbRun) replaceMariaDB(ctx context.Context, payload *agentv1.BackupResto
 		return undo(err)
 	}
 	created = true
-	progress.report("dbrestore", "Rehearsing the restore in a copy", 30, 0, 0, "")
+	progress.report(backup.StepRehearse, "Rehearsing the restore in a copy", 30, 0, 0, "")
 	if err := r.restoreInto(ctx, scratch, ""); err != nil {
 		return undo(err)
 	}

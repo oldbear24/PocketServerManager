@@ -932,7 +932,7 @@ This section is the contract that the agent, the panel and the web UI of #53 cod
   | `backup.DbRestoreReplace`, `DbRestoreNew`, `DbRestoreTest` | `replace`, `new`, `test` | `BackupDbRestore.mode` |
   | `backup.TagDatabase`, `TagServer`, `TagSite`; `backup.DatabaseTags(db, server)`, `backup.SiteTags(site)` | `db:`, `dbserver:`, `site:` | the extra tags of a database's or a site's snapshot |
   | `backup.MaxExcludes` | 100 | the most `excludes` a run takes |
-  | `backup.StepFetch`, `StepDbRestore`, `StepSwap` | `fetch`, `dbrestore`, `swap` | a database restore's progress steps besides #30's `check`, `stop`, `start`, `verify` |
+  | `backup.StepFetch`, `StepRehearse`, `StepDbRestore`, `StepSwap` | `fetch`, `rehearse`, `dbrestore`, `swap` | a database restore's progress steps besides #30's `check`, `stop`, `start`, `verify` |
   | `backup.Phase*` | `scratch`, `rehearsal`, `stopped`, `swapped`, `emptied`, `restored` | a database restore's phase in the agent's restore marker |
   | `backup.RestoreTestOK`, `backup.Test*`, `backup.TestFailures`, `backup.TestFailed(class)` | `ok`; the failure classes below | a restore test's answer |
   | `backup.AlertRestoreTestFailed`, `AlertRestoreTestUnverified`, `AlertTemporaryLeft` | `backup_restore_test_failed`, `backup_restore_test_unverified`, `db_temporary_left` | the alert rules |
@@ -1097,7 +1097,7 @@ This section is the contract that the agent, the panel and the web UI of #53 cod
      "app_not_running":[],"start_errors":[],"partial":false,"app_left_stopped":[],"dropped":false,"interrupted":false,"log":"…"}
     ```
   - **`finishInterruptedRestores`** reads `marker.database.phase` before `startAgain`: `scratch` / `rehearsal` — nothing stopped, settled failed "Nothing changed", the panel's sweep drops the scratch copy; `stopped` — start again, failed "Nothing changed"; PG `swapped` / MariaDB `restored` — start again, settled **succeeded** with `interrupted: true`; MariaDB `emptied` — restart policies back without starting, failed with `app_left_stopped`.
-  - **Progress steps**: `check`, `fetch`, `dbrestore`, `stop`, `swap` (PostgreSQL in place only), `start`, `verify`, leaving out what a restore does not do.
+  - **Progress steps**, in the order the web shows them, leaving out what a restore does not do: PostgreSQL in place `check`, `fetch`, `dbrestore` (into the copy), `stop`, `swap`, `start`, `verify`; MariaDB in place `check`, `fetch`, `rehearse` (into the copy, dropped again), `stop`, `dbrestore`, `start`, `verify`; into a new database `check`, `fetch`, `dbrestore`.
 - **A restore test** (`backup.restore_test`, `handleBackupRestoreTest`). (1) Mode `test`; `database` is `^pc_rt_[a-z0-9]{15}$` with the suffix `check_id`; each `drop_before` is a `pc_rt_` name. (2) Claim `db:<c>/<temp>` for writing. (3) `ExistsSQL(temp)` must be false: a copy is never reused. (4) `DiscardSQL(drop_before)`, then `FreeSpace` (too little room: `space`). (5) `TestDatabaseSQL` create, stage, `CountDump`, `RestoreAsUser`, `CountBaseTables`, `TestDatabaseSQL` closing. The copy stays for the panel's sweep. The answer (`backup.RestoreTestResult`), also with the error of a failed test:
 
   ```json
@@ -1292,6 +1292,7 @@ This section is the contract that the agent, the panel and the web UI of #53 cod
   | `backups.restore.tablesDone` | _one "{{count}} table restored, as many as the dump has" · _other "{{count}} tables restored, as many as the dump has" | _one "Obnovena {{count}} tabulka, stejně jako v dumpu" · _few "Obnoveny {{count}} tabulky, stejně jako v dumpu" · _many "Obnoveno {{count}} tabulky, stejně jako v dumpu" · _other "Obnoveno {{count}} tabulek, stejně jako v dumpu" |
   | `backups.restore.appLeftStopped` | {{names}} stay stopped: {{database}} holds only part of the backup. Restore again, then start them on their pages. | {{names}} zůstávají zastavené: {{database}} obsahuje jen část zálohy. Obnov znovu a pak je spusť na jejich stránkách. |
   | `backups.restore.step.fetch` | Copy the dump to the database server | Zkopírovat dump na databázový server |
+  | `backups.restore.step.rehearse` | Rehearse the restore in a copy | Vyzkoušet obnovu na kopii |
   | `backups.restore.step.dbrestore` | Restore the database | Obnovit databázi |
   | `backups.restore.step.swap` | Put the restored copy in place | Vyměnit za obnovenou kopii |
   | `backups.restoreTests.title` | Restore tests | Testy obnovy |
@@ -1324,7 +1325,7 @@ This section is the contract that the agent, the panel and the web UI of #53 cod
   | `phpSite.sharedNotBackedUp` | not backed up yet: its job comes with the first deployment | zatím se nezálohuje: úloha vznikne s prvním nasazením |
   | `phpSite.databaseBackup` | Backup | Záloha |
 
-  The web's types follow the records: `SourceKind` and `origin` gain `"database"` and `"site"`, `RestoreMode` `"database"` and `"new_database"`, `download_kind` `"sql"`, the restore steps `"fetch"`, `"dbrestore"` and `"swap"`, and `backupAlertRules` the three rules (`backup_restore_test_failed` and `backup_restore_test_unverified` link to `/backups?job=<job>`, `db_temporary_left` to `/databases`). Temporary databases are left out of every Databáze KPI and of the navigation's count (`temporary_until = ''`).
+  The web's types follow the records: `SourceKind` and `origin` gain `"database"` and `"site"`, `RestoreMode` `"database"` and `"new_database"`, `download_kind` `"sql"`, the restore steps `"fetch"`, `"rehearse"`, `"dbrestore"` and `"swap"` (in an order per engine), and `backupAlertRules` the three rules (`backup_restore_test_failed` and `backup_restore_test_unverified` link to `/backups?job=<job>`, `db_temporary_left` to `/databases`). Temporary databases are left out of every Databáze KPI and of the navigation's count (`temporary_until = ''`).
 
 ## Diagnostics
 

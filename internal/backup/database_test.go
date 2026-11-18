@@ -128,7 +128,7 @@ func TestTheDatabaseNamesOfTheContract(t *testing.T) {
 	for got, want := range map[string]string{
 		CapabilityDatabase: "backup.database",
 		DbRestoreReplace:   "replace", DbRestoreNew: "new", DbRestoreTest: "test",
-		StepFetch: "fetch", StepDbRestore: "dbrestore", StepSwap: "swap",
+		StepFetch: "fetch", StepRehearse: "rehearse", StepDbRestore: "dbrestore", StepSwap: "swap",
 		PhaseScratch: "scratch", PhaseRehearsal: "rehearsal", PhaseStopped: "stopped",
 		PhaseSwapped: "swapped", PhaseEmptied: "emptied", PhaseRestored: "restored",
 		AlertRestoreTestFailed:     "backup_restore_test_failed",

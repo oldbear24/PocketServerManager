@@ -354,6 +354,16 @@ describe("a database's restore (#53)", () => {
       "start",
       "verify",
     ]);
+    expect(stepsOf("database", "mariadb")).toEqual([
+      "check",
+      "fetch",
+      "rehearse",
+      "stop",
+      "dbrestore",
+      "start",
+      "verify",
+    ]);
+    expect(stepsOf("database", "postgres")).toEqual(stepsOf("database"));
     expect(stepsOf("original")).toEqual(["check", "stop", "restore", "start", "verify"]);
   });
 
@@ -483,7 +493,7 @@ function has(tree: Tree, key: string): boolean {
 
 describe("the keys a restore builds", () => {
   it("every mode, step and status key exists in both languages", () => {
-    expect(restoreKeys).toHaveLength(5 * 2 + 8 + 8);
+    expect(restoreKeys).toHaveLength(5 * 2 + 9 + 8);
     expect(restoreKeys.filter((key) => !has(en, key))).toEqual([]);
     expect(restoreKeys.filter((key) => !has(cs, key))).toEqual([]);
   });

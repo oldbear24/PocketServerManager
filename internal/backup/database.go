@@ -48,13 +48,18 @@ func SiteTags(site string) []string {
 const MaxExcludes = 100
 
 // The steps of a database restore, as its agent reports them in its
-// progress, beside #30's check, stop, start and verify. A database restore
-// reports check, fetch, dbrestore, stop, swap (PostgreSQL in place only),
-// start and verify, in that order, leaving out what it does not do.
+// progress, beside #30's check, stop, start and verify, in the order the web
+// shows them, leaving out what a restore does not do. PostgreSQL in place
+// reports check, fetch, dbrestore (into the copy), stop, swap, start and
+// verify; MariaDB in place check, fetch, rehearse, stop, dbrestore, start and
+// verify; a restore into a new database check, fetch and dbrestore.
 const (
 	// StepFetch copies the dump from the snapshot into the server's
 	// container.
 	StepFetch = "fetch"
+	// StepRehearse (MariaDB in place) restores the dump into a scratch copy
+	// while the application runs, and drops it again.
+	StepRehearse = "rehearse"
 	// StepDbRestore restores the dump with the server's own client.
 	StepDbRestore = "dbrestore"
 	// StepSwap puts PostgreSQL's restored copy in place of the database.

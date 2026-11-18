@@ -1793,7 +1793,7 @@ function RestoreProgress({
   // PostgreSQL's restore in place puts its restored copy in place (#53)
   const swaps =
     record.mode === "database" && Boolean(record.previous || record.roots?.[0]?.previous);
-  const steps = stepsOf(record.mode).filter(
+  const steps = stepsOf(record.mode, record.roots?.[0]?.engine).filter(
     (item) => (stops || (item !== "stop" && item !== "start")) && (swaps || item !== "swap"),
   );
   const at = current ? steps.indexOf(current as (typeof steps)[number]) : -1;

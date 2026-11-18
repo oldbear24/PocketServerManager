@@ -384,6 +384,48 @@ func TestAMariaDBRestoreInPlaceRehearsesFirst(t *testing.T) {
 	}
 }
 
+// TestADatabaseRestoreReportsItsStepsInTheWebsOrder (#53): the steps a
+// database restore reports come in the order the web shows them: PostgreSQL
+// in place restores its copy before the stop and swaps it in after it;
+// MariaDB in place rehearses before the stop and restores after it; a new
+// database stops nothing.
+func TestADatabaseRestoreReportsItsStepsInTheWebsOrder(t *testing.T) {
+	inPlace := map[string][]string{
+		databases.Postgres.Name: {"check", "fetch", "dbrestore", "stop", "swap", "start", "verify"},
+		databases.MariaDB.Name:  {"check", "fetch", "rehearse", "stop", "dbrestore", "start", "verify"},
+	}
+	for _, engine := range []databases.Engine{databases.Postgres, databases.MariaDB} {
+		for _, mode := range []string{backup.DbRestoreReplace, backup.DbRestoreNew} {
+			t.Run(engine.Name+"/"+mode, func(t *testing.T) {
+				d := newDBHarness(t)
+				d.shop(engine)
+				snapshot, _ := d.backupDatabase(t, engine, "shop")
+				d.app("shop-web-1", "shop")
+				payload, want := d.replace(engine, snapshot, "shop", "shop-web-1"), inPlace[engine.Name]
+				if mode == backup.DbRestoreNew {
+					payload = &agentv1.BackupRestore{Repository: d.repo, SnapshotId: snapshot, JobTag: testJobTag, RestoreId: testRestoreID,
+						Database: &agentv1.BackupDbRestore{Connection: connection(engine), Database: "shop_copy", File: databases.BackupFile(engine, "shop"),
+							Mode: backup.DbRestoreNew, User: "shop_copy", Password: "copy-pw-1"}}
+					want = []string{"check", "fetch", "dbrestore"}
+				}
+				panel := &fakePanel{}
+				if result, err := d.handleBackupRestore(context.Background(), restoreCommand("c1", payload), reporterFor(t, panel, "c1")); err != nil {
+					t.Fatalf("%v\n%v", err, result["log"])
+				}
+				var got []string
+				for _, progress := range panel.progress("c1") {
+					if len(got) == 0 || got[len(got)-1] != progress.GetStep() {
+						got = append(got, progress.GetStep())
+					}
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("the steps %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
 // TestARestoreIntoANewDatabase (#53): the database and its user are made
 // with the delivered password, the dump goes in as that user (on MariaDB
 // with the user as its definers), and nothing stops; a failure drops both

@@ -120,6 +120,7 @@ export const restoreSteps = [
   "start",
   "verify",
   "fetch",
+  "rehearse",
   "dbrestore",
   "swap",
 ] as const;
@@ -127,9 +128,14 @@ export const restoreSteps = [
 export type RestoreStep = (typeof restoreSteps)[number];
 
 /** The steps of a restore in the order it takes them: a database's dump is
- * copied to its server and restored before anything stops, and PostgreSQL's
- * restored copy is put in place while its application is stopped. */
-export function stepsOf(mode: RestoreMode): RestoreStep[] {
+ * copied to its server first; PostgreSQL's is restored into a copy before
+ * anything stops, which is put in place while its application is stopped;
+ * MariaDB's is rehearsed in a copy before anything stops, and restored into
+ * the database while its application is stopped (#53). */
+export function stepsOf(mode: RestoreMode, engine?: string): RestoreStep[] {
+  if (mode === "database" && engine === "mariadb") {
+    return ["check", "fetch", "rehearse", "stop", "dbrestore", "start", "verify"];
+  }
   return mode === "database" || mode === "new_database"
     ? ["check", "fetch", "dbrestore", "stop", "swap", "start", "verify"]
     : ["check", "stop", "restore", "start", "verify"];

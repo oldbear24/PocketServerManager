@@ -2513,6 +2513,7 @@
         "start": "Start the containers",
         "verify": "Check the containers",
         "fetch": "Copy the dump to the database server",
+        "rehearse": "Rehearse the restore in a copy",
         "dbrestore": "Restore the database",
         "swap": "Put the restored copy in place"
       },

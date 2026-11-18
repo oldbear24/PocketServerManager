@@ -2653,6 +2653,7 @@
         "start": "Spuštění kontejnerů",
         "verify": "Kontrola kontejnerů",
         "fetch": "Zkopírovat dump na databázový server",
+        "rehearse": "Vyzkoušet obnovu na kopii",
         "dbrestore": "Obnovit databázi",
         "swap": "Vyměnit za obnovenou kopii"
       },
