@@ -113,10 +113,13 @@ func (p *Panel) registerBackupJobs() {
 	p.backupCatchUp.Store(true)
 	p.App.Cron().MustAdd("pocketcloud_backups", "* * * * *", func() { p.RunDueBackups(time.Now()) })
 	p.App.Cron().MustAdd("pocketcloud_backup_runs_retention", "35 4 * * *", p.pruneBackupRuns)
+	// the jobs of databases and PHP sites, and their servers' settings (#53)
+	p.registerAutoJobs()
+	p.registerHostBackups()
 
 	// the alerts of a job to a target go with the job, the target, the
-	// job's label, or the target's place among the job's: nothing would
-	// resolve them any more
+	// job's label, database or site, or the target's place among the job's:
+	// nothing would resolve them any more
 	p.App.OnRecordAfterDeleteSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
 		p.resolveBackupAlerts(e.App, dbx.Like("target", e.Record.Id+":").Match(false, true))
 		return e.Next()
@@ -127,7 +130,7 @@ func (p *Panel) registerBackupJobs() {
 	})
 	p.App.OnRecordAfterUpdateSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
 		job, before := e.Record, e.Record.Original()
-		if labelGone(job) && !labelGone(before) {
+		if sourceGone(job) && !sourceGone(before) {
 			p.resolveBackupAlerts(e.App, dbx.Like("target", job.Id+":").Match(false, true))
 			return e.Next()
 		}
@@ -168,6 +171,7 @@ func (p *Panel) bindBackupJobRoutes(group *router.RouterGroup[*core.RequestEvent
 	group.DELETE("/backup-jobs/{id}", p.handleRemoveJob).BindFunc(admins)
 	group.POST("/backup-jobs/{id}/run", p.handleRunJob).BindFunc(operators)
 	group.POST("/backup-runs/{id}/retry", p.handleRetryRun).BindFunc(operators)
+	p.bindHostBackupRoutes(group)
 }
 
 // jobBody is a job as the routes take it. Pointers are what a change may
@@ -184,10 +188,13 @@ type jobBody struct {
 	Schedule   *string           `json:"schedule"`
 	Retention  *stacks.Retention `json:"retention"`
 	Enabled    *bool             `json:"enabled"`
+	// Follow names what an automatic job takes from its server's settings
+	// again (#53): schedule, targets, retention.
+	Follow *[]string `json:"follow"`
 }
 
 // jobFields are what the routes set on a job.
-var jobFields = []string{"name", "host", "source_kind", "source", "stack", "service", "engine", "targets", "schedule", "retention", "enabled", "problem", "next_run_at"}
+var jobFields = []string{"name", "host", "source_kind", "source", "stack", "service", "engine", "targets", "schedule", "retention", "enabled", "problem", "next_run_at", "own_settings"}
 
 // apply sets what the body says on a job.
 func (b jobBody) apply(job *core.Record) {
@@ -222,6 +229,10 @@ func (p *Panel) handleAddJob(e *core.RequestEvent) error {
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
 	}
+	// the panel makes these, one per database or site (#53)
+	if kind := body.SourceKind; kind != nil && (strings.TrimSpace(*kind) == schema.SourceDatabase || strings.TrimSpace(*kind) == schema.SourceSite) {
+		return e.BadRequestError("Database and site jobs come with their database or site.", nil)
+	}
 	collection, err := e.App.FindCachedCollectionByNameOrId(schema.BackupJobs)
 	if err != nil {
 		return e.InternalServerError("", err)
@@ -247,7 +258,9 @@ func (p *Panel) handleAddJob(e *core.RequestEvent) error {
 
 // handleChangeJob changes a job. A label's job keeps what its labels say:
 // what it backs up and its server never change, its schedule, targets and
-// retention only where its labels do not set them.
+// retention only where its labels do not set them. An automatic job (#53)
+// keeps its database or site and its server; a schedule, targets or
+// retention set become its own, and what it follows takes its server's.
 func (p *Panel) handleChangeJob(e *core.RequestEvent) error {
 	job, err := e.App.FindRecordById(schema.BackupJobs, e.Request.PathValue("id"))
 	if err != nil {
@@ -257,13 +270,26 @@ func (p *Panel) handleChangeJob(e *core.RequestEvent) error {
 	if err := e.BindBody(&body); err != nil {
 		return e.BadRequestError("Invalid body.", err)
 	}
-	if job.GetString("origin") == schema.JobLabel {
+	switch {
+	case job.GetString("origin") == schema.JobLabel:
 		if problem := p.checkLabelJobChange(job, body); problem != "" {
 			return e.BadRequestError(problem, nil)
 		}
+	case autoOrigin(job):
+		if problem := autoChangeProblem(job, body); problem != "" {
+			return e.BadRequestError(problem, nil)
+		}
+	}
+	if body.Follow != nil && !autoOrigin(job) {
+		return e.BadRequestError("Only a database's or a site's job follows its server's settings.", nil)
 	}
 	draft := job.Fresh()
 	body.apply(draft)
+	if autoOrigin(job) {
+		if err := p.followOwn(draft, body); err != nil {
+			return e.BadRequestError(sentence(err), nil)
+		}
+	}
 	if p.panelJobTaken(draft) {
 		return e.Error(http.StatusConflict, panelJobExists, nil)
 	}
@@ -324,7 +350,8 @@ func labelGone(job *core.Record) bool {
 var labelGoneMessage = fmt.Sprintf("The %s label of this job is gone: remove the job.", stacks.LabelBackup)
 
 // handleRemoveJob removes a job with its runs; its snapshots stay in the
-// repositories. A label's job whose label is still there would come back.
+// repositories. A label's job whose label is still there would come back, as
+// would an automatic job whose database or site is (#53).
 func (p *Panel) handleRemoveJob(e *core.RequestEvent) error {
 	job, err := e.App.FindRecordById(schema.BackupJobs, e.Request.PathValue("id"))
 	if err != nil {
@@ -332,6 +359,12 @@ func (p *Panel) handleRemoveJob(e *core.RequestEvent) error {
 	}
 	if job.GetString("origin") == schema.JobLabel && !labelGone(job) {
 		return e.Error(http.StatusConflict, fmt.Sprintf("It comes back at the stack's next deploy: remove its %s label instead.", stacks.LabelBackup), nil)
+	}
+	if autoOrigin(job) && !autoGone(job) {
+		if job.GetString("origin") == schema.JobSite {
+			return e.Error(http.StatusConflict, "It would come back while its site exists: turn it off instead.", nil)
+		}
+		return e.Error(http.StatusConflict, "It would come back while its database exists: turn it off instead.", nil)
 	}
 	// its restores go with it, and one under way would end unrecorded
 	if p.restoreOpenFor("job={:job}", dbx.Params{"job": job.Id}) {
@@ -361,8 +394,8 @@ func (p *Panel) handleRunJob(e *core.RequestEvent) error {
 	if err != nil {
 		return e.NotFoundError("The job does not exist.", err)
 	}
-	if labelGone(job) {
-		return e.Error(http.StatusConflict, labelGoneMessage, nil)
+	if sourceGone(job) {
+		return e.Error(http.StatusConflict, goneMessage(job), nil)
 	}
 	targets := p.jobTargets(job)
 	if len(targets) == 0 {
@@ -374,6 +407,12 @@ func (p *Panel) handleRunJob(e *core.RequestEvent) error {
 	}
 	if !p.Commands.Connected(host.Id) {
 		return e.Error(http.StatusConflict, fmt.Sprintf("The server %s is offline: its agent runs the backup.", host.GetString("name")), nil)
+	}
+	if problem := autoRunProblem(job, host); problem != "" {
+		return e.Error(http.StatusConflict, problem, nil)
+	}
+	if busy := p.databaseBusy(job); busy != "" {
+		return e.Error(http.StatusConflict, busy, nil)
 	}
 	if p.restoreWriting(job) != nil {
 		return e.Error(http.StatusConflict, "A restore into its data is under way: back it up once it ends.", nil)
@@ -417,8 +456,9 @@ func (p *Panel) checkJob(job *core.Record, body jobBody) string {
 	}
 	job.Set("name", name)
 
-	// a label's source never changes: it is its labels'
-	if job.GetString("origin") != schema.JobLabel {
+	// a label's source never changes: it is its labels'; an automatic
+	// job's is its database's or its site's (#53)
+	if job.GetString("origin") != schema.JobLabel && !autoOrigin(job) {
 		if problem := p.checkSource(job, body); problem != "" {
 			return problem
 		}
@@ -588,11 +628,14 @@ func localElsewhere(target *core.Record) string {
 }
 
 // jobProblem is what keeps a job from running, as it is saved: no target, or
-// for a label's job what its labels said at the last deploy. A job an admin
-// made has no other problem: what it backs up was just checked, so a stack
-// that was removed is behind it.
+// for a label's job what its labels said at the last deploy, or for an
+// automatic job that its database or site went (#53). A job an admin made
+// has no other problem: what it backs up was just checked, so a stack that
+// was removed is behind it.
 func jobProblem(job *core.Record) string {
 	switch problem := job.GetString("problem"); {
+	case autoGone(job):
+		return goneProblem(job)
 	case len(job.GetStringSlice("targets")) == 0:
 		return noTarget
 	case problem == noTarget || job.GetString("origin") != schema.JobLabel:
@@ -747,13 +790,21 @@ func (p *Panel) startJobRuns(job *core.Record, trigger string, minute time.Time)
 	if err != nil {
 		return
 	}
+	// its database or site went: it is being disabled (#53)
+	if sourceGone(job) {
+		return
+	}
 	offline := p.offline(host)
+	// a database being made or dropped has nothing to dump yet, or any more
+	busy := p.databaseBusy(job)
 	// a backup of half a restore would feed the retention (#30)
 	restoring := p.restoreWriting(job) != nil
 	for _, target := range p.jobTargets(job) {
 		switch {
 		case offline:
 			p.skipRun(job, target, host, trigger, scheduledAt, fmt.Sprintf("The server %s was offline at %s UTC.", host.GetString("name"), minute.Format("15:04")), true)
+		case busy != "":
+			p.skipRun(job, target, host, trigger, scheduledAt, busy, false)
 		case restoring:
 			p.skipRun(job, target, host, trigger, scheduledAt, fmt.Sprintf("A restore into its data is under way on %s.", host.GetString("name")), false)
 		case p.runGoing(job, target):
@@ -862,7 +913,7 @@ func (p *Panel) startRun(ctx context.Context, job, target, host *core.Record, tr
 	if saveErr := p.App.Save(run); saveErr != nil {
 		return nil, saveErr
 	}
-	p.runFailed(run, job, target, sentence(err))
+	p.runFailed(run, job, target, sentence(err), refusalClass(err))
 	return run, nil
 }
 
@@ -948,9 +999,10 @@ func cancelledByItsTime(command *core.Record, finished types.DateTime) bool {
 	return !expires.IsZero() && !finished.Time().Before(expires.Time().Add(-time.Minute))
 }
 
-// runFailed fails a run that could not start, and alerts.
-func (p *Panel) runFailed(run, job, target *core.Record, reason string) {
-	p.setFields(run, map[string]any{"status": schema.RunFailed, "error": cutText(reason, 4096), "finished_at": types.NowDateTime()})
+// runFailed fails a run that could not start, and alerts. A run refused for
+// what it backs up has the failure's class (refusalClass).
+func (p *Panel) runFailed(run, job, target *core.Record, reason, failure string) {
+	p.setFields(run, map[string]any{"status": schema.RunFailed, "error": cutText(reason, 4096), "finished_at": types.NowDateTime(), "failure": failure})
 	p.alertFailure(job, target, run, reason, retryPlan{})
 	p.noteJobRun(job.Id)
 }
@@ -1005,9 +1057,10 @@ func keptSeverity(app core.App, rule, key, severity string) string {
 }
 
 // backsUpTo tells whether a job still backs up to a target: the target is one
-// of its own, and a label's job still has its label.
+// of its own, a label's job still has its label, and an automatic job its
+// database or site.
 func backsUpTo(job, target *core.Record) bool {
-	return slices.Contains(job.GetStringSlice("targets"), target.Id) && !labelGone(job)
+	return slices.Contains(job.GetStringSlice("targets"), target.Id) && !sourceGone(job)
 }
 
 // settleRun ends a run that its command can no longer end.
@@ -1078,6 +1131,14 @@ func (p *Panel) backupRun(job, target, host *core.Record, run *core.Record) (*ag
 		payload.Volumes = volumes
 	case schema.SourceDump:
 		if err := p.dumpOf(job, payload); err != nil {
+			return nil, err
+		}
+	case schema.SourceDatabase:
+		if err := p.databaseDumpOf(job, host, payload); err != nil {
+			return nil, err
+		}
+	case schema.SourceSite:
+		if err := p.siteFilesOf(job, host, payload); err != nil {
 			return nil, err
 		}
 	case schema.SourcePanel:
@@ -1183,7 +1244,8 @@ func (p *Panel) dumpOf(job *core.Record, payload *agentv1.BackupRun) error {
 // checkRunDelivery checks a backup.run as it is delivered: its run and its
 // job are still there, the command goes to the job's server, and the target
 // takes the job's backups. A run queued before its target was taken out of
-// the job, or before its label went, gets no secrets of the target: the
+// the job, before its label, database or site went, or before its database
+// moved to another server (#53), gets no secrets of the target: the
 // server need no longer have them. That holds for its first delivery only: a
 // command sent again after the agent reconnected reached it with the secrets
 // already and may be running, and refusing it would only mark a backup that
@@ -1207,6 +1269,12 @@ func (p *Panel) checkRunDelivery(record *core.Record, payload *agentv1.BackupRun
 		return errors.New(staleTarget)
 	case first && labelGone(job):
 		return fmt.Errorf("the %s label of the job is gone", stacks.LabelBackup)
+	case first && autoGone(job) && job.GetString("origin") == schema.JobSite:
+		return errors.New("the site was removed")
+	case first && autoGone(job):
+		return errors.New("the database was dropped")
+	case first && job.GetString("source_kind") == schema.SourceDatabase && p.databaseMoved(job, payload):
+		return errors.New(databaseMoved)
 	case target.GetString("status") == schema.TargetPending:
 		return errors.New("the target is still being added")
 	case target.GetString("kind") == backup.KindLocal && target.GetString("host") != job.GetString("host"):
@@ -1284,6 +1352,9 @@ type backupRunResult struct {
 	Failure    string       `json:"failure"`
 	ResticCode float64      `json:"restic_code"`
 	Lock       *backup.Lock `json:"lock"`
+	// BytesStored is what the run added to the repository once compressed,
+	// restic's data_added_packed (#53).
+	BytesStored float64 `json:"bytes_stored"`
 }
 
 // backupRunFinished keeps how a run went, and alerts: a failure with
@@ -1334,8 +1405,10 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		// someone cancelled it
 		status = schema.RunCancelled
 	}
-	if (status == schema.RunFailed || status == schema.RunSkipped) && started.IsZero() && !backsUpTo(job, target) {
-		// not delivered: the job no longer backs up to the target
+	if (status == schema.RunFailed || status == schema.RunSkipped) && started.IsZero() &&
+		(!backsUpTo(job, target) || strings.Contains(command.GetString("error"), databaseMoved)) {
+		// not delivered: the job no longer backs up to the target, or its
+		// database moved since the run was queued (#53)
 		status = schema.RunCancelled
 	}
 	message := command.GetString("error")
@@ -1348,8 +1421,11 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 			message = "The backup did not finish in time."
 		}
 	}
-	// the agent took the secrets out already; whatever it missed
-	hide := p.targetSecretValues(target)
+	// the agent took the secrets out already; whatever it missed, and the
+	// database's passwords, which a run never carries (#53)
+	hide := append(p.targetSecretValues(target), p.databaseSecretValues(job)...)
+	// the longest first, so that one inside another goes whole
+	slices.SortFunc(hide, func(a, b string) int { return len(b) - len(a) })
 	message = capitalize(backup.Redact(message, hide...))
 	retentionError := backup.Redact(result.RetentionError, hide...)
 	retentionDeferredBy := backup.Redact(result.RetentionDeferred, hide...)
@@ -1369,7 +1445,8 @@ func (p *Panel) backupRunFinished(command *core.Record) {
 		"status": status, "finished_at": finished, "error": cutText(message, 4096),
 		"snapshot_id": cutText(result.SnapshotID, 100), "bytes_added": int64(result.BytesAdded), "total_bytes": int64(result.TotalBytes),
 		"files_new": int64(result.FilesNew), "files_changed": int64(result.FilesChanged), "forgotten": int64(result.Forgotten),
-		"log": cutTail(backup.Redact(result.Log, hide...), maxRunLog),
+		"bytes_stored": int64(result.BytesStored),
+		"log":          cutTail(backup.Redact(result.Log, hide...), maxRunLog),
 	}
 	if !started.IsZero() {
 		fields["started_at"] = started
@@ -1503,9 +1580,11 @@ func (p *Panel) targetSecretValues(target *core.Record) []string {
 	return backup.Secrets(secrets.password, repo.Env, repo.SSHKey)
 }
 
-// noteJobRun keeps the state of a job's newest run on the job. The run is
-// read in the transaction that writes the job: a run's start and its end
-// noted at once leave the job with the later state, whichever is noted last.
+// noteJobRun keeps the state of a job's newest run on the job, and when its
+// newest run that succeeded finished (#53). The runs are read in the
+// transaction that writes the job: a run's start and its end noted at once
+// leave the job with the later state, whichever is noted last. A job whose
+// runs that succeeded were all pruned keeps when the last one did.
 func (p *Panel) noteJobRun(jobID string) {
 	err := p.App.RunInTransaction(func(tx core.App) error {
 		runs, err := tx.FindRecordsByFilter(schema.BackupRuns, "job={:job}", "-created,-id", 1, 0, dbx.Params{"job": jobID})
@@ -1518,11 +1597,22 @@ func (p *Panel) noteJobRun(jobID string) {
 			// a job removed meanwhile has nothing to keep
 			return nil //nolint:nilerr // nothing to do
 		}
-		if job.GetString("last_status") == newest.GetString("status") && job.GetDateTime("last_run_at").Equal(newest.GetDateTime("created")) {
+		success := job.GetDateTime("last_success_at")
+		succeeded, err := tx.FindRecordsByFilter(schema.BackupRuns, "job={:job} && status={:succeeded} && finished_at!=''", "-finished_at,-id", 1, 0,
+			dbx.Params{"job": jobID, "succeeded": schema.RunSucceeded})
+		if err != nil {
+			return err
+		}
+		if len(succeeded) > 0 {
+			success = succeeded[0].GetDateTime("finished_at")
+		}
+		if job.GetString("last_status") == newest.GetString("status") && job.GetDateTime("last_run_at").Equal(newest.GetDateTime("created")) &&
+			job.GetDateTime("last_success_at").Equal(success) {
 			return nil
 		}
 		job.Set("last_status", newest.GetString("status"))
 		job.Set("last_run_at", newest.GetDateTime("created"))
+		job.Set("last_success_at", success)
 		return tx.Save(job)
 	})
 	if err != nil {
