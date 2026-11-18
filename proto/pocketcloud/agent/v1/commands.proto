@@ -589,6 +589,26 @@ message DbDatabaseDrop {
   // keep_user keeps the user, which owns other databases too: it only loses its
   // privileges on this one, so that they do not reach a later database of the name.
   bool keep_user = 4;
+  // temporaries are the database's temporary copies (#53): the data before an
+  // in-place restore (pc_old_…) and restore tests (pc_rt_…). Each matches
+  // ^pc_(rt|rs|old)_[a-z0-9]{15}$. They belong to the database's user, so they
+  // are dropped after the final dump and before the user.
+  repeated string temporaries = 5;
+}
+
+// DbDatabaseDiscard drops temporary databases (#53): copies a restore or a
+// restore test made, whose time is up. The agent refuses a name that is not
+// one of PocketCloud's temporary ones, and one that a running restore or
+// restore test holds. Nothing is dumped first.
+message DbDatabaseDiscard {
+  // connection is the database server; the panel adds the administrator's
+  // password when it delivers the command.
+  DbConnection connection = 1;
+  // names are the databases to drop, each ^pc_(rt|rs|old)_[a-z0-9]{15}$.
+  repeated string names = 2;
+  // revoke_from is, on MariaDB, the user that was granted privileges on them,
+  // if known: they are revoked first, as MariaDB keeps them after a drop.
+  string revoke_from = 3;
 }
 
 // DbDatabaseRotate changes the password of a database user.
@@ -839,6 +859,19 @@ message BackupRun {
   // agent fetches with FetchArtifact on a connection of its own and backs up as
   // stdin_file_name through the relay: no mount, no exec. Not a secret.
   string panel_export = 13;
+  // extra_tags are tags of the snapshot besides tags (#53): db:<name>,
+  // dbserver:<server> or site:<name>, which may change for a job, as a move
+  // renames the server. With any of them the retention selects the job's
+  // snapshots by tags alone, as one group (`forget --group-by ''`). An agent
+  // without the backup.database capability does not know them.
+  repeated string extra_tags = 14;
+  // site_dir is a directory of the pocketcloud-sites volume (#53),
+  // <site>/shared or, for a classic-mode site, <site>; it is mounted read-only
+  // at /srv/sites/<site_dir> and backed up as that path.
+  string site_dir = 15;
+  // excludes are restic --exclude patterns (#53): absolute, clean, under the
+  // path backed up; at most 100.
+  repeated string excludes = 16;
 }
 
 // BackupRetention is how many snapshots of a job a repository keeps, as
@@ -909,6 +942,76 @@ message BackupRestore {
   // confirmed_stops are the names of the containers the preview said would
   // stop. A real restore that would stop another one is refused.
   repeated string confirmed_stops = 14;
+  // database restores a database job's dump into a database of a shared
+  // server (#53), as the database's own user. Such a restore sets neither
+  // original nor target_path; it sets restore_id, job_tag, snapshot_id,
+  // dry_run, overwrite (for mode replace), stack (the owner stack, if any) and
+  // confirmed_stops. Only an agent with the backup.database capability takes it.
+  BackupDbRestore database = 15;
+}
+
+// BackupDbRestore is where a database's dump goes, and who restores it (#53).
+// The restore runs in the shared server's container, with its own client, as
+// the database's own user over the container's address, where the server
+// checks the password: that user's privileges reach its database only, so a
+// dump cannot touch another database of the server. The dump is staged in
+// the container's /tmp first.
+message BackupDbRestore {
+  // connection is the shared server: container_id is its container
+  // (db_servers.container_ref); the panel adds admin_password when it
+  // delivers the command.
+  DbConnection connection = 1;
+  // database is where the dump goes: the database itself (replace), the new
+  // database (new), or pc_rt_<check id> (test).
+  string database = 2;
+  // file is the snapshot's one file: <db>.pgdump (postgres) or <db>.sql
+  // (mariadb), as the job backed it up.
+  string file = 3;
+  // mode is "replace", "new" or "test".
+  string mode = 4;
+  // user is the database's own user, which restores and owns what is
+  // restored; for new, the new database's user, which the agent creates.
+  string user = 5;
+  // password is that user's password; the panel adds it when it delivers the
+  // command, so it is never stored with it.
+  string password = 6 [(pocketcloud.options.v1.sensitive) = true];
+  // scratch is, for replace, pc_rs_<restore id>: PostgreSQL's copy that is
+  // swapped in, MariaDB's rehearsal that is dropped again.
+  string scratch = 7;
+  // previous is, for replace on PostgreSQL, pc_old_<restore id>: the data as
+  // it was before the restore, kept for 24 hours.
+  string previous = 8;
+  // stop_projects are other Compose projects of the host whose env names
+  // ${secret:db/<database>}: their containers stop with the owner stack's.
+  repeated string stop_projects = 9;
+  // stop_containers are the containers <site>-php and <site>-worker of a
+  // site's database, which stop by name.
+  repeated string stop_containers = 10;
+  // site is the site of a site's database, for ordering with its site.*
+  // commands.
+  string site = 11;
+}
+
+// BackupRestoreTest restores a database job's dump into a temporary database
+// of its shared server, as the database's own user, and compares the tables
+// the dump holds with those restored (#53). The temporary database stays for
+// the panel to drop later.
+message BackupRestoreTest {
+  // repository is the source repository; the panel stores only target_id and
+  // url, and adds the rest when it delivers the command.
+  BackupRepository repository = 1;
+  // snapshot_id is the snapshot: its full id, 64 hex characters.
+  string snapshot_id = 2;
+  // job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
+  string job_tag = 3;
+  // check_id is the `backup_checks` row of the test.
+  string check_id = 4;
+  // database is the restore: mode "test", database pc_rt_<check id>.
+  BackupDbRestore database = 5;
+  // drop_before are earlier pc_rt_ databases of this server whose tests
+  // ended: they are dropped before the test, so that a server holds one test
+  // copy at most.
+  repeated string drop_before = 6;
 }
 
 // BackupRestoreRoot is one root of a restore to the original location: a
@@ -974,6 +1077,11 @@ message BackupDump {
   string file_name = 5;
   // job_tag is the job's restic tag, `job:<id>`: the snapshot must carry it.
   string job_tag = 6;
+  // sql_from names a shared PostgreSQL server's container (#53): the file, a
+  // custom-format dump, is converted to plain SQL on the way by pg_restore in
+  // a hardened container made from that container's image, without network.
+  // Only an agent with the backup.database capability takes it.
+  string sql_from = 7;
 }
 
 // BackupCheck verifies a repository with `restic check`.
