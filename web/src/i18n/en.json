@@ -1109,6 +1109,7 @@
       "restore": "Restore…",
       "edit": "Backup settings…",
       "pending": "Its backup job appears once the database is ready.",
+      "reserved": "PocketCloud does not back up this database by itself: names that start with pc_rt_, pc_rs_ or pc_old_ belong to its temporary databases.",
       "dedicated": "A dedicated server is backed up by its stack's jobs.",
       "dedicatedNone": "Its stack has no backup job."
     }

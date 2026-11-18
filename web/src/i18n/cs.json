@@ -1175,6 +1175,7 @@
       "restore": "Obnovit…",
       "edit": "Nastavení záloh…",
       "pending": "Úloha záloh se objeví, až bude databáze připravená.",
+      "reserved": "PocketCloud tuto databázi sám nezálohuje: názvy začínající pc_rt_, pc_rs_ nebo pc_old_ patří jeho dočasným databázím.",
       "dedicated": "Vyhrazený server zálohují úlohy jeho stacku.",
       "dedicatedNone": "Jeho stack nemá žádnou zálohovací úlohu."
     }
