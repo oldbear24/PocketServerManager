@@ -95,7 +95,7 @@ You need the `.pckit` file, its passphrase, and Docker on the new machine. The c
 
 ## Rolling a running panel back
 
-To return a panel to an earlier backup on the same machine: stop it (`docker stop pocketcloud-panel`), fetch the snapshot you want as in step 3, run step 4 with `--replace`, then steps 5 and 6. `recover` refuses while a panel serves the directory (“A panel is serving <dir>: stop it first.”). The same limits as in step 9 apply: everything after the backup is undone.
+To return a panel to an earlier backup on the same machine: stop and remove its container (`docker stop pocketcloud-panel && docker rm pocketcloud-panel`; its data stays in the volumes, and step 6 needs the name free), fetch the snapshot you want as in step 3, run step 4 with `--replace`, then steps 5 and 6. `recover` refuses while a panel serves the directory (“A panel is serving <dir>: stop it first.”). The same limits as in step 9 apply: everything after the backup is undone.
 
 ## When the address cannot be kept
 
