@@ -1,16 +1,23 @@
 package e2e
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/dockerapi/fakedocker"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -34,6 +41,11 @@ type dbBackupsHarness struct {
 
 	lifeMu sync.Mutex
 	life   []string
+
+	// held, when set, keeps the restores of dumps in a server's container
+	// waiting until it is closed; reached hears of each that waits
+	held    atomic.Pointer[chan struct{}]
+	reached chan string
 }
 
 // newDBBackupsHarness starts the panel and an agent whose engine's database
@@ -41,9 +53,20 @@ type dbBackupsHarness struct {
 // come due by themselves: the tests start them, or pass the clock.
 func newDBBackupsHarness(t *testing.T, prepare ...func(engine *fakedocker.Engine)) *dbBackupsHarness {
 	t.Helper()
-	d := &dbBackupsHarness{}
+	d := &dbBackupsHarness{reached: make(chan string, 16)}
 	d.restoresHarness = newRestoresHarness(t, func(engine *fakedocker.Engine) {
-		d.db = fakedb.Install(engine)
+		d.db = fakedb.New(engine)
+		engine.OnExec = func(call *fakedocker.ExecCall, stdin []byte) fakedocker.ExecResult {
+			script := strings.Join(call.Cmd, " ")
+			if held := d.held.Load(); held != nil && (strings.Contains(script, "pg_restore --no-password") || strings.Contains(script, "--one-database")) {
+				select {
+				case d.reached <- envOf(call, "PC_DATABASE"):
+				default:
+				}
+				<-*held
+			}
+			return d.db.Answer(call, stdin)
+		}
 		stop, start := engine.OnStop, engine.OnStart
 		engine.OnStop = func(c *fakedocker.Container) {
 			d.noteLife("stop:" + c.Name)
@@ -67,6 +90,42 @@ func newDBBackupsHarness(t *testing.T, prepare ...func(engine *fakedocker.Engine
 	}
 	d.defaults(map[string]any{"schedule": neverDue, "targets": []string{d.disk.Id}})
 	return d
+}
+
+// envOf is a variable of a process.
+func envOf(call *fakedocker.ExecCall, name string) string {
+	for _, item := range call.Env {
+		if key, value, _ := strings.Cut(item, "="); key == name {
+			return value
+		}
+	}
+	return ""
+}
+
+// holdRestores keeps the restores of dumps waiting until release is called,
+// and says the database of the first that waits.
+func (d *dbBackupsHarness) holdRestores() (release func(), first func() string) {
+	held := make(chan struct{})
+	d.held.Store(&held)
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			d.held.Store(nil)
+			close(held)
+		})
+	}
+	d.t.Cleanup(release)
+	first = func() string {
+		d.t.Helper()
+		select {
+		case name := <-d.reached:
+			return name
+		case <-time.After(waitLimit):
+			d.t.Fatal("no restore came to wait")
+			return ""
+		}
+	}
+	return release, first
 }
 
 // noteLife notes a container that stopped or started; the engine calls it
@@ -594,5 +653,406 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	}
 	if _, err := d.app.FindFirstRecordByFilter(schema.Events, "kind='backup.restore_failed' && data.restore={:id}", dbx.Params{"id": restore.Id}); err != nil {
 		t.Errorf("the restore's event: %v", err)
+	}
+}
+
+// phpSite saves a PHP site of the agent's server, as deployed, with its
+// PHP-FPM and worker containers running.
+func (d *dbBackupsHarness) phpSite(name string, phpSettings map[string]any) *core.Record {
+	d.t.Helper()
+	collection, err := d.app.FindCollectionByNameOrId(schema.Sites)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	site := core.NewRecord(collection)
+	site.Load(map[string]any{"name": name, "host": d.host.Id, "type": schema.SitePHPApp, "source": "upload"})
+	if err := d.app.SaveNoValidate(site); err != nil {
+		d.t.Fatal(err)
+	}
+	// the panel gives a PHP site its settings
+	var php *core.Record
+	d.waitFor("the site's PHP settings", func() bool {
+		php, err = d.app.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+		return err == nil
+	})
+	php.Load(phpSettings)
+	if err := d.app.SaveNoValidate(php); err != nil {
+		d.t.Fatal(err)
+	}
+	for _, role := range []string{"php", "worker"} {
+		d.docker.AddContainer(name+"-"+role, "php:8.3-fpm", map[string]string{"pocketcloud.role": "site", "pocketcloud.site": name})
+	}
+	return site
+}
+
+// TestSiteDatabaseRestoreStopsTheSite (#53): a restore of a PHP site's
+// database back into itself stops the site's PHP-FPM and worker containers,
+// which are known by their names, and no other; while it is under way the
+// site is not deployed.
+func TestSiteDatabaseRestoreStopsTheSite(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	server := d.sharedServer("main", "postgres")
+	site := d.phpSite("shop", nil)
+	status, out := d.send(http.MethodPost, "/api/pc/databases", d.operator, map[string]any{"server": server.Id, "name": "shop", "site": site.Id})
+	if status != http.StatusOK {
+		t.Fatalf("the site's database: %d %v", status, out)
+	}
+	d.waitForStatus(out["command"].(map[string]any)["id"].(string), schema.CommandSucceeded)
+	d.waitFor("the database to be ready", func() bool { return d.databaseNamed(server, "shop").GetString("status") == "ready" })
+	d.db.SetTables(server.GetString("container_ref"), "shop", "wp_posts", "wp_options")
+	d.database(server, "blog", d.application("blog"), "posts")
+	job := d.jobOf("database", d.databaseNamed(server, "shop").Id)
+	run := d.backedUp(job)
+
+	restore := d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "database"})
+	if stops := names(previewOf(t, restore)["would_stop"]); !slices.Equal(stops, []string{"shop-php", "shop-worker"}) {
+		t.Errorf("the preview stops %v", stops)
+	}
+	release, first := d.holdRestores()
+	lives := d.lives()
+	if status, out := d.startNamed(restore, "shop"); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	if name := first(); name != databases.ScratchName(restore.Id) {
+		t.Errorf("the first restore went into %s", name)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/sites/"+site.Id+"/deploy", d.operator, nil); status != http.StatusConflict ||
+		out["message"] != "The site shop is being restored from a backup: this waits until that is done." {
+		t.Errorf("a deploy of the site meanwhile: %d %v", status, out)
+	}
+	release()
+	ended := d.ended(restore.Id)
+	if ended.GetString("status") != schema.RestoreSucceeded {
+		t.Fatalf("the restore: %v", ended.FieldsData())
+	}
+	life := d.lifeSince(lives)
+	slices.Sort(life)
+	if !slices.Equal(life, []string{"start:shop-php", "start:shop-worker", "stop:shop-php", "stop:shop-worker"}) {
+		t.Errorf("what stopped and started: %v", life)
+	}
+	if status := d.docker.Find("shop-php").Status; status != "running" {
+		t.Errorf("the site's PHP-FPM is %s", status)
+	}
+}
+
+// TestRestoreIntoANewDatabase (#53): a restore into a new database makes its
+// record and its user's, with a password and the secret db/<name> of their
+// own, restores as that user, and leaves the new database ready; one that
+// fails drops what it made, and the panel forgets it.
+func TestRestoreIntoANewDatabase(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	server := d.sharedServer("main", "mariadb")
+	shop := d.database(server, "shop", d.application("shop"), "items", "orders")
+	job := d.jobOf("database", shop.Id)
+	run := d.backedUp(job)
+	lives := d.lives()
+
+	restore := d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "new_database", "name": "shop_copy"})
+	if stops := names(previewOf(t, restore)["would_stop"]); len(stops) != 0 {
+		t.Errorf("the preview stops %v", stops)
+	}
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-restores/"+restore.Id+"/start", d.operator, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	ended := d.ended(restore.Id)
+	if ended.GetString("status") != schema.RestoreSucceeded || ended.GetInt("tables") != 2 {
+		t.Fatalf("the restore: %v", ended.FieldsData())
+	}
+	copied := d.databaseNamed(server, "shop_copy")
+	account := d.user(server, "shop_copy")
+	if copied.GetString("status") != "ready" || copied.GetString("owner_kind") != "none" || ended.GetString("database") != copied.Id ||
+		account.GetString("secret_name") != "db/shop_copy" || !slices.Contains(account.GetStringSlice("databases"), copied.Id) {
+		t.Errorf("the new database: %v %v", copied.FieldsData(), account.FieldsData())
+	}
+	password, ok := d.db.Password(server.GetString("container_ref"), "shop_copy")
+	if sealed, err := d.panel.Box.OpenString(account.GetString("password")); err != nil || !ok || password != sealed || password == "" {
+		t.Errorf("the new user's password on the server: %v %v", ok, err)
+	}
+	if tables, from := d.tables(server, "shop_copy"); !slices.Equal(tables, []string{"items", "orders"}) || from != "shop" {
+		t.Errorf("the new database holds %v from %q", tables, from)
+	}
+	if tables, _ := d.tables(server, "shop"); !slices.Equal(tables, []string{"items", "orders"}) {
+		t.Errorf("shop after: %v", tables)
+	}
+	if life := d.lifeSince(lives); len(life) != 0 {
+		t.Errorf("a restore into a new database stopped or started %v", life)
+	}
+
+	// one that fails is dropped again, its records with it
+	restore = d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "new_database", "name": "shop_fail"})
+	if status, out := d.send(http.MethodPost, "/api/pc/backup-restores/"+restore.Id+"/start", d.operator, map[string]any{}); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	ended = d.ended(restore.Id)
+	if ended.GetString("status") != schema.RestoreFailed || !strings.HasPrefix(ended.GetString("error"), "The restore into the new database shop_fail failed, and it was dropped again: ") {
+		t.Errorf("the failed restore: %v", ended.FieldsData())
+	}
+	if _, err := d.app.FindFirstRecordByFilter(schema.Databases, "name='shop_fail'"); err == nil {
+		t.Error("the failed new database's record stays")
+	}
+	if _, err := d.app.FindFirstRecordByFilter(schema.DBUsers, "name='shop_fail'"); err == nil {
+		t.Error("the failed new database's user stays")
+	}
+	if _, there := d.db.Database(server.GetString("container_ref"), "shop_fail"); there {
+		t.Error("the failed new database stays on the server")
+	}
+	if _, there := d.db.Password(server.GetString("container_ref"), "shop_fail"); there {
+		t.Error("the failed new database's user stays on the server")
+	}
+}
+
+// user is a server's user by its name.
+func (d *dbBackupsHarness) user(server *core.Record, name string) *core.Record {
+	d.t.Helper()
+	account, err := d.app.FindFirstRecordByFilter(schema.DBUsers, "server={:server} && name={:name}", dbx.Params{"server": server.Id, "name": name})
+	if err != nil {
+		d.t.Fatalf("the user %s: %v", name, err)
+	}
+	return account
+}
+
+// sqlDownload downloads a database job's snapshot as SQL, as token: the
+// answer's status, its Content-Type, and what came.
+func (d *dbBackupsHarness) sqlDownload(job, run *core.Record, token string) (int, string, string) {
+	d.t.Helper()
+	status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/downloads", token,
+		map[string]any{"target": d.disk.Id, "snapshot": run.GetString("snapshot_id"), "kind": "sql"})
+	if status != http.StatusCreated {
+		return status, "", fmt.Sprint(out["message"])
+	}
+	server := httptest.NewServer(d.handler)
+	defer server.Close()
+	response, err := http.Get(server.URL + out["url"].(string)) //nolint:noctx // a browser's navigation
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	return response.StatusCode, response.Header.Get("Content-Type"), string(data)
+}
+
+// TestSqlDownloads (#53): an admin downloads a database job's snapshot as
+// plain SQL: PostgreSQL's custom archive through a conversion container of
+// its server's own image, which has no network and no capability;
+// MariaDB's dump as it is stored. An operator does not download.
+func TestSqlDownloads(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	pg := d.sharedServer("pg", "postgres")
+	maria := d.sharedServer("maria", "mariadb")
+	pgJob := d.jobOf("database", d.database(pg, "shop", nil, "items").Id)
+	mariaJob := d.jobOf("database", d.database(maria, "blog", nil, "posts").Id)
+	pgRun, mariaRun := d.backedUp(pgJob), d.backedUp(mariaJob)
+
+	if status, _, message := d.sqlDownload(pgJob, pgRun, d.operator); status != http.StatusForbidden {
+		t.Errorf("an operator's download: %d %s", status, message)
+	}
+	status, kind, body := d.sqlDownload(pgJob, pgRun, d.admin)
+	if status != http.StatusOK || kind != "application/sql; charset=utf-8" || !strings.Contains(body, "\n-- PostgreSQL database dump\n") ||
+		!strings.Contains(body, "PGDMP") || !strings.Contains(body, "dbname: shop") {
+		t.Errorf("PostgreSQL's SQL: %d %s %q", status, kind, body)
+	}
+	converters := 0
+	for _, job := range d.ranJobs() {
+		if len(job.Entrypoint) == 0 || job.Entrypoint[0] != "pg_restore" {
+			continue
+		}
+		converters++
+		if job.User != "postgres" || job.Host["NetworkMode"] != "none" || job.Host["ReadonlyRootfs"] != true ||
+			capabilities(job) != "[]" || !slices.Contains(job.Cmd, "--no-owner") {
+			t.Errorf("the conversion container: %+v %v", job, job.Host)
+		}
+	}
+	if converters != 1 {
+		t.Errorf("%d conversion containers", converters)
+	}
+
+	status, kind, body = d.sqlDownload(mariaJob, mariaRun, d.admin)
+	if status != http.StatusOK || kind != "application/sql; charset=utf-8" || !strings.HasPrefix(body, "-- MariaDB dump") ||
+		!strings.Contains(body, "Database: blog") || !strings.HasSuffix(body, "-- Dump completed\n") {
+		t.Errorf("MariaDB's SQL: %d %s %q", status, kind, body)
+	}
+	if count := 0; true {
+		for _, job := range d.ranJobs() {
+			if len(job.Entrypoint) > 0 && job.Entrypoint[0] == "pg_restore" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("MariaDB's download was converted: %d conversions", count)
+		}
+	}
+}
+
+// restoreTests are a job's restore tests, oldest first.
+func (d *dbBackupsHarness) restoreTests(job *core.Record) []*core.Record {
+	d.t.Helper()
+	rows, err := d.app.FindRecordsByFilter(schema.BackupChecks, "kind={:kind} && job={:job}", "created,id", 0, 0,
+		dbx.Params{"kind": schema.CheckRestoreTest, "job": job.Id})
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	return rows
+}
+
+// testEnded waits until a restore test ended, and its finisher, which alerts
+// and notes it in the events after it keeps how it went, is done.
+func (d *dbBackupsHarness) testEnded(id string) *core.Record {
+	d.t.Helper()
+	var row *core.Record
+	d.waitFor("the restore test "+id+" to end", func() bool {
+		found, err := d.app.FindRecordById(schema.BackupChecks, id)
+		if err != nil {
+			return false
+		}
+		row = found
+		switch found.GetString("status") {
+		case schema.CheckQueued, schema.CheckRunning:
+			return false
+		}
+		events, err := d.app.FindRecordsByFilter(schema.Events, "kind~'backup.restore_test_' && data.check={:id}", "", 0, 0, dbx.Params{"id": id})
+		return err == nil && len(events) > 0
+	})
+	return row
+}
+
+// testNow starts a restore test of a job by hand, as the operator, and waits
+// until it ended.
+func (d *dbBackupsHarness) testNow(job *core.Record) *core.Record {
+	d.t.Helper()
+	status, out := d.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/restore-test", d.operator, nil)
+	if status != http.StatusAccepted {
+		d.t.Fatalf("the restore test of %s: %d %v", job.GetString("name"), status, out)
+	}
+	return d.testEnded(out["check"].(string))
+}
+
+// TestRestoreTestsRunOnScheduleAndAlert (#53, AC2): at the slot of their
+// schedule every database job's newest backup is restored into a temporary
+// database of its server, one test of a server at a time, and passes when
+// the tables are all there; a test of a damaged repository fails with the
+// critical alert and its event, which the next test that passes resolves;
+// the temporary databases go two hours after their test; a job whose tests
+// have not passed for long raises the warning.
+func TestRestoreTestsRunOnScheduleAndAlert(t *testing.T) {
+	d := newDBBackupsHarness(t)
+	server := d.sharedServer("main", "postgres")
+	jobs := []*core.Record{}
+	for _, name := range []string{"shop", "blog"} {
+		job := d.jobOf("database", d.database(server, name, nil, name+"_a", name+"_b", name+"_c").Id)
+		d.backedUp(job)
+		jobs = append(jobs, job)
+	}
+	schedule, slot := farSchedule(time.Now())
+	if status, out := d.send(http.MethodPut, "/api/pc/settings/backup-checks", d.admin, map[string]any{"restore_test_schedule": schedule}); status != http.StatusOK ||
+		out["next_restore_test_at"] != slot.Format(time.RFC3339) {
+		t.Fatalf("the restore tests' schedule: %d %v", status, out)
+	}
+
+	// nothing before the slot; at it, a test of each job, one at a time on
+	// their server
+	release, first := d.holdRestores()
+	d.panel.RunDueRestoreTests(slot.Add(-time.Minute))
+	for _, job := range jobs {
+		if rows := d.restoreTests(job); len(rows) != 0 {
+			t.Fatalf("a test before its slot: %v", rows[0].FieldsData())
+		}
+	}
+	d.panel.RunDueRestoreTests(slot)
+	rows := map[string]*core.Record{}
+	for _, job := range jobs {
+		found := d.restoreTests(job)
+		if len(found) != 1 {
+			t.Fatalf("%d tests of %s at the slot", len(found), job.GetString("name"))
+		}
+		row := found[0]
+		temporary := databases.TestDatabaseName(row.Id)
+		if row.GetString("trigger") != schema.RunSchedule || !row.GetDateTime("scheduled_at").Time().Equal(slot) || row.GetString("temporary") != temporary ||
+			row.GetString("target") != d.disk.Id || row.GetString("host") != d.host.Id || row.GetString("database_name") != job.GetString("source") {
+			t.Errorf("the test of %s: %v", job.GetString("name"), row.FieldsData())
+		}
+		copied := d.databaseNamed(server, temporary)
+		if copied.GetDateTime("temporary_until").IsZero() || copied.GetString("owner_kind") != "none" {
+			t.Errorf("the temporary database %s: %v", temporary, copied.FieldsData())
+		}
+		rows[temporary] = row
+	}
+	waiting := first()
+	if rows[waiting] == nil {
+		t.Fatalf("a restore into %s waits", waiting)
+	}
+	select {
+	case other := <-d.reached:
+		t.Errorf("a second test of the server restores into %s meanwhile", other)
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	ended := []*core.Record{}
+	for _, row := range rows {
+		row = d.testEnded(row.Id)
+		if row.GetString("status") != schema.CheckOK || row.GetInt("tables_expected") != 3 || row.GetInt("tables_restored") != 3 || row.GetString("failure") != "" {
+			t.Errorf("the test %s: %v", row.Id, row.FieldsData())
+		}
+		ended = append(ended, row)
+	}
+	slices.SortFunc(ended, func(a, b *core.Record) int {
+		return a.GetDateTime("started_at").Time().Compare(b.GetDateTime("started_at").Time())
+	})
+	if ended[1].GetDateTime("started_at").Time().Before(ended[0].GetDateTime("finished_at").Time()) {
+		t.Errorf("two tests of a server ran at once: %v - %v and %v - %v", ended[0].GetDateTime("started_at"), ended[0].GetDateTime("finished_at"),
+			ended[1].GetDateTime("started_at"), ended[1].GetDateTime("finished_at"))
+	}
+	for temporary := range rows {
+		if copied, ok := d.db.Database(server.GetString("container_ref"), temporary); !ok || copied.Owner == "" || !copied.Closed || copied.From == "" {
+			t.Errorf("the test's database %s on the server: %+v", temporary, copied)
+		}
+	}
+
+	// a damaged repository fails the test, with the critical alert
+	repository := filepath.Join(d.hostRoot, d.diskDir)
+	fakerestic.Damage(t, d.restic, repository)
+	shop := jobs[0]
+	failed := d.testNow(shop)
+	if failed.GetString("status") != schema.CheckFailed || failed.GetString("failure") != backup.TestDamaged || failed.GetString("trigger") != schema.RunManual {
+		t.Errorf("the test of a damaged repository: %v", failed.FieldsData())
+	}
+	alert := d.openAlerts(backup.AlertRestoreTestFailed)[shop.Id]
+	if alert == nil || alert.GetString("severity") != schema.SeverityCritical || alert.GetString("host") != d.host.Id ||
+		!strings.HasPrefix(alert.GetString("message"), "The restore test of shop on main failed: ") {
+		t.Errorf("the failed test's alert: %v", alert)
+	}
+	if event, err := d.app.FindFirstRecordByFilter(schema.Events, "kind={:kind} && data.check={:id}", dbx.Params{"kind": backup.EventRestoreTestFailed, "id": failed.Id}); err != nil ||
+		event.GetString("severity") != schema.SeverityCritical {
+		t.Errorf("the failed test's event: %v %v", event, err)
+	}
+	// the next test that passes resolves it
+	if err := os.Remove(filepath.Join(fakerestic.Repository(d.restic, repository), "damaged")); err != nil {
+		t.Fatal(err)
+	}
+	if passed := d.testNow(shop); passed.GetString("status") != schema.CheckOK {
+		t.Errorf("the test after the repair: %v", passed.FieldsData())
+	}
+	if alert := d.openAlerts(backup.AlertRestoreTestFailed)[shop.Id]; alert != nil {
+		t.Errorf("the alert stays after a test passed: %v", alert.FieldsData())
+	}
+
+	// two hours after their tests the temporary databases go
+	d.panel.SweepTemporaries(time.Now().Add(2*time.Hour + time.Minute))
+	d.waitFor("the temporary databases to go", func() bool {
+		left, err := d.app.FindRecordsByFilter(schema.Databases, "temporary_until!=''", "", 0, 0)
+		return err == nil && len(left) == 0
+	})
+	for _, name := range d.db.DatabaseNames(server.GetString("container_ref")) {
+		if strings.HasPrefix(name, "pc_") {
+			t.Errorf("the temporary database %s stays on the server", name)
+		}
+	}
+
+	// tests that do not pass for long are a warning
+	d.panel.WatchRestoreTests(time.Now().AddDate(3, 0, 0))
+	if alert := d.openAlerts(backup.AlertRestoreTestUnverified)[jobs[1].Id]; alert == nil || alert.GetString("severity") != schema.SeverityWarning {
+		t.Errorf("the watchdog's alert: %v", alert)
 	}
 }
