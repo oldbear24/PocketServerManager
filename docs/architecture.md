@@ -781,11 +781,11 @@ This section is the contract that the agent, the panel, the web UI and the guide
 
   ```
   Kit KIT-7Q2M-9XHC of http://192.0.2.2:8090 (key 9f2c41d0…). Target panel-sftp (sftp): newest panel snapshot 4f1c2d3e from 2026-11-17 04:00 UTC.
-  Fetched it: 312 MB, sha256 ab12…; every part opens with the kit's key (export 2026-11-17 04:00 UTC, panel 0.32.0, 3 servers).
+  Fetched it: 297.5 MiB, sha256 ab12…; every part opens with the kit's key (export 2026-11-17 04:00 UTC, panel 0.32.0, 3 servers).
   ```
 
-  Errors (exit 1): "the passphrase does not open this kit, or the kit was changed"; "no panel snapshot of job:<id> on panel-minio"; "the copy does not open with the kit's key: it belongs to another panel"; restic's own lines with secrets masked; and the warning "the target disk is a directory of node-b: run this there".
-- **`pocketcloud-agent repoint --panel HOST:PORT [--check]`** dials with the stored identity and the pinned roots, makes one `Heartbeat`, and only then rewrites `identity.json`'s `panel` (never the key or the certificates). "The panel at X holds this server's CA (sha256:…) and knows it as vm. This server now dials X: restart the agent (docker restart pocketcloud-agent)."; refusals, nothing changed: "The panel at X does not hold this server's CA: nothing was changed." / "The panel at X does not know this server: nothing was changed."
+  Errors (exit 1): "the passphrase does not open this kit, or the kit was changed"; "no panel snapshot of job:<id> on panel-minio"; "the copy does not open with the kit's key: it belongs to another panel"; restic's own lines with secrets masked. The size is in binary units, such as MiB. A local target of another server is warned of on stderr before the first line, and the command goes on: "Warning: the target disk is a directory of node-b: run this there."
+- **`pocketcloud-agent repoint --panel HOST:PORT [--check]`** dials with the stored identity and the pinned roots, makes one `Heartbeat`, and only then rewrites `identity.json`'s `panel` (never the key or the certificates). "The panel at X holds this server's CA (sha256:…) and knows it as vm. This server now dials X: restart the agent (docker restart pocketcloud-agent)."; with `--check` it ends "… and knows it as vm. Nothing was changed (--check)."; refusals, nothing changed: "The panel at X does not hold this server's CA: nothing was changed." / "The panel at X does not know this server: nothing was changed. The panel said: <its message>" / "The panel at X cannot be reached: <message>. Nothing was changed."
 - **Alerts and events.** Target `panel`, no host, like `audit_integrity`.
 
   | Rule | Severity | Open while | Resolved by |
