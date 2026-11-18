@@ -227,20 +227,28 @@ func (d *dbBackupsHarness) database(server *core.Record, name string, stack *cor
 		return err == nil && found.GetString("status") == "ready"
 	})
 	if stack != nil {
+		// the stack is connected: its network attached and its new revision
+		// deployed
 		revision := stack.GetInt("current_revision")
 		d.waitFor("the stack "+stack.GetString("name")+" to be connected", func() bool {
-			return d.fresh(schema.Stacks, stack.Id).GetInt("current_revision") > revision && !d.deploying(stack.Id)
+			fresh := d.fresh(schema.Stacks, stack.Id)
+			return fresh.GetInt("current_revision") > revision && fresh.GetInt("deployed_revision") == fresh.GetInt("current_revision")
 		})
 	}
+	d.settled()
 	d.db.SetTables(server.GetString("container_ref"), name, tables...)
 	return d.fresh(schema.Databases, id)
 }
 
-// deploying tells whether a deploy of a stack is still open.
-func (d *dbBackupsHarness) deploying(stackID string) bool {
-	open, err := d.app.FindRecordsByFilter(schema.Commands, "type='stack.deploy' && status!='succeeded' && status!='failed' && status!='cancelled' && status!='timed_out' && payload.stack_id={:stack}",
-		"", 0, 0, dbx.Params{"stack": stackID})
-	return err != nil || len(open) > 0
+// settled waits until no command is open, so that what a test does next
+// meets no deploy or attach still under way.
+func (d *dbBackupsHarness) settled() {
+	d.t.Helper()
+	d.waitFor("the commands to end", func() bool {
+		open, err := d.app.FindRecordsByFilter(schema.Commands,
+			"status!='succeeded' && status!='failed' && status!='cancelled' && status!='timed_out'", "", 0, 0)
+		return err == nil && len(open) == 0
+	})
 }
 
 // jobOf waits for the job the panel makes of a database, or of a site.
