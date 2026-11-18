@@ -1,5 +1,12 @@
-import { Database as DatabaseIcon, Download, Plus, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Database as DatabaseIcon,
+  Download,
+  Plus,
+  RefreshCw,
+} from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -24,6 +31,30 @@ import {
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
 import {
+  restoreTestFields,
+  restoreTestsFilter,
+  type BackupCheck,
+  type CheckSettingsRecord,
+} from "../lib/backupChecks";
+import {
+  automaticJob,
+  runFields,
+  zoneOffset,
+  type BackupJob,
+  type BackupRun,
+} from "../lib/backupJobs";
+import type { BackupRestore } from "../lib/backupRestores";
+import type { BackupTarget } from "../lib/backups";
+import {
+  backupKpi,
+  hostHint,
+  isTemporary,
+  jobOf,
+  runsSinceDays,
+  stackJobOf,
+  type BackupKpi,
+} from "../lib/databaseBackups";
+import {
   connectionShare,
   databaseNamePattern,
   dbApi,
@@ -45,8 +76,16 @@ import {
 } from "../lib/databases";
 import { formatBytes, formatDate, formatNumber, formatRelative } from "../lib/format";
 import { pb } from "../lib/pb";
-import { useLiveList, useNow } from "../lib/realtime";
+import { useLiveList, useLiveRecords, useNow } from "../lib/realtime";
+import type { Site } from "../lib/sites";
 import type { Container, Host, Stack } from "../lib/types";
+import {
+  DatabaseBackupCard,
+  DatabaseBackupCell,
+  HostBackupsDialog,
+  TemporaryDatabaseCard,
+  temporaryLabel,
+} from "./DatabaseBackups";
 
 const candidateRefresh = 30000;
 
@@ -147,6 +186,44 @@ export function DatabasesPage() {
     filter: "project != ''",
     perPage: 1000,
   });
+  // the databases' backups (#53): their jobs, and a dedicated server's
+  // stack's dump job; the runs of two days and more; the restore tests
+  const now = useNow(30_000);
+  const jobs = useLiveList<BackupJob>("backup_jobs", {
+    filter: "origin = 'database' || origin = 'site' || source_kind = 'db_dump'",
+    sort: "name",
+    perPage: 500,
+  });
+  const runs = useLiveRecords<BackupRun>("backup_runs", {
+    filter: pb.filter("created >= {:since}", { since: runsSinceDays(now, 2) }),
+    fields: runFields,
+  });
+  const checks = useLiveList<BackupCheck>("backup_checks", {
+    filter: restoreTestsFilter,
+    fields: restoreTestFields,
+    sort: "-created",
+    perPage: 500,
+  });
+  const tests = checks.items.filter((check) => check.kind === "restore_test");
+  const sites = useLiveList<Site>("sites", {
+    fields: "id,collectionId,collectionName,name",
+    perPage: 500,
+  });
+  const targets = useLiveList<BackupTarget>("backup_targets", { sort: "name" });
+  const settings = useLiveList<CheckSettingsRecord>("settings", {
+    fields: "id,collectionId,collectionName,restore_test_schedule",
+    perPage: 1,
+  });
+  const testSchedule = settings.items[0]?.restore_test_schedule;
+  // whose a temporary copy of a restore is: operators read the restores
+  const restores = useLiveList<BackupRestore>("backup_restores", {
+    filter: "mode = 'database'",
+    fields: "id,collectionId,collectionName,mode,database_name,status",
+    sort: "-created",
+    perPage: 200,
+    enabled: canAct,
+  });
+  const [hostDialog, setHostDialog] = useState<string | null>(null);
 
   // the inventory changes when a stack starts or stops; the list follows it
   const candidates = useCandidates(`${containers.items.length}/${servers.items.length}`);
@@ -173,6 +250,8 @@ export function DatabasesPage() {
     : [];
   const database =
     serverDatabases.find((item) => item.id === selectedDb) ?? serverDatabases[0] ?? null;
+  // a dedicated server is backed up by its stack's dump job (#53 D1)
+  const stackJob = current?.kind === "dedicated" ? stackJobOf(current, jobs.items) : null;
 
   // operators refresh the numbers of what they look at; the panel asks at most once a minute
   const currentId = current?.id;
@@ -184,10 +263,14 @@ export function DatabasesPage() {
 
   const shared = servers.items.filter((server) => server.kind === "shared");
   const totalSize = servers.items.reduce((sum, server) => sum + (server.size_bytes || 0), 0);
-  const largest = [...databases.items].sort((a, b) => b.size_bytes - a.size_bytes)[0];
-  const onShared = databases.items.filter((item) =>
+  // a restore's or a restore test's copy counts in no figure (#53)
+  const permanent = databases.items.filter((item) => !isTemporary(item));
+  const largest = [...permanent].sort((a, b) => b.size_bytes - a.size_bytes)[0];
+  const onShared = permanent.filter((item) =>
     shared.some((server) => server.id === item.server),
   ).length;
+  const kpi = backupKpi(databases.items, servers.items, jobs.items, now, runs.items);
+  const jobOfDatabase = (item: Database) => jobOf(item, jobs.items);
 
   return (
     <>
@@ -251,7 +334,7 @@ export function DatabasesPage() {
         />
         <Kpi
           label={t("db.kpiDatabases")}
-          value={databases.items.length}
+          value={permanent.length}
           note={t("db.kpiDatabasesNote", { count: onShared })}
         />
         <Kpi
@@ -263,7 +346,7 @@ export function DatabasesPage() {
               : t("db.kpiDataNote")
           }
         />
-        <Kpi label={t("db.kpiBackups")} value="–" note={t("db.kpiBackupsNote")} />
+        <BackupKpiTile kpi={kpi} />
       </div>
 
       <h2 className="section-title">{t("db.servers")}</h2>
@@ -274,11 +357,24 @@ export function DatabasesPage() {
       ) : (
         <div className="db-servers">
           {servers.items.map((server) => {
-            const count = databases.items.filter((item) => item.server === server.id).length;
+            const count = permanent.filter((item) => item.server === server.id).length;
             const container = containerOf(server);
             const move = moveTarget(server, servers.items);
             const moving = runningMove(server, moves.items);
             const pressed = current?.id === server.id && !candidate;
+            const tone = serverTone(server, container);
+            // a running shared server says when its databases are backed up (#53)
+            const hint =
+              server.kind === "shared" && tone === "ok"
+                ? hostHint(
+                    permanent
+                      .filter((item) => item.server === server.id)
+                      .map(jobOfDatabase)
+                      .filter((job): job is BackupJob => job !== null),
+                    t,
+                    zoneOffset(new Date(now)),
+                  )
+                : null;
             return (
               <button
                 key={server.id}
@@ -316,7 +412,7 @@ export function DatabasesPage() {
                   errAt={95}
                 />
                 <span
-                  className={`db-server-hint small${move && !moving ? " warn-text" : " muted"}`}
+                  className={`db-server-hint small${(move && !moving) || hint?.warn ? " warn-text" : " muted"}`}
                 >
                   {moving
                     ? t("db.movingHint", { name: moving.target_name })
@@ -324,7 +420,9 @@ export function DatabasesPage() {
                       ? t("db.canMove", { name: move })
                       : (server.extensions ?? []).length > 0
                         ? t("db.keepDedicated")
-                        : t(`db.serverState.${serverTone(server, container)}`)}
+                        : hint
+                          ? hint.text
+                          : t(`db.serverState.${tone}`)}
                 </span>
               </button>
             );
@@ -373,7 +471,22 @@ export function DatabasesPage() {
                 databases={serverDatabases}
                 selected={database}
                 stacks={stacks.items}
+                sites={sites.items}
                 onSelect={setSelectedDb}
+                jobOf={(item) =>
+                  current.kind === "dedicated"
+                    ? stackJob
+                    : isTemporary(item)
+                      ? null
+                      : jobOfDatabase(item)
+                }
+                via={current.kind === "dedicated"}
+                runs={runs.items}
+                checks={tests}
+                temporary={(item) =>
+                  temporaryLabel(item, { tests, restores: canAct ? restores.items : null }, now, t)
+                }
+                now={now}
               />
               {isAdmin && <DumpsCard server={current} />}
             </div>
@@ -382,6 +495,7 @@ export function DatabasesPage() {
                 <ConnectionCard
                   server={current}
                   database={database}
+                  temporary={isTemporary(database)}
                   user={
                     users.items.find(
                       (item) =>
@@ -411,10 +525,35 @@ export function DatabasesPage() {
                   isAdmin={isAdmin}
                 />
               )}
+              {database && isTemporary(database) && (
+                <TemporaryDatabaseCard database={database} canAct={canAct} />
+              )}
+              {database && !isTemporary(database) && (
+                <DatabaseBackupCard
+                  database={database}
+                  dedicated={current.kind === "dedicated"}
+                  job={current.kind === "dedicated" ? stackJob : jobOfDatabase(database)}
+                  runs={runs.items}
+                  checks={tests}
+                  targets={targets.items}
+                  hosts={hosts.items}
+                  stacks={stacks.items}
+                  jobs={jobs.items}
+                  testSchedule={testSchedule}
+                  now={now}
+                  canAct={canAct}
+                  isAdmin={isAdmin}
+                />
+              )}
               <ServerCard
                 server={current}
                 hostName={hostName(current.host)}
-                databases={serverDatabases.length}
+                databases={serverDatabases.filter((item) => !isTemporary(item)).length}
+                onBackupSettings={
+                  isAdmin && current.kind === "shared"
+                    ? () => setHostDialog(current.host)
+                    : undefined
+                }
                 targets={current.kind === "dedicated" ? moveTargets(current, servers.items) : []}
                 moves={moves.items.filter(
                   (move) =>
@@ -428,7 +567,48 @@ export function DatabasesPage() {
           </div>
         )
       )}
+      {hostDialog && hosts.items.some((host) => host.id === hostDialog) && (
+        <HostBackupsDialog
+          key={hostDialog}
+          host={hosts.items.find((host) => host.id === hostDialog)!}
+          jobs={jobs.items.filter((job) => automaticJob(job))}
+          targets={targets.items}
+          hosts={hosts.items}
+          onClose={() => setHostDialog(null)}
+        />
+      )}
     </>
+  );
+}
+
+/** The tile of the databases' backups (#53): of the ready databases of
+ * shared servers, those backed up within a day; its word and icon say how
+ * that stands, the colour only repeats them. */
+function BackupKpiTile({ kpi }: { kpi: BackupKpi }) {
+  const { t } = useTranslation();
+  let tone: "ok" | "warn" | undefined;
+  let icon: ReactNode = null;
+  if (kpi.tone === "ok") {
+    tone = "ok";
+    icon = <CheckCircle2 size={24} aria-hidden="true" />;
+  } else if (kpi.tone === "warn") {
+    tone = "warn";
+    icon = <AlertTriangle size={24} aria-hidden="true" />;
+  }
+  return (
+    <Kpi
+      label={t("db.kpiBackups")}
+      value={kpi.total === 0 ? "–" : `${kpi.done} / ${kpi.total}`}
+      tone={tone}
+      icon={icon}
+      note={
+        kpi.total === 0
+          ? t("db.kpiBackupsNone")
+          : kpi.noTarget > 0
+            ? t("db.kpiBackupsNoTarget", { count: kpi.noTarget })
+            : t("db.kpiBackupsNote")
+      }
+    />
   );
 }
 
@@ -660,16 +840,35 @@ function DatabasesCard({
   databases,
   selected,
   stacks,
+  sites = [],
   onSelect,
+  jobOf = () => null,
+  via = false,
+  runs = [],
+  checks = [],
+  temporary = () => "",
+  now = Date.now(),
 }: {
   server: DbServer;
   databases: Database[];
   selected: Database | null;
   stacks: Stack[];
+  /** the PHP sites, for a site's database (#53) */
+  sites?: Pick<Site, "id" | "name">[];
   onSelect: (id: string) => void;
+  /** the job a database's Backup cell shows */
+  jobOf?: (database: Database) => BackupJob | null;
+  /** the job is the stack's of a dedicated server */
+  via?: boolean;
+  runs?: BackupRun[];
+  checks?: BackupCheck[];
+  /** a temporary database's line in the App column */
+  temporary?: (database: Database) => string;
+  now?: number;
 }) {
   const { t } = useTranslation();
   const stackName = (id: string) => stacks.find((stack) => stack.id === id)?.name;
+  const siteName = (id: string) => sites.find((site) => site.id === id)?.name;
 
   return (
     <Card
@@ -697,6 +896,8 @@ function DatabasesCard({
           <tbody>
             {databases.map((database) => {
               const app = database.stack ? stackName(database.stack) : undefined;
+              const site = database.site ? siteName(database.site) : undefined;
+              const copy = isTemporary(database);
               return (
                 <tr key={database.id} className={selected?.id === database.id ? "selected" : ""}>
                   <td>
@@ -708,7 +909,7 @@ function DatabasesCard({
                     >
                       {database.name}
                     </button>
-                    {database.status !== "ready" && (
+                    {database.status !== "ready" && !(copy && database.status === "dropping") && (
                       <>
                         {" "}
                         <StatusPill tone={databaseTone(database.status)}>
@@ -718,10 +919,14 @@ function DatabasesCard({
                     )}
                   </td>
                   <td className="muted">
-                    {app ? (
+                    {copy ? (
+                      <span className="db-temporary">{temporary(database)}</span>
+                    ) : app ? (
                       <Link to={`/stacks/${database.stack}`}>
                         {t("db.stackApp", { name: app })}
                       </Link>
+                    ) : site ? (
+                      <Link to={`/sites/${database.site}`}>{t("db.siteApp", { name: site })}</Link>
                     ) : (
                       "–"
                     )}
@@ -730,7 +935,19 @@ function DatabasesCard({
                     {database.size_bytes ? formatBytes(database.size_bytes) : "–"}
                   </td>
                   <td className="num">{formatNumber(database.connections || 0)}</td>
-                  <td className="muted">–</td>
+                  <td>
+                    {copy ? (
+                      <span className="faint">—</span>
+                    ) : (
+                      <DatabaseBackupCell
+                        job={jobOf(database)}
+                        runs={runs}
+                        checks={checks}
+                        now={now}
+                        via={via}
+                      />
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -751,9 +968,12 @@ function ConnectionCard({
   stacks,
   canAct,
   isAdmin,
+  temporary = false,
 }: {
   server: DbServer;
   database: Database;
+  /** a restore's or a restore test's copy (#53): where it is, no actions */
+  temporary?: boolean;
   user: DbUser | undefined;
   /** Shared servers this database could move to. */
   targets: DbServer[];
@@ -810,6 +1030,23 @@ function ConnectionCard({
       setBusy("");
     }
   };
+
+  if (temporary) {
+    // the panel drops it by itself: its user and password are another's
+    return (
+      <Card title={t("db.connection", { name: database.name })}>
+        {database.last_error && <Banner tone="err">{database.last_error}</Banner>}
+        <dl className="facts">
+          <dt>{t("db.hostLabel")}</dt>
+          <dd className="mono">
+            {server.name}:{server.port}
+          </dd>
+          <dt>{t("db.database")}</dt>
+          <dd className="mono">{database.name}</dd>
+        </dl>
+      </Card>
+    );
+  }
 
   return (
     <Card title={t("db.connection", { name: database.name })}>
@@ -1109,10 +1346,13 @@ function ServerCard({
   moves,
   stacks,
   canAct,
+  onBackupSettings,
 }: {
   server: DbServer;
   hostName: string;
   databases: number;
+  /** opens the server's defaults of its databases' backups (#53): admins */
+  onBackupSettings?: () => void;
   /** Shared servers a dedicated server's databases could move to. */
   targets: DbServer[];
   /** Moves out of a dedicated server, or into a shared one. */
@@ -1222,6 +1462,13 @@ function ServerCard({
       )}
       {latest?.status === "moved" && latest.error && <Banner tone="warn">{latest.error}</Banner>}
       <p className="muted">{text}</p>
+      {onBackupSettings && (
+        <div className="button-row">
+          <Button size="small" onClick={onBackupSettings}>
+            {t("db.backupSettings")}
+          </Button>
+        </div>
+      )}
       {server.kind === "dedicated" && move && !moving && (
         <>
           <p className="faint small">{t("db.moveKeep")}</p>

@@ -3294,6 +3294,34 @@ td .row-actions {
   color: var(--err-text);
 }
 
+/* a database's Backup cell (#53): its pill links to the job; a failed restore
+ * test says so in a small red line after it */
+.db-backup-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.db-backup-link {
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.db-backup-test {
+  font-size: 12px;
+  color: var(--err-text);
+}
+
+.db-backup-cell .cell-sub {
+  flex-basis: 100%;
+}
+
+/* a temporary database's line in the App column */
+.db-temporary {
+  font-size: 12.5px;
+}
+
 /* whether a setting of a database's job follows its server or is its own */
 .follow-switch {
   display: flex;

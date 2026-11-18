@@ -132,7 +132,11 @@ export function Layout() {
 
   const hosts = useLiveList<Host>("hosts", { sort: "name" });
   const containers = useLiveList<Container>("containers", { perPage: 1 });
-  const databases = useLiveList<DatabaseRecord>("databases", { perPage: 1 });
+  // a restore's or a restore test's temporary copy is no database of its own (#53)
+  const databases = useLiveList<DatabaseRecord>("databases", {
+    filter: "temporary_until = ''",
+    perPage: 1,
+  });
   const sites = useLiveList<Site>("sites", { perPage: 1 });
   const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
   // a failing certificate or DNS provider marks Domains & TLS (#27)

@@ -170,6 +170,12 @@ export function cellTime(value: string, now: number, timeZone?: string): string 
 
 const day = 24 * 3600 * 1000;
 
+/** The moment from which the runs of the last `days` days are loaded, at
+ * midnight UTC, so that it stays the same all day. */
+export function runsSinceDays(now: number, days: number): string {
+  return `${new Date(now - days * day).toISOString().slice(0, 10)} 00:00:00.000Z`;
+}
+
 /** Whether a job backed up within the last 24 hours: its last success, or a
  * run that succeeded. */
 export function backedUpWithin(
