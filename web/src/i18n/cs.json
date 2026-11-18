@@ -2526,6 +2526,10 @@
       "group_few": "Databáze na {{server}} · {{count}} úlohy",
       "group_many": "Databáze na {{server}} · {{count}} úlohy",
       "group_other": "Databáze na {{server}} · {{count}} úloh",
+      "groupOnHost_one": "Databáze na {{server}} ({{host}}) · {{count}} úloha",
+      "groupOnHost_few": "Databáze na {{server}} ({{host}}) · {{count}} úlohy",
+      "groupOnHost_many": "Databáze na {{server}} ({{host}}) · {{count}} úlohy",
+      "groupOnHost_other": "Databáze na {{server}} ({{host}}) · {{count}} úloh",
       "groupState": "{{ok}} z {{total}} zálohováno za 24 h",
       "groupToggle": "Ukázat každou databázi",
       "restoreTest": "Test obnovy: {{state}}"

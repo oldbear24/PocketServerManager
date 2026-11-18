@@ -1590,6 +1590,51 @@ describe("the jobs of databases and sites (#53)", () => {
     expect(screen.queryByText("db-main-shop")).not.toBeInTheDocument();
   });
 
+  it("keep the servers of two hosts apart when they have the same name, naming their hosts", () => {
+    // names are unique on a host only: nas has a db-main too
+    const wiki = job({
+      ...shop,
+      id: "d5",
+      name: "db-main-wiki",
+      host: "h2",
+      source: "wiki",
+      database: "db5",
+      targets: ["t2"],
+      last_success_at: "2026-11-09 00:40:00.000Z",
+    });
+    showPage("admin", { backup_jobs: [...databaseJobs, wiki], backup_runs: dbRuns });
+
+    const main = within(
+      screen.getByText("Databases on db-main (pve-01) · 3 jobs").closest("tr") as HTMLElement,
+    );
+    expect(main.getByText("1 of 2 backed up in 24 h")).toBeInTheDocument();
+    expect(main.getByText("Error · 01:30")).toBeInTheDocument();
+    expect(main.getByText("pve-01")).toBeInTheDocument();
+    const other = within(
+      screen.getByText("Databases on db-main (nas) · 1 job").closest("tr") as HTMLElement,
+    );
+    expect(other.getByText("1 of 1 backed up in 24 h")).toBeInTheDocument();
+    expect(other.getByText("nas")).toBeInTheDocument();
+    expect(other.getByRole("img")).toHaveAccessibleName("Last 14 days: no run");
+    // a name of its own needs no host
+    expect(screen.getByText("Databases on pg-two · 1 job")).toBeInTheDocument();
+
+    // each group opens its own server's jobs
+    fireEvent.click(other.getByRole("button", { name: "Show each database" }));
+    expect(
+      row("db-main-wiki").getByText("pg_dump · db-main/wiki · one job per database"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("db-main-shop")).not.toBeInTheDocument();
+    expect(main.getByRole("button", { name: "Show each database" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    expect(
+      i18n.getFixedT("cs")("backups.job.groupOnHost", { server: "db-main", host: "nas", count: 3 }),
+    ).toBe("Databáze na db-main (nas) · 3 úlohy");
+  });
+
   it("open the group of the job picked", () => {
     signInAs("admin");
     live.lists = {};
