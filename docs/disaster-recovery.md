@@ -111,7 +111,7 @@ docker restart pocketcloud-agent
 
 ## Rehearsing without an outage
 
-Restore onto a machine that the agents cannot reach at their address, such as one on an isolated network, and go through steps 3 to 8 without step 2. Never let a rehearsal panel answer at the agents' address: two panels with one CA would both command the servers, and the agents would go to whichever answered. Remove the rehearsal machine and its copies afterwards. Rehearse twice a year, and after you change the panel's job, its targets or the address.
+Restore onto a machine that the agents cannot reach at their address, such as one on an isolated network, and go through steps 3 to 8 without step 2. Never let a rehearsal panel answer at the agents' address: two panels with one CA would both command the servers, and the agents would go to whichever answered. Of step 8, what needs no server passes there: the CA pin is the kit's, `panel audit verify` (step 5) says the log is intact, Audit & activity › Security shows “Panel restored”, and Settings › Recovery kit shows the block “Restored from a backup”. What needs the servers cannot: “Servers back” stays at 0 of N, the `panel_restored` alert stays open, and no job runs, as its server is offline to this panel. That is a rehearsal going right; `recover` (step 4) has already shown that the backup's CA opens with the kit's key, the key that seals the targets' secrets too. Remove the rehearsal machine and its copies afterwards. Rehearse twice a year, and after you change the panel's job, its targets or the address.
 
 ## Troubleshooting
 
