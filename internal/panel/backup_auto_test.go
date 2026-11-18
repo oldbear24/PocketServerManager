@@ -571,8 +571,9 @@ func TestOrphanedLabelJobsLeaveDatabaseJobsAlone(t *testing.T) {
 }
 
 // TestADeployedPHPSiteGetsAFilesJob (#53): a PHP site gets the job
-// <site>-files at its first deployment, not before; a static site gets
-// none; a site removed leaves its job disabled.
+// <site>-files at its first deployment, not before, whose source is the
+// directory it backs up, <site>/shared, or <site> once the site is classic;
+// a static site gets none; a site removed leaves its job disabled.
 func TestADeployedPHPSiteGetsAFilesJob(t *testing.T) {
 	f := newJobFixture(t)
 	wp := siteRecord(t, f.app, f.host, "wp", schema.SitePHPApp)
@@ -594,7 +595,7 @@ func TestADeployedPHPSiteGetsAFilesJob(t *testing.T) {
 	}
 	f.eventually("the site's job", func() bool { return len(siteJobs(wp)) == 1 })
 	job := siteJobs(wp)[0]
-	if job.GetString("name") != "wp-files" || job.GetString("source_kind") != schema.SourceSite || job.GetString("source") != "wp" ||
+	if job.GetString("name") != "wp-files" || job.GetString("source_kind") != schema.SourceSite || job.GetString("source") != "wp/shared" ||
 		job.GetString("origin") != schema.JobSite || job.GetString("host") != f.host.Id || job.GetString("problem") != noTarget ||
 		job.GetString("schedule") != backup.AutoSchedule(f.host.Id) || job.GetString("database") != "" {
 		t.Errorf("the site's job: %v", job.FieldsData())
@@ -602,6 +603,18 @@ func TestADeployedPHPSiteGetsAFilesJob(t *testing.T) {
 	f.settle()
 	if len(siteJobs(static)) != 0 {
 		t.Error("a static site got a job")
+	}
+	// a classic site backs up its whole directory, and back
+	for _, mode := range []struct{ mode, source string }{{schema.PHPClassic, "wp"}, {schema.PHPReleases, "wp/shared"}} {
+		settings, err := f.app.FindFirstRecordByData(schema.SitePHP, "site", wp.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings.Set("mode", mode.mode)
+		if err := f.app.Save(settings); err != nil {
+			t.Fatal(err)
+		}
+		f.eventually("the job's source "+mode.source, func() bool { return f.fresh(job).GetString("source") == mode.source })
 	}
 
 	if status, out := f.send(http.MethodDelete, "/api/pc/backup-jobs/"+job.Id, f.admin, nil); status != http.StatusConflict ||

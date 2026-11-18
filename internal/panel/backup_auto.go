@@ -90,6 +90,15 @@ func (p *Panel) registerAutoJobs() {
 		}
 		return e.Next()
 	})
+	// a site that turns classic, or back, backs up another directory, which
+	// its job's source says
+	p.App.OnRecordAfterUpdateSuccess(schema.SitePHP).BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetString("mode") != e.Record.Original().GetString("mode") {
+			id := e.Record.GetString("site")
+			p.later.after(0, func() { p.logAutoJob("site", id, p.ensureSiteJob(id)) })
+		}
+		return e.Next()
+	})
 	// a cascade deletes with app.Delete too, so a server's or a host's
 	// databases and sites come here as well
 	for _, collection := range []string{schema.Databases, schema.Sites} {
@@ -292,25 +301,47 @@ func (p *Panel) refreshDatabaseJob(job, server *core.Record) error {
 	})
 }
 
+// siteJobSource is the directory of the sites' volume that a PHP site's
+// job backs up, which its source says: the site's shared/, as <site>/shared,
+// or a classic site's whole directory, as <site>.
+func siteJobSource(site, settings *core.Record) string {
+	if settings.GetString("mode") == schema.PHPClassic {
+		return site.GetString("name")
+	}
+	return site.GetString("name") + "/shared"
+}
+
 // ensureSiteJob makes a PHP site's job <site>-files once the site was
-// deployed: before, it has no shared/ to back up.
+// deployed: before, it has no shared/ to back up. A job it has follows the
+// site's mode in its source.
 func (p *Panel) ensureSiteJob(id string) error {
 	site, err := p.App.FindRecordById(schema.Sites, id)
 	if err != nil || site.GetString("active_deployment") == "" {
 		return nil //nolint:nilerr // nothing to make
 	}
-	if _, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id); err != nil {
+	settings, err := p.App.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+	if err != nil {
 		return nil //nolint:nilerr // a static site keeps nothing of its own
 	}
-	if _, err := p.App.FindFirstRecordByData(schema.BackupJobs, "site", site.Id); err == nil {
-		return nil
+	source := siteJobSource(site, settings)
+	if job, err := p.App.FindFirstRecordByData(schema.BackupJobs, "site", site.Id); err == nil {
+		if job.GetString("source") == source {
+			return nil
+		}
+		return p.update(audit.WithActor(context.Background(), autoJobActor), job, func(fresh *core.Record) error {
+			if fresh.GetString("source") == source {
+				return errUnchanged
+			}
+			fresh.Set("source", source)
+			return nil
+		})
 	}
 	host, err := p.App.FindRecordById(schema.Hosts, site.GetString("host"))
 	if err != nil {
 		return err
 	}
 	fields := map[string]any{
-		"host": host.Id, "source_kind": schema.SourceSite, "source": site.GetString("name"), "site": site.Id,
+		"host": host.Id, "source_kind": schema.SourceSite, "source": source, "site": site.Id,
 		"origin": schema.JobSite,
 	}
 	return p.createAutoJob(site.GetString("name")+siteJobSuffix, host, fields, "site", site.Id)
@@ -633,9 +664,8 @@ func (p *Panel) siteFilesOf(job, host *core.Record, payload *agentv1.BackupRun) 
 			add(path.Join(dir, "releases", "*", exclude))
 		}
 	}
-	payload.SiteDir = name + "/shared"
+	payload.SiteDir = siteJobSource(site, settings)
 	if classic {
-		payload.SiteDir = name
 		add(path.Join(dir, ".build"))
 	}
 	payload.Excludes = excludes
