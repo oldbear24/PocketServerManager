@@ -20,6 +20,7 @@ import (
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/gateway"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
@@ -1517,5 +1518,312 @@ func TestOriginalRestoreOfThePanelIsRefused(t *testing.T) {
 	}
 	if preview := f.received(stream).GetBackupRestore(); preview.GetJobTag() != "job:"+job.Id || len(preview.GetOriginal()) != 0 {
 		t.Errorf("its preview: %v", preview)
+	}
+}
+
+// TestADatabaseRunDumpsOnlyItsDatabase (#53): the run of a database's job
+// names its server's container, which dumps that one database with the
+// server's own client and the password of its own environment: the run's
+// environment stays empty, its stored payload has no password, and its
+// snapshot is tagged with the database and its server. An agent that cannot
+// back up single databases is refused; so is a database that was dropped,
+// or that is no longer on a shared server, which fails the run with the
+// class source.
+func TestADatabaseRunDumpsOnlyItsDatabase(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	maria := f.sharedServer(f.host, "maria", schema.EngineMariaDB)
+	shop := f.jobOfDatabase(f.database(main, "shop", dbReady))
+	blog := f.jobOfDatabase(f.database(maria, "blog", dbReady))
+	build := func(job *core.Record) (*agentv1.BackupRun, error) {
+		t.Helper()
+		return f.p.backupRun(f.fresh(job), f.target, f.host, f.run(job))
+	}
+
+	run, err := build(shop)
+	want, _ := databases.DumpCommand(databases.Postgres, "postgres", "shop")
+	if err != nil || run.GetStdinContainer() != "pcdb-main-db-1" || run.GetStdinFileName() != "shop.pgdump" ||
+		!slices.Equal(run.GetStdinCommand(), want) || !slices.Equal(run.GetExtraTags(), []string{"db:shop", "dbserver:main"}) ||
+		len(run.GetEnv()) != 0 || strings.Join(run.GetTags(), ",") != "pocketcloud,job:"+shop.Id || len(run.GetVolumes()) != 0 ||
+		len(run.GetPaths()) != 0 || run.GetSiteDir() != "" || run.GetRetention().GetDaily() != 7 || run.GetRetention().GetMonthly() != 6 {
+		t.Errorf("a PostgreSQL database's run: %v %v", run, err)
+	}
+	if !strings.Contains(run.GetStdinCommand()[2], "pg_dump --format=custom --compress=0") || slices.Contains(run.GetStdinCommand(), "--all-databases") {
+		t.Errorf("the dump: %q", run.GetStdinCommand())
+	}
+	stored, err := commands.PayloadJSON(&agentv1.Command{Payload: &agentv1.Command_BackupRun{BackupRun: run}})
+	if err != nil || strings.Contains(string(stored), "secret") || strings.Contains(string(stored), "--all-databases") {
+		t.Errorf("the stored payload: %s %v", stored, err)
+	}
+	run, err = build(blog)
+	want, _ = databases.DumpCommand(databases.MariaDB, "root", "blog")
+	if err != nil || run.GetStdinContainer() != "pcdb-maria-db-1" || run.GetStdinFileName() != "blog.sql" || !slices.Equal(run.GetStdinCommand(), want) ||
+		!slices.Equal(run.GetExtraTags(), []string{"db:blog", "dbserver:maria"}) || len(run.GetEnv()) != 0 {
+		t.Errorf("a MariaDB database's run: %v %v", run, err)
+	}
+
+	// an agent too old for it
+	old := testutil.NewHost(t, f.app, "node-old")
+	f.carry(old, "backup.run")
+	if _, err := f.p.backupRun(f.fresh(shop), f.target, old, f.run(shop)); err == nil ||
+		err.Error() != "the agent of node-old cannot back up databases one by one yet: update it" || refusalClass(err) != "" {
+		t.Errorf("an old agent: %v", err)
+	}
+	f.carry(f.host, "backup.run")
+	f.agent(f.host)
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+shop.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
+		t.Fatalf("give it a target: %d %v", status, out)
+	}
+	if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs/"+shop.Id+"/run", f.admin, nil); status != http.StatusConflict ||
+		out["message"] != "The agent of node-1 cannot back up databases one by one yet: update it." {
+		t.Errorf("run it by hand on an old agent: %d %v", status, out)
+	}
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+
+	// a database no longer on a shared server, and one that was dropped
+	dedicated := f.save(schema.DBServers, map[string]any{"host": f.host.Id, "name": "umami-db", "engine": schema.EnginePostgres,
+		"kind": schema.DBServerDedicated, "container_ref": "umami-db-1", "status": dbReady})
+	umami := f.save(schema.Databases, map[string]any{"server": dedicated.Id, "name": "umami", "owner_kind": "stack", "status": dbReady})
+	moved := f.job("umami", map[string]any{"source_kind": schema.SourceDatabase, "source": "umami", "database": umami.Id, "origin": schema.JobDatabase})
+	run2, err := f.p.startRun(context.Background(), moved, f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+	if err != nil || run2.GetString("status") != schema.RunFailed || run2.GetString("failure") != backup.FailureSource ||
+		run2.GetString("error") != "The database umami is no longer on a shared server." || run2.GetString("command") != "" {
+		t.Errorf("a database of a dedicated server: %v %v", run2, err)
+	}
+	gone := f.job("gone", map[string]any{"source_kind": schema.SourceDatabase, "source": "gone", "origin": schema.JobDatabase})
+	if _, err := build(gone); err == nil || err.Error() != "the database was dropped" || refusalClass(err) != backup.FailureSource {
+		t.Errorf("a dropped database: %v", err)
+	}
+}
+
+// TestARetryOfARefusedDatabaseRun (#53): a retry whose command cannot be
+// made for what it backs up fails with the class source, as a first run
+// does.
+func TestARetryOfARefusedDatabaseRun(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	dedicated := f.save(schema.DBServers, map[string]any{"host": f.host.Id, "name": "umami-db", "engine": schema.EnginePostgres,
+		"kind": schema.DBServerDedicated, "container_ref": "umami-db-1", "status": dbReady})
+	umami := f.save(schema.Databases, map[string]any{"server": dedicated.Id, "name": "umami", "owner_kind": "stack", "status": dbReady})
+	job := f.job("umami", map[string]any{"source_kind": schema.SourceDatabase, "source": "umami", "database": umami.Id, "origin": schema.JobDatabase})
+	failed := f.failRun(job, "Fatal: boom", map[string]any{"failure": backup.FailureRestic})
+	retry, err := f.p.claimRetry(context.Background(), failed, job, f.target, f.host, false, commands.Options{})
+	if err != nil || retry.GetString("status") != schema.RunFailed || retry.GetString("failure") != backup.FailureSource ||
+		retry.GetString("error") != "The database umami is no longer on a shared server." {
+		t.Errorf("the retry: %v %v", retry, err)
+	}
+}
+
+// TestASiteRunBacksUpItsSharedFiles (#53): the run of a PHP site's job backs
+// up its shared/, read-only, without what its backup_exclude leaves out,
+// tagged with the site; a classic site's backs up its whole directory but
+// its builds, without those paths in its release either. A path out of the
+// site is no exclude. An agent too old for it is refused, and so is a site
+// that was removed.
+func TestASiteRunBacksUpItsSharedFiles(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	site := siteRecord(t, f.app, f.host, "wp", schema.SitePHPApp)
+	settings, err := f.app.FindFirstRecordByData(schema.SitePHP, "site", site.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Set("backup_exclude", []string{"wp-content/cache", "wp-content/upgrade/", "../etc", "/etc/passwd", "", "wp-content/cache"})
+	if err := f.app.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	job := f.job("wp-files", map[string]any{"source_kind": schema.SourceSite, "source": "wp", "site": site.Id, "origin": schema.JobSite})
+	build := func(host *core.Record) (*agentv1.BackupRun, error) {
+		t.Helper()
+		return f.p.backupRun(f.fresh(job), f.target, host, f.run(job))
+	}
+	run, err := build(f.host)
+	if err != nil || run.GetSiteDir() != "wp/shared" || !slices.Equal(run.GetExcludes(), []string{"/srv/sites/wp/shared/wp-content/cache", "/srv/sites/wp/shared/wp-content/upgrade"}) ||
+		!slices.Equal(run.GetExtraTags(), []string{"site:wp"}) || len(run.GetVolumes()) != 0 || len(run.GetPaths()) != 0 || len(run.GetStdinCommand()) != 0 ||
+		run.GetStdinContainer() != "" {
+		t.Errorf("a site's run: %v %v", run, err)
+	}
+
+	settings.Set("mode", schema.PHPClassic)
+	if err := f.app.Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	run, err = build(f.host)
+	if err != nil || run.GetSiteDir() != "wp" || !slices.Equal(run.GetExcludes(), []string{
+		"/srv/sites/wp/shared/wp-content/cache", "/srv/sites/wp/releases/*/wp-content/cache",
+		"/srv/sites/wp/shared/wp-content/upgrade", "/srv/sites/wp/releases/*/wp-content/upgrade", "/srv/sites/wp/.build",
+	}) {
+		t.Errorf("a classic site's run: %v %v", run, err)
+	}
+
+	old := testutil.NewHost(t, f.app, "node-old")
+	if _, err := build(old); err == nil || err.Error() != "the agent of node-old cannot back up PHP sites' files yet: update it" {
+		t.Errorf("an old agent: %v", err)
+	}
+	// a run queued before the site was removed is not delivered
+	queued, err := f.p.startRun(context.Background(), f.fresh(job), f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+	if err != nil || queued.GetString("command") == "" {
+		t.Fatalf("the run: %v %v", queued, err)
+	}
+	if err := f.app.Delete(site); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := build(f.host); err == nil || err.Error() != "the site was removed" || refusalClass(err) != backup.FailureSource {
+		t.Errorf("a removed site: %v", err)
+	}
+	command, err := f.app.FindRecordById(schema.Commands, queued.GetString("command"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.deliver(command); err == nil || err.Error() != "the site was removed" {
+		t.Errorf("delivered after the site went: %v", err)
+	}
+	f.settle()
+}
+
+// TestADatabaseRunIsNotDeliveredOnceItsDatabaseMovedOrWent (#53): a run
+// queued before its database moved to another server, or before it was
+// dropped, gets no secrets of its target on its first delivery, and ends
+// cancelled, without an alert; sent again once its agent had it, it goes.
+func TestADatabaseRunIsNotDeliveredOnceItsDatabaseMovedOrWent(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	next := f.sharedServer(f.host, "next", schema.EnginePostgres)
+	shop := f.database(main, "shop", dbReady)
+	job := f.jobOfDatabase(shop)
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
+		t.Fatalf("give it a target: %d %v", status, out)
+	}
+	queue := func() (*core.Record, *core.Record) {
+		t.Helper()
+		run, err := f.p.startRun(context.Background(), f.fresh(job), f.target, f.host, schema.RunManual, time.Time{}, commands.Options{})
+		if err != nil || run.GetString("command") == "" {
+			t.Fatalf("the run: %v %v", run, err)
+		}
+		command, err := f.app.FindRecordById(schema.Commands, run.GetString("command"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run, command
+	}
+	run, command := queue()
+	if _, err := f.deliver(command); err != nil {
+		t.Errorf("delivered before the move: %v", err)
+	}
+
+	shop.Set("server", next.Id)
+	if err := f.app.Save(shop); err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := f.deliver(command)
+	if err == nil || err.Error() != "the database moved to another server since the run was queued" || delivered.GetBackupRun().GetRepository().GetPassword() != "" {
+		t.Errorf("delivered after the move: %v", err)
+	}
+	// once its agent had it, it goes
+	command.Set("status", schema.CommandDispatched)
+	if err := f.app.Save(command); err != nil {
+		t.Fatal(err)
+	}
+	if delivered, err := f.deliver(command); err != nil || delivered.GetBackupRun().GetRepository().GetPassword() != "repo-password-b2" {
+		t.Errorf("sent again after the move: %v", err)
+	}
+	// a refused run is cancelled, and alerts nobody
+	refused := f.endRun(run, map[string]any{"status": schema.CommandFailed, "error": "failed to prepare the command: " + databaseMoved})
+	if refused.GetString("status") != schema.RunCancelled || f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id)) != nil {
+		t.Errorf("the refused run: %v", refused.FieldsData())
+	}
+
+	// a run queued before its database was dropped
+	run, command = queue()
+	if err := f.app.Delete(shop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.deliver(command); err == nil || err.Error() != "the database was dropped" {
+		t.Errorf("delivered after the drop: %v", err)
+	}
+	refused = f.endRun(run, map[string]any{"status": schema.CommandFailed, "error": "failed to prepare the command: the database was dropped"})
+	if refused.GetString("status") != schema.RunCancelled || f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id)) != nil {
+		t.Errorf("the run of a dropped database: %v", refused.FieldsData())
+	}
+	f.settle()
+}
+
+// TestADatabaseBeingDroppedSkipsItsRuns (#53): a database being made or
+// dropped has nothing to dump: its scheduled runs are skipped, saying so,
+// without an alert, and a run by hand is refused.
+func TestADatabaseBeingDroppedSkipsItsRuns(t *testing.T) {
+	f := newJobFixture(t)
+	f.carry(f.host, "backup.run", backup.CapabilityDatabase)
+	f.agent(f.host)
+	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	shop := f.database(main, "shop", dbReady)
+	job := f.jobOfDatabase(shop)
+	if status, out := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+job.Id, f.admin, map[string]any{"targets": []string{f.target.Id}, "schedule": neverDue}); status != http.StatusOK {
+		t.Fatalf("give it a target: %d %v", status, out)
+	}
+	for _, test := range []struct{ status, message string }{
+		{dbDropping, "The database shop is being dropped."}, {dbCreating, "The database shop is being created."},
+	} {
+		shop.Set("status", test.status)
+		if err := f.app.Save(shop); err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.runsOf(job))
+		f.p.startJobRuns(job, schema.RunSchedule, time.Now().UTC().Truncate(time.Minute))
+		runs := f.runsOf(job)
+		if len(runs) != before+1 || runs[len(runs)-1].GetString("status") != schema.RunSkipped || runs[len(runs)-1].GetString("error") != test.message {
+			t.Errorf("%s: %d runs, %v", test.status, len(runs), runs[len(runs)-1].FieldsData())
+		}
+		if out, _ := f.app.FindRecordsByFilter(schema.Alerts, "rule={:rule}", "", 0, 0, dbx.Params{"rule": alertBackupSkipped}); len(out) != 0 {
+			t.Errorf("%s: an alert", test.status)
+		}
+		if status, out := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/run", f.admin, nil); status != http.StatusConflict || out["message"] != test.message {
+			t.Errorf("%s: run it by hand: %d %v", test.status, status, out)
+		}
+	}
+	if found := f.eventsOf("backup.skipped"); len(found) != 2 {
+		t.Errorf("%d events", len(found))
+	}
+	f.settle()
+}
+
+// TestAJobKeepsWhenItsLastBackupSucceeded (#53): a job keeps when its newest
+// run that succeeded finished, which a later failure leaves; a run keeps
+// what it added to the repository once compressed; and what a database
+// job's run keeps hides the database's passwords, which it never carries.
+func TestAJobKeepsWhenItsLastBackupSucceeded(t *testing.T) {
+	f := newJobFixture(t)
+	main := f.sharedServer(f.host, "main", schema.EnginePostgres)
+	job := f.jobOfDatabase(f.database(main, "shop", dbReady))
+	job.Set("targets", []string{f.target.Id})
+	if err := f.app.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	ok := f.endRun(f.run(job), map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime().Add(-time.Minute),
+		"result": map[string]any{"snapshot_id": strings.Repeat("3f", 32), "bytes_added": 100, "total_bytes": 1000, "bytes_stored": 40}})
+	if ok.GetString("status") != schema.RunSucceeded || ok.GetInt("bytes_stored") != 40 {
+		t.Errorf("the run: %v", ok.FieldsData())
+	}
+	if kept := f.fresh(job); !kept.GetDateTime("last_success_at").Equal(ok.GetDateTime("finished_at")) || kept.GetString("last_status") != schema.RunSucceeded {
+		t.Errorf("the job after a success: %v", kept.FieldsData())
+	}
+	failed := f.failRun(job, "pg_dump: password authentication failed for admin-secret-of-main", map[string]any{"log": "user-secret-of-shop and admin-secret-of-main"})
+	if kept := f.fresh(job); !kept.GetDateTime("last_success_at").Equal(ok.GetDateTime("finished_at")) || kept.GetString("last_status") != schema.RunFailed {
+		t.Errorf("the job after a failure: %v", kept.FieldsData())
+	}
+	if failed.GetString("error") != "Pg_dump: password authentication failed for ***" || failed.GetString("log") != "*** and ***" {
+		t.Errorf("what the failed run keeps: %q %q", failed.GetString("error"), failed.GetString("log"))
+	}
+	// nor do the events and the alert say them
+	alert := f.openAlert(alertBackupFailed, alertKey(job.Id, f.target.Id))
+	if alert == nil || strings.Contains(alert.GetString("message"), "secret") || !strings.Contains(alert.GetString("message"), "***") {
+		t.Errorf("the alert: %v", alert)
+	}
+	for _, event := range f.eventsOf("backup.failed") {
+		if strings.Contains(event.GetString("message"), "secret") {
+			t.Errorf("an event: %s", event.GetString("message"))
+		}
 	}
 }

@@ -242,7 +242,9 @@ func seedDatabaseFixture(t *testing.T, app core.App, suffix string) databaseFixt
 	f := databaseFixture{checkFixture: seedCheckFixture(t, app, suffix)}
 	f.server = saveRecord(t, app, schema.DBServers, map[string]any{"host": f.host.Id, "name": "db-" + suffix, "engine": schema.EnginePostgres,
 		"kind": schema.DBServerShared, "container_ref": "pcdb-db-" + suffix + "-db-1", "admin_user": "postgres", "status": "ready"})
-	f.database = saveRecord(t, app, schema.Databases, map[string]any{"server": f.server.Id, "name": "shop", "owner_kind": "none", "status": "ready"})
+	// still being created, so that the panel's hook makes no job of it: the
+	// tests save the jobs themselves
+	f.database = saveRecord(t, app, schema.Databases, map[string]any{"server": f.server.Id, "name": "shop", "owner_kind": "none", "status": "creating"})
 	// a site's record as it is stored, without the checks of a new site,
 	// which want an edge on its server
 	sites, err := app.FindCollectionByNameOrId(schema.Sites)

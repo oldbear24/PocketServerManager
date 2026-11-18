@@ -219,6 +219,8 @@ type retryPlan struct {
 // whose label is gone, which the scheduler would drop. A run its agent
 // stored but had not started yet, as it waited for a free worker, when the
 // agent restarted is interrupted too, and tried again: nothing of it ran. A
+// job whose database or site went (#53) gets none either, as one whose label
+// went. A
 // lock's retry waits until restic counts the lock as stale, or follows its
 // holder while it still runs.
 func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *backup.Lock, started bool, finished time.Time) retryPlan {
@@ -237,8 +239,8 @@ func (p *Panel) planRetry(job *core.Record, attempt int, failure string, lock *b
 	case !job.GetBool("enabled"):
 		// as a disabled job's run by hand
 		return retryPlan{note: jobDisabledNote, end: schema.RetryGivenUp}
-	case labelGone(job):
-		return retryPlan{note: labelGoneMessage, end: schema.RetryGivenUp}
+	case sourceGone(job):
+		return retryPlan{note: goneMessage(job), end: schema.RetryGivenUp}
 	}
 	at := finished.UTC().Add(runBackoff[attempt-1])
 	if failure == backup.FailureLocked {
@@ -305,8 +307,8 @@ func (p *Panel) retryDueRun(run *core.Record, now time.Time) {
 	case !job.GetBool("enabled"):
 		giveUp(schema.RetryGivenUp, jobDisabledNote, true)
 		return
-	case labelGone(job):
-		giveUp(schema.RetryGivenUp, labelGoneMessage, false)
+	case sourceGone(job):
+		giveUp(schema.RetryGivenUp, goneMessage(job), false)
 		return
 	case !backsUpTo(job, target):
 		giveUp(schema.RetryGivenUp, "The target is no longer one of the job's targets.", false)
@@ -497,6 +499,7 @@ func (p *Panel) claimRetry(ctx context.Context, prev, job, target, host *core.Re
 		if payloadErr != nil {
 			run.Set("status", schema.RunFailed)
 			run.Set("error", cutText(sentence(payloadErr), 4096))
+			run.Set("failure", refusalClass(payloadErr))
 			run.Set("finished_at", types.NowDateTime())
 			return tx.Save(run)
 		}
@@ -568,8 +571,8 @@ func (p *Panel) handleRetryRun(e *core.RequestEvent) error {
 	if err != nil {
 		return e.NotFoundError("The run does not exist.", err)
 	}
-	if labelGone(job) {
-		return conflict(labelGoneMessage)
+	if sourceGone(job) {
+		return conflict(goneMessage(job))
 	}
 	target, err := e.App.FindRecordById(schema.BackupTargets, run.GetString("target"))
 	if err != nil || !slices.Contains(job.GetStringSlice("targets"), target.Id) {
@@ -651,8 +654,8 @@ func (p *Panel) planRetryAt(run *core.Record, at time.Time) (bool, error) {
 			return err
 		}
 		switch {
-		case labelGone(job):
-			return errors.New(labelGoneMessage)
+		case sourceGone(job):
+			return errors.New(goneMessage(job))
 		case !job.GetBool("enabled"):
 			return fmt.Errorf("the job is disabled, so PocketCloud plans no retry of it: try again once restic counts the lock as stale, at %s UTC", at.UTC().Format("15:04"))
 		}
