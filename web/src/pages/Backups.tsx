@@ -129,9 +129,11 @@ export function BackupsPage() {
   const [dialog, setDialog] = useState<string | null>(null);
   const edited = jobs.items.find((job) => job.id === dialog);
   // the panel's own backup (#32): its job, set up or changed at ?setup=panel,
-  // where its alert links, and whether its recovery kit's reminder is open
+  // where its alert links, and whether its recovery kit's reminder is open;
+  // the dialog waits for the jobs, as it sets the job up only while there
+  // is none and changes it otherwise
   const panelJob = jobs.items.find((item) => item.source_kind === "panel") ?? null;
-  const settingUp = isAdmin && params.get("setup") === "panel";
+  const settingUp = isAdmin && params.get("setup") === "panel" && !jobs.loading && !jobs.error;
   const kitAlerts = useLiveList<Alert>("alerts", {
     filter: pb.filter("rule = {:rule} && status != 'resolved'", { rule: "recovery_kit" }),
     perPage: 1,
