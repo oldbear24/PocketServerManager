@@ -759,15 +759,31 @@ func (p *Panel) deployEnvironmentWith(stack *core.Record, env string) (map[strin
 	return stacks.Environment(plain, secrets)
 }
 
-// ownerOf is the user of a database on a server: the one named after it, as the
-// panel creates them, or the one that owns it, as after a stack's own server
-// moved in with the application's user.
+// errNoOwner says no user of a server holds a database.
+var errNoOwner = errors.New("no user holds the database")
+
+// ownerOf is the user of a database on a server: a user whose databases hold
+// it, the one named after it first, as the panel names the users it creates;
+// an application's user that moved in with its own server holds its
+// databases under another name. A user that is only named like the database
+// is another application's, as when a move brought a user named like a
+// database that was there already: restores, restore tests, moves and drops
+// never act as it (#53).
 func (p *Panel) ownerOf(server, database *core.Record) (*core.Record, error) {
-	if account, err := p.userOf(server, database.GetString("name")); err == nil {
-		return account, nil
-	}
-	return p.App.FindFirstRecordByFilter(schema.DBUsers, "server={:server} && databases~{:database}",
+	accounts, err := p.App.FindRecordsByFilter(schema.DBUsers, "server={:server} && databases~{:database}", "created,id", 0, 0,
 		dbx.Params{"server": server.Id, "database": database.Id})
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		return nil, errNoOwner
+	}
+	for _, account := range accounts {
+		if account.GetString("name") == database.GetString("name") {
+			return account, nil
+		}
+	}
+	return accounts[0], nil
 }
 
 // moveNames tells whether a move takes a database of a name.
