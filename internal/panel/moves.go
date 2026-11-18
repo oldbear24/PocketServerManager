@@ -453,12 +453,16 @@ func (p *Panel) planMove(source *core.Record, targetID, database string) (*moveP
 			}
 		}
 	}
+	// a user named like a database there, or a database named like a user
+	// there, would be taken for its namesake's (#53)
 	for _, item := range plan.items {
-		if _, err := p.databaseOf(target, item.GetDatabase()); err == nil {
-			return nil, fmt.Errorf("the server %s already has a database named %s", target.GetString("name"), item.GetDatabase())
-		}
-		if _, err := p.userOf(target, item.GetUser()); err == nil {
-			return nil, fmt.Errorf("the server %s already has a user named %s", target.GetString("name"), item.GetUser())
+		for _, name := range []string{item.GetDatabase(), item.GetUser()} {
+			if _, err := p.databaseOf(target, name); err == nil {
+				return nil, fmt.Errorf("the server %s already has a database named %s", target.GetString("name"), name)
+			}
+			if _, err := p.userOf(target, name); err == nil {
+				return nil, fmt.Errorf("the server %s already has a user named %s", target.GetString("name"), name)
+			}
 		}
 	}
 

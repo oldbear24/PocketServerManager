@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -88,5 +89,44 @@ func TestARestoreRunsAsTheUserThatHoldsItsDatabase(t *testing.T) {
 	f.setTest(restore, map[string]any{"roots": roots})
 	if _, err := f.deliver(f.link(restore, false)); err == nil || err.Error() != "the database's user is not the one the restore was planned with" {
 		t.Errorf("a restore of app as b's user: %v", err)
+	}
+}
+
+// TestAMoveBringsNoNameOfTheOtherKind (#53, ISO-1): a move into a shared
+// server refuses a user named like a database the server has, and a
+// database named like a user it has, as the review's scenario would bring
+// b's user app beside a's database app: either would be taken for its
+// namesake's. A move of other names goes ahead.
+func TestAMoveBringsNoNameOfTheOtherKind(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	a := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": "a"})
+	app := f.save(schema.Databases, map[string]any{"server": f.server.Id, "name": "app", "status": dbReady, "owner_kind": "stack", "stack": a.Id})
+	f.save(schema.DBUsers, map[string]any{"server": f.server.Id, "name": "app_user", "password": "secret-of-a", "databases": []string{app.Id}, "app_password": true})
+
+	// the stacks of another shared server, each with a database and its user
+	source := f.sharedServer("db-b", databases.Postgres, "postgres:17", "admin-secret-b")
+	application := func(stack, name, user string) {
+		t.Helper()
+		lines := databases.Connection{Engine: databases.Postgres, Server: "db-b", Database: name, User: user}.EnvLines()
+		owner := f.save(schema.Stacks, map[string]any{"host": f.host.Id, "name": stack,
+			"compose_yaml": "services:\n  web:\n    image: nginx:1.27\n", "env": strings.Join(lines, "\n") + "\n"})
+		database := f.save(schema.Databases, map[string]any{"server": source.Id, "name": name, "status": dbReady, "owner_kind": "stack", "stack": owner.Id})
+		f.save(schema.DBUsers, map[string]any{"server": source.Id, "name": user, "password": "secret-of-" + stack,
+			"databases": []string{database.Id}, "secret_name": databases.SecretName(name)})
+	}
+	application("b", "blog", "app")
+	application("c", "app_user", "c")
+	application("d", "news", "news")
+
+	for database, want := range map[string]string{
+		"blog":     "the server db-main already has a database named app",
+		"app_user": "the server db-main already has a user named app_user",
+	} {
+		if _, err := f.p.planMove(source, f.server.Id, database); err == nil || err.Error() != want {
+			t.Errorf("a move of %s: %v, not %q", database, err, want)
+		}
+	}
+	if plan, err := f.p.planMove(source, f.server.Id, "news"); err != nil || len(plan.items) != 1 || plan.items[0].GetUser() != "news" {
+		t.Errorf("a move of news: %v %v", plan, err)
 	}
 }
