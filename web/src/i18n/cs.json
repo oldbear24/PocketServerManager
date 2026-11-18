@@ -2777,6 +2777,7 @@
       "rawLabel": "Stáhnout tak, jak je uložená, pro pg_restore",
       "newName": "Název nové databáze",
       "newNameHint": "Malá písmena, číslice a _, na začátku písmeno; nejvýš 63 znaků. Stejně se bude jmenovat i její uživatel.",
+      "newNameReserved": "Názvy začínající pc_rt_, pc_rs_ nebo pc_old_ patří dočasným databázím PocketCloudu.",
       "newServer": "Databázový server",
       "previewDump": "Záloha obsahuje dump o velikosti {{size}}",
       "previewTables_one": "{{database}} má teď {{count}} tabulku",

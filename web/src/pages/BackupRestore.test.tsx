@@ -1293,3 +1293,470 @@ describe("the panel's own backup in the restore drawer (#32)", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("a database's restore in the drawer (#53)", () => {
+  const shopJob = job({
+    id: "j9",
+    name: "db-main-shop",
+    host: "h1",
+    source_kind: "database",
+    source: "shop",
+    engine: "postgres",
+    targets: ["t1"],
+    origin: "database",
+    database: "db1",
+    db_server_name: "db-main",
+  });
+  const able = hosts.map((host) =>
+    host.id === "h1" ? { ...host, capabilities: ["backup.restore", "backup.database"] } : host,
+  );
+  const stacks = [{ id: "s1", name: "shop", host: "h1" }];
+
+  function showDatabase(
+    role: User["role"],
+    fields: Partial<typeof shopJob> = {},
+    start: RestoreStart = {},
+    serverHosts = able,
+  ) {
+    signInAs(role);
+    vi.spyOn(restoresApi, "snapshots").mockResolvedValue(snapshots(3));
+    live.records["databases/db1"] ??= { id: "db1", stack: "s1", site: "" };
+    wrap(
+      <RestoreDrawer
+        jobs={[{ ...shopJob, ...fields }]}
+        targets={targets}
+        hosts={serverHosts}
+        runs={[run("r1", { job: "j9" })]}
+        stacks={stacks}
+        start={{ job: "j9", target: "t1", snapshot: first, ...start }}
+        onRecord={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+  }
+
+  const dbRoots = [
+    {
+      source: "/shop.pgdump",
+      container: "pcdb-main-db-1",
+      engine: "postgres",
+      admin_user: "postgres",
+      database: "shop",
+      user: "shop",
+      scratch: "pc_rs_r1aaaaaaaaaaaaa",
+      previous: "pc_old_r1aaaaaaaaaaaaa",
+    },
+  ];
+
+  function dbPreview(fields: Partial<ReturnType<typeof preview>> = {}) {
+    return preview({
+      snapshot: { id: first, time: "2026-11-09T11:00:00Z", paths: ["/shop.pgdump"] },
+      roots: [
+        {
+          ...preview().roots[0],
+          source: "/shop.pgdump",
+          destination: "database shop",
+          entries: 12,
+        },
+      ],
+      would_stop: [{ name: "shop-web-1", project: "shop", service: "web" }],
+      total_files: 1,
+      total_bytes: 1048576,
+      database: {
+        exists: true,
+        user_exists: true,
+        size_bytes: 8388608,
+        tables: 12,
+        connections_other: 0,
+        sign_in: true,
+        settings: [],
+        sandbox: false,
+      },
+      free: { data: 53687091200, tmp: 53687091200 },
+      needed: { data: 10603200, tmp: 269484032 },
+      ...fields,
+    });
+  }
+
+  function dbRecord(fields: Partial<BackupRestore> = {}): BackupRestore {
+    return previewed({
+      job: "j9",
+      host: "h1",
+      mode: "database",
+      database: "db1",
+      database_name: "shop",
+      previous: "pc_old_r1aaaaaaaaaaaaa",
+      roots: dbRoots,
+      preview: dbPreview(),
+      ...fields,
+    });
+  }
+
+  it("goes back into the database or into a new one for an operator, nothing to pick", async () => {
+    const create = vi.spyOn(restoresApi, "create").mockResolvedValue(restore({ job: "j9" }));
+    showDatabase("operator");
+
+    const back = await drawer().findByRole("radio", { name: /Back into the database/ });
+    expect(back).toHaveAttribute("aria-checked", "true");
+    expect(back).toHaveTextContent(
+      "shop on db-main is replaced by the backup. shop stops for a while; the other databases on db-main are not touched.",
+    );
+    expect(drawer().getByRole("radio", { name: /Into a new database/ })).toHaveTextContent(
+      "On db-main, with a user and password of its own: connect it to a stack once it is ready. Nothing else changes.",
+    );
+    expect(drawer().getByRole("radio", { name: /To a new folder/ })).toBeDisabled();
+    expect(drawer().getByRole("radio", { name: /Download/ })).toBeDisabled();
+    expect(drawer().queryByRole("radio", { name: /original location/ })).not.toBeInTheDocument();
+    // the snapshot holds the one dump
+    expect(drawer().queryByText("The whole snapshot")).not.toBeInTheDocument();
+    expect(drawer().queryByRole("button", { name: /Choose/ })).not.toBeInTheDocument();
+    expect(drawer().queryByRole("checkbox")).not.toBeInTheDocument();
+
+    fireEvent.click(drawer().getByRole("button", { name: "Preview" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith("j9", {
+        target: "t1",
+        snapshot: first,
+        mode: "database",
+      }),
+    );
+  });
+
+  it("says that no application stops when the database has none", async () => {
+    live.records["databases/db1"] = { id: "db1", stack: "", site: "" };
+    showDatabase("operator");
+    expect(
+      await drawer().findByRole("radio", { name: /Back into the database/ }),
+    ).toHaveTextContent(
+      "shop on db-main is replaced by the backup. No application stops for a while;",
+    );
+  });
+
+  it("restores a dropped database into a new one, on a shared server of its engine", async () => {
+    live.lists.db_servers = [
+      { id: "s1", name: "db-main", engine: "postgres", kind: "shared", host: "h1" },
+      { id: "s2", name: "maria", engine: "mariadb", kind: "shared", host: "h1" },
+      { id: "s3", name: "pg-nas", engine: "postgres", kind: "shared", host: "h2" },
+    ];
+    const create = vi.spyOn(restoresApi, "create").mockResolvedValue(restore({ job: "j9" }));
+    showDatabase("operator", { database: "" });
+
+    const back = await drawer().findByRole("radio", { name: /Back into the database/ });
+    expect(back).toBeDisabled();
+    expect(back).toHaveTextContent("The database was dropped: restore it into a new one.");
+    expect(drawer().getByRole("radio", { name: /Into a new database/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    const server = drawer().getByLabelText("Database server");
+    expect(
+      within(server)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["db-main"]);
+    fireEvent.change(drawer().getByLabelText("Name of the new database"), {
+      target: { value: "shop_restored" },
+    });
+    fireEvent.click(drawer().getByRole("button", { name: "Preview" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith("j9", {
+        target: "t1",
+        snapshot: first,
+        mode: "new_database",
+        name: "shop_restored",
+        server: "s1",
+      }),
+    );
+  });
+
+  it("waits for an agent that restores databases", async () => {
+    const old = able.map((host) =>
+      host.id === "h1" ? { ...host, capabilities: ["backup.restore"] } : host,
+    );
+    showDatabase("admin", {}, {}, old);
+    for (const name of [/Back into the database/, /Into a new database/]) {
+      const radio = await drawer().findByRole("radio", { name });
+      expect(radio).toBeDisabled();
+      expect(radio).toHaveTextContent(
+        "The agent of pve-01 cannot restore databases yet: update it.",
+      );
+    }
+    expect(drawer().getByRole("radio", { name: /To a new folder/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("takes a new name only as the panel does, never one of the temporary namespace", async () => {
+    const create = vi.spyOn(restoresApi, "create").mockResolvedValue(restore({ job: "j9" }));
+    showDatabase("operator");
+    fireEvent.click(await drawer().findByRole("radio", { name: /Into a new database/ }));
+    const name = drawer().getByLabelText("Name of the new database");
+    expect(
+      drawer().getByText(
+        "Lowercase letters, digits and _, starting with a letter; at most 63. Its user gets the same name.",
+      ),
+    ).toBeInTheDocument();
+    const previewButton = drawer().getByRole("button", { name: "Preview" });
+    expect(previewButton).toBeDisabled();
+    for (const value of ["Shop", "1shop", "shop-copy", "a".repeat(64)]) {
+      fireEvent.change(name, { target: { value } });
+      expect(
+        drawer().getByText("Start with a letter, then lower case letters, digits and underscores."),
+      ).toBeInTheDocument();
+      expect(previewButton).toBeDisabled();
+    }
+    for (const value of ["pc_rt_abcdefghijklmno", "pc_rs_x", "pc_old_shop"]) {
+      fireEvent.change(name, { target: { value } });
+      expect(
+        drawer().getByText(
+          "Names that start with pc_rt_, pc_rs_ or pc_old_ are PocketCloud's own temporary databases.",
+        ),
+      ).toBeInTheDocument();
+      expect(previewButton).toBeDisabled();
+    }
+    fireEvent.change(name, { target: { value: "shop_copy" } });
+    expect(name).toHaveAttribute("aria-invalid", "false");
+    expect(previewButton).toBeEnabled();
+    fireEvent.click(previewButton);
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith("j9", {
+        target: "t1",
+        snapshot: first,
+        mode: "new_database",
+        name: "shop_copy",
+      }),
+    );
+  });
+
+  it("shows what the preview found: the dump, the tables, the room, what stops and the copy kept", async () => {
+    live.records["backup_restores/r1"] = dbRecord();
+    showDatabase("operator", {}, { restore: "r1" });
+    expect(await drawer().findByText("The backup holds a dump of 1 MB")).toBeInTheDocument();
+    expect(drawer().getByText("shop has 12 tables now")).toBeInTheDocument();
+    expect(
+      drawer().getByText("53.7 GB free on db-main; the restore needs about 10.6 MB"),
+    ).toBeInTheDocument();
+    expect(
+      drawer().getByText("Also stops shop-web-1, whose settings use this database."),
+    ).toBeInTheDocument();
+    expect(
+      drawer().getByText(
+        "The data as it is now stays on db-main as pc_old_r1aaaaaaaaaaaaa for 24 hours.",
+      ),
+    ).toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Restore…" })).toBeEnabled();
+  });
+
+  it("warns that MariaDB keeps no copy of the data as it is now", async () => {
+    live.records["backup_restores/r1"] = dbRecord({
+      previous: "",
+      roots: [{ ...dbRoots[0], engine: "mariadb", previous: "", source: "/shop.sql" }],
+    });
+    showDatabase("operator", { engine: "mysql" }, { restore: "r1" });
+    expect(
+      await drawer().findByText(
+        "No copy of the data as it is now stays: back up first if you may need it.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      what: "the dump is missing",
+      fields: { roots: [{ ...dbPreview().roots[0], in_snapshot: false }] },
+      says: "The dump is not in this snapshot.",
+    },
+    {
+      what: "the password no longer signs in",
+      fields: { database: { ...dbPreview().database!, sign_in: false } },
+      says: "The panel's password of shop no longer signs in on db-main, and the restore runs as that user.",
+    },
+    {
+      what: "the room is short",
+      fields: { free: { data: 1e6, tmp: 1e9 } },
+      says: "db-main has too little room: restore into a new database elsewhere, or make room first.",
+    },
+  ])("starts nothing when $what", async ({ fields, says }) => {
+    live.records["backup_restores/r1"] = dbRecord({ preview: dbPreview(fields) });
+    showDatabase("operator", {}, { restore: "r1" });
+    expect(await drawer().findByText(says)).toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Restore…" })).toBeDisabled();
+  });
+
+  it("keeps Replace disabled until the database's name is typed, and sends it", async () => {
+    live.records["backup_restores/r1"] = dbRecord();
+    const start = vi
+      .spyOn(restoresApi, "start")
+      .mockRejectedValueOnce(
+        failure(409, "Type the database's name to confirm that its data is replaced."),
+      )
+      .mockResolvedValueOnce(dbRecord({ status: "queued", command: "c1" }));
+    showDatabase("operator", {}, { restore: "r1" });
+
+    fireEvent.click(await drawer().findByRole("button", { name: "Restore…" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Replace the database shop?" }));
+    expect(
+      dialog.getByText(
+        "Everything shop holds now is replaced by the backup of Nov 9, 2026, 12:00:00 PM. 1 container stops meanwhile and starts again.",
+      ),
+    ).toBeInTheDocument();
+    const confirm = dialog.getByRole("button", { name: "Replace shop" });
+    const typed = dialog.getByLabelText("Type shop to confirm");
+    expect(confirm).toBeDisabled();
+    for (const value of ["", "Shop", "shop ", "sho", "blog"]) {
+      fireEvent.change(typed, { target: { value } });
+      expect(confirm).toBeDisabled();
+      fireEvent.click(confirm);
+    }
+    expect(start).not.toHaveBeenCalled();
+
+    fireEvent.change(typed, { target: { value: "shop" } });
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+    // the panel checks the name too; its 409 stays in the dialog
+    expect(
+      await dialog.findByText("Type the database's name to confirm that its data is replaced."),
+    ).toBeInTheDocument();
+    expect(start).toHaveBeenLastCalledWith("r1", true, "shop");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("The restore of db-main-shop started.")).toBeInTheDocument();
+  });
+
+  it("starts a restore into a new database without asking, unless the name is taken", async () => {
+    live.records["backup_restores/r1"] = dbRecord({
+      mode: "new_database",
+      database_name: "shop_copy",
+      previous: "",
+      roots: [{ ...dbRoots[0], database: "shop_copy", user: "shop_copy", previous: "" }],
+      preview: dbPreview({
+        would_stop: [],
+        database: { ...dbPreview().database!, exists: false, user_exists: false, tables: 0 },
+      }),
+    });
+    const start = vi
+      .spyOn(restoresApi, "start")
+      .mockResolvedValue(dbRecord({ mode: "new_database", status: "queued", command: "c1" }));
+    showDatabase("operator", {}, { restore: "r1" });
+    fireEvent.click(await drawer().findByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(start).toHaveBeenCalledWith("r1", false));
+    expect(screen.queryByRole("dialog", { name: /Replace the database/ })).not.toBeInTheDocument();
+    cleanup();
+
+    live.records["backup_restores/r1"] = dbRecord({
+      mode: "new_database",
+      database_name: "shop_copy",
+      preview: dbPreview({
+        would_stop: [],
+        database: { ...dbPreview().database!, exists: false, user_exists: true },
+      }),
+    });
+    showDatabase("operator", {}, { restore: "r1" });
+    expect(
+      await drawer().findByText("A database named shop_copy exists on db-main already."),
+    ).toBeInTheDocument();
+    expect(drawer().getByRole("button", { name: "Restore" })).toBeDisabled();
+  });
+
+  it("downloads the dump as SQL, and PostgreSQL's as stored too, for an admin", async () => {
+    const download = vi.spyOn(restoresApi, "download").mockResolvedValue({
+      restore: restore({ id: "r5", job: "j9", mode: "download", status: "queued" }),
+      url: "/api/pc/backup-downloads/r5?token=x",
+    });
+    showDatabase("admin");
+    fireEvent.click(await drawer().findByRole("radio", { name: /Download/ }));
+    expect(
+      drawer().getByText(
+        "Plain SQL straight to your browser, made from the backup as it streams: keep this page open until it finishes.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(drawer().getByRole("button", { name: "Download as SQL" }));
+    await waitFor(() =>
+      expect(download).toHaveBeenCalledWith("j9", { target: "t1", snapshot: first, kind: "sql" }),
+    );
+    cleanup();
+
+    showDatabase("admin");
+    fireEvent.click(await drawer().findByRole("radio", { name: /Download/ }));
+    fireEvent.click(drawer().getByRole("button", { name: "Download as stored, for pg_restore" }));
+    await waitFor(() =>
+      expect(download).toHaveBeenLastCalledWith("j9", {
+        target: "t1",
+        snapshot: first,
+        path: "/shop.pgdump",
+        kind: "file",
+      }),
+    );
+    cleanup();
+
+    // MariaDB's dump is SQL already
+    showDatabase("admin", { engine: "mysql" });
+    fireEvent.click(await drawer().findByRole("radio", { name: /Download/ }));
+    expect(drawer().getByRole("button", { name: "Download as SQL" })).toBeInTheDocument();
+    expect(
+      drawer().queryByRole("button", { name: "Download as stored, for pg_restore" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("takes its steps, and says the tables it restored", async () => {
+    live.records["backup_restores/r1"] = dbRecord({
+      status: "running",
+      command: "c1",
+    });
+    live.records["commands/c1"] = command({
+      host: "h1",
+      progress: { step: "dbrestore", percent: 40, done: 0, total: 0, unit: "bytes" },
+    });
+    showDatabase("operator", {}, { restore: "r1" });
+    const steps = within(await drawer().findByRole("list", { name: "Steps of the restore" }));
+    expect(steps.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Check the snapshot",
+      "Copy the dump to the database server",
+      "Restore the database",
+      "Stop the containers",
+      "Put the restored copy in place",
+      "Start the containers",
+      "Check the containers",
+    ]);
+    cleanup();
+
+    live.records["backup_restores/r1"] = dbRecord({
+      status: "succeeded",
+      command: "c1",
+      tables: 12,
+      app_stopped: [{ id: "a1", name: "shop-web-1" }],
+    });
+    live.records["commands/c1"] = command({ host: "h1", status: "succeeded" });
+    showDatabase("operator", {}, { restore: "r1" });
+    expect(
+      await drawer().findByText(
+        "12 tables restored, as many as the dump has. The containers run again.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says what stays stopped when MariaDB's restore failed after emptying the database", async () => {
+    live.records["backup_restores/r1"] = dbRecord({
+      status: "failed",
+      command: "c1",
+      partial: true,
+      previous: "",
+      roots: [{ ...dbRoots[0], engine: "mariadb", previous: "" }],
+      error: "The restore failed after shop was emptied.",
+    });
+    live.records["commands/c1"] = command({
+      host: "h1",
+      status: "failed",
+      result: { partial: true, app_left_stopped: ["shop-web-1", "shop-worker-1"] },
+    });
+    showDatabase("operator", { engine: "mysql" }, { restore: "r1" });
+    expect(
+      await drawer().findByText(
+        "shop-web-1, shop-worker-1 stay stopped: shop holds only part of the backup. Restore again, then start them on their pages.",
+      ),
+    ).toBeInTheDocument();
+    const steps = within(drawer().getByRole("list", { name: "Steps of the restore" }));
+    expect(steps.queryByText("Put the restored copy in place")).not.toBeInTheDocument();
+  });
+});

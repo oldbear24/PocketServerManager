@@ -2629,6 +2629,7 @@
       "rawLabel": "Download as stored, for pg_restore",
       "newName": "Name of the new database",
       "newNameHint": "Lowercase letters, digits and _, starting with a letter; at most 63. Its user gets the same name.",
+      "newNameReserved": "Names that start with pc_rt_, pc_rs_ or pc_old_ are PocketCloud's own temporary databases.",
       "newServer": "Database server",
       "previewDump": "The backup holds a dump of {{size}}",
       "previewTables_one": "{{database}} has {{count}} table now",
