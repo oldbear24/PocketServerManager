@@ -1,7 +1,10 @@
 package panel
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -667,5 +670,106 @@ func TestARestoreOfADatabaseHoldsWhatUsesIt(t *testing.T) {
 		"host": f.host.Id, "type": "site.remove", "payload": map[string]any{"site": "wp"}})
 	if status != http.StatusConflict || body["message"] != "The site wp is being restored from a backup: this waits until that is done." {
 		t.Errorf("a site's command through the API: %d %v", status, body["message"])
+	}
+}
+
+// sqlDownloads is a download fixture of a database fixture: a served panel
+// and the agent of the fixture's server.
+func (f *dbFixture) sqlDownloads() *downloadFixture {
+	f.t.Helper()
+	server := httptest.NewServer(f.handler)
+	f.t.Cleanup(func() {
+		server.CloseClientConnections()
+		server.Close()
+	})
+	return &downloadFixture{jobFixture: f.jobFixture, server: server, stream: f.dbAgent(), job: f.job}
+}
+
+// TestADatabaseDumpDownloadsAsSQL (#53, P6): an admin downloads a database
+// job's dump as SQL: PostgreSQL's through a conversion container of its
+// server's image, on the server's host, MariaDB's as it is; under the
+// database's name and the snapshot's time, as application/sql. Only a
+// database's job does, only with an agent that converts, and only while the
+// server is there; an operator does not download.
+func TestADatabaseDumpDownloadsAsSQL(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	_, operator := testutil.NewUser(t, f.app, "operator@example.com", schema.RoleOperator)
+	d := f.sqlDownloads()
+	id, url := d.link(map[string]any{"kind": schema.DownloadSQL, "path": ""})
+	restore := f.stored(schema.BackupRestores, id)
+	name := restore.GetString("download_name")
+	if restore.GetString("download_kind") != schema.DownloadSQL || restore.GetString("path") != "/shop.pgdump" ||
+		!strings.HasPrefix(name, "shop-") || !strings.HasSuffix(name, ".sql") || len(name) != len("shop-20261118-0130.sql") ||
+		len(rootsOf(restore)) != 1 || rootsOf(restore)[0].Container != "db-main-db-1" {
+		t.Fatalf("the download: %v", restore.FieldsData())
+	}
+	answer := d.browse(context.Background(), url)
+	command, up := d.started()
+	if dump := command.GetBackupDump(); dump.GetSqlFrom() != "db-main-db-1" || dump.GetPath() != "/shop.pgdump" || dump.GetFileName() != name {
+		t.Errorf("the dump: %v", command)
+	}
+	go func() {
+		_, _ = up.writer.Write([]byte("-- PostgreSQL database dump\n"))
+		_ = up.writer.Close()
+	}()
+	response := d.response(answer)
+	got, _ := io.ReadAll(response.Body)
+	if response.Header.Get("Content-Type") != "application/sql; charset=utf-8" || string(got) != "-- PostgreSQL database dump\n" ||
+		!strings.Contains(response.Header.Get("Content-Disposition"), `filename="`+name+`"`) {
+		t.Errorf("the SQL: %v %q", response.Header, got)
+	}
+	if _, err := up.result(t); err != nil {
+		t.Errorf("the upload: %v", err)
+	}
+
+	request := func(token string, job *core.Record) (int, string) {
+		t.Helper()
+		status, body := f.send(http.MethodPost, "/api/pc/backup-jobs/"+job.Id+"/downloads", token,
+			map[string]any{"target": f.target.Id, "snapshot": snapshotID, "kind": schema.DownloadSQL})
+		message, _ := body["message"].(string)
+		return status, message
+	}
+	if status, _ := request(operator, f.job); status != http.StatusForbidden {
+		t.Errorf("an operator's download: %d", status)
+	}
+	volume := f.jobFixture.job("data", map[string]any{"source_kind": schema.SourceVolume, "source": "app_data"})
+	if status, message := request(f.admin, volume); status != http.StatusBadRequest || message != "Only a database's job downloads as SQL." {
+		t.Errorf("a volume's job: %d %q", status, message)
+	}
+	f.carry(f.host, "backup.run", "backup.dump")
+	if status, message := request(f.admin, f.job); status != http.StatusConflict || message != "The agent of node-1 cannot convert dumps to SQL yet: update it." {
+		t.Errorf("an old agent: %d %q", status, message)
+	}
+	f.carry(f.host, "backup.run", "backup.dump", backup.CapabilityDatabase)
+	// a dropped database's server is found by its name, while it is there
+	f.setTest(f.job, map[string]any{"database": ""})
+	if status, message := request(f.admin, f.job); status != http.StatusCreated {
+		t.Errorf("a dropped database's dump: %d %q", status, message)
+	}
+	f.setTest(f.job, map[string]any{"db_server_name": "gone"})
+	if status, message := request(f.admin, f.job); status != http.StatusConflict || message != "The database's server is gone: download the dump as stored." {
+		t.Errorf("a server that is gone: %d %q", status, message)
+	}
+}
+
+// TestAMariaDBDumpDownloadsAsItIs (#53, P6): MariaDB's dump is SQL already,
+// and downloads as it is, without a conversion.
+func TestAMariaDBDumpDownloadsAsItIs(t *testing.T) {
+	f := newDBFixture(t, databases.MariaDB.Name)
+	d := f.sqlDownloads()
+	id, url := d.link(map[string]any{"kind": schema.DownloadSQL, "path": ""})
+	restore := f.stored(schema.BackupRestores, id)
+	if restore.GetString("path") != "/shop.sql" || len(rootsOf(restore)) != 0 {
+		t.Fatalf("the download: %v", restore.FieldsData())
+	}
+	answer := d.browse(context.Background(), url)
+	command, up := d.started()
+	if command.GetBackupDump().GetSqlFrom() != "" || command.GetBackupDump().GetPath() != "/shop.sql" {
+		t.Errorf("the dump: %v", command)
+	}
+	_ = up.writer.Close()
+	response := d.response(answer)
+	if response.Header.Get("Content-Type") != "application/sql; charset=utf-8" {
+		t.Errorf("the answer: %v", response.Header)
 	}
 }

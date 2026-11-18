@@ -802,15 +802,21 @@ func restorePayload(restore *core.Record, dryRun bool) *agentv1.BackupRestore {
 	return payload
 }
 
-// dumpPayload is a download's backup.dump, without its repository.
+// dumpPayload is a download's backup.dump, without its repository. A
+// PostgreSQL dump downloaded as SQL names the server container whose image
+// converts it (#53).
 func dumpPayload(restore *core.Record) *agentv1.BackupDump {
-	return &agentv1.BackupDump{
+	payload := &agentv1.BackupDump{
 		SnapshotId: restore.GetString("snapshot_id"),
 		Path:       restore.GetString("path"),
 		RestoreId:  restore.Id,
 		FileName:   restore.GetString("download_name"),
 		JobTag:     "job:" + restore.GetString("job"),
 	}
+	if roots := rootsOf(restore); restore.GetString("download_kind") == schema.DownloadSQL && len(roots) == 1 {
+		payload.SqlFrom = roots[0].Container
+	}
+	return payload
 }
 
 // restorePayloadMatches tells whether a command is what its record builds,

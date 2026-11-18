@@ -11,18 +11,21 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
 	agentv1 "github.com/oldbear24/PocketServerManager/gen/go/pocketcloud/agent/v1"
 	"github.com/oldbear24/PocketServerManager/internal/audit"
 	"github.com/oldbear24/PocketServerManager/internal/backup"
 	"github.com/oldbear24/PocketServerManager/internal/commands"
+	"github.com/oldbear24/PocketServerManager/internal/databases"
 	"github.com/oldbear24/PocketServerManager/internal/events"
 	"github.com/oldbear24/PocketServerManager/internal/schema"
 )
@@ -184,11 +187,18 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 	if kind == "" {
 		kind = schema.DownloadDir
 	}
-	if kind != schema.DownloadDir && kind != schema.DownloadFile {
+	if kind != schema.DownloadDir && kind != schema.DownloadFile && kind != schema.DownloadSQL {
 		return e.BadRequestError("Download a folder or a file.", nil)
 	}
 	snapshot, cached := p.cachedSnapshot(job.Id, target.Id, body.Snapshot)
 	dir := body.Path
+	if kind == schema.DownloadSQL {
+		// a database job's one file, its dump (#53)
+		if job.GetString("source_kind") != schema.SourceDatabase {
+			return e.BadRequestError("Only a database's job downloads as SQL.", nil)
+		}
+		dir = "/" + databases.BackupFile(jobEngine(job), job.GetString("source"))
+	}
 	if dir == "" {
 		dir = "/"
 		if cached && len(snapshot.Paths) == 1 {
@@ -198,7 +208,18 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 	if !snapshotPath(dir) || len(dir) > backup.MaxRestorePath || (kind == schema.DownloadFile && dir == "/") {
 		return e.BadRequestError("Give an absolute path in the snapshot.", nil)
 	}
-	host, problem := p.listingHost(job, target, "sends the download")
+	var host *core.Record
+	var problem *targetProblem
+	roots := []restoreRoot{}
+	if kind == schema.DownloadSQL && jobEngine(job).Name == databases.Postgres.Name {
+		// PostgreSQL's custom dump becomes SQL in a container of the
+		// server's own image, on the server's host
+		var container string
+		host, container, problem = p.sqlConverter(job, target)
+		roots = append(roots, restoreRoot{Container: container})
+	} else {
+		host, problem = p.listingHost(job, target, "sends the download")
+	}
 	if problem != nil {
 		return e.Error(problem.status, problem.message, nil)
 	}
@@ -207,8 +228,11 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 		at = parsed.UTC()
 	}
 	name := path.Base(dir)
-	if kind == schema.DownloadDir {
+	switch kind {
+	case schema.DownloadDir:
 		name = fmt.Sprintf("%s-%s-%s.tar", job.GetString("name"), body.Snapshot[:8], at.Format("20060102-1504"))
+	case schema.DownloadSQL:
+		name = fmt.Sprintf("%s-%s.sql", job.GetString("source"), at.Format("20060102-1504"))
 	}
 	collection, err := e.App.FindCachedCollectionByNameOrId(schema.BackupRestores)
 	if err != nil {
@@ -219,7 +243,7 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 	restore.Load(map[string]any{
 		"job": job.Id, "target": target.Id, "host": host.Id, "snapshot_id": body.Snapshot, "mode": schema.RestoreDownload,
 		"status": schema.RestoreQueued, "path": dir, "download_name": fileName(name), "download_kind": kind,
-		"requested_by": requestedBy, "requested_label": requester,
+		"requested_by": requestedBy, "requested_label": requester, "roots": roots,
 	})
 	if cached {
 		restore.Set("snapshot_time", at)
@@ -234,6 +258,43 @@ func (p *Panel) handleCreateDownload(e *core.RequestEvent) error {
 		return e.InternalServerError("", err)
 	}
 	return e.JSON(http.StatusCreated, map[string]any{"restore": restore, "url": "/api/pc/backup-downloads/" + restore.Id + "?ticket=" + ticket})
+}
+
+// sqlConverter is where a PostgreSQL job's dump becomes SQL (#53): the host
+// of the job's database's server, whose agent makes a conversion container
+// of the server container's image, the same pg_restore; and that container.
+// A dropped database's server is found by its name.
+func (p *Panel) sqlConverter(job, target *core.Record) (*core.Record, string, *targetProblem) {
+	gone := &targetProblem{http.StatusConflict, "The database's server is gone: download the dump as stored."}
+	var server *core.Record
+	if database, err := p.App.FindRecordById(schema.Databases, job.GetString("database")); err == nil && job.GetString("database") != "" {
+		server, _ = p.App.FindRecordById(schema.DBServers, database.GetString("server"))
+	}
+	if server == nil {
+		found, err := p.App.FindFirstRecordByFilter(schema.DBServers, "host={:host} && name={:name} && kind={:shared}",
+			dbx.Params{"host": job.GetString("host"), "name": job.GetString("db_server_name"), "shared": schema.DBServerShared})
+		if err != nil {
+			return nil, "", gone
+		}
+		server = found
+	}
+	if server.GetString("engine") != databases.Postgres.Name || server.GetString("container_ref") == "" {
+		return nil, "", gone
+	}
+	host, err := p.App.FindRecordById(schema.Hosts, server.GetString("host"))
+	if err != nil {
+		return nil, "", gone
+	}
+	if !p.Commands.Connected(host.Id) {
+		return nil, "", &targetProblem{http.StatusConflict, fmt.Sprintf("The server %s is offline: its agent sends the download.", host.GetString("name"))}
+	}
+	if !slices.Contains(host.GetStringSlice("capabilities"), backup.CapabilityDatabase) {
+		return nil, "", &targetProblem{http.StatusConflict, fmt.Sprintf("The agent of %s cannot convert dumps to SQL yet: update it.", host.GetString("name"))}
+	}
+	if problem := localTargetElsewhere(p, target, host); problem != nil {
+		return nil, "", &targetProblem{http.StatusConflict, problem.message}
+	}
+	return host, server.GetString("container_ref"), nil
 }
 
 // fileName keeps a name a browser saves a download under: no folders, no
@@ -403,8 +464,11 @@ func (p *Panel) streamDownload(e *core.RequestEvent, id string, restore *core.Re
 	_ = http.NewResponseController(e.Response).SetWriteDeadline(time.Time{})
 	header := e.Response.Header()
 	header.Set("Content-Type", "application/x-tar")
-	if restore.GetString("download_kind") == schema.DownloadFile {
+	switch restore.GetString("download_kind") {
+	case schema.DownloadFile:
 		header.Set("Content-Type", "application/octet-stream")
+	case schema.DownloadSQL:
+		header.Set("Content-Type", "application/sql; charset=utf-8")
 	}
 	header.Set("Content-Disposition", contentDisposition(restore.GetString("download_name")))
 	header.Set("Cache-Control", "no-store")
