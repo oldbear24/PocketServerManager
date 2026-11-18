@@ -622,7 +622,9 @@ func TestRestoringOneDatabaseLeavesTheOthers(t *testing.T) {
 // was crafted to write another database of the server fails as the
 // database's own user has no privilege there: the rehearsal fails, nothing
 // changed in the database, its application never stopped, and the other
-// database is as it was.
+// database is as it was. A dump that switches to the other database with
+// USE restores only its own: the client, with --one-database, skips what
+// follows, and the other database is as it was.
 func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	d := newDBBackupsHarness(t)
 	server := d.sharedServer("maria", "mariadb")
@@ -630,9 +632,9 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	d.database(server, "shop", shop, "items", "orders")
 	d.database(server, "blog", nil, "posts", "comments")
 	container := server.GetString("container_ref")
-	d.db.SetDumpContent(container, "shop", "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB\n--\n-- Host: localhost    Database: shop\n"+
-		"CREATE TABLE `items` (`id` int);\nINSERT INTO `items` VALUES (1);\n"+
-		"CREATE TABLE `orders` (`id` int);\nUSE `blog`;\nDROP TABLE `posts`;\n-- Dump completed\n")
+	header := "-- MariaDB dump 10.19  Distrib 11.8.2-MariaDB\n--\n-- Host: localhost    Database: shop\n" +
+		"CREATE TABLE `items` (`id` int);\nINSERT INTO `items` VALUES (1);\nCREATE TABLE `orders` (`id` int);\n"
+	d.db.SetDumpContent(container, "shop", header+"DROP TABLE `blog`.`posts`;\n-- Dump completed\n")
 	job := d.jobOf("database", d.databaseNamed(server, "shop").Id)
 	run := d.backedUp(job)
 
@@ -643,7 +645,7 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	}
 	ended := d.ended(restore.Id)
 	if ended.GetString("status") != schema.RestoreFailed || !strings.HasPrefix(ended.GetString("error"), "Nothing changed in shop: ") ||
-		!strings.Contains(ended.GetString("error"), "Access denied for user 'shop'@'%' to database 'blog'") {
+		!strings.Contains(ended.GetString("error"), "DROP command denied to user 'shop'@") || !strings.Contains(ended.GetString("error"), "for table `blog`.`posts`") {
 		t.Errorf("the restore of the crafted dump: %v", ended.FieldsData())
 	}
 	if tables, _ := d.tables(server, "blog"); !slices.Equal(tables, []string{"posts", "comments"}) {
@@ -665,6 +667,35 @@ func TestRestoreCraftedDumpCannotTouchOthers(t *testing.T) {
 	}
 	if event := d.event("backup.restore_failed", "data.restore={:id}", dbx.Params{"id": restore.Id}); event.GetString("severity") != schema.SeverityCritical {
 		t.Errorf("the restore's event: %v", event.FieldsData())
+	}
+
+	// a dump that switches to blog: only shop is restored
+	d.db.SetDumpContent(container, "shop", header+"USE `blog`;\nDROP TABLE `posts`;\nINSERT INTO `posts` VALUES (9);\n-- Dump completed\n")
+	run = d.backedUp(job)
+	from, lives = len(d.db.Execs()), d.lives()
+	restore = d.draft(job, map[string]any{"snapshot": run.GetString("snapshot_id"), "mode": "database"})
+	if status, out := d.startNamed(restore, "shop"); status != http.StatusOK {
+		t.Fatalf("the start: %d %v", status, out)
+	}
+	if ended := d.ended(restore.Id); ended.GetString("status") != schema.RestoreSucceeded || ended.GetInt("tables") != 2 {
+		t.Errorf("the restore of the dump that uses blog: %v", ended.FieldsData())
+	}
+	if tables, from := d.tables(server, "shop"); !slices.Equal(tables, []string{"items", "orders"}) || from != "shop" {
+		t.Errorf("shop after the dump that uses blog: %v from %q", tables, from)
+	}
+	if tables, from := d.tables(server, "blog"); !slices.Equal(tables, []string{"posts", "comments"}) || from != "" {
+		t.Errorf("blog after the dump that uses it: %v from %q", tables, from)
+	}
+	for _, exec := range d.execsSince(server, from) {
+		if slices.Contains(exec.Databases, "blog") {
+			t.Errorf("a process named blog: %+v", exec)
+		}
+		if exec.Kind == fakedb.KindRestore && (exec.Env["PC_USER"] != "shop" || exec.Failed) {
+			t.Errorf("a restore: %+v", exec)
+		}
+	}
+	if life := d.lifeSince(lives); !slices.Equal(life, []string{"stop:shop-web-1", "start:shop-web-1"}) {
+		t.Errorf("what stopped and started: %v", life)
 	}
 }
 

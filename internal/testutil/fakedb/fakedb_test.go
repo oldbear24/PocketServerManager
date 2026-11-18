@@ -228,8 +228,10 @@ func mustDump(t *testing.T, engine databases.Engine, name string) []string {
 
 // TestARestoreRunsAsTheDatabasesOwnUser (AC1): a restore signs in as the
 // database's user with its password and writes only its database; a dump
-// that names another database fails on privileges and leaves that one as
-// it was; names with "fail" fail, and "short" counts one table fewer.
+// whose statement names another database fails on privileges, and one that
+// switches to it with USE restores only its own, as MariaDB's client with
+// --one-database skips what follows; the other database is as it was;
+// names with "fail" fail, and "short" counts one table fewer.
 func TestARestoreRunsAsTheDatabasesOwnUser(t *testing.T) {
 	h := newHarness(t)
 	for _, engine := range engines() {
@@ -268,20 +270,51 @@ func TestARestoreRunsAsTheDatabasesOwnUser(t *testing.T) {
 			t.Errorf("%s: counted %q", engine.Name, out)
 		}
 
-		// a crafted dump that names another database
-		crafted := "-- Host: localhost    Database: shop\nCREATE TABLE `extra` (`id` int);\nUSE blog;\nDROP TABLE posts;\n-- Dump completed\n"
-		if engine.Name == databases.Postgres.Name {
-			crafted = PostgresDump("shop", "shop", "extra") + "\\connect blog\n"
+		// crafted dumps that name another database: what reaches the
+		// server fails on privileges, and the rest never reaches it
+		crafted := func(name, content string, plain bool, wantCode int, want string, tables ...string) {
+			t.Helper()
+			copied := "pc_rs_" + strings.Repeat(name[:1], 15)
+			h.db.AddDatabase(c, copied, "shop", "shop-pw")
+			file = h.stage(c, databases.StagedName(engine, "c"+name[:1]), content)
+			script, err := databases.RestoreAsUser(engine, "shop", "shop-pw", copied, file, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plain {
+				// as if the client ran without --one-database
+				script.Cmd = []string{"sh", "-c", strings.Replace(script.Cmd[2], " --one-database", "", 1)}
+			}
+			_, stderr, code := h.run(c, script)
+			if code != wantCode || !strings.Contains(stderr, want) {
+				t.Errorf("%s: a crafted dump, %s: %d %s", engine.Name, name, code, stderr)
+			}
+			if restored, _ := h.db.Database(c, copied); !slices.Equal(restored.Tables, tables) {
+				t.Errorf("%s: a crafted dump, %s, restored %v", engine.Name, name, restored.Tables)
+			}
+			if blog, _ := h.db.Database(c, "blog"); !slices.Equal(blog.Tables, []string{"posts"}) {
+				t.Errorf("%s: blog after a crafted dump, %s: %+v", engine.Name, name, blog)
+			}
 		}
-		file = h.stage(c, databases.StagedName(engine, "r2"), crafted)
-		h.db.AddDatabase(c, "pc_rs_bbbbbbbbbbbbbbb", "shop", "shop-pw")
-		if stderr, code := restore("shop", "shop-pw", "pc_rs_bbbbbbbbbbbbbbb", ""); code != 1 ||
-			engine.Name == databases.MariaDB.Name && !strings.Contains(stderr, "Access denied for user 'shop'@'%' to database 'blog'") ||
-			engine.Name == databases.Postgres.Name && !strings.Contains(stderr, "permission denied for database blog") {
-			t.Errorf("%s: a crafted dump: %d %s", engine.Name, code, stderr)
-		}
-		if blog, _ := h.db.Database(c, "blog"); !slices.Equal(blog.Tables, []string{"posts"}) {
-			t.Errorf("%s: blog after a crafted dump: %+v", engine.Name, blog)
+		if engine.Name == databases.MariaDB.Name {
+			header := "-- Host: localhost    Database: shop\nCREATE TABLE `extra` (`id` int);\n"
+			crafted("qualified", header+"DROP TABLE `blog`.`posts`;\n-- Dump completed\n", false,
+				1, "ERROR 1142 (42000) at line 3: DROP command denied to user 'shop'@'172.17.0.2' for table `blog`.`posts`", "extra")
+			crafted("insert", header+"INSERT INTO `blog`.`posts` VALUES (2);\n-- Dump completed\n", false,
+				1, "INSERT command denied to user 'shop'@'172.17.0.2' for table `blog`.`posts`", "extra")
+			crafted("database", header+"DROP DATABASE `blog`;\n-- Dump completed\n", false,
+				1, "Access denied for user 'shop'@'%' to database 'blog'", "extra")
+			// --one-database: what follows USE blog is skipped, up to a USE
+			// of the restore's own database
+			crafted("use", header+"USE `blog`;\nCREATE TABLE `pwn` (`id` int);\nDROP TABLE `posts`;\nUSE `pc_rs_uuuuuuuuuuuuuuu`;\n"+
+				"CREATE TABLE `late` (`id` int);\n-- Dump completed\n", false, 0, "", "extra", "late")
+			crafted("without the option", header+"USE `blog`;\nDROP TABLE `posts`;\n-- Dump completed\n", true,
+				1, "Access denied for user 'shop'@'%' to database 'blog'", "extra")
+		} else {
+			// pg_restore restores no DATABASE entry without --create, and
+			// the server knows no psql command
+			crafted("database entry", PostgresDump("shop", "shop", "extra")+"3360; 1262 16385 DATABASE - blog blog\n", false, 0, "", "extra")
+			crafted("connect", PostgresDump("shop", "shop", "extra")+"\\connect blog\n", false, 1, `syntax error at or near "\"`)
 		}
 
 		// fail and short
