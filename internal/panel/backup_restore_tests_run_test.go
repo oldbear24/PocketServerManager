@@ -334,6 +334,73 @@ func TestRestoreTestsGoRoundTheTargets(t *testing.T) {
 	}
 }
 
+// TestABrokenTargetKeepsTheFailedAlert (#53, P7, AC2): a job's
+// backup_restore_test_failed stays while a target of the job is still
+// broken, its newest test that told having failed: a test that passes on
+// another target, as the next test goes round to, leaves it, naming the
+// broken target; a test of that target that passes resolves it, and so
+// does the last broken target leaving the job. The alert stays keyed by the
+// job, which the web links to and the watchdog reads.
+func TestABrokenTargetKeepsTheFailedAlert(t *testing.T) {
+	f := newDBFixture(t, databases.Postgres.Name)
+	nas := f.addTarget("nas", backup.KindS3, f.host, backup.Config{Endpoint: "https://nas.example.com", Bucket: "b"}, backup.Credentials{AccessKeyID: "k", SecretAccessKey: "s"})
+	f.setTest(f.job, map[string]any{"targets": []string{f.target.Id, nas.Id}})
+	f.snapshotRun(f.job, nas, otherSnapshot, 10)
+	test := func(target *core.Record, passes bool) {
+		t.Helper()
+		row, command := f.startedTest(f.job, schema.RunManual)
+		if row.GetString("target") != target.Id {
+			t.Fatalf("the test reads %s, not %s", row.GetString("target"), target.GetString("name"))
+		}
+		fields := map[string]any{"status": schema.CommandSucceeded, "started_at": types.NowDateTime().Add(-time.Minute),
+			"result": testAnswer(t, backup.RestoreTestResult{Status: backup.RestoreTestOK, Tables: 1, TablesExpected: 1, Created: true})}
+		if !passes {
+			fields = map[string]any{"status": schema.CommandFailed, "error": "restic: ciphertext verification failed", "started_at": types.NowDateTime().Add(-time.Minute),
+				"result": testAnswer(t, backup.RestoreTestResult{Failure: backup.TestDamaged, Created: true})}
+		}
+		f.endTest(row, command, fields)
+		time.Sleep(5 * time.Millisecond)
+	}
+	about := func(step, target string) {
+		t.Helper()
+		alert := f.openAlert(backup.AlertRestoreTestFailed, f.job.Id)
+		if target == "" {
+			if alert != nil {
+				t.Errorf("%s: the alert stays: %s", step, alert.GetString("message"))
+			}
+			return
+		}
+		if alert == nil || alert.GetString("severity") != schema.SeverityCritical || !strings.HasSuffix(alert.GetString("message"), " from "+target+" could not be restored.") {
+			t.Errorf("%s: the alert is %v, not about %s", step, alert, target)
+		}
+	}
+
+	test(f.target, false)
+	about("b2 failed", "b2")
+	test(nas, true)
+	about("nas passed after b2 failed", "b2")
+	f.p.WatchRestoreTests(time.Now().AddDate(3, 0, 0))
+	if alert := f.openAlert(backup.AlertRestoreTestUnverified, f.job.Id); alert != nil {
+		t.Errorf("the watchdog warns of a job with its failed alert: %v", alert.FieldsData())
+	}
+	test(f.target, true)
+	about("b2 passed", "")
+
+	test(nas, false)
+	about("nas failed", "nas")
+	test(f.target, false)
+	about("b2 failed too", "b2")
+	// an admin takes the targets out of the job
+	if status, body := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+f.job.Id, f.admin, map[string]any{"targets": []string{nas.Id}}); status != http.StatusOK {
+		t.Fatalf("b2 out of the job: %d %v", status, body)
+	}
+	about("b2 left the job", "nas")
+	if status, body := f.send(http.MethodPatch, "/api/pc/backup-jobs/"+f.job.Id, f.admin, map[string]any{"targets": []string{}}); status != http.StatusOK {
+		t.Fatalf("nas out of the job: %d %v", status, body)
+	}
+	about("nas left the job too", "")
+}
+
 // TestARestoreTestThatCannotStartIsSkipped (#53, P7): a job whose server is
 // offline at the slot, whose agent cannot test, or whose user's password is
 // being rotated gets a skipped test with its reason and an event, tried

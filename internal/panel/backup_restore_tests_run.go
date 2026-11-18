@@ -65,12 +65,19 @@ func (p *Panel) registerRestoreTests() {
 		return e.Next()
 	})
 	// whatever the job was before: a record the panel made in memory has
-	// no original to compare with
+	// no original to compare with. A broken target that left the job, as
+	// one taken out of it or removed, keeps its failed alert no longer.
 	p.App.OnRecordAfterUpdateSuccess(schema.BackupJobs).BindFunc(func(e *core.RecordEvent) error {
 		job := e.Record
 		gone := job.GetString("origin") == schema.JobDatabase && job.GetString("database") == ""
-		if !job.GetBool("enabled") || gone {
+		left := slices.ContainsFunc(job.Original().GetStringSlice("targets"), func(target string) bool {
+			return !slices.Contains(job.GetStringSlice("targets"), target)
+		})
+		switch {
+		case !job.GetBool("enabled") || gone:
 			p.resolveTestAlerts(e.App, job.Id, backup.AlertRestoreTestFailed, backup.AlertRestoreTestUnverified)
+		case left:
+			p.settleFailedTestAlert(e.App, job)
 		}
 		return e.Next()
 	})
