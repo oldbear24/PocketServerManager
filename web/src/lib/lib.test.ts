@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import i18n from "../i18n";
 import { auditFilter, emptyFilters, initials, lineDiff, windowStart, withContext } from "./audit";
 import {
   formatBitrate,
@@ -8,6 +9,7 @@ import {
   formatDuration,
   formatRelative,
   formatSkew,
+  formatToday,
   formatVersion,
   parseDate,
   percentOf,
@@ -236,6 +238,28 @@ describe("formatting", () => {
     expect(percentOf(1, 4)).toBe(25);
     expect(percentOf(5, 0)).toBe(0);
     expect(percentOf(9, 3)).toBe(100);
+  });
+
+  it("says today without the year, in the browser's zone and the UI's language (#33)", async () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "Europe/Prague";
+    try {
+      // Friday 12:24 in Prague
+      const now = Date.parse("2026-10-16T10:24:00Z");
+      await i18n.changeLanguage("cs");
+      expect(formatToday(now)).toBe("pátek 16. 10.");
+      await i18n.changeLanguage("en");
+      expect(formatToday(now)).toBe("Friday, 10/16");
+      // 00:30 on Saturday in Prague is still Friday in UTC
+      expect(formatToday(Date.parse("2026-10-16T22:30:00Z"))).toBe("Saturday, 10/17");
+    } finally {
+      await i18n.changeLanguage("en");
+      if (zone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = zone;
+      }
+    }
   });
 });
 

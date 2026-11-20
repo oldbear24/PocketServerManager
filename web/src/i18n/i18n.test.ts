@@ -71,7 +71,8 @@ describe("translations", () => {
     const bases = new Set(
       keys
         .filter((key) => /_(one|few|many|other)$/.test(key))
-        .map((key) => key.replace(/_\w+$/, "")),
+        // only the form: a key of a rule, as alert.certificate_expiring, has _ of its own
+        .map((key) => key.replace(/_(one|few|many|other)$/, "")),
     );
 
     for (const base of bases) {

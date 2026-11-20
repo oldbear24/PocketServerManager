@@ -6,6 +6,7 @@ import { PageHead } from "../components/Layout";
 import { HostStatusPill } from "../components/status";
 import { Card, EmptyState, ProgressBar, Table } from "../components/ui";
 import { hasRole, useAuth } from "../lib/auth";
+import { hostUsageLevels } from "../lib/hosts";
 import { formatNumber, formatRelative, formatVersion, percentOf } from "../lib/format";
 import { useLiveList, useNow } from "../lib/realtime";
 import type { Host } from "../lib/types";
@@ -82,6 +83,7 @@ export function ServersPage() {
                   <td style={{ minWidth: 90 }}>
                     <span className="num">{formatNumber(host.cpu_percent)} %</span>
                     <ProgressBar
+                      {...hostUsageLevels}
                       value={host.cpu_percent}
                       label={t("host.cpuOf", { name: host.name })}
                     />
@@ -91,6 +93,7 @@ export function ServersPage() {
                       {formatNumber(percentOf(host.mem_used_bytes, host.mem_bytes))} %
                     </span>
                     <ProgressBar
+                      {...hostUsageLevels}
                       value={percentOf(host.mem_used_bytes, host.mem_bytes)}
                       label={t("host.memOf", { name: host.name })}
                     />
@@ -100,6 +103,7 @@ export function ServersPage() {
                       {formatNumber(percentOf(host.disk_used_bytes, host.disk_total_bytes))} %
                     </span>
                     <ProgressBar
+                      {...hostUsageLevels}
                       value={percentOf(host.disk_used_bytes, host.disk_total_bytes)}
                       label={t("host.diskOf", { name: host.name })}
                     />

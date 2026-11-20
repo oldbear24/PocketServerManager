@@ -15,6 +15,7 @@ import {
   lastRun,
   lockStaleAt,
   nextJob,
+  overviewRunFields,
   parseKeep,
   parseTime,
   presetCron,
@@ -26,6 +27,7 @@ import {
   shortError,
   successPercent,
   successRate,
+  successSince,
   supersededRuns,
   validPath,
   validVolume,
@@ -304,6 +306,75 @@ describe("the success over 14 days", () => {
   });
 });
 
+describe("the runs since a moment (#33)", () => {
+  const since = now - 24 * 3600 * 1000;
+
+  it("counts the runs that succeeded, failed or were skipped since then, by when they happened", () => {
+    const runs = [
+      run("2026-11-09 03:00:00.000Z", "succeeded", { finished_at: "2026-11-09 03:05:00.000Z" }),
+      run("2026-11-09 04:00:00.000Z", "failed", { finished_at: "2026-11-09 04:01:00.000Z" }),
+      run("2026-11-09 05:00:00.000Z", "skipped", { scheduled_at: "2026-11-09 05:00:00.000Z" }),
+      run("2026-11-09 06:00:00.000Z", "skipped"),
+      // neither: not ended, or stopped
+      run("2026-11-09 11:00:00.000Z", "running", { started_at: "2026-11-09 11:00:01.000Z" }),
+      run("2026-11-09 11:30:00.000Z", "queued"),
+      run("2026-11-09 07:00:00.000Z", "cancelled", { finished_at: "2026-11-09 07:00:30.000Z" }),
+      // ended before the moment
+      run("2026-11-08 11:00:00.000Z", "succeeded", { finished_at: "2026-11-08 11:59:59.999Z" }),
+    ];
+    expect(successSince(runs, since)).toEqual({ succeeded: 1, failed: 1, skipped: 2, total: 4 });
+  });
+
+  it("goes by when a run ended, not when it was made", () => {
+    // queued for hours, as a run that waited on a lock: it ended in the window
+    const late = run("2026-11-08 02:00:00.000Z", "succeeded", {
+      scheduled_at: "2026-11-08 02:00:00.000Z",
+      started_at: "2026-11-08 13:00:00.000Z",
+      finished_at: "2026-11-08 13:30:00.000Z",
+    });
+    expect(successSince([late], since)).toMatchObject({ succeeded: 1, total: 1 });
+    // made in the window, but it says it ended before: it did not
+    const early = {
+      ...late,
+      created: "2026-11-09 01:00:00.000Z",
+      finished_at: "2026-11-08 11:00:00.000Z",
+    };
+    expect(successSince([early], since)).toMatchObject({ total: 0 });
+  });
+
+  it("takes a run that ended exactly 24 hours ago", () => {
+    const edge = run("2026-11-08 11:00:00.000Z", "failed", {
+      finished_at: "2026-11-08 12:00:00.000Z",
+    });
+    expect(successSince([edge], since)).toMatchObject({ failed: 1, total: 1 });
+    const before = { ...edge, finished_at: "2026-11-08 11:59:59.999Z" };
+    expect(successSince([before], since)).toMatchObject({ total: 0 });
+  });
+
+  it("counts a chain of retries once, by its last attempt", () => {
+    const first = run("2026-11-09 03:00:00.000Z", "failed", { id: "r1" });
+    const second = run("2026-11-09 03:35:00.000Z", "failed", { id: "r2", retry_of: "r1" });
+    const third = run("2026-11-09 04:05:00.000Z", "succeeded", { id: "r3", retry_of: "r2" });
+    expect(successSince([first, second, third], since)).toEqual({
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+      total: 1,
+    });
+    // a retry that never ran stands for none
+    const skipped = { ...second, status: "skipped" as const };
+    expect(successSince([first, skipped], since)).toEqual({
+      succeeded: 0,
+      failed: 1,
+      skipped: 1,
+      total: 2,
+    });
+    // while its retry runs, the failure counts for neither
+    const running = { ...second, status: "running" as const };
+    expect(successSince([first, running], since)).toMatchObject({ failed: 0, total: 0 });
+  });
+});
+
 describe("a run tried again", () => {
   // 03:00 locked, retried at 03:35 and at 04:05, which succeeded
   const first = run("2026-11-09 03:00:00.000Z", "failed", { id: "r1", failure: "locked" });
@@ -377,6 +448,22 @@ describe("a run tried again", () => {
     const stopped = { ...cancelled, started_at: "2026-11-09 03:35:01.000Z" };
     expect(runStrip([first, stopped], now, "UTC")[13].state).toBe("off");
     expect(successRate([first, stopped], now, "UTC")).toEqual({ succeeded: 0, total: 0 });
+  });
+
+  it("is read by the Overview without its log or its lock (#33)", () => {
+    const fields = overviewRunFields.split(",");
+    for (const field of [
+      "created",
+      "updated",
+      "status",
+      "finished_at",
+      "total_bytes",
+      "retry_of",
+    ]) {
+      expect(fields).toContain(field);
+    }
+    expect(fields).not.toContain("log");
+    expect(fields).not.toContain("lock");
   });
 
   it("is read with its retry fields, still without its log", () => {

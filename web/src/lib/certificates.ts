@@ -2,7 +2,7 @@ import type { RecordModel } from "pocketbase";
 
 import type { Tone } from "../components/ui";
 import type { DnsProvider, DnsZone } from "./dns";
-import type { Certificate } from "./edge";
+import type { Certificate, Domain } from "./edge";
 import { parseDate } from "./format";
 import { pb } from "./pb";
 
@@ -151,6 +151,87 @@ export function validity(cert: Certificate, now = Date.now()): { days: number; l
   }
   const left = Math.min(1, Math.max(0, (end - now) / (end - start)));
   return { days: Math.max(0, Math.floor((end - now) / day)), left };
+}
+
+/** Whether a certificate's names cover a hostname, as the edge matches them
+ * (edge.Covers in internal/edge/shared.go): the same name, or a wildcard
+ * one level above it, in any case of the letters. A name of one label has
+ * no level above it. */
+export function covers(cert: Pick<Certificate, "names">, hostname: string): boolean {
+  const name = hostname.toLowerCase();
+  const dot = name.indexOf(".");
+  const parent = dot >= 0 ? name.slice(dot + 1) : null;
+  return (cert.names ?? []).some((each) => {
+    const covering = each.toLowerCase();
+    return covering === name || (parent !== null && covering === `*.${parent}`);
+  });
+}
+
+/** How a domain is served, as its server's edge serves it: plain HTTP as
+ * asked (off), without a certificate (none), with one that is on its way to
+ * the server (installing), or with one in its state. */
+export type DomainTls =
+  | { kind: "off" }
+  | { kind: "none" }
+  | { kind: "installing"; cert: Certificate }
+  | { kind: "cert"; cert: Certificate; state: CertState };
+
+/** A domain's TLS as its edge has it, worked out in the browser from the
+ * certificates, so that a page of many servers asks none of them. It mirrors
+ * coveringCertificate and suits of internal/panel/edge.go: of the
+ * certificates with a key (here a fingerprint) that cover the domain and are
+ * of its kind, of the internal CA for internal TLS and of any other for
+ * automatic TLS, never the panel's own, the one that lasts longest. One not
+ * yet installed on the domain's server is on its way there. Without one, the
+ * ACME order the panel makes for the domain stands for it, as the stack
+ * page's orderFor has it. After a renewal the server still holds the old
+ * file for a moment, which reads here as the new one installed. */
+export function domainTls(
+  certs: Certificate[],
+  domain: Pick<Domain, "hostname" | "tls" | "host">,
+  now: number,
+): DomainTls {
+  if (domain.tls === "off") {
+    return { kind: "off" };
+  }
+  const internal = domain.tls === "internal";
+  let best: Certificate | undefined;
+  let bestEnd = 0;
+  for (const cert of certs) {
+    if (
+      !cert.fingerprint ||
+      cert.panel ||
+      (cert.issuer === "internal") !== internal ||
+      !covers(cert, domain.hostname)
+    ) {
+      continue;
+    }
+    const end = parseDate(cert.not_after)?.getTime() ?? 0;
+    if (!best || end > bestEnd) {
+      best = cert;
+      bestEnd = end;
+    }
+  }
+  if (best) {
+    if (!best.installed?.[domain.host]) {
+      return { kind: "installing", cert: best };
+    }
+    return { kind: "cert", cert: best, state: certificateState(best, now) };
+  }
+  // the panel orders a certificate only for automatic TLS
+  const order = internal
+    ? undefined
+    : certs.find(
+        (cert) =>
+          !cert.panel &&
+          cert.issuer === "acme" &&
+          !cert.fingerprint &&
+          covers(cert, domain.hostname),
+      );
+  if (order) {
+    return { kind: "cert", cert: order, state: certificateState(order, now) };
+  }
+  return { kind: "none" };
 }
 
 /** The name of the CA in a certificate's issuer, such as "Let's Encrypt". */

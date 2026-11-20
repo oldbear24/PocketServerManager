@@ -3827,3 +3827,238 @@ a.job-name {
   font-weight: 600;
   margin: 0;
 }
+
+/* Components of the Overview (#33): a tile that links to its page, the
+   meter on a track of its own colour, and the meter of a server that is
+   offline */
+.kpi-link,
+.kpi-link:hover {
+  color: var(--text);
+}
+
+.kpi-link {
+  text-decoration: none;
+  transition: border-color 0.15s;
+}
+
+.kpi-link:hover {
+  border-color: var(--border-control);
+}
+
+.kpi-link:focus-visible {
+  border-radius: var(--radius-card);
+}
+
+/* the track is a dim step of the fill's ramp, so the state reads across the
+   whole bar; each fill is above 5:1 on its track */
+.progress.ramp {
+  background: var(--accent-bg);
+}
+
+.progress.ramp.warn {
+  background: var(--warn-bg);
+}
+
+.progress.ramp.err {
+  background: var(--err-bg);
+}
+
+/* no figure: a bare neutral track, whatever the meters beside it show. The
+   class is also EmptyState's, whose box it must not take */
+.progress.empty {
+  display: block;
+  padding: 0;
+  background: var(--border);
+}
+
+/* The Overview (#33): the design's two rows of cards, its lists whose items
+   are links, the bell and its count */
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.overview .page-head {
+  align-items: center;
+}
+
+/* below 640 px the actions wrap under the title, and stay 44 px tall */
+.overview .page-actions .button {
+  min-height: 44px;
+}
+
+.overview .column-wide {
+  flex-basis: 620px;
+}
+
+.overview .column-side {
+  flex-basis: 340px;
+}
+
+.overview .bell {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  color: var(--text-2);
+}
+
+.bell-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--err);
+  color: var(--on-err);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* a row's name, in the page's own font, as the design's servers and sites */
+.cell-name,
+.cell-name:hover {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.cell-name:hover {
+  text-decoration: underline;
+}
+
+.overview .ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview td .ellipsis {
+  max-width: 220px;
+}
+
+/* columns 12 px apart and 18 px from the card's edges, as the design's
+   grid: the servers' seven fit beside the side column at 1440 px */
+.overview .table th,
+.overview .table td {
+  padding-inline: 6px;
+}
+
+.overview .table th:first-child,
+.overview .table td:first-child {
+  padding-left: 18px;
+}
+
+.overview .table th:last-child,
+.overview .table td:last-child {
+  padding-right: 18px;
+}
+
+.overview .usage {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 72px;
+}
+
+.overview .usage .num {
+  font-size: 12px;
+}
+
+.overview .info-text {
+  color: var(--accent);
+}
+
+.overview .off-text {
+  color: var(--text-2);
+}
+
+.overview .banner {
+  align-items: center;
+}
+
+.overview .banner-action {
+  margin-left: auto;
+}
+
+/* an item that is a link is the link, the whole of it */
+.overview .list > li.link-item {
+  padding: 0;
+}
+
+.list-link {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 12px 18px;
+  color: inherit;
+}
+
+.list-link.list-row {
+  align-items: center;
+  padding-block: 10px;
+}
+
+a.list-link:hover {
+  color: inherit;
+  background: var(--surface-2);
+}
+
+.overview .list > li.link-item:last-child a.list-link {
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+
+.list-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list-title {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.list-text > .cell-sub {
+  font-size: 12.5px;
+}
+
+/* a row's line under its title is a little smaller, as the design's queue */
+.list-row .list-text > .cell-sub {
+  font-size: 12px;
+}
+
+.overview .notice-mark {
+  margin-top: 1px;
+}
+
+.run-result {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 12px;
+  text-align: right;
+}
+
+.site-tls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.card-foot {
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}

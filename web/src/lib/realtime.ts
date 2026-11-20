@@ -1,5 +1,5 @@
 import type { RecordModel } from "pocketbase";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { pb } from "./pb";
 
@@ -14,6 +14,19 @@ export type ListOptions = {
   fields?: string;
   /** Set to false to wait, for example until a selection has been made. */
   enabled?: boolean;
+  /** Counts no total. PocketBase otherwise runs a COUNT of every record the
+   * filter matches with each read, which a long list, as the commands that
+   * are never pruned, pays for a page of five. The total is then the number
+   * of records loaded. */
+  skipTotal?: boolean;
+  /** Keeps the list in place: realtime sends only the records the filter
+   * matches, an update of a record shown replaces it, an update of a record
+   * not shown is ignored, and only a create or a delete loads the list
+   * again. Without it any event of a filtered list reloads it, as a
+   * command's progress would the queue. Only for a filter and a sort on
+   * fields that never change, as a command's type and creation: an update
+   * cannot then move a record into the list, out of it or within it. */
+  inPlace?: boolean;
 };
 
 export type ListState<T> = {
@@ -26,18 +39,35 @@ export type ListState<T> = {
 
 /**
  * Loads a list and keeps it live over PocketBase realtime. An update of a known
- * record is applied in place; anything that may change the list itself reloads it.
+ * record is applied in place; anything that may change the list itself reloads it,
+ * and so does each reconnect of the realtime connection.
  */
 export function useLiveList<T extends RecordModel>(
   collection: string,
   options: ListOptions = {},
 ): ListState<T> {
-  const { filter, sort, perPage = 200, expand, fields, enabled = true } = options;
+  const {
+    filter,
+    sort,
+    perPage = 200,
+    expand,
+    fields,
+    enabled = true,
+    skipTotal,
+    inPlace = false,
+  } = options;
 
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<unknown>(null);
+  // A list that waited loads once it is enabled: from that render on it is
+  // loading, not empty. A list that waits loads nothing.
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (enabled !== wasEnabled) {
+    setWasEnabled(enabled);
+    setLoading(enabled);
+  }
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const generation = useRef(0);
@@ -47,10 +77,11 @@ export function useLiveList<T extends RecordModel>(
     try {
       const list = await pb
         .collection(collection)
-        .getList<T>(1, perPage, { filter, sort, expand, fields });
+        .getList<T>(1, perPage, { filter, sort, expand, fields, skipTotal });
       if (current === generation.current) {
         setItems(list.items);
-        setTotal(list.totalItems);
+        // without a count PocketBase sends -1
+        setTotal(skipTotal ? list.items.length : list.totalItems);
         setError(null);
       }
     } catch (err) {
@@ -62,7 +93,7 @@ export function useLiveList<T extends RecordModel>(
         setLoading(false);
       }
     }
-  }, [collection, filter, sort, perPage, expand, fields]);
+  }, [collection, filter, sort, perPage, expand, fields, skipTotal]);
 
   useEffect(() => {
     if (!enabled) {
@@ -79,13 +110,29 @@ export function useLiveList<T extends RecordModel>(
     };
 
     let unsubscribe: (() => Promise<void>) | undefined;
+    let stopConnect: (() => Promise<void>) | undefined;
     let cancelled = false;
+    // once the subscription is in place, a connect is a reconnect
+    let subscribed = false;
     const pendingLoads = generation;
 
     pb.collection(collection)
       .subscribe<T>(
         "*",
         ({ action, record }) => {
+          if (inPlace) {
+            if (action !== "update") {
+              schedule();
+              return;
+            }
+            // a record not shown stays out: its update cannot move it in
+            setItems((current) =>
+              current.some((item) => item.id === record.id)
+                ? current.map((item) => (item.id === record.id ? record : item))
+                : current,
+            );
+            return;
+          }
           if (action !== "update" || filter || expand) {
             schedule();
             return;
@@ -98,16 +145,42 @@ export function useLiveList<T extends RecordModel>(
             return current.map((item) => (item.id === record.id ? record : item));
           });
         },
-        fields ? { fields } : undefined,
+        // a list in place hears only of its own records, each as it shows them
+        subscribeOptions(inPlace ? { filter, fields, expand } : { fields }),
       )
       .then((stop) => {
         if (cancelled) {
           void stop();
         } else {
           unsubscribe = stop;
+          subscribed = true;
         }
       })
       .catch((err: unknown) => setError(err));
+
+    // PocketBase's client reconnects by itself, with a new client id: the
+    // events between are lost, so the list is read again, as useLiveRecords
+    // does. The connect that makes the subscription comes before it is in
+    // place and is no reconnect.
+    pb.realtime
+      .subscribe("PB_CONNECT", () => {
+        if (subscribed && !cancelled) {
+          if (timer.current) {
+            clearTimeout(timer.current);
+          }
+          void load();
+        }
+      })
+      .then((stop) => {
+        if (cancelled) {
+          void stop();
+        } else {
+          stopConnect = stop;
+        }
+      })
+      .catch(() => {
+        // the list's own subscription says why
+      });
 
     return () => {
       cancelled = true;
@@ -116,10 +189,23 @@ export function useLiveList<T extends RecordModel>(
         clearTimeout(timer.current);
       }
       void unsubscribe?.();
+      void stopConnect?.();
     };
-  }, [collection, enabled, expand, fields, filter, load]);
+  }, [collection, enabled, expand, fields, filter, inPlace, load]);
 
-  return { items, total, loading, error, reload: load };
+  // the same state while nothing changed, so that a list shared through a
+  // context, as the Layout's servers, renders its readers again only then
+  return useMemo(
+    () => ({ items, total, loading, error, reload: load }),
+    [items, total, loading, error, load],
+  );
+}
+
+/** The options of a subscription without those not set: each set of options
+ * makes a topic of its own. */
+function subscribeOptions(options: Record<string, string | undefined>) {
+  const set = Object.entries(options).filter(([, value]) => value);
+  return set.length > 0 ? Object.fromEntries(set) : undefined;
 }
 
 type RecordEvent<T> = { action: string; record: T };

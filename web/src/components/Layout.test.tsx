@@ -4,14 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../lib/api";
 import { AuthProvider } from "../lib/auth";
+import { hostSummaryFields, useHosts } from "../lib/hosts";
 import { pb, type User } from "../lib/pb";
 import { matchesFilter } from "../test-filter";
-import type { Alert } from "../lib/types";
+import type { Alert, PanelInfo } from "../lib/types";
 import { alertDot, Layout } from "./Layout";
 
-const live = vi.hoisted(() => ({ lists: {} as Record<string, unknown[]> }));
+const live = vi.hoisted(() => ({
+  lists: {} as Record<string, unknown[]>,
+  /** each list the Layout asked for, with its options */
+  asked: [] as { collection: string; options: Record<string, unknown> }[],
+}));
 vi.mock("../lib/realtime", () => ({
   useLiveList: (collection: string, options: { filter?: string } = {}) => {
+    live.asked.push({ collection, options });
     const items = (live.lists[collection] ?? []).filter(
       (item) => !options.filter || matchesFilter(item as Record<string, unknown>, options.filter),
     );
@@ -37,6 +43,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   pb.authStore.clear();
   live.lists = {};
+  live.asked = [];
 });
 
 function alert(fields: Partial<Alert>): Alert {
@@ -134,6 +141,94 @@ describe("the Databases item of the navigation (#53)", () => {
     };
     backups();
     expect(screen.getByRole("link", { name: /^Databases/ })).toHaveTextContent("2");
+  });
+});
+
+describe("the servers the Layout shares with its pages (#33)", () => {
+  function host(id: string, name: string, stream_open: boolean) {
+    return { id, collectionId: "hosts", collectionName: "hosts", name, stream_open };
+  }
+
+  /** a page that shows the servers it is given */
+  function SharedHosts() {
+    const hosts = useHosts();
+    return (
+      <ul aria-label="shared servers" data-loading={hosts.loading}>
+        {hosts.items.map((item) => (
+          <li key={item.id}>{item.name}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderPage() {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AuthProvider>
+          <Routes>
+            <Route element={<Layout />}>
+              <Route path="/" element={<SharedHosts />} />
+            </Route>
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const optionsOf = (collection: string) =>
+    live.asked.filter((list) => list.collection === collection).map((list) => list.options);
+
+  it("reads the servers once, with the fields of a summary, and gives its pages that list", () => {
+    live.lists = { hosts: [host("h1", "nas", true), host("h2", "pve-01", false)] };
+    renderPage();
+    const shared = screen.getByRole("list", { name: "shared servers" });
+    expect(
+      within(shared)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["nas", "pve-01"]);
+    expect(shared).toHaveAttribute("data-loading", "false");
+    expect(screen.getByRole("link", { name: /^Servers/ })).toHaveTextContent("2");
+
+    const hosts = optionsOf("hosts");
+    expect(hosts.length).toBeGreaterThan(0);
+    for (const options of hosts) {
+      expect(options).toEqual({ sort: "name", fields: hostSummaryFields });
+    }
+  });
+
+  it("counts the connected agents of the shared list in the gateway card", async () => {
+    vi.spyOn(api, "info").mockResolvedValue({
+      gateway_running: true,
+      grpc_address: "panel.example.cz:9443",
+    } as PanelInfo);
+    live.lists = {
+      hosts: [host("h1", "nas", true), host("h2", "pve-01", false), host("h3", "rpi", true)],
+    };
+    renderPage();
+    expect(await screen.findByText("2 of 3 agents connected")).toBeInTheDocument();
+  });
+
+  it("keeps the counts of containers and sites in place, and no list whose records move", () => {
+    renderPage();
+    for (const collection of ["containers", "sites"]) {
+      const lists = optionsOf(collection);
+      expect(lists.length).toBeGreaterThan(0);
+      for (const options of lists) {
+        expect(options).toEqual({ perPage: 1, inPlace: true });
+      }
+    }
+    // an alert resolved or a database's temporary end leaves their filter
+    for (const collection of ["hosts", "alerts", "databases"]) {
+      for (const options of optionsOf(collection)) {
+        expect(options).not.toHaveProperty("inPlace");
+      }
+    }
+  });
+
+  it("is what useHosts needs: without it a page fails at once", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => render(<SharedHosts />)).toThrow(/HostsProvider/);
   });
 });
 

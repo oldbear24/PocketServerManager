@@ -1,13 +1,14 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { RecordModel, RecordSubscription } from "pocketbase";
+import type { ListResult, RecordModel, RecordSubscription } from "pocketbase";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { pb } from "./pb";
-import { useLiveRecords } from "./realtime";
+import { useLiveList, useLiveRecords } from "./realtime";
 
 type Run = RecordModel & { status: string; updated: string };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -267,5 +268,339 @@ describe("live records", () => {
     expect(sorted(result.current.items)).toEqual(["r1:queued"]);
     expect(result.current.error).toBe(err);
     expect(result.current.loading).toBe(false);
+  });
+});
+
+/** A collection for a list: its pages arrive and its subscription is in
+ * place when the test says; it sends the realtime events and the connects. */
+function fakeList({ held = false } = {}) {
+  let send: (event: RecordSubscription<Run>) => void = () => {};
+  let connect: () => void = () => {};
+  let place: () => void = () => {};
+  const pages: { resolve: (page: ListResult<Run>) => void; reject: (err: unknown) => void }[] = [];
+  const stop = vi.fn(() => Promise.resolve());
+  const stopConnect = vi.fn(() => Promise.resolve());
+  const subscribe = vi.fn((_topic: string, callback: (event: RecordSubscription<Run>) => void) => {
+    send = callback;
+    if (!held) {
+      return Promise.resolve(stop);
+    }
+    return new Promise<typeof stop>((resolve) => {
+      place = () => resolve(stop);
+    });
+  });
+  const getList = vi.fn(
+    () =>
+      new Promise<ListResult<Run>>((resolve, reject) => {
+        pages.push({ resolve, reject });
+      }),
+  );
+  vi.spyOn(pb, "collection").mockReturnValue({ subscribe, getList } as never);
+  const realtime = vi.spyOn(pb.realtime, "subscribe").mockImplementation((topic, callback) => {
+    if (topic === "PB_CONNECT") {
+      connect = () => callback({ clientId: "c2" });
+    }
+    return Promise.resolve(stopConnect);
+  });
+  return {
+    subscribe,
+    getList,
+    realtime,
+    stop,
+    stopConnect,
+    send: (action: string, item: Run) => act(() => send({ action, record: item })),
+    connect: () => act(() => connect()),
+    /** the subscription is in place */
+    placed: () => act(async () => place()),
+    /** the page of a read, by default the newest; without a count PocketBase sends -1 */
+    page: (items: Run[], totalItems = items.length, read = pages.length - 1) =>
+      act(async () =>
+        pages[read].resolve({ page: 1, perPage: 200, totalItems, totalPages: 1, items }),
+      ),
+    /** the newest read fails */
+    pageFails: (err: unknown) => act(async () => pages.at(-1)!.reject(err)),
+  };
+}
+
+const commandFilter = "parent = '' && type !~ 'logs.%'";
+
+const shown = (items: Run[]) => items.map((item) => `${item.id}:${item.status}`);
+
+describe("a live list", () => {
+  it("loads a page with its options, and the total PocketBase counted", async () => {
+    const fake = fakeList();
+    const { result } = renderHook(() =>
+      useLiveList<Run>("alerts", { filter: "status != 'resolved'", perPage: 50, fields: "id" }),
+    );
+    expect(result.current.loading).toBe(true);
+    expect(fake.getList).toHaveBeenCalledWith(1, 50, {
+      filter: "status != 'resolved'",
+      sort: undefined,
+      expand: undefined,
+      fields: "id",
+      skipTotal: undefined,
+    });
+    await fake.page([record("a1", "open", "2026-11-09 12:00:00.000Z")], 7);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.total).toBe(7);
+  });
+
+  it("asks for no count with skipTotal, and counts what it loaded", async () => {
+    const fake = fakeList();
+    const { result } = renderHook(() =>
+      useLiveList<Run>("commands", { sort: "-created", perPage: 5, skipTotal: true }),
+    );
+    expect(fake.getList).toHaveBeenCalledWith(
+      1,
+      5,
+      expect.objectContaining({ sort: "-created", skipTotal: true }),
+    );
+    await fake.page(
+      [
+        record("c1", "queued", "2026-11-09 12:00:00.000Z"),
+        record("c2", "done", "2026-11-09 12:00:00.000Z"),
+      ],
+      -1,
+    );
+    expect(result.current.total).toBe(2);
+  });
+
+  it("gives the same state while nothing changed, and a new one when it did", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(() => useLiveList<Run>("hosts", { sort: "name" }));
+    await fake.page([record("h1", "online", "2026-11-09 12:00:00.000Z")]);
+    const state = result.current;
+    rerender();
+    expect(result.current).toBe(state);
+
+    fake.send("update", record("h1", "offline", "2026-11-09 12:00:01.000Z"));
+    expect(result.current).not.toBe(state);
+    expect(result.current.reload).toBe(state.reload);
+  });
+
+  it("keeps what it showed when a reload fails", async () => {
+    const fake = fakeList();
+    const { result } = renderHook(() => useLiveList<Run>("alerts"));
+    await fake.page([record("a1", "open", "2026-11-09 12:00:00.000Z")]);
+
+    act(() => void result.current.reload());
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+    const err = new Error("Something went wrong.");
+    await fake.pageFails(err);
+    expect(result.current.error).toBe(err);
+    expect(shown(result.current.items)).toEqual(["a1:open"]);
+    expect(result.current.total).toBe(1);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("loads the list again after a reconnect, not at the connect of its subscription", async () => {
+    const fake = fakeList({ held: true });
+    const { result } = renderHook(() => useLiveList<Run>("hosts", { sort: "name" }));
+    expect(fake.realtime).toHaveBeenCalledWith("PB_CONNECT", expect.any(Function));
+    await fake.page([record("h1", "online", "2026-11-09 12:00:00.000Z")]);
+    // the connect that makes the subscription is no reconnect
+    fake.connect();
+    await fake.placed();
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+
+    // while the connection was down h1 went offline and h2 came, unseen
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+    await fake.page([
+      record("h1", "offline", "2026-11-09 12:00:05.000Z"),
+      record("h2", "online", "2026-11-09 12:00:05.000Z"),
+    ]);
+    expect(shown(result.current.items)).toEqual(["h1:offline", "h2:online"]);
+    expect(result.current.total).toBe(2);
+
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(3);
+  });
+
+  it("reloads after a reconnect at once, in place of a reload it was waiting for", async () => {
+    vi.useFakeTimers();
+    const fake = fakeList();
+    renderHook(() => useLiveList<Run>("commands", { filter: commandFilter, inPlace: true }));
+    await fake.page([record("c1", "queued", "2026-11-09 12:00:00.000Z")]);
+    fake.send("create", record("c2", "queued", "2026-11-09 12:00:01.000Z"));
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops listening for connects when it goes", async () => {
+    const fake = fakeList();
+    const { unmount } = renderHook(() => useLiveList<Run>("hosts"));
+    await fake.page([]);
+    unmount();
+    await waitFor(() => expect(fake.stopConnect).toHaveBeenCalled());
+    expect(fake.stop).toHaveBeenCalled();
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wait for a list that is not enabled, nor read it at a reconnect", async () => {
+    const fake = fakeList();
+    renderHook(() => useLiveList<Run>("dns_providers", { enabled: false }));
+    expect(fake.subscribe).not.toHaveBeenCalled();
+    expect(fake.realtime).not.toHaveBeenCalled();
+    expect(fake.getList).not.toHaveBeenCalled();
+  });
+
+  it("is loading from the render that enables it until its page is there", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useLiveList<Run>("dns_providers", { enabled }),
+      { initialProps: { enabled: false } },
+    );
+    expect(result.current.loading).toBe(false);
+
+    rerender({ enabled: true });
+    // never an empty list that has loaded
+    expect(result.current.loading).toBe(true);
+    expect(result.current.items).toEqual([]);
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+    await fake.page([record("p1", "ok", "2026-11-09 12:00:00.000Z")]);
+    expect(result.current.loading).toBe(false);
+    expect(shown(result.current.items)).toEqual(["p1:ok"]);
+  });
+
+  it("is not loading once it waits again, and loads anew when enabled", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useLiveList<Run>("dns_providers", { enabled }),
+      { initialProps: { enabled: true } },
+    );
+    expect(result.current.loading).toBe(true);
+    rerender({ enabled: false });
+    expect(result.current.loading).toBe(false);
+    // the page of the read it no longer waits for changes nothing
+    await fake.page([record("p1", "ok", "2026-11-09 12:00:00.000Z")], 1, 0);
+    expect(result.current.items).toEqual([]);
+
+    rerender({ enabled: true });
+    expect(result.current.loading).toBe(true);
+    await fake.page([record("p2", "ok", "2026-11-09 12:00:00.000Z")]);
+    expect(result.current.loading).toBe(false);
+    expect(shown(result.current.items)).toEqual(["p2:ok"]);
+  });
+
+  describe("without inPlace", () => {
+    it("subscribes to every record of the collection, with the fields only", async () => {
+      const fake = fakeList();
+      renderHook(() => useLiveList<Run>("commands", { filter: commandFilter, fields: "id" }));
+      expect(fake.subscribe).toHaveBeenCalledWith("*", expect.any(Function), { fields: "id" });
+
+      const other = fakeList();
+      renderHook(() => useLiveList<Run>("hosts"));
+      expect(other.subscribe).toHaveBeenCalledWith("*", expect.any(Function), undefined);
+    });
+
+    it("loads a filtered list again on any update", async () => {
+      vi.useFakeTimers();
+      const fake = fakeList();
+      renderHook(() => useLiveList<Run>("commands", { filter: commandFilter }));
+      await fake.page([record("c1", "queued", "2026-11-09 12:00:00.000Z")]);
+      fake.send("update", record("c1", "running", "2026-11-09 12:00:01.000Z"));
+      act(() => vi.advanceTimersByTime(250));
+      expect(fake.getList).toHaveBeenCalledTimes(2);
+    });
+
+    it("replaces a record of a list without a filter, and reloads for one it lacks", async () => {
+      vi.useFakeTimers();
+      const fake = fakeList();
+      const { result } = renderHook(() => useLiveList<Run>("hosts", { sort: "name" }));
+      await fake.page([record("h1", "online", "2026-11-09 12:00:00.000Z")]);
+      fake.send("update", record("h1", "offline", "2026-11-09 12:00:01.000Z"));
+      expect(shown(result.current.items)).toEqual(["h1:offline"]);
+      act(() => vi.advanceTimersByTime(1000));
+      expect(fake.getList).toHaveBeenCalledTimes(1);
+
+      fake.send("update", record("h2", "online", "2026-11-09 12:00:01.000Z"));
+      act(() => vi.advanceTimersByTime(250));
+      expect(fake.getList).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("in place", () => {
+    it("subscribes with the list's filter and fields", () => {
+      const fake = fakeList();
+      renderHook(() =>
+        useLiveList<Run>("commands", {
+          filter: commandFilter,
+          sort: "-created",
+          perPage: 5,
+          fields: "id,status,updated",
+          inPlace: true,
+        }),
+      );
+      expect(fake.subscribe).toHaveBeenCalledWith("*", expect.any(Function), {
+        filter: commandFilter,
+        fields: "id,status,updated",
+      });
+    });
+
+    it("subscribes to every record without a filter", () => {
+      const fake = fakeList();
+      renderHook(() => useLiveList<Run>("containers", { perPage: 1, inPlace: true }));
+      expect(fake.subscribe).toHaveBeenCalledWith("*", expect.any(Function), undefined);
+    });
+
+    it("replaces a record shown in place, without a read", async () => {
+      vi.useFakeTimers();
+      const fake = fakeList();
+      const { result } = renderHook(() =>
+        useLiveList<Run>("commands", { filter: commandFilter, inPlace: true }),
+      );
+      await fake.page([
+        record("c1", "queued", "2026-11-09 12:00:00.000Z"),
+        record("c2", "queued", "2026-11-09 12:00:00.000Z"),
+      ]);
+      const other = result.current.items[1];
+
+      fake.send("update", record("c1", "running", "2026-11-09 12:00:01.000Z"));
+      expect(shown(result.current.items)).toEqual(["c1:running", "c2:queued"]);
+      // the other record stays the same, so its row need not render again
+      expect(result.current.items[1]).toBe(other);
+      act(() => vi.advanceTimersByTime(1000));
+      expect(fake.getList).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores an update of a record it does not show", async () => {
+      vi.useFakeTimers();
+      const fake = fakeList();
+      const { result } = renderHook(() =>
+        useLiveList<Run>("commands", { filter: commandFilter, perPage: 1, inPlace: true }),
+      );
+      await fake.page([record("c2", "queued", "2026-11-09 12:00:00.000Z")], 2);
+      const before = result.current.items;
+
+      fake.send("update", record("c1", "done", "2026-11-09 12:00:01.000Z"));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(fake.getList).toHaveBeenCalledTimes(1);
+      expect(result.current.items).toBe(before);
+      expect(result.current.total).toBe(2);
+    });
+
+    it("loads the list again once, 250 ms after a create or a delete", async () => {
+      vi.useFakeTimers();
+      const fake = fakeList();
+      const { result } = renderHook(() =>
+        useLiveList<Run>("commands", { filter: commandFilter, inPlace: true }),
+      );
+      await fake.page([record("c1", "queued", "2026-11-09 12:00:00.000Z")]);
+
+      fake.send("create", record("c3", "queued", "2026-11-09 12:00:02.000Z"));
+      fake.send("delete", record("c1", "queued", "2026-11-09 12:00:00.000Z"));
+      act(() => vi.advanceTimersByTime(249));
+      expect(fake.getList).toHaveBeenCalledTimes(1);
+      act(() => vi.advanceTimersByTime(1));
+      expect(fake.getList).toHaveBeenCalledTimes(2);
+      await fake.page([record("c3", "queued", "2026-11-09 12:00:02.000Z")]);
+      expect(shown(result.current.items)).toEqual(["c3:queued"]);
+      act(() => vi.advanceTimersByTime(1000));
+      expect(fake.getList).toHaveBeenCalledTimes(2);
+    });
   });
 });

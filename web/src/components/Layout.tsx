@@ -23,10 +23,11 @@ import { api } from "../lib/api";
 import { backupAlertRules, domainAlertRules } from "../lib/events";
 import { hasRole, useAuth } from "../lib/auth";
 import type { Database as DatabaseRecord } from "../lib/databases";
+import { HostsProvider, hostSummaryFields, type HostSummary } from "../lib/hosts";
 import type { Role } from "../lib/pb";
 import { useLiveList } from "../lib/realtime";
 import type { Site } from "../lib/sites";
-import type { Alert, Container, Host, PanelInfo } from "../lib/types";
+import type { Alert, Container, PanelInfo } from "../lib/types";
 import { IconButton } from "./ui";
 
 type NavItem = {
@@ -87,7 +88,7 @@ function Section({ heading, items }: { heading?: string; items: NavItem[] }) {
   );
 }
 
-function GatewayCard({ hosts }: { hosts: Host[] }) {
+function GatewayCard({ hosts }: { hosts: Pick<HostSummary, "stream_open">[] }) {
   const { t } = useTranslation();
   const [info, setInfo] = useState<PanelInfo | null>(null);
 
@@ -130,14 +131,18 @@ export function Layout() {
   const { t } = useTranslation();
   const { user, signOut } = useAuth();
 
-  const hosts = useLiveList<Host>("hosts", { sort: "name" });
-  const containers = useLiveList<Container>("containers", { perPage: 1 });
+  // the one list of the servers, which the pages share (#33): a heartbeat
+  // brings only what the sidebar and the Overview show
+  const hosts = useLiveList<HostSummary>("hosts", { sort: "name", fields: hostSummaryFields });
+  // the counts: no filter and no sort, so an update cannot change them, and
+  // only a create or a delete reads the count again
+  const containers = useLiveList<Container>("containers", { perPage: 1, inPlace: true });
   // a restore's or a restore test's temporary copy is no database of its own (#53)
   const databases = useLiveList<DatabaseRecord>("databases", {
     filter: "temporary_until = ''",
     perPage: 1,
   });
-  const sites = useLiveList<Site>("sites", { perPage: 1 });
+  const sites = useLiveList<Site>("sites", { perPage: 1, inPlace: true });
   const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
   // a failing certificate or DNS provider marks Domains & TLS (#27)
   const domainAlerts = useLiveList<Alert>("alerts", {
@@ -222,7 +227,9 @@ export function Layout() {
       </nav>
 
       <main className="main">
-        <Outlet />
+        <HostsProvider value={hosts}>
+          <Outlet />
+        </HostsProvider>
       </main>
     </div>
   );
