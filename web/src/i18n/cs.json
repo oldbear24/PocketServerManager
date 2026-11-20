@@ -220,6 +220,7 @@
     "tlsExpiring_many": "Vyprší za {{count}} dne",
     "tlsExpiring_other": "Vyprší za {{count}} dní",
     "tlsNoDomain": "Bez domény",
+    "tlsOn": "{{name}}: {{state}}",
     "deployCol": "Nasazení",
     "deployed": "nasazeno {{when}}",
     "deploying": "probíhá",

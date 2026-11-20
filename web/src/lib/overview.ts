@@ -368,7 +368,11 @@ export type SiteRow = {
   source: string;
   hostName: string;
   online: boolean;
+  /** the worst TLS of its domains, named by its domain when that is not the
+   * first */
   tls: SiteTls;
+  /** each of its domains with its TLS, by name */
+  domainsTls: { hostname: string; tls: SiteTls }[];
   deploy: { text: string; tone?: Tone };
 };
 
@@ -494,6 +498,27 @@ export function siteRows(input: SiteInput, now: number, t: TFunction): SiteRow[]
       host?.status !== "offline" &&
       (site.type === "php" ? settings?.state === "running" : Boolean(site.active_deployment));
 
+    // each domain has a certificate of its own (the panel orders one per
+    // hostname): the row says the worst, so that a second domain's expired
+    // one is not hidden behind the first's
+    const domainsTls = own.map((domain) => ({
+      hostname: domain.hostname,
+      tls: siteTls(domain, input.certificates, now, t),
+    }));
+    let tls = siteTls(undefined, input.certificates, now, t);
+    if (domainsTls.length > 0) {
+      const worst = domainsTls.reduce((shown, item) =>
+        rank(item.tls.tone) < rank(shown.tls.tone) ? item : shown,
+      );
+      tls =
+        worst === domainsTls[0]
+          ? worst.tls
+          : {
+              ...worst.tls,
+              text: t("overview.tlsOn", { name: worst.hostname, state: worst.tls.text }),
+            };
+    }
+
     return {
       id: site.id,
       domain: own[0]?.hostname ?? site.name,
@@ -501,7 +526,8 @@ export function siteRows(input: SiteInput, now: number, t: TFunction): SiteRow[]
       source,
       hostName: host?.name ?? "",
       online,
-      tls: siteTls(own[0], input.certificates, now, t),
+      tls,
+      domainsTls,
       deploy: deployCell(site, settings, input.deployments, now, t),
     };
   });
@@ -549,9 +575,10 @@ function deployCell(
   return { text: t("overview.notDeployed") };
 }
 
-/** The sites' tile: those online, and its line: a certificate that expired
- * or was not issued, one that expires soon or whose renewal failed, each the
- * soonest to end first, then the sites not online, or that all is valid. */
+/** The sites' tile: those online, and its line: of every domain of every
+ * site, a certificate that expired or was not issued, one that expires soon
+ * or whose renewal failed, each the soonest to end first and named by its
+ * domain, then the sites not online, or that all is valid. */
 export function sitesSummary(
   rows: SiteRow[],
   now: number,
@@ -571,33 +598,34 @@ export function sitesSummary(
     online === total
       ? t("overview.sitesOnline", { count: online })
       : t("overview.sitesOnlineOf", { count: total });
-  const soonest = (a: SiteRow, b: SiteRow) => {
+  const domains = rows.flatMap((row) => row.domainsTls);
+  const soonest = (a: (typeof domains)[number], b: (typeof domains)[number]) => {
     const left = a.tls.cert?.not_after ?? "";
     const right = b.tls.cert?.not_after ?? "";
     return left < right ? -1 : left > right ? 1 : 0;
   };
-  const failing = rows
-    .filter((row) => row.tls.state === "expired" || row.tls.state === "failed")
+  const failing = domains
+    .filter((item) => item.tls.state === "expired" || item.tls.state === "failed")
     .sort(soonest);
   if (failing.length > 0) {
-    const [row] = failing;
-    const key = row.tls.state === "expired" ? "overview.certExpired" : "overview.certFailed";
-    return { online, total, unit, note: { text: t(key, { name: row.domain }), tone: "err" } };
+    const [item] = failing;
+    const key = item.tls.state === "expired" ? "overview.certExpired" : "overview.certFailed";
+    return { online, total, unit, note: { text: t(key, { name: item.hostname }), tone: "err" } };
   }
-  const due = rows
+  const due = domains
     .filter(
-      (row) =>
-        row.tls.state === "expiring" ||
-        row.tls.state === "renewal_failed" ||
-        row.tls.state === "renewal_waiting",
+      (item) =>
+        item.tls.state === "expiring" ||
+        item.tls.state === "renewal_failed" ||
+        item.tls.state === "renewal_waiting",
     )
     .sort(soonest);
   if (due.length > 0) {
-    const [row] = due;
-    const cert = row.tls.cert!;
-    const text = expiresSoon(cert, row.tls.state!, now)
-      ? t("overview.certExpiresIn", { name: row.domain, count: daysLeft(cert, now) })
-      : t("overview.certRenewalFailed", { name: row.domain });
+    const [item] = due;
+    const cert = item.tls.cert!;
+    const text = expiresSoon(cert, item.tls.state!, now)
+      ? t("overview.certExpiresIn", { name: item.hostname, count: daysLeft(cert, now) })
+      : t("overview.certRenewalFailed", { name: item.hostname });
     return { online, total, unit, note: { text, tone: "warn" } };
   }
   if (online < total) {

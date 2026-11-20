@@ -186,6 +186,7 @@
     "tlsExpiring_one": "Expires in {{count}} day",
     "tlsExpiring_other": "Expires in {{count}} days",
     "tlsNoDomain": "No domain",
+    "tlsOn": "{{name}}: {{state}}",
     "deployCol": "Deployment",
     "deployed": "deployed {{when}}",
     "deploying": "in progress",

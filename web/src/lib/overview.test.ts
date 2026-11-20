@@ -326,7 +326,7 @@ describe("the sites' rows", () => {
     });
   });
 
-  it("say each TLS state of the first domain, with the rest counted", async () => {
+  it("say each TLS state of a site's domains, with the rest counted", async () => {
     const cs = await lang("cs");
     const tlsOf = (
       certificates: Certificate[],
@@ -397,6 +397,48 @@ describe("the sites' rows", () => {
       more: 0,
       tls: { text: "Bez domény", tone: "off" },
     });
+  });
+
+  it("say the worst TLS of all of a site's domains, by its domain when it is not the first", async () => {
+    const cs = await lang("cs");
+    // a certificate for each hostname, as the panel orders them
+    const blog = (b: Partial<Certificate>) =>
+      siteRows(
+        siteInput({
+          sites: [f.site("s1", { name: "blog", active_deployment: "d1" }), f.site("s2", {})],
+          domains: [
+            f.domain("a", { hostname: "a.example.cz", site: "s1" }),
+            f.domain("b", { hostname: "b.example.cz", site: "s1" }),
+            f.domain("z", { hostname: "z.example.cz", site: "s2" }),
+          ],
+          certificates: [
+            f.certificate("ka", { names: ["a.example.cz"] }),
+            f.certificate("kb", { names: ["b.example.cz"], ...b }),
+            f.certificate("kz", { names: ["z.example.cz"], not_after: pbDate(now + 5 * day) }),
+          ],
+        }),
+        now,
+        cs,
+      );
+    const expired = blog({ not_after: pbDate(now - day) });
+    // the expired second domain comes before the other site's that expires soon
+    expect(expired.map((row) => [row.domain, row.more, row.tls.text, row.tls.tone])).toEqual([
+      ["a.example.cz", 1, "b.example.cz: Vypršel", "err"],
+      ["z.example.cz", 0, "Vyprší za 5 dní", "warn"],
+    ]);
+    expect(expired[0].domainsTls.map((item) => [item.hostname, item.tls.text])).toEqual([
+      ["a.example.cz", "Let's Encrypt · 60 dní"],
+      ["b.example.cz", "Vypršel"],
+    ]);
+    const failed = blog({ fingerprint: "", status: "failed", attempts: 1, installed: null });
+    expect([failed[0].tls.text, failed[0].tls.tone]).toEqual(["b.example.cz: Nevydán", "err"]);
+    // the first domain's own TLS needs no name, when it is the worst or all are alike
+    const fine = blog({});
+    expect([fine[1].domain, fine[1].tls.text, fine[1].tls.tone]).toEqual([
+      "a.example.cz",
+      "Let's Encrypt · 60 dní",
+      "ok",
+    ]);
   });
 
   it("say each state of the deployment", async () => {
@@ -525,6 +567,33 @@ describe("the sites' tile", () => {
     expect((await summary({ certificates: failed }, "en")).note.text).toBe(
       "docs.example.cz – the certificate could not be issued",
     );
+  });
+
+  it("names the certificate of any domain of a site, not of its first only", async () => {
+    // blog.example.cz is fine; its second domain has a certificate of its own
+    const domains = [...f.domains, f.domain("o7", { hostname: "www.blog.example.cz", site: "s1" })];
+    const valid = f.certificates.filter((cert) => cert.id !== "c3");
+    const second = (fields: Partial<Certificate>) => [
+      ...valid,
+      f.certificate("c7", { names: ["www.blog.example.cz"], ...fields }),
+    ];
+    expect((await summary({ domains, certificates: second({}) })).note).toEqual({
+      text: "Všechny certifikáty jsou platné",
+    });
+    expect(
+      (await summary({ domains, certificates: second({ not_after: pbDate(now - day) }) })).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát vypršel", tone: "err" });
+    expect(
+      (
+        await summary({
+          domains,
+          certificates: second({ fingerprint: "", status: "failed", attempts: 1, installed: null }),
+        })
+      ).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát se nepodařilo vydat", tone: "err" });
+    expect(
+      (await summary({ domains, certificates: second({ not_after: pbDate(now + 3 * day) }) })).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát vyprší za 3 dny", tone: "warn" });
   });
 
   it("names a failed renewal with time left as such, the soonest first", async () => {
