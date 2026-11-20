@@ -384,7 +384,12 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
   return (
     <Card
       id="attention"
-      title={t("overview.attention")}
+      // the bell's focus when the first alert has no link
+      title={
+        <span id="attention-heading" tabIndex={-1}>
+          {t("overview.attention")}
+        </span>
+      }
       side={!alerts.loading && !alerts.error && t("overview.openCount", { count: alerts.total })}
       flush
     >
@@ -831,10 +836,14 @@ export function OverviewPage() {
       : openAlerts > 0
         ? t("overview.bell", { count: openAlerts })
         : t("overview.bellNone");
+  // the bell brings the focus to the first alert, by its link; to the card's
+  // heading when that alert has no link (audit_integrity for a viewer, which
+  // as critical comes first), or there is none, so that nothing is skipped
   const focusAttention = () => {
     const card = document.getElementById("attention");
     card?.scrollIntoView?.({ block: "start" });
-    card?.querySelector<HTMLElement>("a, button")?.focus();
+    const first = card?.querySelector(".list > li")?.querySelector<HTMLElement>("a[href]");
+    (first ?? document.getElementById("attention-heading"))?.focus();
   };
 
   const agentsTile = tileState(sectionOf(hosts), t);

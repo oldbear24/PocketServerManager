@@ -490,6 +490,36 @@ describe("the Overview's links", () => {
     expect(document.activeElement).toBe(within(card("Vyžaduje pozornost")).getAllByRole("link")[0]);
   });
 
+  it("bring the bell to the card's heading when the first alert has no link, or there is none", () => {
+    // a viewer's audit_integrity has no link, and as critical comes first
+    const audit = {
+      ...f.alerts[0],
+      id: "a9",
+      rule: "audit_integrity",
+      target: "audit_log",
+      host: "",
+      message: "Audit log integrity check failed",
+    } as Alert;
+    const heading = () => screen.getByRole("heading", { name: "Vyžaduje pozornost", level: 2 });
+    const cases: [Alert[], string][] = [
+      [[audit, f.alerts[1]], "Upozornění, 2 nová"],
+      [[audit], "Upozornění, 1 nové"],
+      [[], "Upozornění, žádná nová"],
+    ];
+    signInAs("viewer");
+    for (const [alerts, name] of cases) {
+      live.lists.alerts = alerts;
+      const view = page();
+      const bell = screen.getByRole("button", { name });
+      bell.focus();
+      fireEvent.click(bell);
+      expect(document.activeElement).not.toBe(bell);
+      // not the second alert's link: nothing comes before where the focus is
+      expect(heading()).toContainElement(document.activeElement as HTMLElement);
+      view.unmount();
+    }
+  });
+
   it("count only the open alerts on the bell, and say when there are none", () => {
     live.lists.alerts = [
       { ...f.alerts[0], status: "acknowledged" },
