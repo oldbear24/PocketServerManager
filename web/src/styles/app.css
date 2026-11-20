@@ -3938,7 +3938,24 @@ a.job-name {
 }
 
 .overview td .ellipsis {
-  max-width: 240px;
+  max-width: 220px;
+}
+
+/* columns 12 px apart and 18 px from the card's edges, as the design's
+   grid: the servers' seven fit beside the side column at 1440 px */
+.overview .table th,
+.overview .table td {
+  padding-inline: 6px;
+}
+
+.overview .table th:first-child,
+.overview .table td:first-child {
+  padding-left: 18px;
+}
+
+.overview .table th:last-child,
+.overview .table td:last-child {
+  padding-right: 18px;
 }
 
 .overview .usage {
@@ -4011,6 +4028,11 @@ a.list-link:hover {
 
 .list-text > .cell-sub {
   font-size: 12.5px;
+}
+
+/* a row's line under its title is a little smaller, as the design's queue */
+.list-row .list-text > .cell-sub {
+  font-size: 12px;
 }
 
 .overview .notice-mark {
