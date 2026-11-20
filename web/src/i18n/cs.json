@@ -871,7 +871,14 @@
     "certificate_expired": "Certifikát {{name}} vypršel",
     "certificate_failed": "Certifikát {{name}} se nepodařilo získat",
     "dns_provider_failed": "DNS poskytovatel {{name}} hlásí chybu",
-    "backup_restore": "{{name}}: obnova ze zálohy potřebuje pozornost"
+    "backup_restore": "{{name}}: obnova ze zálohy potřebuje pozornost",
+    "unnamed": {
+      "backup_check_failed": "Repozitář záloh obsahuje chyby",
+      "backup_check_unverified": "Repozitář záloh není ověřený",
+      "certificate_expiring": "Certifikát brzy vyprší",
+      "certificate_failed": "Certifikát se nepodařilo získat",
+      "dns_provider_failed": "DNS poskytovatel hlásí chybu"
+    }
   },
   "chart": {
     "now": "teď",

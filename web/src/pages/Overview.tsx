@@ -328,7 +328,16 @@ function ServersCard({
   );
 }
 
-function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: AttentionItem[] }) {
+function AttentionCard({
+  alerts,
+  items,
+  waiting,
+}: {
+  alerts: ListState<Alert>;
+  items: AttentionItem[];
+  /** the records the items name are still loading */
+  waiting: boolean;
+}) {
   const { t } = useTranslation();
   const [all, setAll] = useState(false);
   const section = sectionOf(alerts);
@@ -339,7 +348,7 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
   let body: ReactNode;
   if (alerts.error) {
     body = <LoadError section={section} />;
-  } else if (alerts.loading) {
+  } else if (alerts.loading || waiting) {
     body = <Loading />;
   } else if (items.length === 0) {
     body = <EmptyState title={t("overview.noAlerts")} />;
@@ -801,6 +810,10 @@ export function OverviewPage() {
   // its runs are named by their server: both wait for the servers too
   const sitesSection = sectionOf(hosts, sites, sitePhp, domains, certificates, deployments);
   const backupsSection = sectionOf(hosts, jobs, targets, runs);
+  // what Needs attention's titles and lines name: until it has loaded, a
+  // title would name a record's id, or a server for a repository
+  const subjects = sectionOf(hosts, jobs, targets, certificates, providers, runs);
+  // the DNS providers count while an alert of one is open
   const lists: AnyList[] = [
     hosts,
     containers,
@@ -815,6 +828,7 @@ export function OverviewPage() {
     jobs,
     targets,
     runs,
+    providers,
   ];
   const loaded = lists.every((list) => !list.loading);
   const failed = lists.some((list) => list.error);
@@ -987,7 +1001,7 @@ export function OverviewPage() {
           />
         </div>
         <div className="column-side">
-          <AttentionCard alerts={alerts} items={items} />
+          <AttentionCard alerts={alerts} items={items} waiting={subjects.loading} />
           <QueueCard commands={commands} links={commandLinks} now={now} canAudit={canOperate} />
         </div>
       </div>

@@ -799,7 +799,14 @@
     "certificate_expired": "The certificate {{name}} has expired",
     "certificate_failed": "Could not get the certificate {{name}}",
     "dns_provider_failed": "The DNS provider {{name}} reports an error",
-    "backup_restore": "{{name}}: a restore needs attention"
+    "backup_restore": "{{name}}: a restore needs attention",
+    "unnamed": {
+      "backup_check_failed": "A backup repository has errors",
+      "backup_check_unverified": "A backup repository is not verified",
+      "certificate_expiring": "A certificate expires soon",
+      "certificate_failed": "Could not get a certificate",
+      "dns_provider_failed": "A DNS provider reports an error"
+    }
   },
   "chart": {
     "now": "now",

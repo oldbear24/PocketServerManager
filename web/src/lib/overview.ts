@@ -871,8 +871,10 @@ export type AttentionItem = {
 const severityRank: Record<Alert["severity"], number> = { critical: 0, warning: 1, info: 2 };
 
 /** What an alert's title names: its server, job, repository, certificate or
- * DNS provider, when the page holds that record; its server or stored target
- * otherwise. */
+ * DNS provider, when the page holds that record. Without it, a job's alert
+ * names its server, and a repository's, a certificate's or a DNS provider's
+ * names none (alert.unnamed.*): never a record's id, nor the server of a
+ * repository as if it were one. */
 function subjectOf(
   alert: Alert,
   ctx: AttentionContext,
@@ -881,6 +883,7 @@ function subjectOf(
 ): AlertSubject | undefined {
   const hostName = ctx.hosts.get(alert.host)?.name;
   const fallback = hostName ? { name: hostName } : undefined;
+  const unnamed = { rule: `unnamed.${alert.rule}` };
   switch (alert.rule) {
     case "backup_failed":
     case "backup_skipped":
@@ -892,7 +895,7 @@ function subjectOf(
     case "backup_check_failed":
     case "backup_check_unverified": {
       const target = ctx.targets.get(alert.target);
-      return target ? { name: target } : fallback;
+      return target ? { name: target } : unnamed;
     }
     case "backup_restore_test_failed":
     case "backup_restore_test_unverified": {
@@ -902,10 +905,10 @@ function subjectOf(
     case "certificate_expiring":
     case "certificate_failed": {
       const cert = ctx.certificates.get(alert.target);
-      if (!cert) {
-        return fallback;
+      const name = cert?.names?.[0];
+      if (!cert || !name) {
+        return unnamed;
       }
-      const name = cert.names?.[0] ?? alert.target;
       if (alert.rule === "certificate_failed") {
         return { name };
       }
@@ -917,7 +920,7 @@ function subjectOf(
     }
     case "dns_provider_failed": {
       const provider = ctx.providers.get(alert.target);
-      return provider ? { name: provider.name } : fallback;
+      return provider ? { name: provider.name } : unnamed;
     }
   }
   return fallback;

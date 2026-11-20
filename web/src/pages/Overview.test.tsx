@@ -947,6 +947,36 @@ describe("the Overview's states", () => {
     );
   });
 
+  it("waits for what its alerts name before it lists them, and to be filled for the DNS providers", async () => {
+    signInAs("viewer");
+    // a target not loaded would have named nas a repository
+    live.lists.alerts = [
+      ...f.alerts,
+      { ...f.alerts[1], id: "a5", rule: "backup_check_failed", target: "t3", host: "h3" },
+    ];
+    live.state = { backup_targets: { loading: true } };
+    const targets = page();
+    expect(within(card("Vyžaduje pozornost")).getByText("Načítám…")).toBeInTheDocument();
+    expect(screen.queryByText(/Repozitář/)).toBeNull();
+    targets.unmount();
+
+    // the providers are read once the alerts hold one of theirs: never its id first
+    live.lists.alerts = f.alerts;
+    live.state = { dns_providers: { loading: true } };
+    const view = page();
+    const attention = card("Vyžaduje pozornost");
+    expect(within(attention).getByText("Načítám…")).toBeInTheDocument();
+    expect(screen.queryByText(/DNS poskytovatel/)).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const root = view.container.querySelector("[data-overview-state]")!;
+    expect(root).toHaveAttribute("data-overview-state", "loading");
+
+    live.state = {};
+    view.update(hostsState(f.hosts));
+    await waitFor(() => expect(root).toHaveAttribute("data-overview-state", "filled"));
+    expect(within(attention).getByText("DNS poskytovatel WEDOS hlásí chybu")).toBeInTheDocument();
+  });
+
   it("waits for the servers too before it is filled", async () => {
     signInAs("viewer");
     const view = page(hostsState([], { loading: true }));

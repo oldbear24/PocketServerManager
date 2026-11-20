@@ -1001,14 +1001,18 @@ describe("needs attention", () => {
     ]);
   });
 
-  it("names each rule's subject, and its server or target when the record is not loaded", async () => {
+  it("names each rule's subject, its server when a job is not loaded, and no id or server for another", async () => {
     const cs = await lang("cs");
     const title = (a: Alert, ctx = context()) => attentionItems([a], ctx, now, cs)[0].title;
     expect(title(alert("backup_check_failed", { target: "t1", host: "h5" }))).toBe(
       "Repozitář Backblaze B2 obsahuje chyby",
     );
-    expect(title(alert("backup_check_unverified", { target: "t9", host: "h5" }))).toBe(
-      "Repozitář backup-node není ověřený",
+    // a target not loaded: its server is no repository
+    expect(title(alert("backup_check_unverified", { target: "t9", host: "h3" }))).toBe(
+      "Repozitář záloh není ověřený",
+    );
+    expect(title(alert("backup_check_failed", { target: "t9", host: "h3" }))).toBe(
+      "Repozitář záloh obsahuje chyby",
     );
     expect(title(alert("backup_restore_test_failed", { target: "j4", host: "h1" }))).toBe(
       "umami-db: test obnovy selhal",
@@ -1031,12 +1035,31 @@ describe("needs attention", () => {
     expect(title(alert("certificate_failed", { target: "c2" }))).toBe(
       "Certifikát docs.example.cz se nepodařilo získat",
     );
-    expect(title(alert("certificate_expiring", { target: "gone" }))).toBe(
-      "Certifikát gone brzy vyprší",
+    // a certificate or a provider not loaded is named by no id
+    expect(title(alert("certificate_expiring", { target: "gone" }))).toBe("Certifikát brzy vyprší");
+    expect(title(alert("certificate_failed", { target: "gone" }))).toBe(
+      "Certifikát se nepodařilo získat",
     );
-    expect(title(alert("dns_provider_failed", { target: "p9" }))).toBe(
-      "DNS poskytovatel p9 hlásí chybu",
+    expect(title(alert("dns_provider_failed", { target: "k3j2h1g0f9e8d7c" }))).toBe(
+      "DNS poskytovatel hlásí chybu",
     );
+    const en = await lang("en");
+    expect(
+      [
+        "backup_check_failed",
+        "backup_check_unverified",
+        "certificate_expiring",
+        "dns_provider_failed",
+      ].map(
+        (rule) =>
+          attentionItems([alert(rule, { target: "x9", host: "h3" })], context(), now, en)[0].title,
+      ),
+    ).toEqual([
+      "A backup repository has errors",
+      "A backup repository is not verified",
+      "A certificate expires soon",
+      "A DNS provider reports an error",
+    ]);
     expect(title(alert("agent_offline", { target: "h9", host: "h9" }))).toBe(
       "h9: agent bez spojení",
     );
