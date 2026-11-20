@@ -804,6 +804,43 @@ describe("the Overview's states", () => {
     expect(count()).not.toHaveClass("faint");
   });
 
+  it("claims no site online and names no server while the servers load or could not be read", () => {
+    const sitesAndBackups = () => {
+      for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+        expect(within(tile(name)).getByText("–")).toBeInTheDocument();
+      }
+      // no site counted online on a server not known to be offline, no job without its server
+      expect(screen.queryByText(/webů online/)).toBeNull();
+      expect(within(tile(/^Zálohy za 24 h/)).queryByText(/selhala/)).toBeNull();
+      expect(screen.queryByText(/→ backup-node/)).toBeNull();
+    };
+    signInAs("viewer");
+    const loading = page(hostsState([], { loading: true }));
+    sitesAndBackups();
+    for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+      expect(within(tile(name)).getByText("Načítám…")).toBeInTheDocument();
+    }
+    for (const name of ["Weby a domény", "Zálohy – poslední běhy"]) {
+      expect(within(card(name)).getByText("Načítám…")).toBeInTheDocument();
+    }
+    loading.unmount();
+
+    page(hostsState([], { error: new Error("forbidden") }));
+    sitesAndBackups();
+    for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+      expect(within(tile(name)).getByText("Nepodařilo se načíst: forbidden")).toHaveClass(
+        "err-text",
+      );
+    }
+    for (const name of ["Weby a domény", "Zálohy – poslední běhy"]) {
+      const banner = within(card(name)).getByRole("alert");
+      expect(banner).toHaveTextContent("Nepodařilo se načíst: forbidden");
+      fireEvent.click(within(banner).getByRole("button", { name: "Zkusit znovu" }));
+    }
+    expect(live.reloads.hosts).toBe(2);
+    expect(live.reloads.sites).toBeUndefined();
+  });
+
   it("says the servers failed to load, and reads them again", () => {
     signInAs("viewer");
     page(hostsState([], { error: new Error("forbidden") }));

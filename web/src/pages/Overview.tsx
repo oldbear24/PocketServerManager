@@ -773,8 +773,10 @@ export function OverviewPage() {
     [commands.items, stacks.items, runs.items],
   );
 
-  const sitesSection = sectionOf(sites, sitePhp, domains, certificates, deployments);
-  const backupsSection = sectionOf(jobs, targets, runs);
+  // a site is online only on a server that is not offline, and a job and
+  // its runs are named by their server: both wait for the servers too
+  const sitesSection = sectionOf(hosts, sites, sitePhp, domains, certificates, deployments);
+  const backupsSection = sectionOf(hosts, jobs, targets, runs);
   const lists: AnyList[] = [
     hosts,
     containers,
@@ -826,7 +828,7 @@ export function OverviewPage() {
   const agentsTile = tileState(sectionOf(hosts), t);
   const containersTile = tileState(sectionOf(containers), t);
   const sitesTileState = tileState(sitesSection, t);
-  const backupsTileState = tileState(sectionOf(jobs, runs), t);
+  const backupsTileState = tileState(sectionOf(hosts, jobs, runs), t);
 
   return (
     <div className="overview" data-overview-state={state}>
