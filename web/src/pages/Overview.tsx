@@ -257,7 +257,7 @@ export function OverviewPage() {
                         <div style={{ fontWeight: 500 }}>
                           {alertLink(alert) ? (
                             <Link to={alertLink(alert)!} style={{ color: "var(--text)" }}>
-                              {alertText(t, alert, hostNames.get(alert.host))}
+                              {alertText(t, alert, { name: hostNames.get(alert.host) })}
                             </Link>
                           ) : (
                             alertText(t, alert)

@@ -30,10 +30,19 @@ export function eventText(t: TFunction, event: HostEvent): string {
   });
 }
 
-/** Alerts work the same way, by their rule. */
-export function alertText(t: TFunction, alert: Alert, hostName?: string): string {
-  return t(`alert.${alert.rule}`, {
-    name: hostName ?? alert.target,
+/** What an alert is about, as its title names it (#33): a server, a job as
+ * server/job, a repository, a certificate or a DNS provider by its name; how
+ * many days a certificate has left; and the rule whose title fits it better
+ * now, as an expiring certificate's once it expired. */
+export type AlertSubject = { name?: string; count?: number; rule?: string };
+
+/** Alerts work the same way, by their rule. Without a subject the title
+ * names the alert's target as it is stored. */
+export function alertText(t: TFunction, alert: Alert, subject?: AlertSubject): string {
+  return t(`alert.${subject?.rule ?? alert.rule}`, {
+    name: subject?.name ?? alert.target,
+    // without a count the title is the one without a number
+    count: subject?.count,
     defaultValue: alert.message,
   });
 }

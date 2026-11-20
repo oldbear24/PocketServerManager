@@ -707,19 +707,26 @@
     }
   },
   "alert": {
-    "agent_offline": "{{name}}: the agent stopped responding",
+    "agent_offline": "{{name}}: the agent is not connected",
     "audit_integrity": "The integrity check of the audit log failed",
-    "backup_failed": "{{name}}: a backup failed",
-    "backup_skipped": "{{name}}: a backup was skipped",
-    "backup_retention": "{{name}}: old snapshots are not being removed",
-    "backup_check_failed": "{{name}}: a backup repository has errors",
-    "backup_check_unverified": "{{name}}: a backup repository is not verified",
+    "backup_failed": "Backup {{name}} failed",
+    "backup_skipped": "Backup {{name}} was skipped",
+    "backup_retention": "Backup {{name}}: old snapshots are not being removed",
+    "backup_check_failed": "The repository {{name}} has errors",
+    "backup_check_unverified": "The repository {{name}} is not verified",
     "recovery_kit": "The panel's recovery kit is not saved",
     "panel_backup": "The panel itself is not backed up",
     "panel_restored": "The panel was restored from a backup: servers are reconnecting",
     "backup_restore_test_failed": "{{name}}: a restore test failed",
     "backup_restore_test_unverified": "{{name}}: no restore test passed lately",
-    "db_temporary_left": "{{name}}: a temporary database was not dropped"
+    "db_temporary_left": "{{name}}: a temporary database was not dropped",
+    "certificate_expiring": "The certificate {{name}} expires soon",
+    "certificate_expiring_one": "The certificate {{name}} expires in {{count}} day",
+    "certificate_expiring_other": "The certificate {{name}} expires in {{count}} days",
+    "certificate_expired": "The certificate {{name}} has expired",
+    "certificate_failed": "Could not get the certificate {{name}}",
+    "dns_provider_failed": "The DNS provider {{name}} reports an error",
+    "backup_restore": "{{name}}: a restore needs attention"
   },
   "chart": {
     "now": "now",

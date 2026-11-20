@@ -59,9 +59,9 @@ describe("the backup alerts", () => {
     const en = i18n.getFixedT("en");
     const cs = i18n.getFixedT("cs");
     const failed = { ...alert, rule: "backup_restore_test_failed", target: "j7" };
-    expect(alertText(en, failed, "db-main")).toBe("db-main: a restore test failed");
-    expect(alertText(cs, failed, "db-main")).toBe("db-main: test obnovy selhal");
-    expect(alertText(cs, { ...failed, rule: "db_temporary_left" }, "nas")).toBe(
+    expect(alertText(en, failed, { name: "db-main" })).toBe("db-main: a restore test failed");
+    expect(alertText(cs, failed, { name: "db-main" })).toBe("db-main: test obnovy selhal");
+    expect(alertText(cs, { ...failed, rule: "db_temporary_left" }, { name: "nas" })).toBe(
       "nas: dočasná databáze se nesmazala",
     );
   });
@@ -86,15 +86,93 @@ describe("the backup alerts", () => {
     );
   });
 
-  it("are said in the UI's language, by the server's name", () => {
+  it("are said in the UI's language, by their subject's name (#33)", () => {
     const en = i18n.getFixedT("en");
     const cs = i18n.getFixedT("cs");
     const failed = { ...alert, rule: "backup_check_failed", target: "t2" };
-    expect(alertText(en, failed, "nas")).toBe("nas: a backup repository has errors");
-    expect(alertText(cs, failed, "nas")).toBe("nas: repozitář záloh obsahuje chyby");
-    expect(alertText(en, alert, "nas")).toBe("nas: a backup failed");
-    expect(alertText(cs, { ...alert, rule: "backup_check_unverified" }, "nas")).toBe(
-      "nas: repozitář záloh není ověřený",
+    expect(alertText(en, failed, { name: "Backblaze B2" })).toBe(
+      "The repository Backblaze B2 has errors",
+    );
+    expect(alertText(cs, failed, { name: "Backblaze B2" })).toBe(
+      "Repozitář Backblaze B2 obsahuje chyby",
+    );
+    expect(alertText(en, alert, { name: "nas/photos" })).toBe("Backup nas/photos failed");
+    expect(alertText(cs, alert, { name: "nas/photos" })).toBe("Záloha nas/photos selhala");
+    expect(alertText(cs, { ...alert, rule: "backup_check_unverified" }, { name: "B2" })).toBe(
+      "Repozitář B2 není ověřený",
+    );
+    expect(alertText(cs, { ...alert, rule: "agent_offline" }, { name: "rpi-garaz" })).toBe(
+      "rpi-garaz: agent bez spojení",
+    );
+  });
+
+  it("name their stored target without a subject, and say the stored message for a rule the UI does not know", () => {
+    const cs = i18n.getFixedT("cs");
+    expect(alertText(cs, alert)).toBe("Záloha j1:t2 selhala");
+    expect(alertText(cs, alert, {})).toBe("Záloha j1:t2 selhala");
+    expect(alertText(cs, { ...alert, rule: "something_new" })).toBe(
+      "The backup of photos to b2 failed.",
+    );
+  });
+});
+
+describe("the certificates' alerts (#33)", () => {
+  const expiring = {
+    ...alert,
+    rule: "certificate_expiring",
+    target: "c1",
+    host: "",
+    message: "The certificate for shop.example.org expires in 12 days.",
+  };
+
+  it("say how many days a certificate has left, in each plural form", () => {
+    const en = i18n.getFixedT("en");
+    const cs = i18n.getFixedT("cs");
+    const name = "shop.example.org";
+    expect(alertText(en, expiring, { name, count: 1 })).toBe(
+      "The certificate shop.example.org expires in 1 day",
+    );
+    expect(alertText(en, expiring, { name, count: 12 })).toBe(
+      "The certificate shop.example.org expires in 12 days",
+    );
+    expect(alertText(cs, expiring, { name, count: 1 })).toBe(
+      "Certifikát shop.example.org vyprší za 1 den",
+    );
+    expect(alertText(cs, expiring, { name, count: 3 })).toBe(
+      "Certifikát shop.example.org vyprší za 3 dny",
+    );
+    expect(alertText(cs, expiring, { name, count: 12 })).toBe(
+      "Certifikát shop.example.org vyprší za 12 dní",
+    );
+    expect(alertText(cs, expiring, { name, count: 0 })).toBe(
+      "Certifikát shop.example.org vyprší za 0 dní",
+    );
+  });
+
+  it("say it without a number when the count is not known", () => {
+    const en = i18n.getFixedT("en");
+    const cs = i18n.getFixedT("cs");
+    expect(alertText(en, expiring, { name: "shop.example.org" })).toBe(
+      "The certificate shop.example.org expires soon",
+    );
+    expect(alertText(cs, expiring, { name: "shop.example.org" })).toBe(
+      "Certifikát shop.example.org brzy vyprší",
+    );
+  });
+
+  it("take the subject's rule, as an expiring certificate's once it expired", () => {
+    const cs = i18n.getFixedT("cs");
+    expect(alertText(cs, expiring, { name: "shop.example.org", rule: "certificate_expired" })).toBe(
+      "Certifikát shop.example.org vypršel",
+    );
+    expect(alertText(cs, { ...expiring, rule: "certificate_failed" }, { name: "a.lan" })).toBe(
+      "Certifikát a.lan se nepodařilo získat",
+    );
+    expect(alertText(cs, { ...expiring, rule: "dns_provider_failed" }, { name: "WEDOS" })).toBe(
+      "DNS poskytovatel WEDOS hlásí chybu",
+    );
+    expect(alertText(cs, { ...expiring, rule: "backup_restore" }, { name: "nas" })).toBe(
+      "nas: obnova ze zálohy potřebuje pozornost",
     );
   });
 });
