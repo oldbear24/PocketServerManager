@@ -457,10 +457,11 @@ function QueueCard({
             <>
               <span className="list-text">
                 <span className="mono list-title">{command.type}</span>
-                <span className="cell-sub ellipsis">
-                  {[target, formatMoment(command.created as string, now)]
-                    .filter(Boolean)
-                    .join(" · ")}
+                {/* a long target is cut short, never the time after it */}
+                <span className="cell-sub queue-sub">
+                  {target && <span className="ellipsis">{target}</span>}
+                  {target && " · "}
+                  <span className="queue-time">{formatMoment(command.created as string, now)}</span>
                 </span>
               </span>
               <CommandStatusPill status={command.status} />

@@ -3941,6 +3941,21 @@ a.job-name {
   max-width: 220px;
 }
 
+/* a queue row's target shrinks and is cut short; its time stays whole */
+.overview .queue-sub {
+  display: flex;
+  min-width: 0;
+  white-space: pre;
+}
+
+.overview .queue-sub .ellipsis {
+  min-width: 0;
+}
+
+.overview .queue-time {
+  flex: none;
+}
+
 /* columns 12 px apart and 18 px from the card's edges, as the design's
    grid: the servers' seven fit beside the side column at 1440 px */
 .overview .table th,

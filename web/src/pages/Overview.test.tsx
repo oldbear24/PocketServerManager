@@ -364,6 +364,9 @@ describe("the Overview of the design", () => {
       expect(within(queue).queryByText(hidden)).toBeNull();
     }
     expect(items[0]).toHaveTextContent("docs.example.cz → vps-hetzner · 12:23");
+    // a long target is cut short in its own element, never the time after it
+    expect(within(items[0]).getByText("docs.example.cz → vps-hetzner")).toHaveClass("ellipsis");
+    expect(within(items[0]).getByText("12:23")).toHaveClass("queue-time");
     expect(within(items[0]).getByText("odesláno")).toBeInTheDocument();
     expect(items[2]).toHaveTextContent("immich @ nas · 12:18");
     expect(items[4]).toHaveTextContent("photos @ nas · 03:00");
