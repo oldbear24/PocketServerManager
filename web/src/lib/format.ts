@@ -69,6 +69,16 @@ export function formatHour(date: Date): string {
   }).format(date);
 }
 
+/** Today as a page's header says it, without the year: "pátek 16. 10.",
+ * "Friday, 10/16". */
+export function formatToday(now: number): string {
+  return new Intl.DateTimeFormat(locale(), {
+    weekday: "long",
+    day: "numeric",
+    month: "numeric",
+  }).format(new Date(now));
+}
+
 export function formatDay(value: string | null | undefined): string {
   const date = parseDate(value);
   if (!date) {
