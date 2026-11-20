@@ -104,6 +104,8 @@ export function BackupsPage() {
   const since = runsSince(now);
   const runs = useLiveRecords<BackupRun>("backup_runs", {
     filter: pb.filter("created >= {:since}", { since }),
+    // for the runs' index of created, which serves the read only so sorted
+    sort: "created",
     fields: runFields,
   });
   // the integrity checks under way, and the targets an alert says are not

@@ -1,16 +1,21 @@
 package panel
 
 import (
+	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/search"
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/oldbear24/PocketServerManager/internal/schema"
+	"github.com/oldbear24/PocketServerManager/internal/testutil"
 )
 
 // overviewMigration is the file of the migration that indexes the backup
@@ -50,16 +55,80 @@ func seedRunHistory(t *testing.T, app core.App, f checkFixture) {
 	}
 }
 
-// runsSincePlan is how SQLite reads the runs of the Overview's window, after
-// it measured the tables as PocketBase has it do each night.
-func runsSincePlan(t *testing.T, app core.App) string {
+// runsReads are the reads of a window of runs that the index of created
+// serves: the Overview's (O12, as the timing test of the page sends it) and
+// the Backups page's 15 days (web/src/pages/Backups.tsx), each sorted by
+// created. A read's fields change nothing of its SQL: PocketBase picks them
+// from whole rows.
+func runsReads(now time.Time) []overviewRead {
+	reads := []overviewRead{}
+	for _, read := range overviewReads(now, nil) {
+		if read.collection == schema.BackupRuns {
+			reads = append(reads, read)
+		}
+	}
+	return append(reads, fullListRead("backups runs", schema.BackupRuns, map[string]string{
+		"filter": "created >= " + pbFilterTime(now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -15)),
+		"sort":   "created",
+	}))
+}
+
+// viewerListQuery is the SQL, and its parameters, of the first page of a read
+// as a viewer makes it: built from the collection's list rule, the viewer and
+// the read's query by PocketBase's own field resolver and search provider, as
+// its list route builds it (apis/record_crud.go, recordsList). A rule that
+// names @request.auth, as the runs' does, joins the users and makes the read
+// DISTINCT (core/record_field_resolver.go), and SQLite then reads the runs by
+// created through its index only when the read is sorted by created: else
+// it goes through every run by id, as DISTINCT costs nothing that way.
+func viewerListQuery(t *testing.T, app core.App, read overviewRead) (string, dbx.Params) {
 	t.Helper()
-	if _, err := app.NonconcurrentDB().NewQuery("PRAGMA optimize").Execute(); err != nil {
+	collection, err := app.FindCollectionByNameOrId(read.collection)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if collection.ListRule == nil || *collection.ListRule == "" {
+		t.Fatalf("%s has no list rule", read.collection)
+	}
+	viewer, err := app.FindAuthRecordByEmail(schema.Users, "viewer@example.com")
+	if err != nil {
+		viewer, _ = testutil.NewUser(t, app, "viewer@example.com", schema.RoleViewer)
+	}
+	resolver := core.NewRecordFieldResolver(app, collection,
+		&core.RequestInfo{Method: http.MethodGet, Auth: viewer, Context: core.RequestInfoContextDefault}, true)
+	query := app.RecordQuery(collection)
+	rule, err := search.FilterData(*collection.ListRule).BuildExpr(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query.AndWhere(rule)
+	resolver.SetAllowHiddenFields(false)
+	// in place of the hook that makes records of the rows: only the SQL is wanted
+	var built *dbx.Query
+	query.WithBuildHook(func(q *dbx.Query) { built = q })
+
+	params := url.Values{}
+	for key, values := range read.query {
+		params[key] = values
+	}
+	params.Set("page", "1")
+	params.Set("perPage", strconv.Itoa(read.perPage))
 	rows := []dbx.NullStringMap{}
-	if err := app.DB().NewQuery("EXPLAIN QUERY PLAN SELECT id FROM backup_runs WHERE created >= {:since}").
-		Bind(dbx.Params{"since": types.NowDateTime().Add(-37 * time.Hour).String()}).All(&rows); err != nil {
+	if _, err := search.NewProvider(resolver).Query(query).CountCol("_rowid_").ParseAndExec(params.Encode(), &rows); err != nil {
+		t.Fatalf("%s: %v", read.name, err)
+	}
+	if built == nil {
+		t.Fatalf("%s built no query", read.name)
+	}
+	return built.SQL(), built.Params()
+}
+
+// runsReadPlan is how SQLite runs a viewer's read of a window of runs.
+func runsReadPlan(t *testing.T, app core.App, read overviewRead) string {
+	t.Helper()
+	sql, params := viewerListQuery(t, app, read)
+	rows := []dbx.NullStringMap{}
+	if err := app.DB().NewQuery("EXPLAIN QUERY PLAN " + sql).Bind(params).All(&rows); err != nil {
 		t.Fatal(err)
 	}
 	details := []string{}
@@ -69,8 +138,12 @@ func runsSincePlan(t *testing.T, app core.App) string {
 	return strings.Join(details, "; ")
 }
 
-// checkRunsByTime checks that the runs have the index and that the window of
-// them is read through it.
+// checkRunsByTime checks that the runs have the index and that each read of
+// a window of them goes through it to the window's runs only: as SQLite
+// first plans it, and once it has measured the tables, as PocketBase's
+// nightly PRAGMA optimize has it do for a table that grew. Without the
+// read's sort SQLite would go by id through every run kept: from the first,
+// and after the measure still for the Backups page's 15 days.
 func checkRunsByTime(t *testing.T, app core.App) {
 	t.Helper()
 	checkIndexes(t, app, schema.BackupRuns, runsCreatedIndex,
@@ -79,8 +152,30 @@ func checkRunsByTime(t *testing.T, app core.App) {
 		"INDEX idx_backup_runs_target ON backup_runs (target)",
 		"INDEX idx_backup_runs_command ON backup_runs (command)",
 	)
-	if plan := runsSincePlan(t, app); !strings.Contains(plan, "USING INDEX idx_backup_runs_created") {
-		t.Errorf("the runs since a moment are read %q", plan)
+	for _, measured := range []bool{false, true} {
+		if measured {
+			// the test's connection made none of the queries PRAGMA
+			// optimize goes by
+			if _, err := app.NonconcurrentDB().NewQuery("ANALYZE").Execute(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, read := range runsReads(time.Now()) {
+			if plan := runsReadPlan(t, app, read); !strings.Contains(plan, "SEARCH backup_runs USING INDEX idx_backup_runs_created (created>?)") {
+				t.Errorf("%s is read %q (measured: %v)", read.name, plan, measured)
+			}
+		}
+	}
+}
+
+// checkRunsWithoutIndex checks that no read of a window of runs uses the
+// index, as before the migration and after its revert.
+func checkRunsWithoutIndex(t *testing.T, app core.App, when string) {
+	t.Helper()
+	for _, read := range runsReads(time.Now()) {
+		if plan := runsReadPlan(t, app, read); strings.Contains(plan, "idx_backup_runs_created") {
+			t.Errorf("%s is read %q %s", read.name, plan, when)
+		}
 	}
 }
 
@@ -120,11 +215,8 @@ func TestTheOverviewMigrationAppliesOverDatabaseBackups(t *testing.T) {
 	}
 	f := seedCheckFixture(t, app, "old")
 	seedRunHistory(t, app, f)
-	// without it SQLite goes through every run, or skips through those of
-	// each job when the jobs are few
-	if plan := runsSincePlan(t, app); strings.Contains(plan, "idx_backup_runs_created") {
-		t.Fatalf("the runs are read %q before the migration", plan)
-	}
+	// without it SQLite goes through every run
+	checkRunsWithoutIndex(t, app, "before the migration")
 
 	// the panel's next start applies only the new migration
 	if err := app.RunAllMigrations(); err != nil {
@@ -135,11 +227,11 @@ func TestTheOverviewMigrationAppliesOverDatabaseBackups(t *testing.T) {
 		run.GetString("error") != f.run.GetString("error") || run.GetDateTime("created").String() != f.run.GetDateTime("created").String() {
 		t.Errorf("a run of before changed: %v, %v", run, err)
 	}
-	// the window holds the runs of its 37 hours: those of the history, every
+	// the window holds the runs of its 49 hours: those of the history, every
 	// 6 hours, and f's
 	window, err := app.FindRecordsByFilter(schema.BackupRuns, "created >= {:since}", "", 0, 0,
-		dbx.Params{"since": types.NowDateTime().Add(-37 * time.Hour)})
-	if err != nil || len(window) != 7+1 {
+		dbx.Params{"since": types.NowDateTime().Add(-49 * time.Hour)})
+	if err != nil || len(window) != 9+1 {
 		t.Errorf("the runs of the window: %d, %v", len(window), err)
 	}
 
@@ -157,9 +249,7 @@ func TestTheOverviewMigrationAppliesOverDatabaseBackups(t *testing.T) {
 			t.Errorf("the index %s stays after the revert", index)
 		}
 	}
-	if plan := runsSincePlan(t, app); strings.Contains(plan, "idx_backup_runs_created") {
-		t.Errorf("the runs are read %q after the revert", plan)
-	}
+	checkRunsWithoutIndex(t, app, "after the revert")
 	if count, err := app.CountRecords(schema.BackupRuns); err != nil || count != 60*4+1 {
 		t.Errorf("the revert left %d runs: %v", count, err)
 	}

@@ -21,8 +21,8 @@ export type ListOptions = {
   skipTotal?: boolean;
   /** Keeps the list in place: realtime sends only the records the filter
    * matches, an update of a record shown replaces it, an update of a record
-   * not shown is ignored, and only a create or a delete loads the list
-   * again. Without it any event of a filtered list reloads it, as a
+   * not shown is ignored but for the page being read, and only a create or a
+   * delete loads the list again. Without it any event of a filtered list reloads it, as a
    * command's progress would the queue. Only for a filter and a sort on
    * fields that never change, as a command's type and creation: an update
    * cannot then move a record into the list, out of it or within it. */
@@ -39,8 +39,9 @@ export type ListState<T> = {
 
 /**
  * Loads a list and keeps it live over PocketBase realtime. An update of a known
- * record is applied in place; anything that may change the list itself reloads it,
- * and so does each reconnect of the realtime connection.
+ * record is applied in place, and to the page being read, which may be older;
+ * anything that may change the list itself reloads it, and so does each
+ * reconnect of the realtime connection.
  */
 export function useLiveList<T extends RecordModel>(
   collection: string,
@@ -71,15 +72,24 @@ export function useLiveList<T extends RecordModel>(
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const generation = useRef(0);
+  // The updates that arrive while the newest page is read, the newest of each
+  // record. The page may have been read before them, and as no later event
+  // need come for a record, as for a command that has finished, each takes
+  // the place of its record's copy on the page unless that copy is newer, as
+  // useLiveRecords does.
+  const arrived = useRef<Map<string, T> | null>(null);
 
   const load = useCallback(async () => {
     const current = ++generation.current;
+    // a read sent after an update has it: only what arrives from now on
+    const updates = new Map<string, T>();
+    arrived.current = updates;
     try {
       const list = await pb
         .collection(collection)
         .getList<T>(1, perPage, { filter, sort, expand, fields, skipTotal });
       if (current === generation.current) {
-        setItems(list.items);
+        setItems(list.items.map((item) => newer(item, updates.get(item.id))));
         // without a count PocketBase sends -1
         setTotal(skipTotal ? list.items.length : list.totalItems);
         setError(null);
@@ -90,6 +100,7 @@ export function useLiveList<T extends RecordModel>(
       }
     } finally {
       if (current === generation.current) {
+        arrived.current = null;
         setLoading(false);
       }
     }
@@ -120,6 +131,11 @@ export function useLiveList<T extends RecordModel>(
       .subscribe<T>(
         "*",
         ({ action, record }) => {
+          // a list that applies an update in place keeps it for the page
+          // being read; any other reads again after it
+          if (action === "update" && (inPlace || (!filter && !expand))) {
+            arrived.current?.set(record.id, record);
+          }
           if (inPlace) {
             if (action !== "update") {
               schedule();
@@ -185,6 +201,7 @@ export function useLiveList<T extends RecordModel>(
     return () => {
       cancelled = true;
       pendingLoads.current++; // what is still loading belongs to an older filter
+      arrived.current = null;
       if (timer.current) {
         clearTimeout(timer.current);
       }
@@ -208,6 +225,12 @@ function subscribeOptions(options: Record<string, string | undefined>) {
   return set.length > 0 ? Object.fromEntries(set) : undefined;
 }
 
+/** A record of a page, or the update of it that arrived while the page was
+ * read, unless the page's copy is newer. */
+function newer<T extends RecordModel>(item: T, update: T | undefined): T {
+  return update && !(item.updated > update.updated) ? update : item;
+}
+
 type RecordEvent<T> = { action: string; record: T };
 
 /** An event applied to records by id: a deleted record leaves, any other
@@ -229,7 +252,10 @@ function applyEvent<T extends RecordModel>(records: Map<string, T>, event: Recor
  * joins, a changed one replaces its copy and a deleted one leaves, without
  * loading the list again. For lists too long to reload on every change, such
  * as two weeks of backup runs. The records come in no order; `fields` must
- * name `updated`.
+ * name `updated`. A `sort` orders the read only, for an index that serves the
+ * filter: PocketBase reads a list whose rule names `@request.auth` with a
+ * join and DISTINCT, and SQLite then goes through every record by id unless
+ * the read is sorted by the field the index starts with.
  *
  * The list is read once the subscription is in place, so that nothing changes
  * unseen between the two, and again after each reconnect of the realtime
@@ -237,9 +263,9 @@ function applyEvent<T extends RecordModel>(records: Map<string, T>, event: Recor
  */
 export function useLiveRecords<T extends RecordModel>(
   collection: string,
-  options: { filter?: string; fields?: string; enabled?: boolean } = {},
+  options: { filter?: string; sort?: string; fields?: string; enabled?: boolean } = {},
 ): ListState<T> {
-  const { filter, fields, enabled = true } = options;
+  const { filter, sort, fields, enabled = true } = options;
 
   const [items, setItems] = useState<T[]>([]);
   const [loading, setLoading] = useState(enabled);
@@ -287,7 +313,7 @@ export function useLiveRecords<T extends RecordModel>(
         early = [];
       }
       pb.collection(collection)
-        .getFullList<T>({ filter, fields, batch: 1000 })
+        .getFullList<T>({ filter, sort, fields, batch: 1000 })
         .then((list) => {
           if (cancelled || current !== reads) {
             return;
@@ -376,7 +402,7 @@ export function useLiveRecords<T extends RecordModel>(
       void unsubscribe?.();
       void stopConnect?.();
     };
-  }, [collection, enabled, fields, filter, version]);
+  }, [collection, enabled, fields, filter, sort, version]);
 
   const reload = useCallback(() => setVersion((current) => current + 1), []);
 

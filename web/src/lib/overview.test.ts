@@ -1182,7 +1182,8 @@ describe("what the Overview reads", () => {
       },
       targets: { perPage: 500, fields: "id,collectionId,collectionName,updated,name" },
       runs: {
-        filter: 'created >= "2026-10-14 21:00:00.000Z"',
+        filter: 'created >= "2026-10-14 09:00:00.000Z"',
+        sort: "created",
         fields:
           "id,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,total_bytes,error,command,retry_of",
       },
@@ -1196,13 +1197,39 @@ describe("what the Overview reads", () => {
     );
   });
 
-  it("reads the runs from the hour 37 hours back, which changes once an hour", () => {
+  it("reads the runs from the hour 49 hours back, which changes once an hour", () => {
     const at = (iso: string) => overviewQueries(Date.parse(iso)).runs.filter;
     expect(at("2026-10-16T10:59:59Z")).toBe(at("2026-10-16T10:00:00Z"));
-    expect(at("2026-10-16T11:00:00Z")).toBe('created >= "2026-10-14 22:00:00.000Z"');
-    // a run made 36 hours ago, queued 12 hours, ended within the 24
-    const made = { created: pbDate(now - 36 * hour) };
-    expect(matchesFilter(made, overviewQueries(now).runs.filter!)).toBe(true);
+    expect(at("2026-10-16T11:00:00Z")).toBe('created >= "2026-10-14 10:00:00.000Z"');
+  });
+
+  // A run waits up to 12 hours in the queue and, once it starts, has 12
+  // more before its deadline: it may end 24 hours after it was made.
+  it("reads every run that may have ended in the last 24 hours, so the tile counts it", async () => {
+    const filter = overviewQueries(now).runs.filter!;
+    const ran = (made: number, waited: number, took: number) =>
+      f.run("j3", "t3", new Date(now - made * hour).toISOString(), "failed", {
+        host: "h3",
+        started_at: pbDate(now - (made - waited) * hour),
+        finished_at: pbDate(now - (made - waited - took) * hour),
+        error: "Fatal: unable to open repository",
+      });
+    const runs = [
+      // made 37.5 hours ago, waited 12, failed 23.5 hours ago
+      ran(37.5, 12, 2),
+      // made 38 hours ago, waited 4, stopped at its deadline 22 hours ago
+      ran(38, 4, 12),
+      // made 47 hours ago, waited its 12 hours, ran its 12: 23 hours ago
+      ran(47, 12, 12),
+    ];
+    expect(runs.filter((run) => matchesFilter(run, filter))).toEqual(runs);
+    const cs = await lang("cs");
+    expect(backupSummary(f.jobs, runs, hostNames, now, cs)).toMatchObject({
+      succeeded: 0,
+      total: 3,
+    });
+    // made before, it ended before the 24 hours
+    expect(matchesFilter({ created: pbDate(now - 50 * hour) }, filter)).toBe(false);
   });
 
   it("reads the last disconnects of every server offline in one list", () => {

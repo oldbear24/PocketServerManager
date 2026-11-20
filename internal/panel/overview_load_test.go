@@ -141,10 +141,13 @@ func overviewReads(now time.Time, offline []string) []overviewRead {
 			"fields": "id,collectionId,collectionName,updated,name,host,source_kind,targets,origin,database,site,label_removed,enabled",
 		}),
 		listRead("O11 backup_targets", schema.BackupTargets, 500, map[string]string{"fields": "id,collectionId,collectionName,updated,name"}),
-		// the start of the hour UTC 37 hours ago: the day, the 12 hours a
-		// run may wait in the queue, and an hour for the rounding
+		// the start of the hour UTC 49 hours ago: the day, the 12 hours a
+		// run may wait in the queue, the 12 it may then run, and an hour to
+		// spare; sorted by created, which only the runs' index of created
+		// serves
 		fullListRead("O12 backup_runs", schema.BackupRuns, map[string]string{
-			"filter": "created >= " + pbFilterTime(now.UTC().Truncate(time.Hour).Add(-37*time.Hour)), "fields": overviewRunFields,
+			"filter": "created >= " + pbFilterTime(now.UTC().Truncate(time.Hour).Add(-49*time.Hour)),
+			"sort":   "created", "fields": overviewRunFields,
 		}),
 	}
 	// R1, one read for every server offline, and R2, which do not hold up
@@ -173,7 +176,7 @@ type overviewLoadScale struct {
 }
 
 var (
-	overviewFullScale = overviewLoadScale{commands: 100_000, runsPerJob: 75, resolvedAlerts: 2000, events: 5000}
+	overviewFullScale = overviewLoadScale{commands: 100_000, runsPerJob: 300, resolvedAlerts: 2000, events: 5000}
 	overviewRaceScale = overviewLoadScale{commands: 5000, runsPerJob: 8, resolvedAlerts: 200, events: 500}
 )
 
@@ -257,10 +260,12 @@ func hexID(prefix string, i, size int) string {
 
 // seedOverviewLoad writes 20 servers with their vitals, 1000 containers, 100
 // stacks, 40 sites with 60 domains, 50 certificates and 800 deployments, 120
-// backup jobs to 3 targets with about 9000 runs over 60 days and logs of 2 to
-// 8 KB, 100,000 commands over 100 days, 2000 resolved alerts and 8 open ones,
-// in one transaction, before the panel registers: its hooks see none of it,
-// as on a panel that starts with this database.
+// backup jobs to 3 targets with 36,000 runs and logs of 2 to 8 KB, 100,000
+// commands over 100 days, 2000 resolved alerts and 8 open ones, in one
+// transaction, before the panel registers: its hooks see none of it, as on a
+// panel that starts with this database. The runs go back 240 days: as many
+// as a panel with four times the jobs keeps in its 60, with no more of them
+// in the Overview's window than these 120 jobs make.
 func seedOverviewLoad(t *testing.T, app core.App, scale overviewLoadScale, now time.Time) overviewSeed {
 	t.Helper()
 	seed := overviewSeed{}
@@ -440,7 +445,7 @@ func seedOverviewLoad(t *testing.T, app core.App, scale overviewLoadScale, now t
 		}
 
 		// 3 targets on the backup server; 120 jobs, each with a run every
-		// 19.2 hours over 60 days
+		// 19.2 hours, 300 of them over 240 days
 		targets := []*core.Record{}
 		for i, kind := range []string{"local", "s3", "sftp"} {
 			targets = append(targets, s.save(schema.BackupTargets, map[string]any{"name": "target-" + kind, "kind": kind, "host": carrier.Id,
@@ -459,7 +464,7 @@ func seedOverviewLoad(t *testing.T, app core.App, scale overviewLoadScale, now t
 				"retention": map[string]int{"daily": 7, "weekly": 4}, "enabled": false, "origin": schema.JobManual,
 				"last_status": schema.RunSucceeded, "last_run_at": now.Add(-time.Hour)}, now.Add(-90*day)))
 		}
-		runsSince := now.UTC().Truncate(time.Hour).Add(-37 * time.Hour)
+		runsSince := now.UTC().Truncate(time.Hour).Add(-49 * time.Hour)
 		interval := 1152 * time.Minute // 19.2 hours
 		for j, job := range jobs {
 			jobTargets := job.GetStringSlice("targets")
@@ -767,7 +772,11 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	// much again for a long record: it writes each whole record as JSON and
 	// reads it back before it picks the fields (tools/picker). The thousand
 	// containers and the runs of the window, whose logs it reads too, take
-	// 60 to 85 ms on a 2.1 GHz core; the rest under 15 ms each.
+	// the longest; the rest under 15 ms each. The runs' read goes through
+	// their index of created to the window only because it is sorted by
+	// created: PocketBase reads a list whose rule names @request.auth with a
+	// join of the users and DISTINCT, and SQLite would otherwise go by id
+	// through all 36,000 runs and their logs, which takes 150 ms or more.
 	if !raceEnabled {
 		for _, m := range measured {
 			if median := m.median(); median >= 100*time.Millisecond {
