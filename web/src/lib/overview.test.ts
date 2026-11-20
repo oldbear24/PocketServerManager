@@ -14,6 +14,8 @@ import {
   commandTarget,
   containerSummary,
   disconnectQuery,
+  disconnectReasons,
+  disconnectsRead,
   hostKind,
   overviewCollections,
   overviewQueries,
@@ -1203,12 +1205,45 @@ describe("what the Overview reads", () => {
     expect(matchesFilter(made, overviewQueries(now).runs.filter!)).toBe(true);
   });
 
-  it("reads a server's last disconnect, once", () => {
-    expect(disconnectQuery("h7")).toEqual({
-      filter: "host = \"h7\" && kind = 'connection.disconnected'",
+  it("reads the last disconnects of every server offline in one list", () => {
+    expect(disconnectQuery(["h7"])).toEqual({
+      filter: "(host = \"h7\") && kind = 'connection.disconnected'",
       sort: "-created",
-      fields: "id,data,created",
+      fields: "id,host,data,created",
       skipTotal: true,
     });
+    const filter = disconnectQuery(["h7", "h8", "h9", "h10"]).filter;
+    expect(filter).toBe(
+      '(host = "h7" || host = "h8" || host = "h9" || host = "h10") && ' +
+        "kind = 'connection.disconnected'",
+    );
+    const event = (host: string, kind = "connection.disconnected") => ({ host, kind });
+    expect(matchesFilter(event("h9"), filter)).toBe(true);
+    expect(matchesFilter(event("h1"), filter)).toBe(false);
+    expect(matchesFilter(event("h9", "connection.connected"), filter)).toBe(false);
+    expect(disconnectsRead).toBe(200);
+  });
+
+  it("takes each server's reason from its newest disconnect only", () => {
+    const event = (host: string, reason?: unknown) => ({
+      host,
+      data: reason === undefined ? null : { reason },
+    });
+    expect(
+      disconnectReasons([
+        event("h7", "eof"),
+        event("h8"),
+        event("h7", "keepalive"),
+        event("h8", "reset"),
+        event("h9", 42),
+        event("h10", "canceled"),
+      ]),
+    ).toEqual(
+      new Map([
+        ["h7", "eof"],
+        ["h10", "canceled"],
+      ]),
+    );
+    expect(disconnectReasons([])).toEqual(new Map());
   });
 });

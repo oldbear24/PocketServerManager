@@ -50,6 +50,8 @@ import {
   commandTarget,
   containerSummary,
   disconnectQuery,
+  disconnectReasons,
+  disconnectsRead,
   hostKind,
   overviewQueries,
   siteRows,
@@ -633,8 +635,8 @@ function BackupsCard({
 }
 
 /** Why each server that is offline last lost its stream, when the
- * diagnostics plugin wrote it: read once per server and time it was last
- * seen, not live. */
+ * diagnostics plugin wrote it: read in one list for all of them, once per
+ * set of servers offline and the times they were last seen, not live. */
 function useDisconnectReasons(hosts: HostSummary[]): Map<string, string> {
   const key = hosts
     .filter((host) => host.status === "offline")
@@ -648,22 +650,16 @@ function useDisconnectReasons(hosts: HostSummary[]): Map<string, string> {
     }
     let cancelled = false;
     const ids = key.split(",").map((item) => item.split("@")[0]);
-    void Promise.all(
-      ids.map((id) =>
-        pb
-          .collection("events")
-          .getList<HostEvent>(1, 1, disconnectQuery(id))
-          .then((list) => {
-            const reason = list.items[0]?.data?.reason;
-            return [id, typeof reason === "string" ? reason : ""] as const;
-          })
-          .catch(() => [id, ""] as const),
-      ),
-    ).then((entries) => {
-      if (!cancelled) {
-        setReasons(new Map(entries.filter(([, reason]) => reason)));
-      }
-    });
+    void pb
+      .collection("events")
+      .getList<HostEvent>(1, disconnectsRead, disconnectQuery(ids))
+      .then((list) => disconnectReasons(list.items))
+      .catch(() => new Map<string, string>())
+      .then((found) => {
+        if (!cancelled) {
+          setReasons(found);
+        }
+      });
     return () => {
       cancelled = true;
     };

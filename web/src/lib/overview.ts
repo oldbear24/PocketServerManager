@@ -37,7 +37,7 @@ import { pb } from "./pb";
 import type { SitePhp } from "./php";
 import type { ListOptions } from "./realtime";
 import type { Deployment, Site } from "./sites";
-import type { Alert, Command, Container, Stack } from "./types";
+import type { Alert, Command, Container, HostEvent, Stack } from "./types";
 
 const minute = 60 * 1000;
 const hour = 60 * minute;
@@ -199,16 +199,45 @@ export function overviewQueries(now: number): Record<QueryName, ListOptions> {
   };
 }
 
-/** How a server that went away went: the newest disconnect of its stream,
- * whose data says why when the diagnostics plugin wrote it. Read with
- * getList(1, 1) once per server that is offline, not live. */
-export function disconnectQuery(host: string) {
+/** How many disconnects the Overview reads, newest first, for the servers
+ * that are offline. */
+export const disconnectsRead = 200;
+
+/** How the servers that went away went: the newest disconnects of their
+ * streams, whose data says why when the diagnostics plugin wrote it. Read
+ * with getList(1, disconnectsRead) once for all the servers that are
+ * offline, not live: a read for each would make the fourth list of events
+ * with a filter once four are offline, which PocketBase holds up when it
+ * finds nothing (lib/alerts.tsx). A server's newest disconnect is the first
+ * of its own; it falls past the page only after another offline server
+ * disconnected 200 times since, and its line then names no reason. */
+export function disconnectQuery(hosts: string[]) {
+  const params = Object.fromEntries(hosts.map((host, index) => [`h${index}`, host]));
+  const each = hosts.map((_, index) => `host = {:h${index}}`).join(" || ");
   return {
-    filter: pb.filter("host = {:host} && kind = 'connection.disconnected'", { host }),
+    filter: pb.filter(`(${each}) && kind = 'connection.disconnected'`, params),
     sort: "-created",
-    fields: "id,data,created",
+    fields: "id,host,data,created",
     skipTotal: true,
   };
+}
+
+/** Each server's reason, from its newest disconnect of those read newest
+ * first; none for a server whose newest names none. */
+export function disconnectReasons(events: Pick<HostEvent, "host" | "data">[]): Map<string, string> {
+  const reasons = new Map<string, string>();
+  const newest = new Set<string>();
+  for (const event of events) {
+    if (newest.has(event.host)) {
+      continue;
+    }
+    newest.add(event.host);
+    const reason = event.data?.reason;
+    if (typeof reason === "string" && reason) {
+      reasons.set(event.host, reason);
+    }
+  }
+  return reasons;
 }
 
 /** A line of a tile, in its tone; no tone is the plain note colour. */

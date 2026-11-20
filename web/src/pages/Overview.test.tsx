@@ -87,7 +87,8 @@ beforeEach(async () => {
       perPage: 1,
       totalItems: -1,
       totalPages: -1,
-      items: name === "events" ? [{ id: "e1", data: { reason: "eof" }, created: "" }] : [],
+      items:
+        name === "events" ? [{ id: "e1", host: "h7", data: { reason: "eof" }, created: "" }] : [],
     }),
   })) as unknown as typeof pb.collection);
 });
@@ -258,6 +259,63 @@ describe("the Overview of the design", () => {
     expect(within(rows[1]).getByText("OK · 84 MB")).toHaveClass("ok-text");
     expect(rows[2]).toHaveTextContent("panel → Backblaze B2");
     expect(rows[3]).toHaveTextContent("OK · 2,1 GB");
+  });
+
+  it("reads why every offline server went away in one list, each from its newest disconnect", async () => {
+    const getList = vi.fn(async () => ({
+      page: 1,
+      perPage: 200,
+      totalItems: -1,
+      totalPages: -1,
+      items: [
+        { id: "e3", host: "h1", data: { reason: "keepalive_timeout" }, created: "" },
+        { id: "e2", host: "h7", data: { reason: "eof" }, created: "" },
+        { id: "e1", host: "h1", data: { reason: "tls_error" }, created: "" },
+      ],
+    }));
+    vi.mocked(pb.collection).mockImplementation(((name: string) =>
+      name === "events" ? { getList } : {}) as unknown as typeof pb.collection);
+    const hetzner = f.hosts.find((host) => host.id === "h1")!;
+    live.lists.alerts = [
+      ...f.alerts,
+      {
+        ...f.alerts[0],
+        id: "a9",
+        target: "h1",
+        host: "h1",
+        message: "vps-hetzner stopped responding",
+      },
+    ];
+    signInAs("viewer");
+    page(
+      hostsState(
+        f.hosts.map((host) =>
+          host === hetzner
+            ? {
+                ...host,
+                status: "offline",
+                stream_open: false,
+                last_seen: f.pbDate(f.now - 3_600_000),
+              }
+            : host,
+        ),
+      ),
+    );
+    const attention = card("Vyžaduje pozornost");
+    await waitFor(() =>
+      expect(
+        within(attention).getByText(/keepalive bez odpovědi, možná výpadek sítě/),
+      ).toBeInTheDocument(),
+    );
+    expect(within(attention).getByText(/spojení bylo uzavřeno/)).toBeInTheDocument();
+    expect(within(attention).queryByText(/chyba TLS/)).toBeNull();
+    expect(getList).toHaveBeenCalledTimes(1);
+    expect(getList).toHaveBeenCalledWith(1, 200, {
+      filter: '(host = "h1" || host = "h7") && kind = \'connection.disconnected\'',
+      sort: "-created",
+      fields: "id,host,data,created",
+      skipTotal: true,
+    });
   });
 
   it("names each alert by its subject, with its detail, critical first", async () => {
