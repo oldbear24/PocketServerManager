@@ -227,11 +227,11 @@ func TestTheOverviewMigrationAppliesOverDatabaseBackups(t *testing.T) {
 		run.GetString("error") != f.run.GetString("error") || run.GetDateTime("created").String() != f.run.GetDateTime("created").String() {
 		t.Errorf("a run of before changed: %v, %v", run, err)
 	}
-	// the window holds the runs of its 37 hours: those of the history, every
+	// the window holds the runs of its 49 hours: those of the history, every
 	// 6 hours, and f's
 	window, err := app.FindRecordsByFilter(schema.BackupRuns, "created >= {:since}", "", 0, 0,
-		dbx.Params{"since": types.NowDateTime().Add(-37 * time.Hour)})
-	if err != nil || len(window) != 7+1 {
+		dbx.Params{"since": types.NowDateTime().Add(-49 * time.Hour)})
+	if err != nil || len(window) != 9+1 {
 		t.Errorf("the runs of the window: %d, %v", len(window), err)
 	}
 

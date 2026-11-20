@@ -141,11 +141,12 @@ func overviewReads(now time.Time, offline []string) []overviewRead {
 			"fields": "id,collectionId,collectionName,updated,name,host,source_kind,targets,origin,database,site,label_removed,enabled",
 		}),
 		listRead("O11 backup_targets", schema.BackupTargets, 500, map[string]string{"fields": "id,collectionId,collectionName,updated,name"}),
-		// the start of the hour UTC 37 hours ago: the day, the 12 hours a
-		// run may wait in the queue, and an hour for the rounding; sorted by
-		// created, which only the runs' index of created serves
+		// the start of the hour UTC 49 hours ago: the day, the 12 hours a
+		// run may wait in the queue, the 12 it may then run, and an hour to
+		// spare; sorted by created, which only the runs' index of created
+		// serves
 		fullListRead("O12 backup_runs", schema.BackupRuns, map[string]string{
-			"filter": "created >= " + pbFilterTime(now.UTC().Truncate(time.Hour).Add(-37*time.Hour)),
+			"filter": "created >= " + pbFilterTime(now.UTC().Truncate(time.Hour).Add(-49*time.Hour)),
 			"sort":   "created", "fields": overviewRunFields,
 		}),
 	}
@@ -463,7 +464,7 @@ func seedOverviewLoad(t *testing.T, app core.App, scale overviewLoadScale, now t
 				"retention": map[string]int{"daily": 7, "weekly": 4}, "enabled": false, "origin": schema.JobManual,
 				"last_status": schema.RunSucceeded, "last_run_at": now.Add(-time.Hour)}, now.Add(-90*day)))
 		}
-		runsSince := now.UTC().Truncate(time.Hour).Add(-37 * time.Hour)
+		runsSince := now.UTC().Truncate(time.Hour).Add(-49 * time.Hour)
 		interval := 1152 * time.Minute // 19.2 hours
 		for j, job := range jobs {
 			jobTargets := job.GetStringSlice("targets")

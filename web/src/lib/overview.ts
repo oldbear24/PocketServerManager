@@ -108,12 +108,13 @@ export function deploymentsSince(now: number): string {
   return `${new Date(now - 7 * day).toISOString().slice(0, 10)} 00:00:00.000Z`;
 }
 
-/** The runs made since the start of the hour UTC 37 hours ago: the 24 hours
- * the Overview counts, up to 12 more a run may have waited in the queue
- * (internal/panel/backup_jobs.go), and the hour it is rounded to. The
- * filter changes once an hour, which reads the runs again. */
+/** The runs made since the start of the hour UTC 49 hours ago: every run
+ * that may have ended in the 24 hours the Overview counts, as a run may wait
+ * 12 hours in the queue (internal/panel/backup_jobs.go) and then run 12 more
+ * (backup.run's timeout, internal/commands/registry.go), and an hour to
+ * spare. The filter changes once an hour, which reads the runs again. */
 export function runsMadeSince(now: number): string {
-  return pbDate(Math.floor(now / hour) * hour - 37 * hour);
+  return pbDate(Math.floor(now / hour) * hour - 49 * hour);
 }
 
 /**
