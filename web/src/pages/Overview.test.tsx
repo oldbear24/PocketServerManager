@@ -610,13 +610,33 @@ describe("the Overview's open alerts, which are the Layout's (#33)", () => {
     expect(screen.getByRole("button", { name: "Upozornění, 4 nová" })).toBeInTheDocument();
   });
 
-  it("counts every open alert the panel counts, more than the Layout holds", () => {
+  it("counts every open alert the panel counts, more than the Layout holds, and says so", () => {
     live.totals.alerts = 250;
     signInAs("viewer");
-    page();
+    const view = page();
     const attention = card("Vyžaduje pozornost");
     expect(within(attention).getByText("250 otevřených")).toBeInTheDocument();
     expect(within(attention).getAllByRole("listitem")).toHaveLength(f.alerts.length);
+    expect(
+      within(attention).getByText("Vypsána jsou jen nejnovější 4 z 250 otevřených upozornění"),
+    ).toBeInTheDocument();
+    view.unmount();
+
+    // the newest 200, as the Layout reads them: none is shown as all
+    live.lists.alerts = Array.from({ length: 200 }, (_, index) => ({
+      ...f.alerts[1],
+      id: `n${index}`,
+    }));
+    live.totals.alerts = 221;
+    page();
+    const all = card("Vyžaduje pozornost");
+    expect(within(all).getByText("221 otevřených")).toBeInTheDocument();
+    expect(
+      within(all).getByText("Vypsáno je jen nejnovějších 200 z 221 otevřených upozornění"),
+    ).toBeInTheDocument();
+    expect(within(all).queryByRole("button", { name: /Zobrazit všechna/ })).toBeNull();
+    fireEvent.click(within(all).getByRole("button", { name: "Zobrazit nejnovějších 200" }));
+    expect(within(all).getAllByRole("listitem")).toHaveLength(200);
   });
 
   it("follows the Layout's list as an alert opens and another resolves, without a remount", () => {
@@ -651,6 +671,8 @@ describe("the Overview's lists of alerts", () => {
     expect(within(attention).getAllByRole("listitem")).toHaveLength(6);
     const more = within(attention).getByRole("button", { name: "Zobrazit všechna (9)" });
     expect(more).toHaveAttribute("aria-expanded", "false");
+    // all of them are held: nothing to say of more
+    expect(within(attention).queryByText(/Vypsán/)).toBeNull();
     fireEvent.click(more);
     const items = within(attention).getAllByRole("listitem");
     expect(items).toHaveLength(9);

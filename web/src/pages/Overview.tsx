@@ -333,6 +333,8 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
   const [all, setAll] = useState(false);
   const section = sectionOf(alerts);
   const shown = all ? items : items.slice(0, attentionShown);
+  // the Layout holds the newest 200 of all the panel counts
+  const truncated = alerts.total > alerts.items.length;
 
   let body: ReactNode;
   if (alerts.error) {
@@ -370,11 +372,28 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
             );
           })}
         </ul>
-        {items.length > attentionShown && (
-          <div className="card-foot">
-            <Button size="small" aria-expanded={all} onClick={() => setAll(!all)}>
-              {all ? t("overview.showLess") : t("overview.showAll", { total: items.length })}
-            </Button>
+        {(items.length > attentionShown || truncated) && (
+          <div
+            className="card-foot"
+            style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8 }}
+          >
+            {truncated && (
+              <span className="muted">
+                {t("overview.attentionTruncated", {
+                  count: alerts.items.length,
+                  total: alerts.total,
+                })}
+              </span>
+            )}
+            {items.length > attentionShown && (
+              <Button size="small" aria-expanded={all} onClick={() => setAll(!all)}>
+                {all
+                  ? t("overview.showLess")
+                  : truncated
+                    ? t("overview.showNewest", { count: items.length })
+                    : t("overview.showAll", { total: items.length })}
+              </Button>
+            )}
           </div>
         )}
       </>
