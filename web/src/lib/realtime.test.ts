@@ -435,6 +435,44 @@ describe("a live list", () => {
     expect(fake.getList).not.toHaveBeenCalled();
   });
 
+  it("is loading from the render that enables it until its page is there", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useLiveList<Run>("dns_providers", { enabled }),
+      { initialProps: { enabled: false } },
+    );
+    expect(result.current.loading).toBe(false);
+
+    rerender({ enabled: true });
+    // never an empty list that has loaded
+    expect(result.current.loading).toBe(true);
+    expect(result.current.items).toEqual([]);
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+    await fake.page([record("p1", "ok", "2026-11-09 12:00:00.000Z")]);
+    expect(result.current.loading).toBe(false);
+    expect(shown(result.current.items)).toEqual(["p1:ok"]);
+  });
+
+  it("is not loading once it waits again, and loads anew when enabled", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useLiveList<Run>("dns_providers", { enabled }),
+      { initialProps: { enabled: true } },
+    );
+    expect(result.current.loading).toBe(true);
+    rerender({ enabled: false });
+    expect(result.current.loading).toBe(false);
+    // the page of the read it no longer waits for changes nothing
+    await fake.page([record("p1", "ok", "2026-11-09 12:00:00.000Z")], 1, 0);
+    expect(result.current.items).toEqual([]);
+
+    rerender({ enabled: true });
+    expect(result.current.loading).toBe(true);
+    await fake.page([record("p2", "ok", "2026-11-09 12:00:00.000Z")]);
+    expect(result.current.loading).toBe(false);
+    expect(shown(result.current.items)).toEqual(["p2:ok"]);
+  });
+
   describe("without inPlace", () => {
     it("subscribes to every record of the collection, with the fields only", async () => {
       const fake = fakeList();

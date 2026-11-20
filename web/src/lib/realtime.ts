@@ -61,6 +61,13 @@ export function useLiveList<T extends RecordModel>(
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<unknown>(null);
+  // A list that waited loads once it is enabled: from that render on it is
+  // loading, not empty. A list that waits loads nothing.
+  const [wasEnabled, setWasEnabled] = useState(enabled);
+  if (enabled !== wasEnabled) {
+    setWasEnabled(enabled);
+    setLoading(enabled);
+  }
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const generation = useRef(0);
