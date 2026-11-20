@@ -39,7 +39,8 @@ export type ListState<T> = {
 
 /**
  * Loads a list and keeps it live over PocketBase realtime. An update of a known
- * record is applied in place; anything that may change the list itself reloads it.
+ * record is applied in place; anything that may change the list itself reloads it,
+ * and so does each reconnect of the realtime connection.
  */
 export function useLiveList<T extends RecordModel>(
   collection: string,
@@ -102,7 +103,10 @@ export function useLiveList<T extends RecordModel>(
     };
 
     let unsubscribe: (() => Promise<void>) | undefined;
+    let stopConnect: (() => Promise<void>) | undefined;
     let cancelled = false;
+    // once the subscription is in place, a connect is a reconnect
+    let subscribed = false;
     const pendingLoads = generation;
 
     pb.collection(collection)
@@ -142,9 +146,34 @@ export function useLiveList<T extends RecordModel>(
           void stop();
         } else {
           unsubscribe = stop;
+          subscribed = true;
         }
       })
       .catch((err: unknown) => setError(err));
+
+    // PocketBase's client reconnects by itself, with a new client id: the
+    // events between are lost, so the list is read again, as useLiveRecords
+    // does. The connect that makes the subscription comes before it is in
+    // place and is no reconnect.
+    pb.realtime
+      .subscribe("PB_CONNECT", () => {
+        if (subscribed && !cancelled) {
+          if (timer.current) {
+            clearTimeout(timer.current);
+          }
+          void load();
+        }
+      })
+      .then((stop) => {
+        if (cancelled) {
+          void stop();
+        } else {
+          stopConnect = stop;
+        }
+      })
+      .catch(() => {
+        // the list's own subscription says why
+      });
 
     return () => {
       cancelled = true;
@@ -153,6 +182,7 @@ export function useLiveList<T extends RecordModel>(
         clearTimeout(timer.current);
       }
       void unsubscribe?.();
+      void stopConnect?.();
     };
   }, [collection, enabled, expand, fields, filter, inPlace, load]);
 

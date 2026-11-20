@@ -380,6 +380,61 @@ describe("a live list", () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it("loads the list again after a reconnect, not at the connect of its subscription", async () => {
+    const fake = fakeList({ held: true });
+    const { result } = renderHook(() => useLiveList<Run>("hosts", { sort: "name" }));
+    expect(fake.realtime).toHaveBeenCalledWith("PB_CONNECT", expect.any(Function));
+    await fake.page([record("h1", "online", "2026-11-09 12:00:00.000Z")]);
+    // the connect that makes the subscription is no reconnect
+    fake.connect();
+    await fake.placed();
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+
+    // while the connection was down h1 went offline and h2 came, unseen
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+    await fake.page([
+      record("h1", "offline", "2026-11-09 12:00:05.000Z"),
+      record("h2", "online", "2026-11-09 12:00:05.000Z"),
+    ]);
+    expect(shown(result.current.items)).toEqual(["h1:offline", "h2:online"]);
+    expect(result.current.total).toBe(2);
+
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(3);
+  });
+
+  it("reloads after a reconnect at once, in place of a reload it was waiting for", async () => {
+    vi.useFakeTimers();
+    const fake = fakeList();
+    renderHook(() => useLiveList<Run>("commands", { filter: commandFilter, inPlace: true }));
+    await fake.page([record("c1", "queued", "2026-11-09 12:00:00.000Z")]);
+    fake.send("create", record("c2", "queued", "2026-11-09 12:00:01.000Z"));
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(fake.getList).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops listening for connects when it goes", async () => {
+    const fake = fakeList();
+    const { unmount } = renderHook(() => useLiveList<Run>("hosts"));
+    await fake.page([]);
+    unmount();
+    await waitFor(() => expect(fake.stopConnect).toHaveBeenCalled());
+    expect(fake.stop).toHaveBeenCalled();
+    fake.connect();
+    expect(fake.getList).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wait for a list that is not enabled, nor read it at a reconnect", async () => {
+    const fake = fakeList();
+    renderHook(() => useLiveList<Run>("dns_providers", { enabled: false }));
+    expect(fake.subscribe).not.toHaveBeenCalled();
+    expect(fake.realtime).not.toHaveBeenCalled();
+    expect(fake.getList).not.toHaveBeenCalled();
+  });
+
   describe("without inPlace", () => {
     it("subscribes to every record of the collection, with the fields only", async () => {
       const fake = fakeList();
