@@ -109,6 +109,11 @@ export type Command = RecordModel & {
   /** a command its agent settles was asked to stop, and waits for the agent */
   cancel_requested_at?: string;
   cancel_reason?: string;
+  /** what it holds while it runs, as stack:<name>, site:<id> or
+   * backup:<target>; the commands of one resource run one after another */
+  resource?: string;
+  /** the command whose step it is, as a site's provisioning's */
+  parent?: string;
 };
 
 export type Alert = RecordModel & {
