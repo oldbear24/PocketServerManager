@@ -708,6 +708,10 @@ describe("the Overview's states", () => {
       expect(within(card(name)).getByText("Načítám…")).toBeInTheDocument();
     }
     expect(screen.queryByText("Nic nevyžaduje pozornost")).toBeNull();
+    // the bell says nothing is new only once the alerts have loaded
+    const bell = screen.getByRole("button", { name: "Upozornění, načítám…" });
+    expect(bell).toHaveAttribute("title", "Upozornění, načítám…");
+    expect(bell.querySelector(".bell-badge")).toBeNull();
     expect(screen.queryByText("Zatím žádné příkazy")).toBeNull();
     expect(screen.queryByText("Zatím žádné servery")).toBeNull();
     expect(screen.queryByText(/0 \/ 0/)).toBeNull();
@@ -728,6 +732,9 @@ describe("the Overview's states", () => {
     fireEvent.click(within(banner).getByRole("button", { name: "Zkusit znovu" }));
     expect(live.reloads.alerts).toBe(1);
     expect(within(attention).queryByText("Nic nevyžaduje pozornost")).toBeNull();
+    // nor does the bell count what it could not read
+    const bell = screen.getByRole("button", { name: "Upozornění se nepodařilo načíst" });
+    expect(bell.querySelector(".bell-badge")).toBeNull();
     // the rest stays
     expect(tile(/^Agenti připojení/)).toHaveTextContent("6 / 7");
     expect(within(card("Fronta příkazů")).getAllByRole("listitem")).toHaveLength(5);

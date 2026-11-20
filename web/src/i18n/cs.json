@@ -154,6 +154,8 @@
     "bell_many": "Upozornění, {{count}} nového",
     "bell_other": "Upozornění, {{count}} nových",
     "bellNone": "Upozornění, žádná nová",
+    "bellLoading": "Upozornění, načítám…",
+    "bellFailed": "Upozornění se nepodařilo načíst",
     "agentsOfflineFor": "{{name}} bez spojení {{duration}}",
     "agentsOfflineMore_one": "{{name}} a {{count}} další bez spojení",
     "agentsOfflineMore_few": "{{name}} a {{count}} další bez spojení",

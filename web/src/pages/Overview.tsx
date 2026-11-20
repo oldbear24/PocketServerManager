@@ -818,7 +818,19 @@ export function OverviewPage() {
   }, [loaded]);
   const state = !filled ? "loading" : failed ? "error" : "filled";
 
-  const openAlerts = alerts.items.filter((alert) => alert.status === "open").length;
+  // the bell counts only what has loaded: never "none new" while the alerts
+  // load, or once their read failed
+  const openAlerts =
+    alerts.loading || alerts.error
+      ? 0
+      : alerts.items.filter((alert) => alert.status === "open").length;
+  const bellLabel = alerts.error
+    ? t("overview.bellFailed")
+    : alerts.loading
+      ? t("overview.bellLoading")
+      : openAlerts > 0
+        ? t("overview.bell", { count: openAlerts })
+        : t("overview.bellNone");
   const focusAttention = () => {
     const card = document.getElementById("attention");
     card?.scrollIntoView?.({ block: "start" });
@@ -837,13 +849,7 @@ export function OverviewPage() {
         title={t("overview.title")}
         actions={
           <>
-            <IconButton
-              className="bell"
-              aria-label={
-                openAlerts > 0 ? t("overview.bell", { count: openAlerts }) : t("overview.bellNone")
-              }
-              onClick={focusAttention}
-            >
+            <IconButton className="bell" aria-label={bellLabel} onClick={focusAttention}>
               <Bell size={18} aria-hidden="true" />
               {openAlerts > 0 && (
                 <span className="bell-badge" aria-hidden="true">

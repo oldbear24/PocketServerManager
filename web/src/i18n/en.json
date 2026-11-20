@@ -140,6 +140,8 @@
     "bell_one": "Alerts, {{count}} new",
     "bell_other": "Alerts, {{count}} new",
     "bellNone": "Alerts, none new",
+    "bellLoading": "Alerts, loading…",
+    "bellFailed": "Alerts could not be loaded",
     "agentsOfflineFor": "{{name}} offline for {{duration}}",
     "agentsOfflineMore_one": "{{name}} and {{count}} more offline",
     "agentsOfflineMore_other": "{{name}} and {{count}} more offline",
