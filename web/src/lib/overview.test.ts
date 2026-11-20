@@ -1183,6 +1183,7 @@ describe("what the Overview reads", () => {
       targets: { perPage: 500, fields: "id,collectionId,collectionName,updated,name" },
       runs: {
         filter: 'created >= "2026-10-14 21:00:00.000Z"',
+        sort: "created",
         fields:
           "id,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,total_bytes,error,command,retry_of",
       },

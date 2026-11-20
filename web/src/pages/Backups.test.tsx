@@ -19,6 +19,8 @@ const now = Date.parse("2026-11-09T12:00:00Z");
 const live = vi.hoisted(() => ({
   lists: {} as Record<string, unknown[]>,
   records: {} as Record<string, Record<string, unknown>>,
+  // the options of each useLiveRecords, by collection
+  wholeLists: {} as Record<string, unknown>,
 }));
 vi.mock("../lib/realtime", () => {
   const list = (collection: string) => {
@@ -27,7 +29,10 @@ vi.mock("../lib/realtime", () => {
   };
   return {
     useLiveList: list,
-    useLiveRecords: list,
+    useLiveRecords: (collection: string, options: unknown) => {
+      live.wholeLists[collection] = options;
+      return list(collection);
+    },
     useLiveRecord: (collection: string, id?: string) => ({
       record: (id && live.records[collection]?.[id]) || null,
       loading: false,
@@ -72,6 +77,7 @@ afterEach(async () => {
   pb.authStore.clear();
   live.lists = {};
   live.records = {};
+  live.wholeLists = {};
   await i18n.changeLanguage("en");
 });
 
@@ -170,6 +176,16 @@ function showPage(role: User["role"], targets: BackupTarget[] = [bucket, disk, n
 function item(name: string) {
   return within(screen.getByRole("listitem", { name }));
 }
+
+describe("the page's runs", () => {
+  it("are those of 15 days, read in the order the runs' index of created serves", () => {
+    showPage("viewer");
+    expect(live.wholeLists.backup_runs).toMatchObject({
+      filter: 'created >= "2026-10-25 00:00:00.000Z"',
+      sort: "created",
+    });
+  });
+});
 
 describe("the backup targets", () => {
   it("lists each with its usage, where it is and how its last check went", () => {

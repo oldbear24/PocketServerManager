@@ -252,7 +252,10 @@ function applyEvent<T extends RecordModel>(records: Map<string, T>, event: Recor
  * joins, a changed one replaces its copy and a deleted one leaves, without
  * loading the list again. For lists too long to reload on every change, such
  * as two weeks of backup runs. The records come in no order; `fields` must
- * name `updated`.
+ * name `updated`. A `sort` orders the read only, for an index that serves the
+ * filter: PocketBase reads a list whose rule names `@request.auth` with a
+ * join and DISTINCT, and SQLite then goes through every record by id unless
+ * the read is sorted by the field the index starts with.
  *
  * The list is read once the subscription is in place, so that nothing changes
  * unseen between the two, and again after each reconnect of the realtime
@@ -260,9 +263,9 @@ function applyEvent<T extends RecordModel>(records: Map<string, T>, event: Recor
  */
 export function useLiveRecords<T extends RecordModel>(
   collection: string,
-  options: { filter?: string; fields?: string; enabled?: boolean } = {},
+  options: { filter?: string; sort?: string; fields?: string; enabled?: boolean } = {},
 ): ListState<T> {
-  const { filter, fields, enabled = true } = options;
+  const { filter, sort, fields, enabled = true } = options;
 
   const [items, setItems] = useState<T[]>([]);
   const [loading, setLoading] = useState(enabled);
@@ -310,7 +313,7 @@ export function useLiveRecords<T extends RecordModel>(
         early = [];
       }
       pb.collection(collection)
-        .getFullList<T>({ filter, fields, batch: 1000 })
+        .getFullList<T>({ filter, sort, fields, batch: 1000 })
         .then((list) => {
           if (cancelled || current !== reads) {
             return;
@@ -399,7 +402,7 @@ export function useLiveRecords<T extends RecordModel>(
       void unsubscribe?.();
       void stopConnect?.();
     };
-  }, [collection, enabled, fields, filter, version]);
+  }, [collection, enabled, fields, filter, sort, version]);
 
   const reload = useCallback(() => setVersion((current) => current + 1), []);
 

@@ -190,6 +190,9 @@ export function overviewQueries(now: number): Record<QueryName, ListOptions> {
     targets: { perPage: 500, fields: "id,collectionId,collectionName,updated,name" },
     runs: {
       filter: pb.filter("created >= {:since}", { since: runsMadeSince(now) }),
+      // only so that the runs' index of created serves the read: without it
+      // SQLite goes through every run kept (see useLiveRecords)
+      sort: "created",
       fields: overviewRunFields,
     },
     dnsProviders: {

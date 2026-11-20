@@ -90,6 +90,25 @@ describe("live records", () => {
     );
   });
 
+  it("reads the list in the order asked, which realtime needs not", async () => {
+    const fake = fakeCollection();
+    renderHook(() =>
+      useLiveRecords<Run>("backup_runs", {
+        filter: "created >= 'x'",
+        sort: "created",
+        fields: "id,updated",
+      }),
+    );
+    expect(fake.subscribe).toHaveBeenCalledWith("*", expect.any(Function), {
+      filter: "created >= 'x'",
+      fields: "id,updated",
+    });
+    await waitFor(() => expect(fake.getFullList).toHaveBeenCalledTimes(1));
+    expect(fake.getFullList.mock.calls[0]).toEqual([
+      { filter: "created >= 'x'", sort: "created", fields: "id,updated", batch: 1000 },
+    ]);
+  });
+
   it("reads the list only once its subscription is in place", async () => {
     const fake = fakeCollection({ held: true });
     const { result } = renderHook(() => useLiveRecords<Run>("backup_runs"));
