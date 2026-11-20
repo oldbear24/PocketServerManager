@@ -1125,13 +1125,6 @@ describe("what the Overview reads", () => {
         perPage: 500,
         fields: "id,collectionId,collectionName,name,host,updated",
       },
-      alerts: {
-        filter: "status != 'resolved'",
-        sort: "-last_seen",
-        perPage: 200,
-        fields:
-          "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated",
-      },
       commands: {
         filter:
           "parent = '' && resource !~ 'backup-usage:%' && type !~ 'logs.%' && type !~ 'exec.%' && " +

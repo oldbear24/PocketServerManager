@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { ToastProvider } from "../components/toast";
 import i18n from "../i18n";
+import { AlertsProvider, openAlertsQuery } from "../lib/alerts";
 import { AuthProvider } from "../lib/auth";
 import { alertLink } from "../lib/events";
 import { HostsProvider, type HostSummary } from "../lib/hosts";
@@ -23,6 +24,8 @@ const live = vi.hoisted(() => ({
   /** a list that is still loading, or failed */
   state: {} as Record<string, { loading?: boolean; error?: unknown }>,
   reloads: {} as Record<string, number>,
+  /** a list's count, where the panel counts more than it sends */
+  totals: {} as Record<string, number>,
   asked: [] as { collection: string; options: Record<string, unknown> }[],
   now: 0,
 }));
@@ -95,6 +98,7 @@ afterEach(async () => {
   live.lists = {};
   live.state = {};
   live.reloads = {};
+  live.totals = {};
   live.asked = [];
   await i18n.changeLanguage("en");
 });
@@ -119,14 +123,35 @@ function Location() {
 
 const shared = { set: null as ((hosts: ListState<HostSummary>) => void) | null };
 
-/** The Layout's part: it holds the servers and gives them to the page, so
- * that a heartbeat renders the page again through the context only. */
+/** The Layout's open alerts, as live.lists and live.state hold them, read
+ * with the Layout's options; not asked for, as the page asks for its own
+ * lists. */
+function alertsState(): ListState<Alert> {
+  const state = live.state.alerts ?? {};
+  const all = state.loading ? [] : ((live.lists.alerts ?? []) as Alert[]);
+  const items = listPage(all, openAlertsQuery);
+  return {
+    items,
+    total: live.totals.alerts ?? items.length,
+    loading: Boolean(state.loading),
+    error: state.error ?? null,
+    reload: () => {
+      live.reloads.alerts = (live.reloads.alerts ?? 0) + 1;
+    },
+  };
+}
+
+/** The Layout's part: it holds the servers and the open alerts and gives
+ * them to the page, so that a heartbeat renders the page again through the
+ * context only. */
 function HostsLayout({ initial }: { initial: ListState<HostSummary> }) {
   const [hosts, setHosts] = useState(initial);
   shared.set = setHosts;
   return (
     <HostsProvider value={hosts}>
-      <Outlet />
+      <AlertsProvider value={alertsState()}>
+        <Outlet />
+      </AlertsProvider>
     </HostsProvider>
   );
 }
@@ -484,6 +509,43 @@ describe("the Overview's meters", () => {
     expect(within(servers).getByText("203.0.113.24 · Edge proxy")).toHaveClass("cell-sub", "mono");
     expect(within(servers).getByText("10.0.0.30 · Cíl záloh")).toBeInTheDocument();
     expect(within(servers).getByText("10.0.0.20 · TrueNAS SCALE")).toBeInTheDocument();
+  });
+});
+
+describe("the Overview's open alerts, which are the Layout's (#33)", () => {
+  it("shows the alerts the Layout gives it, and reads none of its own", () => {
+    signInAs("viewer");
+    page();
+    expect(live.asked.filter((item) => item.collection === "alerts")).toEqual([]);
+    const attention = card("Vyžaduje pozornost");
+    expect(within(attention).getAllByRole("listitem")).toHaveLength(f.alerts.length);
+    expect(screen.getByRole("button", { name: "Upozornění, 4 nová" })).toBeInTheDocument();
+  });
+
+  it("counts every open alert the panel counts, more than the Layout holds", () => {
+    live.totals.alerts = 250;
+    signInAs("viewer");
+    page();
+    const attention = card("Vyžaduje pozornost");
+    expect(within(attention).getByText("250 otevřených")).toBeInTheDocument();
+    expect(within(attention).getAllByRole("listitem")).toHaveLength(f.alerts.length);
+  });
+
+  it("follows the Layout's list as an alert opens and another resolves, without a remount", () => {
+    signInAs("viewer");
+    const view = page();
+    const attention = card("Vyžaduje pozornost");
+    expect(within(attention).getByText("rpi-garaz: agent bez spojení")).toBeInTheDocument();
+    live.lists.alerts = [
+      ...f.alerts.filter((alert) => alert.rule !== "agent_offline"),
+      { ...f.alerts[0], id: "a9", status: "resolved" },
+      { ...f.alerts[1], id: "a10", last_seen: f.pbDate(f.now - 60_000) },
+    ];
+    view.update(hostsState(f.hosts));
+    expect(card("Vyžaduje pozornost")).toBe(attention);
+    expect(within(attention).queryByText("rpi-garaz: agent bez spojení")).toBeNull();
+    expect(within(attention).getAllByRole("listitem")).toHaveLength(f.alerts.length);
+    expect(screen.getByRole("button", { name: "Upozornění, 4 nová" })).toBeInTheDocument();
   });
 });
 

@@ -65,11 +65,11 @@ export const queueFilter = [
   "type != 'backup.browse'",
 ].join(" && ");
 
-/** The lists the Overview reads besides the servers, which the Layout shares. */
+/** The lists the Overview reads besides the servers and the open alerts,
+ * which the Layout shares (lib/hosts.tsx, lib/alerts.tsx). */
 export type QueryName =
   | "containers"
   | "stacks"
-  | "alerts"
   | "commands"
   | "sites"
   | "sitePhp"
@@ -85,7 +85,6 @@ export type QueryName =
 export const overviewCollections: Record<QueryName, string> = {
   containers: "containers",
   stacks: "stacks",
-  alerts: "alerts",
   commands: "commands",
   sites: "sites",
   sitePhp: "site_php",
@@ -121,8 +120,9 @@ export function runsMadeSince(now: number): string {
  * What the Overview reads, each list with the fields it shows only, as the
  * panel's timing test of the page reads it (internal/panel/overview_load_test.go):
  * containers and runs as whole live sets (useLiveRecords, filter and fields
- * only), the rest with useLiveList. The DNS providers are read only while an
- * alert of one is open; the page adds `enabled`.
+ * only), the rest with useLiveList. The servers and the open alerts are the
+ * Layout's (useHosts, useOpenAlerts). The DNS providers are read only while
+ * an alert of one is open; the page adds `enabled`.
  */
 export function overviewQueries(now: number): Record<QueryName, ListOptions> {
   return {
@@ -132,13 +132,6 @@ export function overviewQueries(now: number): Record<QueryName, ListOptions> {
       perPage: 500,
       // never a stack's compose file or env, each up to 1 MB
       fields: "id,collectionId,collectionName,name,host,updated",
-    },
-    alerts: {
-      filter: "status != 'resolved'",
-      sort: "-last_seen",
-      perPage: 200,
-      fields:
-        "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated",
     },
     commands: {
       filter: queueFilter,

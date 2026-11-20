@@ -27,6 +27,7 @@ import {
 } from "../components/ui";
 import { errorMessage } from "../lib/api";
 import { hasRole, useAuth } from "../lib/auth";
+import { useOpenAlerts } from "../lib/alerts";
 import { formatMoment, type BackupJob, type BackupRun } from "../lib/backupJobs";
 import type { BackupTarget } from "../lib/backups";
 import type { DnsProvider } from "../lib/dns";
@@ -678,11 +679,12 @@ export function OverviewPage() {
   const canOperate = hasRole(user, "operator");
   const canAdmin = hasRole(user, "admin");
 
+  // the Layout's servers and open alerts, which the sidebar shows too
   const hosts = useHosts();
+  const alerts = useOpenAlerts();
   const queries = overviewQueries(now);
   const containers = useLiveRecords<Container>("containers", queries.containers);
   const stacks = useLiveList<Stack>("stacks", queries.stacks);
-  const alerts = useLiveList<Alert>("alerts", queries.alerts);
   const commands = useLiveList<Command>("commands", queries.commands);
   const sites = useLiveList<Site>("sites", queries.sites);
   const sitePhp = useLiveList<SitePhp>("site_php", queries.sitePhp);

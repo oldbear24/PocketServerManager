@@ -15,10 +15,11 @@ import {
   SquarePlus,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet } from "react-router-dom";
 
+import { AlertsProvider, alertsOf, openAlertsQuery } from "../lib/alerts";
 import { api } from "../lib/api";
 import { backupAlertRules, domainAlertRules } from "../lib/events";
 import { hasRole, useAuth } from "../lib/auth";
@@ -65,14 +66,11 @@ function Item({ item }: { item: NavItem }) {
 
 /** A section's dot from its open alerts: err when any is critical, else warn,
  * and none without an alert. */
-export function alertDot(
-  alerts: Pick<Alert, "severity">[],
-  total: number,
-): "err" | "warn" | undefined {
+export function alertDot(alerts: Pick<Alert, "severity">[]): "err" | "warn" | undefined {
   if (alerts.some((alert) => alert.severity === "critical")) {
     return "err";
   }
-  return total > 0 ? "warn" : undefined;
+  return alerts.length > 0 ? "warn" : undefined;
 }
 
 function Section({ heading, items }: { heading?: string; items: NavItem[] }) {
@@ -143,19 +141,16 @@ export function Layout() {
     perPage: 1,
   });
   const sites = useLiveList<Site>("sites", { perPage: 1, inPlace: true });
-  const alerts = useLiveList<Alert>("alerts", { filter: "status != 'resolved'", perPage: 1 });
+  // the one list of the open alerts, which the pages share (#33): one read
+  // with a filter, where three would have PocketBase hold up a fourth of
+  // the Overview's that finds nothing
+  const alerts = useLiveList<Alert>("alerts", openAlertsQuery);
   // a failing certificate or DNS provider marks Domains & TLS (#27)
-  const domainAlerts = useLiveList<Alert>("alerts", {
-    filter: `status != 'resolved' && (${domainAlertRules.map((rule) => `rule = '${rule}'`).join(" || ")})`,
-    perPage: 50,
-  });
-  const domainsDot = alertDot(domainAlerts.items, domainAlerts.total);
+  const domainAlerts = useMemo(() => alertsOf(alerts.items, domainAlertRules), [alerts.items]);
+  const domainsDot = alertDot(domainAlerts);
   // a failed backup or a repository with errors marks Backups (#31)
-  const backupAlerts = useLiveList<Alert>("alerts", {
-    filter: `status != 'resolved' && (${backupAlertRules.map((rule) => `rule = '${rule}'`).join(" || ")})`,
-    perPage: 50,
-  });
-  const backupsDot = alertDot(backupAlerts.items, backupAlerts.total);
+  const backupAlerts = useMemo(() => alertsOf(alerts.items, backupAlertRules), [alerts.items]);
+  const backupsDot = alertDot(backupAlerts);
 
   const overview: NavItem[] = [
     { to: "/", label: t("nav.overview"), icon: LayoutDashboard, end: true },
@@ -170,7 +165,7 @@ export function Layout() {
       label: t("nav.backups"),
       icon: Archive,
       dot: backupsDot,
-      dotLabel: t("nav.backupsAlert", { count: backupAlerts.total }),
+      dotLabel: t("nav.backupsAlert", { count: backupAlerts.length }),
     },
   ];
 
@@ -181,7 +176,7 @@ export function Layout() {
       label: t("nav.domains"),
       icon: Lock,
       dot: domainsDot,
-      dotLabel: t("nav.domainsAlert", { count: domainAlerts.total }),
+      dotLabel: t("nav.domainsAlert", { count: domainAlerts.length }),
     },
   ];
 
@@ -228,7 +223,9 @@ export function Layout() {
 
       <main className="main">
         <HostsProvider value={hosts}>
-          <Outlet />
+          <AlertsProvider value={alerts}>
+            <Outlet />
+          </AlertsProvider>
         </HostsProvider>
       </main>
     </div>

@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { openAlertsQuery, useOpenAlerts } from "../lib/alerts";
 import { api } from "../lib/api";
 import { AuthProvider } from "../lib/auth";
 import { hostSummaryFields, useHosts } from "../lib/hosts";
@@ -12,6 +13,8 @@ import { alertDot, Layout } from "./Layout";
 
 const live = vi.hoisted(() => ({
   lists: {} as Record<string, unknown[]>,
+  /** a list's count, where the panel counts more than it sends */
+  totals: {} as Record<string, number>,
   /** each list the Layout asked for, with its options */
   asked: [] as { collection: string; options: Record<string, unknown> }[],
 }));
@@ -21,7 +24,8 @@ vi.mock("../lib/realtime", () => ({
     const items = (live.lists[collection] ?? []).filter(
       (item) => !options.filter || matchesFilter(item as Record<string, unknown>, options.filter),
     );
-    return { items, loading: false, error: null, total: items.length, reload: () => {} };
+    const total = live.totals[collection] ?? items.length;
+    return { items, loading: false, error: null, total, reload: () => {} };
   },
 }));
 
@@ -43,6 +47,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   pb.authStore.clear();
   live.lists = {};
+  live.totals = {};
   live.asked = [];
 });
 
@@ -234,10 +239,122 @@ describe("the servers the Layout shares with its pages (#33)", () => {
 
 describe("a section's dot", () => {
   it("is err for a critical alert, warn for any other, none without", () => {
-    expect(alertDot([{ severity: "warning" }, { severity: "critical" }], 2)).toBe("err");
-    expect(alertDot([{ severity: "warning" }], 1)).toBe("warn");
-    // more are open than were loaded
-    expect(alertDot([], 60)).toBe("warn");
-    expect(alertDot([], 0)).toBeUndefined();
+    expect(alertDot([{ severity: "warning" }, { severity: "critical" }])).toBe("err");
+    expect(alertDot([{ severity: "warning" }])).toBe("warn");
+    expect(alertDot([{ severity: "info" }])).toBe("warn");
+    expect(alertDot([])).toBeUndefined();
+  });
+});
+
+describe("the open alerts the Layout shares with its pages (#33)", () => {
+  /** a page that shows the open alerts it is given */
+  function SharedAlerts() {
+    const alerts = useOpenAlerts();
+    return (
+      <ul aria-label="shared alerts" data-total={alerts.total}>
+        {alerts.items.map((item) => (
+          <li key={item.id}>{item.rule}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderPage() {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AuthProvider>
+          <Routes>
+            <Route element={<Layout />}>
+              <Route path="/" element={<SharedAlerts />} />
+            </Route>
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const open = () => [
+    alert({ id: "a1", rule: "agent_offline", target: "h1", severity: "critical" }),
+    alert({ id: "a2", rule: "certificate_expiring", target: "c1", severity: "warning" }),
+    alert({ id: "a3", rule: "backup_failed", severity: "warning" }),
+    alert({ id: "a4", rule: "backup_failed", severity: "critical", status: "resolved" }),
+  ];
+
+  it("reads them once, as the Overview needs them, and gives its pages that list", () => {
+    live.lists = { alerts: open() };
+    renderPage();
+    const shared = screen.getByRole("list", { name: "shared alerts" });
+    expect(
+      within(shared)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["agent_offline", "certificate_expiring", "backup_failed"]);
+
+    // one list of the alerts, every render the same: no section reads its own
+    const asked = live.asked.filter((list) => list.collection === "alerts");
+    expect(asked.length).toBeGreaterThan(0);
+    for (const { options } of asked) {
+      expect(options).toEqual(openAlertsQuery);
+    }
+    expect(openAlertsQuery).toEqual({
+      filter: "status != 'resolved'",
+      sort: "-last_seen",
+      perPage: 200,
+      fields:
+        "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated",
+    });
+  });
+
+  it("counts every open alert the panel counts, more than it sends", () => {
+    live.lists = { alerts: open() };
+    live.totals = { alerts: 250 };
+    renderPage();
+    expect(screen.getByRole("link", { name: "250 open alerts" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("list", { name: "shared alerts" })).toHaveAttribute(
+      "data-total",
+      "250",
+    );
+  });
+
+  it("says nothing of open alerts when there are none", () => {
+    live.lists = { alerts: [alert({ status: "resolved" })] };
+    renderPage();
+    expect(screen.queryByRole("link", { name: /open alert/ })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: /^Domains & TLS/ }).querySelector(".nav-dot"),
+    ).toBeNull();
+    expect(screen.getByRole("link", { name: /^Backups/ }).querySelector(".nav-dot")).toBeNull();
+  });
+
+  it("marks Domains & TLS and Backups each by the alerts of its rules only", () => {
+    live.lists = { alerts: open() };
+    renderPage();
+    // the critical alert of a server and the resolved one of a backup mark neither
+    const domains = screen.getByRole("link", { name: /^Domains & TLS/ });
+    expect(domains.querySelector(".nav-dot")).toHaveClass("warn");
+    expect(within(domains).getByText("1 open alert")).toHaveClass("visually-hidden");
+    const backups = screen.getByRole("link", { name: /^Backups/ });
+    expect(backups.querySelector(".nav-dot")).toHaveClass("warn");
+    expect(within(backups).getByText("1 open alert")).toHaveClass("visually-hidden");
+    expect(screen.getByRole("link", { name: "3 open alerts" })).toBeInTheDocument();
+  });
+
+  it("marks Domains & TLS err for a critical alert of a certificate or a DNS provider", () => {
+    live.lists = {
+      alerts: [
+        alert({ id: "a1", rule: "certificate_failed", target: "c1", severity: "critical" }),
+        alert({ id: "a2", rule: "dns_provider_failed", target: "p1", severity: "warning" }),
+      ],
+    };
+    renderPage();
+    const domains = screen.getByRole("link", { name: /^Domains & TLS/ });
+    expect(domains.querySelector(".nav-dot")).toHaveClass("err");
+    expect(within(domains).getByText("2 open alerts")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^Backups/ }).querySelector(".nav-dot")).toBeNull();
+  });
+
+  it("is what useOpenAlerts needs: without it a page fails at once", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => render(<SharedAlerts />)).toThrow(/AlertsProvider/);
   });
 });
