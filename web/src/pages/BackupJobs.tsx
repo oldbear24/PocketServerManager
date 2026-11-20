@@ -1031,6 +1031,8 @@ export function ServerJobsCard({ host }: { host: Host }) {
       host: host.id,
       since: runsSince(now),
     }),
+    // for the runs' index of created, which serves the read only so sorted
+    sort: "created",
     fields: runFields,
   });
 

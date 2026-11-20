@@ -18,10 +18,12 @@ const live = vi.hoisted(() => ({
   host: null as unknown,
   lists: {} as Record<string, unknown[]>,
   filters: {} as Record<string, string | undefined>,
+  sorts: {} as Record<string, string | undefined>,
 }));
 vi.mock("../lib/realtime", async (importOriginal) => {
-  const list = (collection: string, options?: { filter?: string }) => {
+  const list = (collection: string, options?: { filter?: string; sort?: string }) => {
     live.filters[collection] = options?.filter;
+    live.sorts[collection] = options?.sort;
     const items = live.lists[collection] ?? [];
     return { items, loading: false, error: null, total: items.length, reload: () => {} };
   };
@@ -261,6 +263,8 @@ describe("the server's backups tab", () => {
     // only this server's
     expect(live.filters.backup_jobs).toBe('host = "h2"');
     expect(live.filters.backup_runs).toMatch(/^host = "h2" && created >= "/);
+    // sorted by created, so that the runs' index of created serves the read (#33)
+    expect(live.sorts.backup_runs).toBe("created");
 
     const table = within(screen.getByRole("region", { name: "Backup jobs" }));
     expect(table.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([

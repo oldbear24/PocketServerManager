@@ -196,6 +196,8 @@ export function DatabasesPage() {
   });
   const runs = useLiveRecords<BackupRun>("backup_runs", {
     filter: pb.filter("created >= {:since}", { since: runsSinceDays(now, 2) }),
+    // for the runs' index of created, which serves the read only so sorted
+    sort: "created",
     fields: runFields,
   });
   const checks = useLiveList<BackupCheck>("backup_checks", {

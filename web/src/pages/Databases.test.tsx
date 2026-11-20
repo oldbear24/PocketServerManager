@@ -380,6 +380,8 @@ describe("the KPI of the databases' backups", () => {
       perPage: 500,
     });
     expect(live.asked.backup_runs?.[0]?.filter).toBe('created >= "2026-11-16 00:00:00.000Z"');
+    // sorted by created, so that the runs' index of created serves the read (#33)
+    expect(live.asked.backup_runs?.[0]?.sort).toBe("created");
     expect(live.asked.backup_checks?.[0]).toMatchObject({
       filter: "kind = 'restore_test'",
       sort: "-created",
