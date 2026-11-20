@@ -15,7 +15,7 @@ func init() {
 const runsCreatedIndex = "idx_backup_runs_created"
 
 // upOverview indexes the backup runs by when they were made (#33). The
-// Overview reads the runs of the last day and a half, and the Backups page
+// Overview reads the runs of the last two days, and the Backups page
 // those of two weeks; no index of the runs started with created, so each read
 // went through every run the panel keeps, 60 days of them, each with a log of
 // up to 32 KB.

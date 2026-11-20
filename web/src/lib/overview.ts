@@ -121,8 +121,8 @@ export function runsMadeSince(now: number): string {
 /**
  * What the Overview reads, each list with the fields it shows only, as the
  * panel's timing test of the page reads it (internal/panel/overview_load_test.go):
- * containers and runs as whole live sets (useLiveRecords, filter and fields
- * only), the rest with useLiveList. The servers and the open alerts are the
+ * containers and runs as whole live sets (useLiveRecords: filter, fields and,
+ * for the runs, a sort by created for their index), the rest with useLiveList. The servers and the open alerts are the
  * Layout's (useHosts, useOpenAlerts). The DNS providers are read only while
  * an alert of one is open; the page adds `enabled`.
  */
