@@ -326,7 +326,7 @@ describe("the sites' rows", () => {
     });
   });
 
-  it("say each TLS state of the first domain, with the rest counted", async () => {
+  it("say each TLS state of a site's domains, with the rest counted", async () => {
     const cs = await lang("cs");
     const tlsOf = (
       certificates: Certificate[],
@@ -397,6 +397,48 @@ describe("the sites' rows", () => {
       more: 0,
       tls: { text: "Bez domény", tone: "off" },
     });
+  });
+
+  it("say the worst TLS of all of a site's domains, by its domain when it is not the first", async () => {
+    const cs = await lang("cs");
+    // a certificate for each hostname, as the panel orders them
+    const blog = (b: Partial<Certificate>) =>
+      siteRows(
+        siteInput({
+          sites: [f.site("s1", { name: "blog", active_deployment: "d1" }), f.site("s2", {})],
+          domains: [
+            f.domain("a", { hostname: "a.example.cz", site: "s1" }),
+            f.domain("b", { hostname: "b.example.cz", site: "s1" }),
+            f.domain("z", { hostname: "z.example.cz", site: "s2" }),
+          ],
+          certificates: [
+            f.certificate("ka", { names: ["a.example.cz"] }),
+            f.certificate("kb", { names: ["b.example.cz"], ...b }),
+            f.certificate("kz", { names: ["z.example.cz"], not_after: pbDate(now + 5 * day) }),
+          ],
+        }),
+        now,
+        cs,
+      );
+    const expired = blog({ not_after: pbDate(now - day) });
+    // the expired second domain comes before the other site's that expires soon
+    expect(expired.map((row) => [row.domain, row.more, row.tls.text, row.tls.tone])).toEqual([
+      ["a.example.cz", 1, "b.example.cz: Vypršel", "err"],
+      ["z.example.cz", 0, "Vyprší za 5 dní", "warn"],
+    ]);
+    expect(expired[0].domainsTls.map((item) => [item.hostname, item.tls.text])).toEqual([
+      ["a.example.cz", "Let's Encrypt · 60 dní"],
+      ["b.example.cz", "Vypršel"],
+    ]);
+    const failed = blog({ fingerprint: "", status: "failed", attempts: 1, installed: null });
+    expect([failed[0].tls.text, failed[0].tls.tone]).toEqual(["b.example.cz: Nevydán", "err"]);
+    // the first domain's own TLS needs no name, when it is the worst or all are alike
+    const fine = blog({});
+    expect([fine[1].domain, fine[1].tls.text, fine[1].tls.tone]).toEqual([
+      "a.example.cz",
+      "Let's Encrypt · 60 dní",
+      "ok",
+    ]);
   });
 
   it("say each state of the deployment", async () => {
@@ -527,6 +569,33 @@ describe("the sites' tile", () => {
     );
   });
 
+  it("names the certificate of any domain of a site, not of its first only", async () => {
+    // blog.example.cz is fine; its second domain has a certificate of its own
+    const domains = [...f.domains, f.domain("o7", { hostname: "www.blog.example.cz", site: "s1" })];
+    const valid = f.certificates.filter((cert) => cert.id !== "c3");
+    const second = (fields: Partial<Certificate>) => [
+      ...valid,
+      f.certificate("c7", { names: ["www.blog.example.cz"], ...fields }),
+    ];
+    expect((await summary({ domains, certificates: second({}) })).note).toEqual({
+      text: "Všechny certifikáty jsou platné",
+    });
+    expect(
+      (await summary({ domains, certificates: second({ not_after: pbDate(now - day) }) })).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát vypršel", tone: "err" });
+    expect(
+      (
+        await summary({
+          domains,
+          certificates: second({ fingerprint: "", status: "failed", attempts: 1, installed: null }),
+        })
+      ).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát se nepodařilo vydat", tone: "err" });
+    expect(
+      (await summary({ domains, certificates: second({ not_after: pbDate(now + 3 * day) }) })).note,
+    ).toEqual({ text: "www.blog.example.cz – certifikát vyprší za 3 dny", tone: "warn" });
+  });
+
   it("names a failed renewal with time left as such, the soonest first", async () => {
     const certificates = f.certificates.map((cert) =>
       cert.id === "c3" ? { ...cert, not_after: pbDate(now + 40 * day) } : cert,
@@ -640,6 +709,53 @@ describe("the backups' tile", () => {
     expect(backupSummary(f.jobs, runs, hostNames, now, cs)).toEqual({
       succeeded: 1,
       total: 2,
+      note: { text: "nas/photos selhala ve 03:00", tone: "err" },
+    });
+  });
+
+  it("names a failure while its retry is queued or running, as its alert stays open", async () => {
+    const cs = await lang("cs");
+    const ok = f.run("j1", "t1", "2026-10-16T04:00:00Z", "succeeded");
+    const failed = f.run("j3", "t3", "2026-10-16T06:00:00Z", "failed", { host: "h3" });
+    for (const status of ["running", "queued"] as const) {
+      const retry = f.run("j3", "t3", "2026-10-16T06:30:00Z", status, {
+        host: "h3",
+        trigger: "retry",
+        retry_of: failed.id,
+        started_at: status === "running" ? "2026-10-16 06:30:01.000Z" : "",
+      });
+      // the retry stands for the failure in the count, and is no result yet
+      expect(backupSummary(f.jobs, [ok, failed, retry], hostNames, now, cs)).toEqual({
+        succeeded: 1,
+        total: 1,
+        note: { text: "nas/photos selhala v 08:00", tone: "err" },
+      });
+      // nothing else ran: still not that none ran
+      expect(backupSummary(f.jobs, [failed, retry], hostNames, now, cs)).toEqual({
+        succeeded: 0,
+        total: 0,
+        note: { text: "nas/photos selhala v 08:00", tone: "err" },
+      });
+    }
+  });
+
+  it("names the failure the count has when a retry never ran", async () => {
+    const cs = await lang("cs");
+    const failed = f.run("j3", "t3", "2026-10-16T01:00:00Z", "failed", { host: "h3" });
+    const runs = [
+      failed,
+      // a retry that never ran stands for no failure
+      f.run("j3", "t3", "2026-10-16T01:30:00Z", "skipped", {
+        host: "h3",
+        trigger: "retry",
+        retry_of: failed.id,
+        started_at: "",
+      }),
+      f.run("j3", "t3", "2026-10-16T02:00:00Z", "succeeded", { host: "h3" }),
+    ];
+    expect(backupSummary(f.jobs, runs, hostNames, now, cs)).toEqual({
+      succeeded: 1,
+      total: 3,
       note: { text: "nas/photos selhala ve 03:00", tone: "err" },
     });
   });
@@ -885,14 +1001,18 @@ describe("needs attention", () => {
     ]);
   });
 
-  it("names each rule's subject, and its server or target when the record is not loaded", async () => {
+  it("names each rule's subject, its server when a job is not loaded, and no id or server for another", async () => {
     const cs = await lang("cs");
     const title = (a: Alert, ctx = context()) => attentionItems([a], ctx, now, cs)[0].title;
     expect(title(alert("backup_check_failed", { target: "t1", host: "h5" }))).toBe(
       "Repozitář Backblaze B2 obsahuje chyby",
     );
-    expect(title(alert("backup_check_unverified", { target: "t9", host: "h5" }))).toBe(
-      "Repozitář backup-node není ověřený",
+    // a target not loaded: its server is no repository
+    expect(title(alert("backup_check_unverified", { target: "t9", host: "h3" }))).toBe(
+      "Repozitář záloh není ověřený",
+    );
+    expect(title(alert("backup_check_failed", { target: "t9", host: "h3" }))).toBe(
+      "Repozitář záloh obsahuje chyby",
     );
     expect(title(alert("backup_restore_test_failed", { target: "j4", host: "h1" }))).toBe(
       "umami-db: test obnovy selhal",
@@ -915,12 +1035,31 @@ describe("needs attention", () => {
     expect(title(alert("certificate_failed", { target: "c2" }))).toBe(
       "Certifikát docs.example.cz se nepodařilo získat",
     );
-    expect(title(alert("certificate_expiring", { target: "gone" }))).toBe(
-      "Certifikát gone brzy vyprší",
+    // a certificate or a provider not loaded is named by no id
+    expect(title(alert("certificate_expiring", { target: "gone" }))).toBe("Certifikát brzy vyprší");
+    expect(title(alert("certificate_failed", { target: "gone" }))).toBe(
+      "Certifikát se nepodařilo získat",
     );
-    expect(title(alert("dns_provider_failed", { target: "p9" }))).toBe(
-      "DNS poskytovatel p9 hlásí chybu",
+    expect(title(alert("dns_provider_failed", { target: "k3j2h1g0f9e8d7c" }))).toBe(
+      "DNS poskytovatel hlásí chybu",
     );
+    const en = await lang("en");
+    expect(
+      [
+        "backup_check_failed",
+        "backup_check_unverified",
+        "certificate_expiring",
+        "dns_provider_failed",
+      ].map(
+        (rule) =>
+          attentionItems([alert(rule, { target: "x9", host: "h3" })], context(), now, en)[0].title,
+      ),
+    ).toEqual([
+      "A backup repository has errors",
+      "A backup repository is not verified",
+      "A certificate expires soon",
+      "A DNS provider reports an error",
+    ]);
     expect(title(alert("agent_offline", { target: "h9", host: "h9" }))).toBe(
       "h9: agent bez spojení",
     );
@@ -931,17 +1070,46 @@ describe("needs attention", () => {
     ).toBe("Certifikát shop.example.org vypršel");
   });
 
-  it("falls back to since when for what the page knows nothing of", async () => {
+  it("says a certificate that was never issued failed to be issued, not to be renewed", async () => {
+    const cs = await lang("cs");
+    // a new domain whose DNS does not point at its edge yet: its first order failed
+    const order = f.certificate("cx", {
+      names: ["shop.example.org"],
+      fingerprint: "",
+      status: "failed",
+      installed: null,
+      not_before: "",
+      not_after: "",
+      attempts: 1,
+      last_error: "acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN\nmore",
+    });
+    const item = (t: TFunction) =>
+      attentionItems(
+        [alert("certificate_failed", { target: "cx", severity: "critical" })],
+        context({ certificates: new Map([["cx", order]]) }),
+        now,
+        t,
+      )[0];
+    expect(item(cs)).toMatchObject({
+      title: "Certifikát shop.example.org se nepodařilo získat",
+      detail: "Vydání selhalo 1× – acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN",
+    });
+    expect(item(await lang("en")).detail).toBe(
+      "Issuing failed 1× – acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN",
+    );
+  });
+
+  it("falls back to when it was opened for what the page knows nothing of", async () => {
     const cs = await lang("cs");
     const detail = (a: Alert, ctx = context()) => attentionItems([a], ctx, now, cs)[0].detail;
     // no reason without the diagnostics plugin
     expect(
       detail(alert("agent_offline", { target: "h7", host: "h7" }), context({ reasons: new Map() })),
     ).toBe("Poslední heartbeat 12:10");
-    expect(detail(alert("agent_offline", { target: "h9", host: "h9" }))).toBe("od před 2 h");
+    expect(detail(alert("agent_offline", { target: "h9", host: "h9" }))).toBe("otevřeno před 2 h");
     // a run without an error, or none loaded
-    expect(detail(alert("backup_failed", { target: "j4:t1" }))).toBe("od před 2 h");
-    expect(detail(alert("backup_skipped", { target: "j1:t3" }))).toBe("od před 2 h");
+    expect(detail(alert("backup_failed", { target: "j4:t1" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("backup_skipped", { target: "j1:t3" }))).toBe("otevřeno před 2 h");
     const skipped = [
       f.run("j1", "t3", "2026-10-16T09:00:00Z", "skipped", {
         error: "The run before still held the repository.",
@@ -952,10 +1120,17 @@ describe("needs attention", () => {
     );
     // a certificate being issued, one that failed without an attempt, or none loaded
     expect(detail(alert("certificate_failed", { target: "c2" }))).toBe("Vydává se (DNS-01)");
-    expect(detail(alert("certificate_expiring", { target: "c1" }))).toBe("od před 2 h");
-    expect(detail(alert("certificate_expiring", { target: "gone" }))).toBe("od před 2 h");
-    expect(detail(alert("dns_provider_failed", { target: "p9" }))).toBe("od před 2 h");
-    expect(detail(alert("backup_check_failed", { target: "t1" }))).toBe("od před 2 h");
+    expect(detail(alert("certificate_expiring", { target: "c1" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("certificate_expiring", { target: "gone" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("dns_provider_failed", { target: "p9" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("backup_check_failed", { target: "t1" }))).toBe("otevřeno před 2 h");
+    // in words that take a relative time, in both languages
+    const fresh = alert("panel_backup", { first_seen: pbDate(now - 20_000) });
+    expect(detail(fresh)).toBe("otevřeno před 20 s");
+    const en = await lang("en");
+    expect(attentionItems([alert("backup_retention")], context(), now, en)[0].detail).toBe(
+      "opened 2 hr. ago",
+    );
   });
 
   it("links each alert where it is fixed, and the audit log's to the log for operators only", async () => {

@@ -132,7 +132,7 @@
     "noServersText": "Connect a Docker host with one command. Nothing needs to be opened on the server.",
     "openCount_one": "{{count}} open",
     "openCount_other": "{{count}} open",
-    "since": "since {{when}}",
+    "opened": "opened {{when}}",
     "queue": "Command queue",
     "history": "History",
     "noCommands": "No commands yet",
@@ -140,6 +140,8 @@
     "bell_one": "Alerts, {{count}} new",
     "bell_other": "Alerts, {{count}} new",
     "bellNone": "Alerts, none new",
+    "bellLoading": "Alerts, loading…",
+    "bellFailed": "Alerts could not be loaded",
     "agentsOfflineFor": "{{name}} offline for {{duration}}",
     "agentsOfflineMore_one": "{{name}} and {{count}} more offline",
     "agentsOfflineMore_other": "{{name}} and {{count}} more offline",
@@ -186,6 +188,7 @@
     "tlsExpiring_one": "Expires in {{count}} day",
     "tlsExpiring_other": "Expires in {{count}} days",
     "tlsNoDomain": "No domain",
+    "tlsOn": "{{name}}: {{state}}",
     "deployCol": "Deployment",
     "deployed": "deployed {{when}}",
     "deploying": "in progress",
@@ -198,8 +201,13 @@
     "runOk": "OK · {{size}}",
     "showAll": "Show all ({{total}})",
     "showLess": "Show fewer",
+    "showNewest_one": "Show the newest {{count}}",
+    "showNewest_other": "Show the newest {{count}}",
+    "attentionTruncated_one": "Only the newest {{count}} of {{total}} open alerts is listed",
+    "attentionTruncated_other": "Only the newest {{count}} of {{total}} open alerts are listed",
     "lastHeartbeat": "Last heartbeat {{time}}",
     "autoRenewFailed": "Automatic renewal failed {{times}}× – {{error}}",
+    "issuingFailed": "Issuing failed {{times}}× – {{error}}",
     "usageHigh": "{{value}} %, high usage",
     "loadFailed": "Could not load: {{error}}",
     "retry": "Try again"
@@ -791,7 +799,14 @@
     "certificate_expired": "The certificate {{name}} has expired",
     "certificate_failed": "Could not get the certificate {{name}}",
     "dns_provider_failed": "The DNS provider {{name}} reports an error",
-    "backup_restore": "{{name}}: a restore needs attention"
+    "backup_restore": "{{name}}: a restore needs attention",
+    "unnamed": {
+      "backup_check_failed": "A backup repository has errors",
+      "backup_check_unverified": "A backup repository is not verified",
+      "certificate_expiring": "A certificate expires soon",
+      "certificate_failed": "Could not get a certificate",
+      "dns_provider_failed": "A DNS provider reports an error"
+    }
   },
   "chart": {
     "now": "now",

@@ -21,7 +21,6 @@ import {
   EmptyState,
   IconButton,
   Kpi,
-  ProgressBar,
   Table,
   type Tone,
 } from "../components/ui";
@@ -40,7 +39,7 @@ import {
   formatVersion,
   percentOf,
 } from "../lib/format";
-import { hostUsageLevels, useHosts, type HostSummary } from "../lib/hosts";
+import { HostUsage, useHosts, type HostSummary } from "../lib/hosts";
 import {
   agentSummary,
   attentionItems,
@@ -146,23 +145,9 @@ function rowClick(go: () => void) {
 }
 
 function Usage({ value, label }: { value: number; label: string }) {
-  const { t } = useTranslation();
-  const shown = Math.round(value);
   return (
     <div className="usage">
-      <span className="num">{formatNumber(shown)} %</span>
-      <ProgressBar
-        value={shown}
-        label={label}
-        warnAt={hostUsageLevels.warnAt}
-        errAt={hostUsageLevels.errAt}
-        track="ramp"
-        valueText={
-          shown >= hostUsageLevels.warnAt
-            ? t("overview.usageHigh", { value: formatNumber(shown) })
-            : undefined
-        }
-      />
+      <HostUsage value={value} label={label} track="ramp" />
     </div>
   );
 }
@@ -178,14 +163,15 @@ function NoUsage() {
 }
 
 /** A server's row, rendered again only when its server, its count or the
- * minute changes: a heartbeat of one server renders one row. */
+ * minute changes: a heartbeat of one server renders one row. The count is
+ * null while the containers load, or when they could not be read. */
 const HostRow = memo(function HostRow({
   host,
   containers,
   now,
 }: {
   host: HostSummary;
-  containers: number;
+  containers: number | null;
   now: number;
 }) {
   const { t } = useTranslation();
@@ -237,7 +223,9 @@ const HostRow = memo(function HostRow({
         </>
       )}
       {/* an offline server's count is the last it reported */}
-      <td className={`num${offline ? " faint" : ""}`}>{containers}</td>
+      <td className={`num${offline || containers === null ? " faint" : ""}`}>
+        {containers ?? "–"}
+      </td>
       <td className="num" style={{ textAlign: "right" }}>
         <div>{formatVersion(host.agent_version)}</div>
         <div className="cell-sub">
@@ -259,7 +247,9 @@ function ServersCard({
   canConnect,
 }: {
   hosts: ListState<HostSummary>;
-  perHost: Map<string, number>;
+  /** each server's containers; null while they load, or when they could
+   * not be read, as the containers' tile then says */
+  perHost: Map<string, number> | null;
   now: number;
   canConnect: boolean;
 }) {
@@ -315,7 +305,7 @@ function ServersCard({
                 <HostRow
                   key={host.id}
                   host={host}
-                  containers={perHost.get(host.id) ?? 0}
+                  containers={perHost ? (perHost.get(host.id) ?? 0) : null}
                   now={now}
                 />
               ))
@@ -338,16 +328,27 @@ function ServersCard({
   );
 }
 
-function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: AttentionItem[] }) {
+function AttentionCard({
+  alerts,
+  items,
+  waiting,
+}: {
+  alerts: ListState<Alert>;
+  items: AttentionItem[];
+  /** the records the items name are still loading */
+  waiting: boolean;
+}) {
   const { t } = useTranslation();
   const [all, setAll] = useState(false);
   const section = sectionOf(alerts);
   const shown = all ? items : items.slice(0, attentionShown);
+  // the Layout holds the newest 200 of all the panel counts
+  const truncated = alerts.total > alerts.items.length;
 
   let body: ReactNode;
   if (alerts.error) {
     body = <LoadError section={section} />;
-  } else if (alerts.loading) {
+  } else if (alerts.loading || waiting) {
     body = <Loading />;
   } else if (items.length === 0) {
     body = <EmptyState title={t("overview.noAlerts")} />;
@@ -380,11 +381,28 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
             );
           })}
         </ul>
-        {items.length > attentionShown && (
-          <div className="card-foot">
-            <Button size="small" aria-expanded={all} onClick={() => setAll(!all)}>
-              {all ? t("overview.showLess") : t("overview.showAll", { total: items.length })}
-            </Button>
+        {(items.length > attentionShown || truncated) && (
+          <div
+            className="card-foot"
+            style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8 }}
+          >
+            {truncated && (
+              <span className="muted">
+                {t("overview.attentionTruncated", {
+                  count: alerts.items.length,
+                  total: alerts.total,
+                })}
+              </span>
+            )}
+            {items.length > attentionShown && (
+              <Button size="small" aria-expanded={all} onClick={() => setAll(!all)}>
+                {all
+                  ? t("overview.showLess")
+                  : truncated
+                    ? t("overview.showNewest", { count: items.length })
+                    : t("overview.showAll", { total: items.length })}
+              </Button>
+            )}
           </div>
         )}
       </>
@@ -394,7 +412,12 @@ function AttentionCard({ alerts, items }: { alerts: ListState<Alert>; items: Att
   return (
     <Card
       id="attention"
-      title={t("overview.attention")}
+      // the bell's focus when the first alert has no link
+      title={
+        <span id="attention-heading" tabIndex={-1}>
+          {t("overview.attention")}
+        </span>
+      }
       side={!alerts.loading && !alerts.error && t("overview.openCount", { count: alerts.total })}
       flush
     >
@@ -783,8 +806,14 @@ export function OverviewPage() {
     [commands.items, stacks.items, runs.items],
   );
 
-  const sitesSection = sectionOf(sites, sitePhp, domains, certificates, deployments);
-  const backupsSection = sectionOf(jobs, targets, runs);
+  // a site is online only on a server that is not offline, and a job and
+  // its runs are named by their server: both wait for the servers too
+  const sitesSection = sectionOf(hosts, sites, sitePhp, domains, certificates, deployments);
+  const backupsSection = sectionOf(hosts, jobs, targets, runs);
+  // what Needs attention's titles and lines name: until it has loaded, a
+  // title would name a record's id, or a server for a repository
+  const subjects = sectionOf(hosts, jobs, targets, certificates, providers, runs);
+  // the DNS providers count while an alert of one is open
   const lists: AnyList[] = [
     hosts,
     containers,
@@ -799,6 +828,7 @@ export function OverviewPage() {
     jobs,
     targets,
     runs,
+    providers,
   ];
   const loaded = lists.every((list) => !list.loading);
   const failed = lists.some((list) => list.error);
@@ -826,17 +856,33 @@ export function OverviewPage() {
   }, [loaded]);
   const state = !filled ? "loading" : failed ? "error" : "filled";
 
-  const openAlerts = alerts.items.filter((alert) => alert.status === "open").length;
+  // the bell counts only what has loaded: never "none new" while the alerts
+  // load, or once their read failed
+  const openAlerts =
+    alerts.loading || alerts.error
+      ? 0
+      : alerts.items.filter((alert) => alert.status === "open").length;
+  const bellLabel = alerts.error
+    ? t("overview.bellFailed")
+    : alerts.loading
+      ? t("overview.bellLoading")
+      : openAlerts > 0
+        ? t("overview.bell", { count: openAlerts })
+        : t("overview.bellNone");
+  // the bell brings the focus to the first alert, by its link; to the card's
+  // heading when that alert has no link (audit_integrity for a viewer, which
+  // as critical comes first), or there is none, so that nothing is skipped
   const focusAttention = () => {
     const card = document.getElementById("attention");
     card?.scrollIntoView?.({ block: "start" });
-    card?.querySelector<HTMLElement>("a, button")?.focus();
+    const first = card?.querySelector(".list > li")?.querySelector<HTMLElement>("a[href]");
+    (first ?? document.getElementById("attention-heading"))?.focus();
   };
 
   const agentsTile = tileState(sectionOf(hosts), t);
   const containersTile = tileState(sectionOf(containers), t);
   const sitesTileState = tileState(sitesSection, t);
-  const backupsTileState = tileState(sectionOf(jobs, runs), t);
+  const backupsTileState = tileState(sectionOf(hosts, jobs, runs), t);
 
   return (
     <div className="overview" data-overview-state={state}>
@@ -845,13 +891,7 @@ export function OverviewPage() {
         title={t("overview.title")}
         actions={
           <>
-            <IconButton
-              className="bell"
-              aria-label={
-                openAlerts > 0 ? t("overview.bell", { count: openAlerts }) : t("overview.bellNone")
-              }
-              onClick={focusAttention}
-            >
+            <IconButton className="bell" aria-label={bellLabel} onClick={focusAttention}>
               <Bell size={18} aria-hidden="true" />
               {openAlerts > 0 && (
                 <span className="bell-badge" aria-hidden="true">
@@ -949,10 +989,19 @@ export function OverviewPage() {
 
       <div className="columns">
         <div className="column-wide">
-          <ServersCard hosts={hosts} perHost={counts.perHost} now={now} canConnect={canAdmin} />
+          <ServersCard
+            hosts={hosts}
+            perHost={
+              containers.loading || (containers.error && containers.items.length === 0)
+                ? null
+                : counts.perHost
+            }
+            now={now}
+            canConnect={canAdmin}
+          />
         </div>
         <div className="column-side">
-          <AttentionCard alerts={alerts} items={items} />
+          <AttentionCard alerts={alerts} items={items} waiting={subjects.loading} />
           <QueueCard commands={commands} links={commandLinks} now={now} canAudit={canOperate} />
         </div>
       </div>

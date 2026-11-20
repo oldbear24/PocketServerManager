@@ -13,6 +13,7 @@ import {
   runMoment,
   shortError,
   successSince,
+  supersededRuns,
   type BackupJob,
   type BackupRun,
   type RunStatus,
@@ -372,7 +373,11 @@ export type SiteRow = {
   source: string;
   hostName: string;
   online: boolean;
+  /** the worst TLS of its domains, named by its domain when that is not the
+   * first */
   tls: SiteTls;
+  /** each of its domains with its TLS, by name */
+  domainsTls: { hostname: string; tls: SiteTls }[];
   deploy: { text: string; tone?: Tone };
 };
 
@@ -498,6 +503,27 @@ export function siteRows(input: SiteInput, now: number, t: TFunction): SiteRow[]
       host?.status !== "offline" &&
       (site.type === "php" ? settings?.state === "running" : Boolean(site.active_deployment));
 
+    // each domain has a certificate of its own (the panel orders one per
+    // hostname): the row says the worst, so that a second domain's expired
+    // one is not hidden behind the first's
+    const domainsTls = own.map((domain) => ({
+      hostname: domain.hostname,
+      tls: siteTls(domain, input.certificates, now, t),
+    }));
+    let tls = siteTls(undefined, input.certificates, now, t);
+    if (domainsTls.length > 0) {
+      const worst = domainsTls.reduce((shown, item) =>
+        rank(item.tls.tone) < rank(shown.tls.tone) ? item : shown,
+      );
+      tls =
+        worst === domainsTls[0]
+          ? worst.tls
+          : {
+              ...worst.tls,
+              text: t("overview.tlsOn", { name: worst.hostname, state: worst.tls.text }),
+            };
+    }
+
     return {
       id: site.id,
       domain: own[0]?.hostname ?? site.name,
@@ -505,7 +531,8 @@ export function siteRows(input: SiteInput, now: number, t: TFunction): SiteRow[]
       source,
       hostName: host?.name ?? "",
       online,
-      tls: siteTls(own[0], input.certificates, now, t),
+      tls,
+      domainsTls,
       deploy: deployCell(site, settings, input.deployments, now, t),
     };
   });
@@ -553,9 +580,10 @@ function deployCell(
   return { text: t("overview.notDeployed") };
 }
 
-/** The sites' tile: those online, and its line: a certificate that expired
- * or was not issued, one that expires soon or whose renewal failed, each the
- * soonest to end first, then the sites not online, or that all is valid. */
+/** The sites' tile: those online, and its line: of every domain of every
+ * site, a certificate that expired or was not issued, one that expires soon
+ * or whose renewal failed, each the soonest to end first and named by its
+ * domain, then the sites not online, or that all is valid. */
 export function sitesSummary(
   rows: SiteRow[],
   now: number,
@@ -575,33 +603,34 @@ export function sitesSummary(
     online === total
       ? t("overview.sitesOnline", { count: online })
       : t("overview.sitesOnlineOf", { count: total });
-  const soonest = (a: SiteRow, b: SiteRow) => {
+  const domains = rows.flatMap((row) => row.domainsTls);
+  const soonest = (a: (typeof domains)[number], b: (typeof domains)[number]) => {
     const left = a.tls.cert?.not_after ?? "";
     const right = b.tls.cert?.not_after ?? "";
     return left < right ? -1 : left > right ? 1 : 0;
   };
-  const failing = rows
-    .filter((row) => row.tls.state === "expired" || row.tls.state === "failed")
+  const failing = domains
+    .filter((item) => item.tls.state === "expired" || item.tls.state === "failed")
     .sort(soonest);
   if (failing.length > 0) {
-    const [row] = failing;
-    const key = row.tls.state === "expired" ? "overview.certExpired" : "overview.certFailed";
-    return { online, total, unit, note: { text: t(key, { name: row.domain }), tone: "err" } };
+    const [item] = failing;
+    const key = item.tls.state === "expired" ? "overview.certExpired" : "overview.certFailed";
+    return { online, total, unit, note: { text: t(key, { name: item.hostname }), tone: "err" } };
   }
-  const due = rows
+  const due = domains
     .filter(
-      (row) =>
-        row.tls.state === "expiring" ||
-        row.tls.state === "renewal_failed" ||
-        row.tls.state === "renewal_waiting",
+      (item) =>
+        item.tls.state === "expiring" ||
+        item.tls.state === "renewal_failed" ||
+        item.tls.state === "renewal_waiting",
     )
     .sort(soonest);
   if (due.length > 0) {
-    const [row] = due;
-    const cert = row.tls.cert!;
-    const text = expiresSoon(cert, row.tls.state!, now)
-      ? t("overview.certExpiresIn", { name: row.domain, count: daysLeft(cert, now) })
-      : t("overview.certRenewalFailed", { name: row.domain });
+    const [item] = due;
+    const cert = item.tls.cert!;
+    const text = expiresSoon(cert, item.tls.state!, now)
+      ? t("overview.certExpiresIn", { name: item.hostname, count: daysLeft(cert, now) })
+      : t("overview.certRenewalFailed", { name: item.hostname });
     return { online, total, unit, note: { text, tone: "warn" } };
   }
   if (online < total) {
@@ -672,6 +701,15 @@ export function runsIn24h<R extends OverviewRun>(runs: R[], now: number): R[] {
   return runs.filter((run) => (parseDate(runMoment(run))?.getTime() ?? 0) >= since);
 }
 
+/** The newest of some runs by when they happened. */
+function newestRun<R extends OverviewRun>(runs: R[]): R | undefined {
+  return [...runs].sort((a, b) => {
+    const left = runMoment(a);
+    const right = runMoment(b);
+    return left < right ? 1 : left > right ? -1 : 0;
+  })[0];
+}
+
 /** The backups' tile: of the runs of the last 24 hours, those that
  * succeeded of all that ended or were skipped, and its line: the newest
  * failure by its job and time, the runs skipped, or that all went fine. */
@@ -684,35 +722,35 @@ export function backupSummary(
 ): { succeeded: number; total: number; note: Note } {
   const counts = successSince(runs, now - day);
   const { succeeded, total } = counts;
+  const recent = runsIn24h(runs, now);
+  // the newest failure that still stands, as the Backups page's banners have
+  // it: a retry that is queued or running speaks of the run it tries again,
+  // whose alert stays open until a run succeeds
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  const standing = failedRuns(jobs, recent).map((run) =>
+    run.status === "failed" ? run : (byId.get(run.retry_of ?? "") ?? run),
+  );
+  // else the newest the count has, as one a later run followed: the same
+  // failures stand as in the count, of a run tried again the last attempt
+  const superseded = supersededRuns(runs);
+  const failed =
+    newestRun(standing) ??
+    newestRun(recent.filter((run) => run.status === "failed" && !superseded.has(run.id)));
+  if (failed) {
+    const job = jobs.find((item) => item.id === failed.job);
+    const name = job ? jobName(job, hostNames, t) : (hostNames.get(failed.host) ?? failed.job);
+    const moment = parseDate(runMoment(failed))!;
+    const today = new Date(now).toDateString() === moment.toDateString();
+    const text = today
+      ? t(czechAt(moment) === "titleVe" ? "overview.backupFailedAtVe" : "overview.backupFailedAt", {
+          name,
+          time: formatHour(moment),
+        })
+      : t("overview.backupFailedDay", { name, when: formatMoment(runMoment(failed), now) });
+    return { succeeded, total, note: { text, tone: "err" } };
+  }
   if (total === 0) {
     return { succeeded, total, note: { text: t("overview.backupsNone") } };
-  }
-  if (counts.failed > 0) {
-    const recent = runsIn24h(runs, now);
-    // the newest failure that still stands, as the Backups page's banners
-    // have it; else the newest the count has, as one a later run followed
-    const superseded = new Set(recent.map((run) => run.retry_of ?? "").filter(Boolean));
-    const failed =
-      failedRuns(jobs, recent).find((run) => run.status === "failed") ??
-      recent
-        .filter((run) => run.status === "failed" && !superseded.has(run.id))
-        .sort((a, b) => (runMoment(a) < runMoment(b) ? 1 : -1))[0];
-    if (failed) {
-      const job = jobs.find((item) => item.id === failed.job);
-      const name = job ? jobName(job, hostNames, t) : (hostNames.get(failed.host) ?? failed.job);
-      const moment = parseDate(runMoment(failed))!;
-      const today = new Date(now).toDateString() === moment.toDateString();
-      const text = today
-        ? t(
-            czechAt(moment) === "titleVe" ? "overview.backupFailedAtVe" : "overview.backupFailedAt",
-            {
-              name,
-              time: formatHour(moment),
-            },
-          )
-        : t("overview.backupFailedDay", { name, when: formatMoment(runMoment(failed), now) });
-      return { succeeded, total, note: { text, tone: "err" } };
-    }
   }
   if (counts.skipped > 0) {
     return {
@@ -837,8 +875,10 @@ export type AttentionItem = {
 const severityRank: Record<Alert["severity"], number> = { critical: 0, warning: 1, info: 2 };
 
 /** What an alert's title names: its server, job, repository, certificate or
- * DNS provider, when the page holds that record; its server or stored target
- * otherwise. */
+ * DNS provider, when the page holds that record. Without it, a job's alert
+ * names its server, and a repository's, a certificate's or a DNS provider's
+ * names none (alert.unnamed.*): never a record's id, nor the server of a
+ * repository as if it were one. */
 function subjectOf(
   alert: Alert,
   ctx: AttentionContext,
@@ -847,6 +887,7 @@ function subjectOf(
 ): AlertSubject | undefined {
   const hostName = ctx.hosts.get(alert.host)?.name;
   const fallback = hostName ? { name: hostName } : undefined;
+  const unnamed = { rule: `unnamed.${alert.rule}` };
   switch (alert.rule) {
     case "backup_failed":
     case "backup_skipped":
@@ -858,7 +899,7 @@ function subjectOf(
     case "backup_check_failed":
     case "backup_check_unverified": {
       const target = ctx.targets.get(alert.target);
-      return target ? { name: target } : fallback;
+      return target ? { name: target } : unnamed;
     }
     case "backup_restore_test_failed":
     case "backup_restore_test_unverified": {
@@ -868,10 +909,10 @@ function subjectOf(
     case "certificate_expiring":
     case "certificate_failed": {
       const cert = ctx.certificates.get(alert.target);
-      if (!cert) {
-        return fallback;
+      const name = cert?.names?.[0];
+      if (!cert || !name) {
+        return unnamed;
       }
-      const name = cert.names?.[0] ?? alert.target;
       if (alert.rule === "certificate_failed") {
         return { name };
       }
@@ -883,16 +924,16 @@ function subjectOf(
     }
     case "dns_provider_failed": {
       const provider = ctx.providers.get(alert.target);
-      return provider ? { name: provider.name } : fallback;
+      return provider ? { name: provider.name } : unnamed;
     }
   }
   return fallback;
 }
 
-/** The line under an alert's title: what the page knows of it, else since
- * when it is open. */
+/** The line under an alert's title: what the page knows of it, else when
+ * it was opened, as "opened 2 hr. ago". */
 function detailOf(alert: Alert, ctx: AttentionContext, now: number, t: TFunction): string {
-  const since = t("overview.since", {
+  const since = t("overview.opened", {
     when: formatRelative(alert.first_seen, now, { past: true }),
   });
   switch (alert.rule) {
@@ -922,7 +963,8 @@ function detailOf(alert: Alert, ctx: AttentionContext, now: number, t: TFunction
         return since;
       }
       if (cert.attempts > 0 && cert.last_error) {
-        return t("overview.autoRenewFailed", {
+        // a certificate that was never issued has nothing to renew
+        return t(cert.fingerprint ? "overview.autoRenewFailed" : "overview.issuingFailed", {
           times: cert.attempts,
           error: shortError(cert.last_error),
         });

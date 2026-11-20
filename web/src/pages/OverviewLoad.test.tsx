@@ -96,11 +96,12 @@ describe("a cold load of the Overview", () => {
     for (const [collection, count] of filtered) {
       expect({ collection, count }).toEqual({ collection, count: Math.min(count, 3) });
     }
-    // the open alerts once, for the sidebar and the page; the last
+    // the open alerts once for the sidebar's count and the page, and once
+    // for each of the sidebar's two dots, none by the page itself; the last
     // disconnects of the four offline servers once; and each list with a
     // filter, once
     expect(Object.fromEntries(filtered)).toEqual({
-      alerts: 1,
+      alerts: 3,
       databases: 1,
       commands: 1,
       domains: 1,

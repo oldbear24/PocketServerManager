@@ -15,11 +15,11 @@ import {
   SquarePlus,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet } from "react-router-dom";
 
-import { AlertsProvider, alertsOf, openAlertsQuery } from "../lib/alerts";
+import { AlertsProvider, openAlertsQuery, sectionAlertsQuery } from "../lib/alerts";
 import { api } from "../lib/api";
 import { backupAlertRules, domainAlertRules } from "../lib/events";
 import { hasRole, useAuth } from "../lib/auth";
@@ -64,14 +64,21 @@ function Item({ item }: { item: NavItem }) {
   );
 }
 
-/** A section's dot from its open alerts: err when any is critical, else warn,
- * and none without an alert. */
-export function alertDot(alerts: Pick<Alert, "severity">[]): "err" | "warn" | undefined {
+/** A section's dot from its open alerts, as sectionAlertsQuery reads them
+ * (the most severe first) with the panel's count of all: err when one is
+ * critical, else warn, and none without an alert. */
+export function alertDot(
+  alerts: Pick<Alert, "severity">[],
+  total: number,
+): "err" | "warn" | undefined {
   if (alerts.some((alert) => alert.severity === "critical")) {
     return "err";
   }
-  return alerts.length > 0 ? "warn" : undefined;
+  return total > 0 ? "warn" : undefined;
 }
+
+const domainAlertsQuery = sectionAlertsQuery(domainAlertRules);
+const backupAlertsQuery = sectionAlertsQuery(backupAlertRules);
 
 function Section({ heading, items }: { heading?: string; items: NavItem[] }) {
   return (
@@ -141,16 +148,17 @@ export function Layout() {
     perPage: 1,
   });
   const sites = useLiveList<Site>("sites", { perPage: 1, inPlace: true });
-  // the one list of the open alerts, which the pages share (#33): one read
-  // with a filter, where three would have PocketBase hold up a fourth of
-  // the Overview's that finds nothing
+  // the one list of the open alerts, which the pages share (#33), so that a
+  // page reads none of its own: with the two below, three reads with a
+  // filter, where a fourth that finds nothing PocketBase holds up
   const alerts = useLiveList<Alert>("alerts", openAlertsQuery);
-  // a failing certificate or DNS provider marks Domains & TLS (#27)
-  const domainAlerts = useMemo(() => alertsOf(alerts.items, domainAlertRules), [alerts.items]);
-  const domainsDot = alertDot(domainAlerts);
-  // a failed backup or a repository with errors marks Backups (#31)
-  const backupAlerts = useMemo(() => alertsOf(alerts.items, backupAlertRules), [alerts.items]);
-  const backupsDot = alertDot(backupAlerts);
+  // a failing certificate or DNS provider marks Domains & TLS (#27), and a
+  // failed backup or a repository with errors marks Backups (#31): each from
+  // its own read, as the newest 200 of all may not hold their alerts
+  const domainAlerts = useLiveList<Alert>("alerts", domainAlertsQuery);
+  const domainsDot = alertDot(domainAlerts.items, domainAlerts.total);
+  const backupAlerts = useLiveList<Alert>("alerts", backupAlertsQuery);
+  const backupsDot = alertDot(backupAlerts.items, backupAlerts.total);
 
   const overview: NavItem[] = [
     { to: "/", label: t("nav.overview"), icon: LayoutDashboard, end: true },
@@ -165,7 +173,7 @@ export function Layout() {
       label: t("nav.backups"),
       icon: Archive,
       dot: backupsDot,
-      dotLabel: t("nav.backupsAlert", { count: backupAlerts.length }),
+      dotLabel: t("nav.backupsAlert", { count: backupAlerts.total }),
     },
   ];
 
@@ -176,7 +184,7 @@ export function Layout() {
       label: t("nav.domains"),
       icon: Lock,
       dot: domainsDot,
-      dotLabel: t("nav.domainsAlert", { count: domainAlerts.length }),
+      dotLabel: t("nav.domainsAlert", { count: domainAlerts.total }),
     },
   ];
 

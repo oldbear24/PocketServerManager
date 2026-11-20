@@ -1,6 +1,9 @@
 import type { RecordModel } from "pocketbase";
 import { createContext, useContext, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
+import { ProgressBar } from "../components/ui";
+import { formatNumber } from "./format";
 import type { ListState } from "./realtime";
 import type { Host } from "./types";
 
@@ -35,6 +38,39 @@ export type HostSummary = RecordModel &
 /** Where a server's CPU, RAM or disk turns amber and red, as in the design's
  * Overview: from 75 % and from 90 %. */
 export const hostUsageLevels = { warnAt: 75, errAt: 90 } as const;
+
+/** A server's CPU, RAM or disk as its figure and its bar, on the Overview
+ * and the Servers page alike: from one value rounded to whole per cent, so
+ * that the figure, the bar's colour and what it says agree, as 74.6 % that
+ * reads 75 % is high. */
+export function HostUsage({
+  value,
+  label,
+  track,
+}: {
+  value: number;
+  label: string;
+  track?: "neutral" | "ramp";
+}) {
+  const { t } = useTranslation();
+  const shown = Math.round(value);
+  return (
+    <>
+      <span className="num">{formatNumber(shown)} %</span>
+      <ProgressBar
+        {...hostUsageLevels}
+        value={shown}
+        label={label}
+        track={track}
+        valueText={
+          shown >= hostUsageLevels.warnAt
+            ? t("overview.usageHigh", { value: formatNumber(shown) })
+            : undefined
+        }
+      />
+    </>
+  );
+}
 
 const HostsContext = createContext<ListState<HostSummary> | null>(null);
 

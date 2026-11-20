@@ -2,12 +2,13 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openAlertsQuery, useOpenAlerts } from "../lib/alerts";
+import { openAlertsQuery, sectionAlertsQuery, useOpenAlerts } from "../lib/alerts";
 import { api } from "../lib/api";
 import { AuthProvider } from "../lib/auth";
+import { backupAlertRules, domainAlertRules } from "../lib/events";
 import { hostSummaryFields, useHosts } from "../lib/hosts";
 import { pb, type User } from "../lib/pb";
-import { matchesFilter } from "../test-filter";
+import { listPage, matchesFilter } from "../test-filter";
 import type { Alert, PanelInfo } from "../lib/types";
 import { alertDot, Layout } from "./Layout";
 
@@ -19,12 +20,17 @@ const live = vi.hoisted(() => ({
   asked: [] as { collection: string; options: Record<string, unknown> }[],
 }));
 vi.mock("../lib/realtime", () => ({
-  useLiveList: (collection: string, options: { filter?: string } = {}) => {
+  // a page of the list as the panel sends it, with its count of all
+  useLiveList: (
+    collection: string,
+    options: { filter?: string; sort?: string; perPage?: number } = {},
+  ) => {
     live.asked.push({ collection, options });
-    const items = (live.lists[collection] ?? []).filter(
+    const matched = (live.lists[collection] ?? []).filter(
       (item) => !options.filter || matchesFilter(item as Record<string, unknown>, options.filter),
-    );
-    const total = live.totals[collection] ?? items.length;
+    ) as Record<string, unknown>[];
+    const items = listPage(matched, { sort: options.sort, perPage: options.perPage ?? 200 });
+    const total = live.totals[collection] ?? matched.length;
     return { items, loading: false, error: null, total, reload: () => {} };
   },
 }));
@@ -239,10 +245,12 @@ describe("the servers the Layout shares with its pages (#33)", () => {
 
 describe("a section's dot", () => {
   it("is err for a critical alert, warn for any other, none without", () => {
-    expect(alertDot([{ severity: "warning" }, { severity: "critical" }])).toBe("err");
-    expect(alertDot([{ severity: "warning" }])).toBe("warn");
-    expect(alertDot([{ severity: "info" }])).toBe("warn");
-    expect(alertDot([])).toBeUndefined();
+    expect(alertDot([{ severity: "warning" }, { severity: "critical" }], 2)).toBe("err");
+    expect(alertDot([{ severity: "warning" }], 1)).toBe("warn");
+    expect(alertDot([{ severity: "info" }], 1)).toBe("warn");
+    // the alerts the page holds, of more the panel counts
+    expect(alertDot([], 3)).toBe("warn");
+    expect(alertDot([], 0)).toBeUndefined();
   });
 });
 
@@ -290,12 +298,18 @@ describe("the open alerts the Layout shares with its pages (#33)", () => {
         .map((item) => item.textContent),
     ).toEqual(["agent_offline", "certificate_expiring", "backup_failed"]);
 
-    // one list of the alerts, every render the same: no section reads its own
-    const asked = live.asked.filter((list) => list.collection === "alerts");
-    expect(asked.length).toBeGreaterThan(0);
-    for (const { options } of asked) {
-      expect(options).toEqual(openAlertsQuery);
-    }
+    // one list of the alerts for the pages, and one for each section's dot,
+    // every render the same: three reads with a filter
+    const asked = new Set(
+      live.asked
+        .filter((list) => list.collection === "alerts")
+        .map(({ options }) => JSON.stringify(options)),
+    );
+    expect([...asked].sort()).toEqual(
+      [openAlertsQuery, sectionAlertsQuery(domainAlertRules), sectionAlertsQuery(backupAlertRules)]
+        .map((options) => JSON.stringify(options))
+        .sort(),
+    );
     expect(openAlertsQuery).toEqual({
       filter: "status != 'resolved'",
       sort: "-last_seen",
@@ -337,6 +351,57 @@ describe("the open alerts the Layout shares with its pages (#33)", () => {
     expect(backups.querySelector(".nav-dot")).toHaveClass("warn");
     expect(within(backups).getByText("1 open alert")).toHaveClass("visually-hidden");
     expect(screen.getByRole("link", { name: "3 open alerts" })).toBeInTheDocument();
+  });
+
+  it("marks Domains & TLS and Backups by reads of their own, past the newest 200 of all", () => {
+    // 220 failed backups raised again lately; a certificate's alert and a
+    // critical repository's older than all of them
+    live.lists = {
+      alerts: [
+        ...Array.from({ length: 220 }, (_, index) =>
+          alert({
+            id: `b${index}`,
+            rule: "backup_failed",
+            target: `j${index}:t1`,
+            last_seen: "2026-11-20 12:00:00.000Z",
+          }),
+        ),
+        alert({
+          id: "c1",
+          rule: "certificate_expiring",
+          target: "c1",
+          last_seen: "2026-11-19 12:00:00.000Z",
+        }),
+        alert({
+          id: "k1",
+          rule: "backup_check_failed",
+          target: "t1",
+          severity: "critical",
+          last_seen: "2026-11-18 12:00:00.000Z",
+        }),
+      ],
+    };
+    renderPage();
+    // the pages' list holds the newest 200, of all 222 the panel counts
+    const shared = screen.getByRole("list", { name: "shared alerts" });
+    expect(within(shared).getAllByRole("listitem")).toHaveLength(200);
+    expect(within(shared).queryByText("certificate_expiring")).toBeNull();
+    expect(screen.getByRole("link", { name: "222 open alerts" })).toBeInTheDocument();
+
+    const domains = screen.getByRole("link", { name: /^Domains & TLS/ });
+    expect(domains.querySelector(".nav-dot")).toHaveClass("warn");
+    expect(within(domains).getByText("1 open alert")).toBeInTheDocument();
+    const backups = screen.getByRole("link", { name: /^Backups/ });
+    expect(backups.querySelector(".nav-dot")).toHaveClass("err");
+    expect(within(backups).getByText("221 open alerts")).toBeInTheDocument();
+    // each read sends the most severe of its rules, critical first, and counts all
+    expect(sectionAlertsQuery(domainAlertRules)).toEqual({
+      filter:
+        "status != 'resolved' && (rule = 'certificate_failed' || rule = 'certificate_expiring' || rule = 'dns_provider_failed')",
+      sort: "severity",
+      perPage: 1,
+      fields: "id,collectionId,collectionName,severity",
+    });
   });
 
   it("marks Domains & TLS err for a critical alert of a certificate or a DNS provider", () => {

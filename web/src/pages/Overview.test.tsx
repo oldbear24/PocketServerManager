@@ -490,6 +490,36 @@ describe("the Overview's links", () => {
     expect(document.activeElement).toBe(within(card("Vyžaduje pozornost")).getAllByRole("link")[0]);
   });
 
+  it("bring the bell to the card's heading when the first alert has no link, or there is none", () => {
+    // a viewer's audit_integrity has no link, and as critical comes first
+    const audit = {
+      ...f.alerts[0],
+      id: "a9",
+      rule: "audit_integrity",
+      target: "audit_log",
+      host: "",
+      message: "Audit log integrity check failed",
+    } as Alert;
+    const heading = () => screen.getByRole("heading", { name: "Vyžaduje pozornost", level: 2 });
+    const cases: [Alert[], string][] = [
+      [[audit, f.alerts[1]], "Upozornění, 2 nová"],
+      [[audit], "Upozornění, 1 nové"],
+      [[], "Upozornění, žádná nová"],
+    ];
+    signInAs("viewer");
+    for (const [alerts, name] of cases) {
+      live.lists.alerts = alerts;
+      const view = page();
+      const bell = screen.getByRole("button", { name });
+      bell.focus();
+      fireEvent.click(bell);
+      expect(document.activeElement).not.toBe(bell);
+      // not the second alert's link: nothing comes before where the focus is
+      expect(heading()).toContainElement(document.activeElement as HTMLElement);
+      view.unmount();
+    }
+  });
+
   it("count only the open alerts on the bell, and say when there are none", () => {
     live.lists.alerts = [
       { ...f.alerts[0], status: "acknowledged" },
@@ -580,13 +610,33 @@ describe("the Overview's open alerts, which are the Layout's (#33)", () => {
     expect(screen.getByRole("button", { name: "Upozornění, 4 nová" })).toBeInTheDocument();
   });
 
-  it("counts every open alert the panel counts, more than the Layout holds", () => {
+  it("counts every open alert the panel counts, more than the Layout holds, and says so", () => {
     live.totals.alerts = 250;
     signInAs("viewer");
-    page();
+    const view = page();
     const attention = card("Vyžaduje pozornost");
     expect(within(attention).getByText("250 otevřených")).toBeInTheDocument();
     expect(within(attention).getAllByRole("listitem")).toHaveLength(f.alerts.length);
+    expect(
+      within(attention).getByText("Vypsána jsou jen nejnovější 4 z 250 otevřených upozornění"),
+    ).toBeInTheDocument();
+    view.unmount();
+
+    // the newest 200, as the Layout reads them: none is shown as all
+    live.lists.alerts = Array.from({ length: 200 }, (_, index) => ({
+      ...f.alerts[1],
+      id: `n${index}`,
+    }));
+    live.totals.alerts = 221;
+    page();
+    const all = card("Vyžaduje pozornost");
+    expect(within(all).getByText("221 otevřených")).toBeInTheDocument();
+    expect(
+      within(all).getByText("Vypsáno je jen nejnovějších 200 z 221 otevřených upozornění"),
+    ).toBeInTheDocument();
+    expect(within(all).queryByRole("button", { name: /Zobrazit všechna/ })).toBeNull();
+    fireEvent.click(within(all).getByRole("button", { name: "Zobrazit nejnovějších 200" }));
+    expect(within(all).getAllByRole("listitem")).toHaveLength(200);
   });
 
   it("follows the Layout's list as an alert opens and another resolves, without a remount", () => {
@@ -621,6 +671,8 @@ describe("the Overview's lists of alerts", () => {
     expect(within(attention).getAllByRole("listitem")).toHaveLength(6);
     const more = within(attention).getByRole("button", { name: "Zobrazit všechna (9)" });
     expect(more).toHaveAttribute("aria-expanded", "false");
+    // all of them are held: nothing to say of more
+    expect(within(attention).queryByText(/Vypsán/)).toBeNull();
     fireEvent.click(more);
     const items = within(attention).getAllByRole("listitem");
     expect(items).toHaveLength(9);
@@ -708,6 +760,10 @@ describe("the Overview's states", () => {
       expect(within(card(name)).getByText("Načítám…")).toBeInTheDocument();
     }
     expect(screen.queryByText("Nic nevyžaduje pozornost")).toBeNull();
+    // the bell says nothing is new only once the alerts have loaded
+    const bell = screen.getByRole("button", { name: "Upozornění, načítám…" });
+    expect(bell).toHaveAttribute("title", "Upozornění, načítám…");
+    expect(bell.querySelector(".bell-badge")).toBeNull();
     expect(screen.queryByText("Zatím žádné příkazy")).toBeNull();
     expect(screen.queryByText("Zatím žádné servery")).toBeNull();
     expect(screen.queryByText(/0 \/ 0/)).toBeNull();
@@ -728,6 +784,9 @@ describe("the Overview's states", () => {
     fireEvent.click(within(banner).getByRole("button", { name: "Zkusit znovu" }));
     expect(live.reloads.alerts).toBe(1);
     expect(within(attention).queryByText("Nic nevyžaduje pozornost")).toBeNull();
+    // nor does the bell count what it could not read
+    const bell = screen.getByRole("button", { name: "Upozornění se nepodařilo načíst" });
+    expect(bell.querySelector(".bell-badge")).toBeNull();
     // the rest stays
     expect(tile(/^Agenti připojení/)).toHaveTextContent("6 / 7");
     expect(within(card("Fronta příkazů")).getAllByRole("listitem")).toHaveLength(5);
@@ -779,6 +838,68 @@ describe("the Overview's states", () => {
     ).toBeInTheDocument();
   });
 
+  it("counts no containers on a server while they load, or when they could not be read", () => {
+    const count = () =>
+      within(screen.getByRole("link", { name: "nas" }).closest("tr")!).getAllByRole("cell")[5];
+    live.state = { containers: { loading: true } };
+    signInAs("viewer");
+    const loading = page();
+    expect(count()).toHaveTextContent(/^–$/);
+    expect(count()).toHaveClass("num", "faint");
+    loading.unmount();
+
+    // a first read that failed leaves no containers
+    live.state = { containers: { error: new Error("timeout") } };
+    live.lists.containers = [];
+    const failed = page();
+    expect(count()).toHaveTextContent(/^–$/);
+    expect(within(tile(/^Kontejnery/)).getByText("Nepodařilo se načíst: timeout")).toBeVisible();
+    failed.unmount();
+
+    live.state = {};
+    live.lists.containers = f.containers;
+    page();
+    expect(count()).toHaveTextContent(/^9$/);
+    expect(count()).not.toHaveClass("faint");
+  });
+
+  it("claims no site online and names no server while the servers load or could not be read", () => {
+    const sitesAndBackups = () => {
+      for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+        expect(within(tile(name)).getByText("–")).toBeInTheDocument();
+      }
+      // no site counted online on a server not known to be offline, no job without its server
+      expect(screen.queryByText(/webů online/)).toBeNull();
+      expect(within(tile(/^Zálohy za 24 h/)).queryByText(/selhala/)).toBeNull();
+      expect(screen.queryByText(/→ backup-node/)).toBeNull();
+    };
+    signInAs("viewer");
+    const loading = page(hostsState([], { loading: true }));
+    sitesAndBackups();
+    for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+      expect(within(tile(name)).getByText("Načítám…")).toBeInTheDocument();
+    }
+    for (const name of ["Weby a domény", "Zálohy – poslední běhy"]) {
+      expect(within(card(name)).getByText("Načítám…")).toBeInTheDocument();
+    }
+    loading.unmount();
+
+    page(hostsState([], { error: new Error("forbidden") }));
+    sitesAndBackups();
+    for (const name of [/^Weby a certifikáty/, /^Zálohy za 24 h/]) {
+      expect(within(tile(name)).getByText("Nepodařilo se načíst: forbidden")).toHaveClass(
+        "err-text",
+      );
+    }
+    for (const name of ["Weby a domény", "Zálohy – poslední běhy"]) {
+      const banner = within(card(name)).getByRole("alert");
+      expect(banner).toHaveTextContent("Nepodařilo se načíst: forbidden");
+      fireEvent.click(within(banner).getByRole("button", { name: "Zkusit znovu" }));
+    }
+    expect(live.reloads.hosts).toBe(2);
+    expect(live.reloads.sites).toBeUndefined();
+  });
+
   it("says the servers failed to load, and reads them again", () => {
     signInAs("viewer");
     page(hostsState([], { error: new Error("forbidden") }));
@@ -824,6 +945,36 @@ describe("the Overview's states", () => {
         "error",
       ),
     );
+  });
+
+  it("waits for what its alerts name before it lists them, and to be filled for the DNS providers", async () => {
+    signInAs("viewer");
+    // a target not loaded would have named nas a repository
+    live.lists.alerts = [
+      ...f.alerts,
+      { ...f.alerts[1], id: "a5", rule: "backup_check_failed", target: "t3", host: "h3" },
+    ];
+    live.state = { backup_targets: { loading: true } };
+    const targets = page();
+    expect(within(card("Vyžaduje pozornost")).getByText("Načítám…")).toBeInTheDocument();
+    expect(screen.queryByText(/Repozitář/)).toBeNull();
+    targets.unmount();
+
+    // the providers are read once the alerts hold one of theirs: never its id first
+    live.lists.alerts = f.alerts;
+    live.state = { dns_providers: { loading: true } };
+    const view = page();
+    const attention = card("Vyžaduje pozornost");
+    expect(within(attention).getByText("Načítám…")).toBeInTheDocument();
+    expect(screen.queryByText(/DNS poskytovatel/)).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const root = view.container.querySelector("[data-overview-state]")!;
+    expect(root).toHaveAttribute("data-overview-state", "loading");
+
+    live.state = {};
+    view.update(hostsState(f.hosts));
+    await waitFor(() => expect(root).toHaveAttribute("data-overview-state", "filled"));
+    expect(within(attention).getByText("DNS poskytovatel WEDOS hlásí chybu")).toBeInTheDocument();
   });
 
   it("waits for the servers too before it is filled", async () => {

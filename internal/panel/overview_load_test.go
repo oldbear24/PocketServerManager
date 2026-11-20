@@ -38,6 +38,15 @@ const (
 	// openAlertsFields are web/src/lib/alerts.tsx's openAlertsQuery's:
 	// Layout's one list of the open alerts, which the Overview shares.
 	openAlertsFields = "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated"
+	// sectionAlertsFields are web/src/lib/alerts.tsx's sectionAlertsQuery's,
+	// and the filters below its filters for web/src/lib/events.ts's
+	// domainAlertRules and backupAlertRules: the open alerts of the
+	// sidebar's Domains & TLS and Backups, for their dots.
+	sectionAlertsFields = "id,collectionId,collectionName,severity"
+	domainAlertsFilter  = "status != 'resolved' && (rule = 'certificate_failed' || rule = 'certificate_expiring' || rule = 'dns_provider_failed')"
+	backupAlertsFilter  = "status != 'resolved' && (rule = 'backup_failed' || rule = 'backup_skipped' || rule = 'backup_retention'" +
+		" || rule = 'backup_check_failed' || rule = 'backup_check_unverified' || rule = 'panel_backup'" +
+		" || rule = 'backup_restore_test_failed' || rule = 'backup_restore_test_unverified' || rule = 'db_temporary_left')"
 	// overviewRunFields is web/src/lib/backupJobs.ts's.
 	overviewRunFields = "id,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,total_bytes,error,command,retry_of"
 	// overviewQueueFilter is web/src/lib/overview.ts's queueFilter: the
@@ -102,10 +111,17 @@ func overviewReads(now time.Time, offline []string) []overviewRead {
 		listRead("layout containers", schema.Containers, 1, nil),
 		listRead("layout databases", schema.Databases, 1, map[string]string{"filter": "temporary_until = ''"}),
 		listRead("layout sites", schema.Sites, 1, nil),
-		// the open alerts once, for the sidebar's count and dots and the
-		// Overview's O3
+		// the open alerts once, for the sidebar's count and the Overview's
+		// O3, and for each of the sidebar's two dots the most severe of its
+		// rules with their count, which the 200 newest may not hold
 		listRead("layout alerts", schema.Alerts, 200, map[string]string{
 			"filter": "status != 'resolved'", "sort": "-last_seen", "fields": openAlertsFields,
+		}),
+		listRead("layout domain alerts", schema.Alerts, 1, map[string]string{
+			"filter": domainAlertsFilter, "sort": "severity", "fields": sectionAlertsFields,
+		}),
+		listRead("layout backup alerts", schema.Alerts, 1, map[string]string{
+			"filter": backupAlertsFilter, "sort": "severity", "fields": sectionAlertsFields,
 		}),
 		{name: "info", route: "/api/pc/info"},
 
@@ -839,7 +855,7 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 			t.Errorf("a load reads %s with a filter %d times", collection, count)
 		}
 	}
-	if filteredOf[schema.Alerts] != 1 || filteredOf[schema.Events] != 1 {
+	if filteredOf[schema.Alerts] != 3 || filteredOf[schema.Events] != 1 {
 		t.Errorf("the reads with a filter: %v", filteredOf)
 	}
 
@@ -882,6 +898,26 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	for i := 1; i < len(alerts); i++ {
 		if alerts[i-1]["last_seen"].(string) < alerts[i]["last_seen"].(string) {
 			t.Errorf("the alerts are not newest first: %v", alerts)
+		}
+	}
+	// the sidebar's dots: of each section's open alerts the most severe,
+	// critical sorting before info and warning, and the count of all
+	for name, rules := range map[string][]string{
+		"layout domain alerts": {"certificate_failed", "certificate_expiring", "dns_provider_failed"},
+		"layout backup alerts": {"backup_failed", "backup_skipped", "backup_retention", "backup_check_failed",
+			"backup_check_unverified", "panel_backup", "backup_restore_test_failed", "backup_restore_test_unverified", "db_temporary_left"},
+	} {
+		want, critical := 0, false
+		for _, record := range open {
+			if slices.Contains(rules, record.GetString("rule")) {
+				want++
+				critical = critical || record.GetString("severity") == schema.SeverityCritical
+			}
+		}
+		found, total := items(name)
+		if want == 0 || total != want || len(found) != 1 || keys(found[0]) != fieldsOf(sectionAlertsFields) ||
+			(found[0]["severity"] == schema.SeverityCritical) != critical {
+			t.Errorf("%s: %v of %d, not of %d (critical: %v)", name, found, total, want, critical)
 		}
 	}
 
