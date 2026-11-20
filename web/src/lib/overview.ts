@@ -923,10 +923,10 @@ function subjectOf(
   return fallback;
 }
 
-/** The line under an alert's title: what the page knows of it, else since
- * when it is open. */
+/** The line under an alert's title: what the page knows of it, else when
+ * it was opened, as "opened 2 hr. ago". */
 function detailOf(alert: Alert, ctx: AttentionContext, now: number, t: TFunction): string {
-  const since = t("overview.since", {
+  const since = t("overview.opened", {
     when: formatRelative(alert.first_seen, now, { past: true }),
   });
   switch (alert.rule) {

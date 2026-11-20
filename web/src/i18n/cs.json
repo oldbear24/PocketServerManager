@@ -144,7 +144,7 @@
     "openCount_few": "{{count}} otevřené",
     "openCount_many": "{{count}} otevřených",
     "openCount_other": "{{count}} otevřených",
-    "since": "od {{when}}",
+    "opened": "otevřeno {{when}}",
     "queue": "Fronta příkazů",
     "history": "Historie",
     "noCommands": "Zatím žádné příkazy",

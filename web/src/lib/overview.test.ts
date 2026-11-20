@@ -1076,17 +1076,17 @@ describe("needs attention", () => {
     );
   });
 
-  it("falls back to since when for what the page knows nothing of", async () => {
+  it("falls back to when it was opened for what the page knows nothing of", async () => {
     const cs = await lang("cs");
     const detail = (a: Alert, ctx = context()) => attentionItems([a], ctx, now, cs)[0].detail;
     // no reason without the diagnostics plugin
     expect(
       detail(alert("agent_offline", { target: "h7", host: "h7" }), context({ reasons: new Map() })),
     ).toBe("Poslední heartbeat 12:10");
-    expect(detail(alert("agent_offline", { target: "h9", host: "h9" }))).toBe("od před 2 h");
+    expect(detail(alert("agent_offline", { target: "h9", host: "h9" }))).toBe("otevřeno před 2 h");
     // a run without an error, or none loaded
-    expect(detail(alert("backup_failed", { target: "j4:t1" }))).toBe("od před 2 h");
-    expect(detail(alert("backup_skipped", { target: "j1:t3" }))).toBe("od před 2 h");
+    expect(detail(alert("backup_failed", { target: "j4:t1" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("backup_skipped", { target: "j1:t3" }))).toBe("otevřeno před 2 h");
     const skipped = [
       f.run("j1", "t3", "2026-10-16T09:00:00Z", "skipped", {
         error: "The run before still held the repository.",
@@ -1097,10 +1097,17 @@ describe("needs attention", () => {
     );
     // a certificate being issued, one that failed without an attempt, or none loaded
     expect(detail(alert("certificate_failed", { target: "c2" }))).toBe("Vydává se (DNS-01)");
-    expect(detail(alert("certificate_expiring", { target: "c1" }))).toBe("od před 2 h");
-    expect(detail(alert("certificate_expiring", { target: "gone" }))).toBe("od před 2 h");
-    expect(detail(alert("dns_provider_failed", { target: "p9" }))).toBe("od před 2 h");
-    expect(detail(alert("backup_check_failed", { target: "t1" }))).toBe("od před 2 h");
+    expect(detail(alert("certificate_expiring", { target: "c1" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("certificate_expiring", { target: "gone" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("dns_provider_failed", { target: "p9" }))).toBe("otevřeno před 2 h");
+    expect(detail(alert("backup_check_failed", { target: "t1" }))).toBe("otevřeno před 2 h");
+    // in words that take a relative time, in both languages
+    const fresh = alert("panel_backup", { first_seen: pbDate(now - 20_000) });
+    expect(detail(fresh)).toBe("otevřeno před 20 s");
+    const en = await lang("en");
+    expect(attentionItems([alert("backup_retention")], context(), now, en)[0].detail).toBe(
+      "opened 2 hr. ago",
+    );
   });
 
   it("links each alert where it is fixed, and the audit log's to the log for operators only", async () => {

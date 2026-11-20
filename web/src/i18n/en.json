@@ -132,7 +132,7 @@
     "noServersText": "Connect a Docker host with one command. Nothing needs to be opened on the server.",
     "openCount_one": "{{count}} open",
     "openCount_other": "{{count}} open",
-    "since": "since {{when}}",
+    "opened": "opened {{when}}",
     "queue": "Command queue",
     "history": "History",
     "noCommands": "No commands yet",
