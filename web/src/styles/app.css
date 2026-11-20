@@ -3863,7 +3863,10 @@ a.job-name {
   background: var(--err-bg);
 }
 
-/* no figure: a bare neutral track, whatever the meters beside it show */
+/* no figure: a bare neutral track, whatever the meters beside it show. The
+   class is also EmptyState's, whose box it must not take */
 .progress.empty {
+  display: block;
+  padding: 0;
   background: var(--border);
 }
