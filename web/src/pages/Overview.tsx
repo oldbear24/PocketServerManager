@@ -21,7 +21,6 @@ import {
   EmptyState,
   IconButton,
   Kpi,
-  ProgressBar,
   Table,
   type Tone,
 } from "../components/ui";
@@ -40,7 +39,7 @@ import {
   formatVersion,
   percentOf,
 } from "../lib/format";
-import { hostUsageLevels, useHosts, type HostSummary } from "../lib/hosts";
+import { HostUsage, useHosts, type HostSummary } from "../lib/hosts";
 import {
   agentSummary,
   attentionItems,
@@ -146,23 +145,9 @@ function rowClick(go: () => void) {
 }
 
 function Usage({ value, label }: { value: number; label: string }) {
-  const { t } = useTranslation();
-  const shown = Math.round(value);
   return (
     <div className="usage">
-      <span className="num">{formatNumber(shown)} %</span>
-      <ProgressBar
-        value={shown}
-        label={label}
-        warnAt={hostUsageLevels.warnAt}
-        errAt={hostUsageLevels.errAt}
-        track="ramp"
-        valueText={
-          shown >= hostUsageLevels.warnAt
-            ? t("overview.usageHigh", { value: formatNumber(shown) })
-            : undefined
-        }
-      />
+      <HostUsage value={value} label={label} track="ramp" />
     </div>
   );
 }

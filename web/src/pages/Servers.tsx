@@ -4,9 +4,9 @@ import { Link } from "react-router-dom";
 
 import { PageHead } from "../components/Layout";
 import { HostStatusPill } from "../components/status";
-import { Card, EmptyState, ProgressBar, Table } from "../components/ui";
+import { Card, EmptyState, Table } from "../components/ui";
 import { hasRole, useAuth } from "../lib/auth";
-import { hostUsageLevels } from "../lib/hosts";
+import { HostUsage } from "../lib/hosts";
 import { formatNumber, formatRelative, formatVersion, percentOf } from "../lib/format";
 import { useLiveList, useNow } from "../lib/realtime";
 import type { Host } from "../lib/types";
@@ -81,29 +81,19 @@ export function ServersPage() {
                     {host.roles.map((role) => t(`host.role.${role}`)).join(", ")}
                   </td>
                   <td style={{ minWidth: 90 }}>
-                    <span className="num">{formatNumber(host.cpu_percent)} %</span>
-                    <ProgressBar
-                      {...hostUsageLevels}
+                    <HostUsage
                       value={host.cpu_percent}
                       label={t("host.cpuOf", { name: host.name })}
                     />
                   </td>
                   <td style={{ minWidth: 90 }}>
-                    <span className="num">
-                      {formatNumber(percentOf(host.mem_used_bytes, host.mem_bytes))} %
-                    </span>
-                    <ProgressBar
-                      {...hostUsageLevels}
+                    <HostUsage
                       value={percentOf(host.mem_used_bytes, host.mem_bytes)}
                       label={t("host.memOf", { name: host.name })}
                     />
                   </td>
                   <td style={{ minWidth: 90 }}>
-                    <span className="num">
-                      {formatNumber(percentOf(host.disk_used_bytes, host.disk_total_bytes))} %
-                    </span>
-                    <ProgressBar
-                      {...hostUsageLevels}
+                    <HostUsage
                       value={percentOf(host.disk_used_bytes, host.disk_total_bytes)}
                       label={t("host.diskOf", { name: host.name })}
                     />

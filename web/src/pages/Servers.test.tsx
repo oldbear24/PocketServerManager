@@ -60,4 +60,24 @@ describe("the servers' usage", () => {
     expect(level("Memory of vps-wedos")).toBe("");
     expect(level("Disk of vps-wedos")).toBe("err");
   });
+
+  it("colours and says a level from the figure it shows, rounded once as on the Overview", () => {
+    live.hosts = [host("nas", 74.6, 74.7, 89.6), host("dev-box", 74.4, 89.4, 12)];
+    wrap(<ServersPage />, "/servers");
+    const bar = (name: string) => screen.getByRole("progressbar", { name });
+    const shown = (name: string) => [
+      bar(name).closest("td")!.querySelector(".num")!.textContent,
+      bar(name).className,
+    ];
+
+    expect(shown("CPU of nas")).toEqual(["75 %", "progress warn"]);
+    expect(bar("CPU of nas")).toHaveAttribute("aria-valuetext", "75 %, high usage");
+    expect(shown("Memory of nas")).toEqual(["75 %", "progress warn"]);
+    expect(shown("Disk of nas")).toEqual(["90 %", "progress err"]);
+    expect(bar("Disk of nas")).toHaveAttribute("aria-valuetext", "90 %, high usage");
+    // just below a level, the figure and the bar stay below it too
+    expect(shown("CPU of dev-box")).toEqual(["74 %", "progress"]);
+    expect(bar("CPU of dev-box")).not.toHaveAttribute("aria-valuetext");
+    expect(shown("Memory of dev-box")).toEqual(["89 %", "progress warn"]);
+  });
 });
