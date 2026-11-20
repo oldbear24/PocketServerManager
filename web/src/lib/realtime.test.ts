@@ -365,6 +365,19 @@ describe("a live list", () => {
     expect(result.current.total).toBe(2);
   });
 
+  it("gives the same state while nothing changed, and a new one when it did", async () => {
+    const fake = fakeList();
+    const { result, rerender } = renderHook(() => useLiveList<Run>("hosts", { sort: "name" }));
+    await fake.page([record("h1", "online", "2026-11-09 12:00:00.000Z")]);
+    const state = result.current;
+    rerender();
+    expect(result.current).toBe(state);
+
+    fake.send("update", record("h1", "offline", "2026-11-09 12:00:01.000Z"));
+    expect(result.current).not.toBe(state);
+    expect(result.current.reload).toBe(state.reload);
+  });
+
   it("keeps what it showed when a reload fails", async () => {
     const fake = fakeList();
     const { result } = renderHook(() => useLiveList<Run>("alerts"));

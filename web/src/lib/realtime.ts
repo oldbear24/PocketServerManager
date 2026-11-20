@@ -1,5 +1,5 @@
 import type { RecordModel } from "pocketbase";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { pb } from "./pb";
 
@@ -193,7 +193,12 @@ export function useLiveList<T extends RecordModel>(
     };
   }, [collection, enabled, expand, fields, filter, inPlace, load]);
 
-  return { items, total, loading, error, reload: load };
+  // the same state while nothing changed, so that a list shared through a
+  // context, as the Layout's servers, renders its readers again only then
+  return useMemo(
+    () => ({ items, total, loading, error, reload: load }),
+    [items, total, loading, error, load],
+  );
 }
 
 /** The options of a subscription without those not set: each set of options
