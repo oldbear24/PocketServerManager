@@ -201,6 +201,7 @@
     "showLess": "Show fewer",
     "lastHeartbeat": "Last heartbeat {{time}}",
     "autoRenewFailed": "Automatic renewal failed {{times}}× – {{error}}",
+    "issuingFailed": "Issuing failed {{times}}× – {{error}}",
     "usageHigh": "{{value}} %, high usage",
     "loadFailed": "Could not load: {{error}}",
     "retry": "Try again"

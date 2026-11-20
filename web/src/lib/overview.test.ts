@@ -1047,6 +1047,35 @@ describe("needs attention", () => {
     ).toBe("Certifikát shop.example.org vypršel");
   });
 
+  it("says a certificate that was never issued failed to be issued, not to be renewed", async () => {
+    const cs = await lang("cs");
+    // a new domain whose DNS does not point at its edge yet: its first order failed
+    const order = f.certificate("cx", {
+      names: ["shop.example.org"],
+      fingerprint: "",
+      status: "failed",
+      installed: null,
+      not_before: "",
+      not_after: "",
+      attempts: 1,
+      last_error: "acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN\nmore",
+    });
+    const item = (t: TFunction) =>
+      attentionItems(
+        [alert("certificate_failed", { target: "cx", severity: "critical" })],
+        context({ certificates: new Map([["cx", order]]) }),
+        now,
+        t,
+      )[0];
+    expect(item(cs)).toMatchObject({
+      title: "Certifikát shop.example.org se nepodařilo získat",
+      detail: "Vydání selhalo 1× – acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN",
+    });
+    expect(item(await lang("en")).detail).toBe(
+      "Issuing failed 1× – acme: error: 400 :: urn:ietf:params:acme:error:dns :: NXDOMAIN",
+    );
+  });
+
   it("falls back to since when for what the page knows nothing of", async () => {
     const cs = await lang("cs");
     const detail = (a: Alert, ctx = context()) => attentionItems([a], ctx, now, cs)[0].detail;

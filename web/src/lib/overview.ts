@@ -956,7 +956,8 @@ function detailOf(alert: Alert, ctx: AttentionContext, now: number, t: TFunction
         return since;
       }
       if (cert.attempts > 0 && cert.last_error) {
-        return t("overview.autoRenewFailed", {
+        // a certificate that was never issued has nothing to renew
+        return t(cert.fingerprint ? "overview.autoRenewFailed" : "overview.issuingFailed", {
           times: cert.attempts,
           error: shortError(cert.last_error),
         });

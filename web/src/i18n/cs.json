@@ -237,6 +237,7 @@
     "showLess": "Zobrazit méně",
     "lastHeartbeat": "Poslední heartbeat {{time}}",
     "autoRenewFailed": "Auto-obnova selhala {{times}}× – {{error}}",
+    "issuingFailed": "Vydání selhalo {{times}}× – {{error}}",
     "usageHigh": "{{value}} %, vysoké vytížení",
     "loadFailed": "Nepodařilo se načíst: {{error}}",
     "retry": "Zkusit znovu"
