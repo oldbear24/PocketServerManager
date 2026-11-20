@@ -192,6 +192,9 @@ describe("the Overview of the design", () => {
         screen.getByText("Poslední heartbeat 12:10 · spojení bylo uzavřeno"),
       ).toBeInTheDocument(),
     );
+    // why it went away is read for the server that is offline only
+    const events = vi.mocked(pb.collection).mock.calls.filter(([name]) => name === "events");
+    expect(events).toHaveLength(1);
   });
 
   it("shows the sites, their certificates and deployments, and the latest runs", () => {
@@ -656,6 +659,17 @@ describe("the Overview's states", () => {
     ).toBeInTheDocument();
   });
 
+  it("says the servers failed to load, and reads them again", () => {
+    signInAs("viewer");
+    page(hostsState([], { error: new Error("forbidden") }));
+    const servers = card("Servery");
+    const banner = within(servers).getByRole("alert");
+    expect(banner).toHaveTextContent("Nepodařilo se načíst: forbidden");
+    expect(within(servers).queryByText("Zatím žádné servery")).toBeNull();
+    fireEvent.click(within(banner).getByRole("button", { name: "Zkusit znovu" }));
+    expect(live.reloads.hosts).toBe(1);
+  });
+
   it("marks its first render and the frame after every list loaded, once each", async () => {
     const mark = vi.spyOn(performance, "mark");
     live.state = { backup_runs: { loading: true } };
@@ -820,5 +834,39 @@ describe("the Overview in English", () => {
     expect(tile(/^Sites and certificates/)).toHaveTextContent("5 sites online");
     expect(tile(/^Backups in 24 h/)).toHaveTextContent("11 / 12 OK");
     expect(screen.getByRole("button", { name: "Alerts, 4 new" })).toBeInTheDocument();
+  });
+});
+
+describe("the Overview's sites and providers", () => {
+  it("shows eight sites, then a link to the rest", () => {
+    live.lists.sites = Array.from({ length: 11 }, (_, index) =>
+      f.site(`z${index}`, {
+        name: `site-${String(index).padStart(2, "0")}`,
+        active_deployment: "d1",
+      }),
+    );
+    live.lists.domains = [];
+    signInAs("viewer");
+    page();
+    const sites = card("Weby a domény");
+    // the hidden head and eight rows
+    expect(within(sites).getAllByRole("row")).toHaveLength(9);
+    expect(within(sites).getByRole("link", { name: "3 další weby" })).toHaveAttribute(
+      "href",
+      "/sites",
+    );
+  });
+
+  it("reads the DNS providers only while one of their alerts is open", () => {
+    const providers = () =>
+      live.asked.filter((item) => item.collection === "dns_providers").at(-1)!.options;
+    signInAs("viewer");
+    const view = page();
+    expect(providers()).toMatchObject({ enabled: true, perPage: 100 });
+    view.unmount();
+
+    live.lists.alerts = f.alerts.filter((alert) => alert.rule !== "dns_provider_failed");
+    page();
+    expect(providers()).toMatchObject({ enabled: false });
   });
 });
