@@ -61,6 +61,21 @@ export function ComponentDemoPage() {
           icon={<XCircle size={24} aria-hidden="true" />}
           note="1 target has errors"
         />
+        <Kpi
+          label="Containers"
+          hint="11 stacks"
+          to="/stacks"
+          value={
+            <>
+              38 <small>running</small>
+            </>
+          }
+          note={
+            <>
+              3 stopped · <span className="warn-text">1 restarting</span>
+            </>
+          }
+        />
       </div>
 
       <Card title="Buttons" note="note" side="side">
@@ -136,6 +151,46 @@ export function ComponentDemoPage() {
               <td className="cell-title">rpi</td>
               <td>
                 <ProgressBar value={95} label="Usage of rpi" />
+              </td>
+            </tr>
+          </tbody>
+        </Table>
+      </Card>
+
+      <Card title="Meters on their own track" flush>
+        <Table label="Example meters">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>CPU</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { name: "vps-hetzner", value: 22 },
+              { name: "nas", value: 81 },
+              { name: "vps-wedos", value: 93 },
+            ].map(({ name, value }) => (
+              <tr key={name}>
+                <td className="cell-title">{name}</td>
+                <td>
+                  <span className="num">{value} %</span>
+                  <ProgressBar
+                    value={value}
+                    label={`CPU of ${name}`}
+                    warnAt={75}
+                    errAt={90}
+                    track="ramp"
+                    valueText={value >= 75 ? `${value} %, high usage` : undefined}
+                  />
+                </td>
+              </tr>
+            ))}
+            <tr>
+              <td className="cell-title">rpi-garaz</td>
+              <td>
+                <span className="num faint">—</span>
+                <div className="progress empty" aria-hidden="true" />
               </td>
             </tr>
           </tbody>

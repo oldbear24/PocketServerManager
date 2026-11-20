@@ -3827,3 +3827,43 @@ a.job-name {
   font-weight: 600;
   margin: 0;
 }
+
+/* Components of the Overview (#33): a tile that links to its page, the
+   meter on a track of its own colour, and the meter of a server that is
+   offline */
+.kpi-link,
+.kpi-link:hover {
+  color: var(--text);
+}
+
+.kpi-link {
+  text-decoration: none;
+  transition: border-color 0.15s;
+}
+
+.kpi-link:hover {
+  border-color: var(--border-control);
+}
+
+.kpi-link:focus-visible {
+  border-radius: var(--radius-card);
+}
+
+/* the track is a dim step of the fill's ramp, so the state reads across the
+   whole bar; each fill is above 5:1 on its track */
+.progress.ramp {
+  background: var(--accent-bg);
+}
+
+.progress.ramp.warn {
+  background: var(--warn-bg);
+}
+
+.progress.ramp.err {
+  background: var(--err-bg);
+}
+
+/* no figure: a bare neutral track, whatever the meters beside it show */
+.progress.empty {
+  background: var(--border);
+}

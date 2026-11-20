@@ -27,6 +27,12 @@ describe("the component demo page", () => {
       </MemoryRouter>,
     );
 
+    // what axe looks at: a tile that is a link, and meters on their own track
+    // that say their level, beside an empty one
+    expect(container.querySelector("a.kpi-link")).not.toBeNull();
+    expect(container.querySelector(".progress.ramp.err[aria-valuetext]")).not.toBeNull();
+    expect(container.querySelector(".progress.empty[aria-hidden='true']")).not.toBeNull();
+
     const results = await axe.run(container, {
       // jsdom has no layout, so colours cannot be measured here
       rules: { "color-contrast": { enabled: false } },
@@ -120,6 +126,40 @@ describe("Kpi", () => {
     render(<Kpi label="Stored" value="1.8 TB" />);
     expect(screen.getByText("1.8 TB").className).toBe("kpi-value");
   });
+
+  it("is no link without a page to go to", () => {
+    const { container } = render(<Kpi label="Stored" value="1.8 TB" note="3 targets" />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(container.firstElementChild).toHaveClass("card", "kpi");
+    expect(container.firstElementChild).not.toHaveClass("kpi-link");
+  });
+
+  it("is a link to its page, named by all it says", () => {
+    render(
+      <MemoryRouter>
+        <Kpi
+          label="Containers"
+          hint="11 stacks"
+          to="/stacks"
+          value={
+            <>
+              38 <small>running</small>
+            </>
+          }
+          note={
+            <>
+              3 stopped · <span className="warn-text">1 restarting</span>
+            </>
+          }
+        />
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("href", "/stacks");
+    expect(link).toHaveClass("card", "kpi", "kpi-link");
+    expect(link).toHaveAccessibleName("Containers 11 stacks 38 running 3 stopped · 1 restarting");
+    expect(link).toContainElement(screen.getByText("1 restarting"));
+  });
 });
 
 describe("IssueBanner", () => {
@@ -175,6 +215,48 @@ describe("ProgressBar", () => {
   ])("colours a value of %i", (value, className) => {
     render(<ProgressBar value={value} label="x" />);
     expect(screen.getByRole("progressbar")).toHaveClass(...className.split(" "));
+  });
+
+  it.each([
+    [74, ""],
+    [75, "warn"],
+    [89, "warn"],
+    [90, "err"],
+  ])("colours a value of %i at the levels it is given", (value, level) => {
+    render(<ProgressBar value={value} label="x" warnAt={75} errAt={90} />);
+    const bar = screen.getByRole("progressbar");
+    expect(bar.className).toBe(`progress${level ? ` ${level}` : ""}`);
+  });
+
+  it("says what its value means only when told", () => {
+    render(
+      <>
+        <ProgressBar value={93} label="CPU of vps-wedos" valueText="93 %, high usage" />
+        <ProgressBar value={12} label="CPU of nas" />
+      </>,
+    );
+    expect(screen.getByRole("progressbar", { name: "CPU of vps-wedos" })).toHaveAttribute(
+      "aria-valuetext",
+      "93 %, high usage",
+    );
+    expect(screen.getByRole("progressbar", { name: "CPU of nas" })).not.toHaveAttribute(
+      "aria-valuetext",
+    );
+  });
+
+  it("lies on a neutral track unless it takes the ramp of its level", () => {
+    render(
+      <>
+        <ProgressBar value={93} label="neutral" />
+        <ProgressBar value={12} label="ramp" track="ramp" />
+        <ProgressBar value={93} label="ramp err" track="ramp" />
+      </>,
+    );
+    expect(screen.getByRole("progressbar", { name: "neutral" }).className).toBe("progress err");
+    expect(screen.getByRole("progressbar", { name: "ramp" }).className).toBe("progress ramp");
+    expect(screen.getByRole("progressbar", { name: "ramp err" }).className).toBe(
+      "progress ramp err",
+    );
   });
 });
 

@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 
 export type Tone = "ok" | "warn" | "err" | "off" | "info";
 
@@ -104,7 +105,8 @@ export function Card({
 }
 
 /** A figure in a tile. A status figure takes a tone, and then an icon too:
- * its word and icon say it, the colour only repeats them. */
+ * its word and icon say it, the colour only repeats them. With `to` the
+ * whole tile is a link to its page, named by all it says. */
 export function Kpi({
   label,
   hint,
@@ -112,6 +114,7 @@ export function Kpi({
   note,
   tone,
   icon,
+  to,
 }: {
   label: ReactNode;
   hint?: ReactNode;
@@ -119,6 +122,7 @@ export function Kpi({
   note?: ReactNode;
   tone?: "ok" | "warn" | "err";
   icon?: ReactNode;
+  to?: string;
 }) {
   const classes = ["kpi-value"];
   if (tone) {
@@ -127,10 +131,13 @@ export function Kpi({
   if (icon) {
     classes.push("with-icon");
   }
-  return (
-    <div className="card kpi">
+  const content = (
+    <>
       <div className="kpi-label">
         <span>{label}</span>
+        {/* a link's name is its text: the space keeps the two words apart,
+            and the flex row of the label shows none */}
+        {hint && " "}
         {hint && <span className="mono faint small">{hint}</span>}
       </div>
       <div className={classes.join(" ")}>
@@ -138,8 +145,16 @@ export function Kpi({
         {value}
       </div>
       {note && <div className="kpi-note">{note}</div>}
-    </div>
+    </>
   );
+  if (to) {
+    return (
+      <Link to={to} className="card kpi kpi-link">
+        {content}
+      </Link>
+    );
+  }
+  return <div className="card kpi">{content}</div>;
 }
 
 export function Table({
@@ -159,26 +174,36 @@ export function Table({
   );
 }
 
+/** A meter of a share in per cent. Its fill turns warn and err at their
+ * levels; the figure beside it says the value, and `valueText` can say
+ * what the colour means, as "high usage". On the "ramp" track the part
+ * not filled is a dim step of the fill's own colour, so the state reads
+ * across the whole bar. */
 export function ProgressBar({
   value,
   label,
   warnAt = 80,
   errAt = 90,
+  valueText,
+  track = "neutral",
 }: {
   value: number;
   label: string;
   warnAt?: number;
   errAt?: number;
+  valueText?: string;
+  track?: "neutral" | "ramp";
 }) {
   const level = value >= errAt ? " err" : value >= warnAt ? " warn" : "";
   return (
     <div
-      className={`progress${level}`}
+      className={`progress${track === "ramp" ? " ramp" : ""}${level}`}
       role="progressbar"
       aria-label={label}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(value)}
+      aria-valuetext={valueText}
     >
       <span style={{ width: `${value}%` }} />
     </div>
