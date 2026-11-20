@@ -14,6 +14,19 @@ export type ListOptions = {
   fields?: string;
   /** Set to false to wait, for example until a selection has been made. */
   enabled?: boolean;
+  /** Counts no total. PocketBase otherwise runs a COUNT of every record the
+   * filter matches with each read, which a long list, as the commands that
+   * are never pruned, pays for a page of five. The total is then the number
+   * of records loaded. */
+  skipTotal?: boolean;
+  /** Keeps the list in place: realtime sends only the records the filter
+   * matches, an update of a record shown replaces it, an update of a record
+   * not shown is ignored, and only a create or a delete loads the list
+   * again. Without it any event of a filtered list reloads it, as a
+   * command's progress would the queue. Only for a filter and a sort on
+   * fields that never change, as a command's type and creation: an update
+   * cannot then move a record into the list, out of it or within it. */
+  inPlace?: boolean;
 };
 
 export type ListState<T> = {
@@ -32,7 +45,16 @@ export function useLiveList<T extends RecordModel>(
   collection: string,
   options: ListOptions = {},
 ): ListState<T> {
-  const { filter, sort, perPage = 200, expand, fields, enabled = true } = options;
+  const {
+    filter,
+    sort,
+    perPage = 200,
+    expand,
+    fields,
+    enabled = true,
+    skipTotal,
+    inPlace = false,
+  } = options;
 
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
@@ -47,10 +69,11 @@ export function useLiveList<T extends RecordModel>(
     try {
       const list = await pb
         .collection(collection)
-        .getList<T>(1, perPage, { filter, sort, expand, fields });
+        .getList<T>(1, perPage, { filter, sort, expand, fields, skipTotal });
       if (current === generation.current) {
         setItems(list.items);
-        setTotal(list.totalItems);
+        // without a count PocketBase sends -1
+        setTotal(skipTotal ? list.items.length : list.totalItems);
         setError(null);
       }
     } catch (err) {
@@ -62,7 +85,7 @@ export function useLiveList<T extends RecordModel>(
         setLoading(false);
       }
     }
-  }, [collection, filter, sort, perPage, expand, fields]);
+  }, [collection, filter, sort, perPage, expand, fields, skipTotal]);
 
   useEffect(() => {
     if (!enabled) {
@@ -86,6 +109,19 @@ export function useLiveList<T extends RecordModel>(
       .subscribe<T>(
         "*",
         ({ action, record }) => {
+          if (inPlace) {
+            if (action !== "update") {
+              schedule();
+              return;
+            }
+            // a record not shown stays out: its update cannot move it in
+            setItems((current) =>
+              current.some((item) => item.id === record.id)
+                ? current.map((item) => (item.id === record.id ? record : item))
+                : current,
+            );
+            return;
+          }
           if (action !== "update" || filter || expand) {
             schedule();
             return;
@@ -98,7 +134,8 @@ export function useLiveList<T extends RecordModel>(
             return current.map((item) => (item.id === record.id ? record : item));
           });
         },
-        fields ? { fields } : undefined,
+        // a list in place hears only of its own records, each as it shows them
+        subscribeOptions(inPlace ? { filter, fields, expand } : { fields }),
       )
       .then((stop) => {
         if (cancelled) {
@@ -117,9 +154,16 @@ export function useLiveList<T extends RecordModel>(
       }
       void unsubscribe?.();
     };
-  }, [collection, enabled, expand, fields, filter, load]);
+  }, [collection, enabled, expand, fields, filter, inPlace, load]);
 
   return { items, total, loading, error, reload: load };
+}
+
+/** The options of a subscription without those not set: each set of options
+ * makes a topic of its own. */
+function subscribeOptions(options: Record<string, string | undefined>) {
+  const set = Object.entries(options).filter(([, value]) => value);
+  return set.length > 0 ? Object.fromEntries(set) : undefined;
 }
 
 type RecordEvent<T> = { action: string; record: T };
