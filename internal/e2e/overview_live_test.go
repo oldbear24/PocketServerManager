@@ -25,10 +25,11 @@ import (
 
 // The Overview (#33) stays live over PocketBase's realtime connection. These
 // are the page's subscriptions, with the options it gives them, which must
-// stay equal to web/src/lib/overview.ts's and web/src/lib/hosts.tsx's (taken
-// from the spec of #33, §4.2 and §4.3): the servers of Layout's one list,
-// every container of useLiveRecords, the open alerts and the command queue,
-// which alone sends its filter as it is kept in place.
+// stay equal to web/src/lib/overview.ts's, web/src/lib/hosts.tsx's and
+// web/src/lib/alerts.tsx's (taken from the spec of #33, §4.2 and §4.3): the
+// servers and the open alerts of Layout's one list of each, every container
+// of useLiveRecords and the command queue, which alone sends its filter as
+// it is kept in place.
 const (
 	overviewHostFields = "id,collectionId,collectionName,updated,name,roles,status,stream_open,ip4,public_ip4,os,cpu_percent," +
 		"mem_used_bytes,mem_bytes,disk_used_bytes,disk_total_bytes,rtt_ms,last_seen,agent_version"

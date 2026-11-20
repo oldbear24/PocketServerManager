@@ -35,6 +35,9 @@ const (
 	// servers, which the Overview shares.
 	hostSummaryFields = "id,collectionId,collectionName,updated,name,roles,status,stream_open,ip4,public_ip4,os,cpu_percent," +
 		"mem_used_bytes,mem_bytes,disk_used_bytes,disk_total_bytes,rtt_ms,last_seen,agent_version"
+	// openAlertsFields are web/src/lib/alerts.tsx's openAlertsQuery's:
+	// Layout's one list of the open alerts, which the Overview shares.
+	openAlertsFields = "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated"
 	// overviewRunFields is web/src/lib/backupJobs.ts's.
 	overviewRunFields = "id,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,total_bytes,error,command,retry_of"
 	// overviewQueueFilter is web/src/lib/overview.ts's queueFilter: the
@@ -45,16 +48,6 @@ const (
 		" && type != 'site.php.mail' && type != 'site.detect' && type != 'stack.validate'" +
 		" && type != 'db.stats' && type != 'backup.snapshots' && type != 'backup.browse'"
 )
-
-// layoutAlertRules are web/src/lib/events.ts's domainAlertRules and
-// backupAlertRules, the alerts that mark Domains & TLS and Backups.
-var layoutAlertRules = map[string][]string{
-	"domains": {"certificate_failed", "certificate_expiring", "dns_provider_failed"},
-	"backups": {
-		"backup_failed", "backup_skipped", "backup_retention", "backup_check_failed", "backup_check_unverified",
-		"panel_backup", "backup_restore_test_failed", "backup_restore_test_unverified", "db_temporary_left",
-	},
-}
 
 // pbFilterTime is a time as the SDK's pb.filter writes a Date into a filter.
 func pbFilterTime(at time.Time) string {
@@ -73,8 +66,8 @@ type overviewRead struct {
 	all bool
 	// a route that is no list
 	route string
-	// it has a filter: PocketBase holds up a list whose filter finds
-	// nothing, after 3 of them in 3 seconds
+	// it has a filter: PocketBase holds up a list of a collection whose
+	// filter finds nothing, after 3 of them in 3 seconds from one address
 	filtered bool
 }
 
@@ -99,15 +92,6 @@ func fullListRead(name, collection string, options map[string]string) overviewRe
 	return read
 }
 
-// alertRules is Layout's filter of the open alerts of rules.
-func alertRules(rules []string) string {
-	parts := []string{}
-	for _, rule := range rules {
-		parts = append(parts, "rule = '"+rule+"'")
-	}
-	return "status != 'resolved' && (" + strings.Join(parts, " || ") + ")"
-}
-
 // overviewReads are the reads of a cold load of the Overview at now, with
 // the servers that are offline, whose last disconnect the page looks up, and
 // with an open alert of a DNS provider, whose providers it then reads.
@@ -118,18 +102,16 @@ func overviewReads(now time.Time, offline []string) []overviewRead {
 		listRead("layout containers", schema.Containers, 1, nil),
 		listRead("layout databases", schema.Databases, 1, map[string]string{"filter": "temporary_until = ''"}),
 		listRead("layout sites", schema.Sites, 1, nil),
-		listRead("layout alerts", schema.Alerts, 1, map[string]string{"filter": "status != 'resolved'"}),
-		listRead("layout domain alerts", schema.Alerts, 50, map[string]string{"filter": alertRules(layoutAlertRules["domains"])}),
-		listRead("layout backup alerts", schema.Alerts, 50, map[string]string{"filter": alertRules(layoutAlertRules["backups"])}),
+		// the open alerts once, for the sidebar's count and dots and the
+		// Overview's O3
+		listRead("layout alerts", schema.Alerts, 200, map[string]string{
+			"filter": "status != 'resolved'", "sort": "-last_seen", "fields": openAlertsFields,
+		}),
 		{name: "info", route: "/api/pc/info"},
 
-		// the Overview, O1 to O12
+		// the Overview, O1 to O12 but O3, which is Layout's
 		fullListRead("O1 containers", schema.Containers, map[string]string{"fields": "id,host,state,updated"}),
 		listRead("O2 stacks", schema.Stacks, 500, map[string]string{"sort": "name", "fields": "id,collectionId,collectionName,name,host,updated"}),
-		listRead("O3 alerts", schema.Alerts, 200, map[string]string{
-			"filter": "status != 'resolved'", "sort": "-last_seen",
-			"fields": "id,collectionId,collectionName,rule,target,host,severity,status,first_seen,last_seen,message,updated",
-		}),
 		listRead("O4 commands", schema.Commands, 5, map[string]string{
 			"filter": overviewQueueFilter, "sort": "-created", "skipTotal": "true",
 			"fields": "id,collectionId,collectionName,created,updated,host,host_name,type,label,status,resource",
@@ -165,10 +147,16 @@ func overviewReads(now time.Time, offline []string) []overviewRead {
 			"filter": "created >= " + pbFilterTime(now.UTC().Truncate(time.Hour).Add(-37*time.Hour)), "fields": overviewRunFields,
 		}),
 	}
-	// R1 and R2, which do not hold up "filled"
-	for _, host := range offline {
-		reads = append(reads, listRead("R1 events "+host, schema.Events, 1, map[string]string{
-			"filter": "host = '" + host + "' && kind = 'connection.disconnected'", "sort": "-created", "fields": "id,data,created", "skipTotal": "true",
+	// R1, one read for every server offline, and R2, which do not hold up
+	// "filled"
+	if len(offline) > 0 {
+		each := []string{}
+		for _, host := range offline {
+			each = append(each, "host = '"+host+"'")
+		}
+		reads = append(reads, listRead("R1 events", schema.Events, 200, map[string]string{
+			"filter": "(" + strings.Join(each, " || ") + ") && kind = 'connection.disconnected'", "sort": "-created",
+			"fields": "id,host,data,created", "skipTotal": "true",
 		}))
 	}
 	return append(reads, listRead("R2 dns_providers", schema.DNSProviders, 100, map[string]string{
@@ -722,23 +710,15 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	handler := testutil.Handler(t, app)
 	_, viewer := testutil.NewUser(t, app, "viewer@example.com", schema.RoleViewer)
 
-	// the open alerts, by the rules Layout marks; the panel may raise some
-	// of its own as it starts, such as about its recovery
+	// the open alerts; the panel may raise some of its own as it starts,
+	// such as about its recovery
 	open, err := app.FindAllRecords(schema.Alerts, dbx.Not(dbx.HashExp{"status": schema.AlertResolved}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	openAlerts := len(open)
-	openOf := map[string]int{}
-	for _, alert := range open {
-		for kind, rules := range layoutAlertRules {
-			if slices.Contains(rules, alert.GetString("rule")) {
-				openOf[kind]++
-			}
-		}
-	}
-	if openAlerts < 8 || openOf["domains"] < 2 || openOf["backups"] < 4 {
-		t.Fatalf("the open alerts: %d, %v", openAlerts, openOf)
+	if openAlerts < 8 {
+		t.Fatalf("%d open alerts", openAlerts)
 	}
 	// the panel makes a job for each database once it serves (#53): the
 	// reads are timed once it has, with nothing else written meanwhile
@@ -830,15 +810,28 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 
 	// PocketBase sleeps up to half a second before it answers a fourth
 	// filtered list of a collection that finds nothing within 3 seconds
-	// (apis/record_crud.go, listTimingRateLimitRule): no filtered read finds
-	// nothing here, so that none of these times holds such a sleep
+	// from one address (apis/record_crud.go, listTimingRateLimitRule): a
+	// load reads no collection with a filter more than 3 times, as
+	// web/src/pages/OverviewLoad.test.tsx checks of the page itself, and no
+	// filtered read finds nothing here, so that none of these times holds
+	// such a sleep
+	filteredOf := map[string]int{}
 	for _, m := range measured {
 		if !m.read.filtered {
 			continue
 		}
+		filteredOf[m.read.collection] += len(m.answer.pages)
 		if found, _ := m.answer.items(t); len(found) == 0 {
 			t.Errorf("%s finds nothing", m.read.name)
 		}
+	}
+	for collection, count := range filteredOf {
+		if count > 3 {
+			t.Errorf("a load reads %s with a filter %d times", collection, count)
+		}
+	}
+	if filteredOf[schema.Alerts] != 1 || filteredOf[schema.Events] != 1 {
+		t.Errorf("the reads with a filter: %v", filteredOf)
 	}
 
 	// Layout
@@ -851,7 +844,6 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	}
 	for name, want := range map[string]int{
 		"layout containers": seed.containers, "layout databases": 6, "layout sites": 40, "layout alerts": openAlerts,
-		"layout domain alerts": openOf["domains"], "layout backup alerts": openOf["backups"],
 	} {
 		if _, total := items(name); total != want {
 			t.Errorf("%s counts %d, not %d", name, total, want)
@@ -873,9 +865,10 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	if len(stacks) != 100 || total != 100 || keys(stacks[0]) != "collectionId,collectionName,host,id,name,updated" {
 		t.Errorf("the stacks: %d of %d with %s", len(stacks), total, keys(stacks[0]))
 	}
-	alerts, _ := items("O3 alerts")
-	if len(alerts) != openAlerts {
-		t.Errorf("%d open alerts, not %d", len(alerts), openAlerts)
+	// the open alerts, newest first, with their fields only
+	alerts, _ := items("layout alerts")
+	if len(alerts) != openAlerts || keys(alerts[0]) != fieldsOf(openAlertsFields) {
+		t.Errorf("%d open alerts, not %d, with %s", len(alerts), openAlerts, keys(alerts[0]))
 	}
 	for i := 1; i < len(alerts); i++ {
 		if alerts[i-1]["last_seen"].(string) < alerts[i]["last_seen"].(string) {
@@ -924,8 +917,8 @@ func TestTheOverviewsReadsAnswerQuicklyWith20Servers(t *testing.T) {
 	if keys(runs[0]) != fieldsOf(overviewRunFields) {
 		t.Errorf("a run sends %s", keys(runs[0]))
 	}
-	events, _ := items("R1 events " + seed.offline[0])
-	if len(events) != 1 || keys(events[0]) != "created,data,id" {
+	events, _ := items("R1 events")
+	if len(events) != 1 || keys(events[0]) != "created,data,host,id" || events[0]["host"] != seed.offline[0] {
 		t.Errorf("the offline server's disconnect: %v", events)
 	}
 }
