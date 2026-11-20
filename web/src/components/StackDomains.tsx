@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
+import { covers } from "../lib/certificates";
 import { edgeApi, tlsTone, type Certificate, type Domain, type EdgeRoute } from "../lib/edge";
 import { useLiveList } from "../lib/realtime";
 import type { Stack } from "../lib/types";
@@ -59,12 +60,6 @@ export function useDomainRoutes(
   }, [hostId, version]);
 
   return { routes, certificates: certificates.items };
-}
-
-/** Whether a certificate's names cover a hostname, as the edge matches them. */
-function covers(cert: Certificate, hostname: string): boolean {
-  const parent = hostname.slice(hostname.indexOf(".") + 1);
-  return cert.names.some((name) => name === hostname || name === `*.${parent}`);
 }
 
 /** The ACME certificate the panel is getting for a name that has none yet. */
