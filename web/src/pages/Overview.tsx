@@ -163,14 +163,15 @@ function NoUsage() {
 }
 
 /** A server's row, rendered again only when its server, its count or the
- * minute changes: a heartbeat of one server renders one row. */
+ * minute changes: a heartbeat of one server renders one row. The count is
+ * null while the containers load, or when they could not be read. */
 const HostRow = memo(function HostRow({
   host,
   containers,
   now,
 }: {
   host: HostSummary;
-  containers: number;
+  containers: number | null;
   now: number;
 }) {
   const { t } = useTranslation();
@@ -222,7 +223,9 @@ const HostRow = memo(function HostRow({
         </>
       )}
       {/* an offline server's count is the last it reported */}
-      <td className={`num${offline ? " faint" : ""}`}>{containers}</td>
+      <td className={`num${offline || containers === null ? " faint" : ""}`}>
+        {containers ?? "–"}
+      </td>
       <td className="num" style={{ textAlign: "right" }}>
         <div>{formatVersion(host.agent_version)}</div>
         <div className="cell-sub">
@@ -244,7 +247,9 @@ function ServersCard({
   canConnect,
 }: {
   hosts: ListState<HostSummary>;
-  perHost: Map<string, number>;
+  /** each server's containers; null while they load, or when they could
+   * not be read, as the containers' tile then says */
+  perHost: Map<string, number> | null;
   now: number;
   canConnect: boolean;
 }) {
@@ -300,7 +305,7 @@ function ServersCard({
                 <HostRow
                   key={host.id}
                   host={host}
-                  containers={perHost.get(host.id) ?? 0}
+                  containers={perHost ? (perHost.get(host.id) ?? 0) : null}
                   now={now}
                 />
               ))
@@ -934,7 +939,16 @@ export function OverviewPage() {
 
       <div className="columns">
         <div className="column-wide">
-          <ServersCard hosts={hosts} perHost={counts.perHost} now={now} canConnect={canAdmin} />
+          <ServersCard
+            hosts={hosts}
+            perHost={
+              containers.loading || (containers.error && containers.items.length === 0)
+                ? null
+                : counts.perHost
+            }
+            now={now}
+            canConnect={canAdmin}
+          />
         </div>
         <div className="column-side">
           <AttentionCard alerts={alerts} items={items} />

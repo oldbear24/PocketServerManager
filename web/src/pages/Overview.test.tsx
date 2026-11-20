@@ -779,6 +779,31 @@ describe("the Overview's states", () => {
     ).toBeInTheDocument();
   });
 
+  it("counts no containers on a server while they load, or when they could not be read", () => {
+    const count = () =>
+      within(screen.getByRole("link", { name: "nas" }).closest("tr")!).getAllByRole("cell")[5];
+    live.state = { containers: { loading: true } };
+    signInAs("viewer");
+    const loading = page();
+    expect(count()).toHaveTextContent(/^–$/);
+    expect(count()).toHaveClass("num", "faint");
+    loading.unmount();
+
+    // a first read that failed leaves no containers
+    live.state = { containers: { error: new Error("timeout") } };
+    live.lists.containers = [];
+    const failed = page();
+    expect(count()).toHaveTextContent(/^–$/);
+    expect(within(tile(/^Kontejnery/)).getByText("Nepodařilo se načíst: timeout")).toBeVisible();
+    failed.unmount();
+
+    live.state = {};
+    live.lists.containers = f.containers;
+    page();
+    expect(count()).toHaveTextContent(/^9$/);
+    expect(count()).not.toHaveClass("faint");
+  });
+
   it("says the servers failed to load, and reads them again", () => {
     signInAs("viewer");
     page(hostsState([], { error: new Error("forbidden") }));
