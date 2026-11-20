@@ -713,6 +713,53 @@ describe("the backups' tile", () => {
     });
   });
 
+  it("names a failure while its retry is queued or running, as its alert stays open", async () => {
+    const cs = await lang("cs");
+    const ok = f.run("j1", "t1", "2026-10-16T04:00:00Z", "succeeded");
+    const failed = f.run("j3", "t3", "2026-10-16T06:00:00Z", "failed", { host: "h3" });
+    for (const status of ["running", "queued"] as const) {
+      const retry = f.run("j3", "t3", "2026-10-16T06:30:00Z", status, {
+        host: "h3",
+        trigger: "retry",
+        retry_of: failed.id,
+        started_at: status === "running" ? "2026-10-16 06:30:01.000Z" : "",
+      });
+      // the retry stands for the failure in the count, and is no result yet
+      expect(backupSummary(f.jobs, [ok, failed, retry], hostNames, now, cs)).toEqual({
+        succeeded: 1,
+        total: 1,
+        note: { text: "nas/photos selhala v 08:00", tone: "err" },
+      });
+      // nothing else ran: still not that none ran
+      expect(backupSummary(f.jobs, [failed, retry], hostNames, now, cs)).toEqual({
+        succeeded: 0,
+        total: 0,
+        note: { text: "nas/photos selhala v 08:00", tone: "err" },
+      });
+    }
+  });
+
+  it("names the failure the count has when a retry never ran", async () => {
+    const cs = await lang("cs");
+    const failed = f.run("j3", "t3", "2026-10-16T01:00:00Z", "failed", { host: "h3" });
+    const runs = [
+      failed,
+      // a retry that never ran stands for no failure
+      f.run("j3", "t3", "2026-10-16T01:30:00Z", "skipped", {
+        host: "h3",
+        trigger: "retry",
+        retry_of: failed.id,
+        started_at: "",
+      }),
+      f.run("j3", "t3", "2026-10-16T02:00:00Z", "succeeded", { host: "h3" }),
+    ];
+    expect(backupSummary(f.jobs, runs, hostNames, now, cs)).toEqual({
+      succeeded: 1,
+      total: 3,
+      note: { text: "nas/photos selhala ve 03:00", tone: "err" },
+    });
+  });
+
   it("counts the runs skipped, says all went fine, and that none ran", async () => {
     const cs = await lang("cs");
     const ok = f.backupRuns.filter((run) => run.status === "succeeded");
