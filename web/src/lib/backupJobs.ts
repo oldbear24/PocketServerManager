@@ -650,6 +650,44 @@ export function successRate(
   return { succeeded, total };
 }
 
+/** What the Overview reads of a run (#33): when and how it went, its size,
+ * its error and what it retried, never its log nor its lock. */
+export const overviewRunFields =
+  "id,created,updated,job,target,host,status,trigger,scheduled_at,started_at,finished_at,total_bytes,error,command,retry_of";
+
+/** How the runs that happened since a moment went, by when they happened
+ * (runMoment), as successRate counts them: those that succeeded, failed or
+ * were skipped, of a run tried again only the last attempt. Queued, running
+ * and cancelled runs count for none. */
+export function successSince(
+  runs: (CountedRun & Partial<Pick<BackupRun, "finished_at" | "scheduled_at">>)[],
+  since: number,
+): { succeeded: number; failed: number; skipped: number; total: number } {
+  const superseded = supersededRuns(runs);
+  const counts = { succeeded: 0, failed: 0, skipped: 0 };
+  for (const run of runs) {
+    if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "skipped") {
+      continue;
+    }
+    if (run.status === "failed" && run.id && superseded.has(run.id)) {
+      continue;
+    }
+    const at = parseDate(
+      runMoment({
+        finished_at: run.finished_at ?? "",
+        started_at: run.started_at ?? "",
+        scheduled_at: run.scheduled_at ?? "",
+        created: run.created,
+      }),
+    )?.getTime();
+    if (at === undefined || at < since) {
+      continue;
+    }
+    counts[run.status]++;
+  }
+  return { ...counts, total: counts.succeeded + counts.failed + counts.skipped };
+}
+
 /** The share that succeeded, in whole percent, never 100 while one did not:
  * null when there was nothing. */
 export function successPercent(succeeded: number, total: number): number | null {
